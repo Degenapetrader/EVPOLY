@@ -55,6 +55,7 @@
   },
   "plugins": {
     "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk3QjNCQUQ0Q0UzQTcwNTgKUldSWWNEck8xTHF6bDhVMmhSTXRNOTRTTEZUbWdKbmg4QjJBb1dia1RnTUN1R3hmVC9wSzlPNHMK",
       "endpoints": [
         "https://github.com/Degenapetrader/EVPOLY/releases/latest/download/latest.json"
       ]

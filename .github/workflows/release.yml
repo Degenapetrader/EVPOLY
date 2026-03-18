@@ -1,0 +1,51 @@
+name: Release EVPoly Desktop (Windows)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout desktop repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build EVPOLY sidecar (Windows)
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch main https://github.com/Degenapetrader/EVPOLY.git "$env:RUNNER_TEMP\evpoly-core"
+          cargo build --release --manifest-path "$env:RUNNER_TEMP\evpoly-core\Cargo.toml" --bin polymarket-arbitrage-bot
+          New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
+          Copy-Item "$env:RUNNER_TEMP\evpoly-core\target\release\polymarket-arbitrage-bot.exe" "src-tauri\binaries\evpoly-bot-x86_64-pc-windows-msvc.exe" -Force
+
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Build and publish NSIS release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "EVPoly Desktop ${{ github.ref_name }}"
+          releaseBody: "Windows one-click installer (.exe) for EVPoly Desktop."
+          releaseDraft: false
+          prerelease: false
+

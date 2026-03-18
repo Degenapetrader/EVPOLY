@@ -43,11 +43,25 @@ cp target/release/polymarket-arbitrage-bot src-tauri/binaries/evpoly-bot-$(rustc
 
 ## Release
 
-Push a version tag to the `desktop` branch:
+Push a version tag:
 
 ```bash
-git tag v0.1.0
-git push origin desktop --tags
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
-GitHub Actions builds installers for Windows, macOS, and Linux, and publishes them as a GitHub Release with SHA256 checksums.
+The GitHub workflow builds and publishes a **Windows NSIS installer (.exe)** on tag push.
+
+### One-Click Windows Installer
+
+- The installer target is NSIS (`.exe`) and includes WebView2 via `offlineInstaller` mode.
+- The app bundles the EVPOLY bot as a Windows sidecar:
+  - `src-tauri/binaries/evpoly-bot-x86_64-pc-windows-msvc.exe`
+- Release pipeline auto-builds this sidecar from `Degenapetrader/EVPOLY` main during CI.
+
+### Required GitHub Secrets (for updater signing)
+
+- `TAURI_SIGNING_PRIVATE_KEY`
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+If signing secrets are missing, release build can fail when generating updater artifacts.

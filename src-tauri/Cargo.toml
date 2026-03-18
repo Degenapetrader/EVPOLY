@@ -1,0 +1,36 @@
+[package]
+name = "evpoly-desktop"
+version = "0.1.0"
+description = "EVPoly Desktop - Cross-platform trading bot manager"
+authors = ["Degenapetrader"]
+license = "SEE LICENSE"
+repository = "https://github.com/Degenapetrader/EVPOLY"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = ["codegen"] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-log = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-updater = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+argon2 = "0.5"
+aes-gcm = "0.10"
+rand = "0.8"
+base64 = "0.22"
+rusqlite = { version = "0.31", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tokio = { version = "1", features = ["full"] }
+chrono = "0.4"
+dirs = "5"
+uuid = { version = "1", features = ["v4"] }

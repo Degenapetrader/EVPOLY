@@ -43,11 +43,12 @@ cp target/release/polymarket-arbitrage-bot src-tauri/binaries/evpoly-bot-$(rustc
 
 ## Release
 
-Push a version tag:
+Push to desktop branch, then create a UI tag:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git push origin desktop
+git tag UI-v1.0.0
+git push origin UI-v1.0.0
 ```
 
 The GitHub workflow builds and publishes a **Windows NSIS installer (.exe)** on tag push.

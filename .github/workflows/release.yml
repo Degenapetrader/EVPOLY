@@ -3,7 +3,7 @@ name: Release EVPoly Desktop (Windows)
 on:
   push:
     tags:
-      - "v*"
+      - "UI-v*"
 
 permissions:
   contents: write
@@ -48,4 +48,3 @@ jobs:
           releaseBody: "Windows one-click installer (.exe) for EVPoly Desktop."
           releaseDraft: false
           prerelease: false
-

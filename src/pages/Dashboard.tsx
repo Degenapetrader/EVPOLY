@@ -9,7 +9,6 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
-import { open } from "@tauri-apps/plugin-shell";
 import { check } from "@tauri-apps/plugin-updater";
 import { StatusBadge } from "../components/StatusBadge";
 import { ProfileSwitcher } from "../components/ProfileSwitcher";
@@ -23,7 +22,7 @@ import {
   restartBot,
   getLogLines,
   getActiveProfileId,
-  getDataDirPath,
+  openLogsFolder,
   type LogLine,
 } from "../lib/tauri-commands";
 
@@ -156,10 +155,9 @@ export function Dashboard() {
 
   const handleOpenLogsFolder = async () => {
     try {
-      const logsDir = await getDataDirPath();
-      await open(logsDir);
-    } catch {
-      // ignore open failure
+      await openLogsFolder();
+    } catch (err) {
+      console.error("Failed to open logs folder", err);
     }
   };
 

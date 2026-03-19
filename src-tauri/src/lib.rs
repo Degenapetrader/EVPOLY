@@ -16,6 +16,7 @@ use chrono::{TimeZone, Utc};
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
@@ -153,8 +154,8 @@ fn build_runtime_paths(
     }
     let env_path =
         config_io::generate_env_file(&profile, &secrets, data_dir).map_err(|e| e.to_string())?;
-    let config_path =
-        config_io::generate_config_json(&profile, data_dir).map_err(|e| e.to_string())?;
+    let config_path = data_dir.join("runtime.config.json");
+    let _ = std::fs::remove_file(&config_path);
     Ok((env_path, config_path))
 }
 
@@ -880,6 +881,37 @@ fn get_data_dir_path(data_dir: State<'_, AppDataDir>) -> String {
     data_dir.0.to_string_lossy().to_string()
 }
 
+#[tauri::command]
+fn open_logs_folder(data_dir: State<'_, AppDataDir>) -> Result<(), String> {
+    std::fs::create_dir_all(&data_dir.0).map_err(|e| format!("prepare logs folder: {e}"))?;
+
+    #[cfg(target_os = "windows")]
+    {
+        Command::new("explorer")
+            .arg(&data_dir.0)
+            .spawn()
+            .map_err(|e| format!("open logs folder: {e}"))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&data_dir.0)
+            .spawn()
+            .map_err(|e| format!("open logs folder: {e}"))?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&data_dir.0)
+            .spawn()
+            .map_err(|e| format!("open logs folder: {e}"))?;
+    }
+
+    Ok(())
+}
+
 // ── Onboard ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1043,6 +1075,7 @@ pub fn run() {
             get_open_positions,
             get_wallet_balance,
             get_data_dir_path,
+            open_logs_folder,
             run_onboarding,
         ])
         .run(tauri::generate_context!())

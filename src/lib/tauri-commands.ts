@@ -205,3 +205,6 @@ export const runOnboarding = (
 
 export const getDataDirPath = (): Promise<string> =>
   invoke("get_data_dir_path");
+
+export const openLogsFolder = (): Promise<void> =>
+  invoke("open_logs_folder");

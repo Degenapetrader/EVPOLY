@@ -16,6 +16,7 @@ use crate::profile_manager::{Profile, ProfileManager};
 
 use chrono::{TimeZone, Utc};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -35,6 +36,10 @@ type BotState = Arc<Mutex<BotManager>>;
 type ManualState = Arc<Mutex<ManualServiceManager>>;
 
 const DESKTOP_SYMBOL_ORDER: [&str; 7] = ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"];
+const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
+const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
+const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
+const MANUAL_DEBUG_LOG_NAME: &str = "evpoly-manual-debug.log.txt";
 
 #[derive(Clone, serde::Deserialize)]
 struct DesktopStrategies {
@@ -416,6 +421,35 @@ fn resolve_tracking_db_path(data_dir: &Path) -> PathBuf {
         }
     }
     data_dir.join("tracking.db")
+}
+
+fn append_desktop_debug_line(data_dir: &Path, source: &str, line: &str) {
+    let ts = Utc::now().to_rfc3339();
+    let content = format!("[{ts}] [{source}] {line}\n");
+    for file_name in [DESKTOP_DEBUG_LOG_NAME, FULL_DEBUG_LOG_NAME] {
+        let path = data_dir.join(file_name);
+        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
+            let _ = file.write_all(content.as_bytes());
+        }
+    }
+}
+
+fn ensure_debug_log_files(data_dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(data_dir).map_err(|e| format!("prepare logs folder: {e}"))?;
+    for file_name in [
+        DESKTOP_DEBUG_LOG_NAME,
+        FULL_DEBUG_LOG_NAME,
+        BOT_DEBUG_LOG_NAME,
+        MANUAL_DEBUG_LOG_NAME,
+    ] {
+        let path = data_dir.join(file_name);
+        let _ = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
+            .map_err(|e| format!("prepare log file {file_name}: {e}"))?;
+    }
+    Ok(())
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────
@@ -971,7 +1005,8 @@ fn get_data_dir_path(data_dir: State<'_, AppDataDir>) -> String {
 
 #[tauri::command]
 fn open_logs_folder(data_dir: State<'_, AppDataDir>) -> Result<(), String> {
-    std::fs::create_dir_all(&data_dir.0).map_err(|e| format!("prepare logs folder: {e}"))?;
+    ensure_debug_log_files(&data_dir.0)?;
+    append_desktop_debug_line(&data_dir.0, "SYSTEM", "open_logs_folder requested");
 
     #[cfg(target_os = "windows")]
     {
@@ -1004,13 +1039,42 @@ fn open_logs_folder(data_dir: State<'_, AppDataDir>) -> Result<(), String> {
 
 #[tauri::command]
 async fn run_onboarding(
+    data_dir: State<'_, AppDataDir>,
     wallet: String,
     private_key: String,
     signature_type: u8,
     proxy_wallet: String,
 ) -> Result<serde_json::Value, String> {
-    let result =
-        onboard::run_onboarding(&wallet, &private_key, signature_type, &proxy_wallet).await?;
+    append_desktop_debug_line(
+        &data_dir.0,
+        "ONBOARD",
+        format!(
+            "run_onboarding start wallet_provided={} signature_type={} proxy_wallet_set={}",
+            !wallet.trim().is_empty(),
+            signature_type,
+            !proxy_wallet.trim().is_empty()
+        )
+        .as_str(),
+    );
+
+    let result = onboard::run_onboarding(&wallet, &private_key, signature_type, &proxy_wallet)
+        .await
+        .map_err(|e| {
+            append_desktop_debug_line(&data_dir.0, "ONBOARD", format!("run_onboarding error: {e}").as_str());
+            e
+        })?;
+
+    append_desktop_debug_line(
+        &data_dir.0,
+        "ONBOARD",
+        format!(
+            "run_onboarding success signer_token_set={} discovery_token_set={} premarket_alpha_token_set={}",
+            result.remote_signer_token.as_ref().map(|v| !v.is_empty()).unwrap_or(false),
+            result.discovery_token.as_ref().map(|v| !v.is_empty()).unwrap_or(false),
+            result.premarket_alpha_token.as_ref().map(|v| !v.is_empty()).unwrap_or(false)
+        )
+        .as_str(),
+    );
     serde_json::to_value(result).map_err(|e| e.to_string())
 }
 
@@ -1022,6 +1086,8 @@ pub fn run() {
         .expect("cannot determine data directory")
         .join("evpoly");
     std::fs::create_dir_all(&data_dir).expect("cannot create data directory");
+    let _ = ensure_debug_log_files(&data_dir);
+    append_desktop_debug_line(&data_dir, "SYSTEM", "desktop app startup");
 
     let auth: AuthState = Arc::new(Mutex::new(AppAuth::new(data_dir.clone())));
     let profiles: ProfileState = Arc::new(Mutex::new(ProfileManager::new(data_dir.clone())));

@@ -279,12 +279,12 @@ export function Config() {
     setOnboardLoading(true);
     setSaveMsg("");
     try {
-      const wallet = onboardWallet.trim() || config.proxy_wallet.trim();
-      if (!wallet) {
-        throw new Error("Enter wallet address for onboarding");
-      }
+      const wallet = onboardWallet.trim();
       if (!config.private_key.trim()) {
         throw new Error("Private key is required for onboarding");
+      }
+      if ((config.sig_type === 1 || config.sig_type === 2) && !config.proxy_wallet.trim()) {
+        throw new Error("Proxy Wallet Address is required for signature type 1 or 2");
       }
 
       const result = await runOnboarding(

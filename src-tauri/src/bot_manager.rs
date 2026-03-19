@@ -258,6 +258,14 @@ fn append_debug_session_start(path: &PathBuf, simulation: bool, args: &[String])
 fn append_debug_line(path: &PathBuf, source: &str, line: &str) {
     let ts = Utc::now().to_rfc3339();
     let content = format!("[{ts}] [{source}] {line}\n");
+    write_debug_line(path, &content);
+    if let Some(parent) = path.parent() {
+        let full_log = parent.join("evpoly-full-debug.log.txt");
+        write_debug_line(&full_log, &content);
+    }
+}
+
+fn write_debug_line(path: &PathBuf, content: &str) {
     if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
         let _ = file.write_all(content.as_bytes());
     }

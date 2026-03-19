@@ -61,8 +61,23 @@ impl LogBuffer {
 }
 
 fn detect_level(content: &str) -> LogLevel {
-    let lower = content.to_lowercase();
-    if lower.contains("error") || lower.contains("panic") || lower.contains("fatal") {
+    let upper = content.to_ascii_uppercase();
+
+    // Prefer explicit runtime level tags first (e.g. "[... WARN ...]").
+    if upper.contains(" WARN ") || upper.starts_with("WARN ") || upper.contains("\tWARN ") {
+        return LogLevel::Warn;
+    }
+    if upper.contains(" ERROR ")
+        || upper.starts_with("ERROR ")
+        || upper.contains("\tERROR ")
+        || upper.contains(" PANIC")
+        || upper.contains(" FATAL")
+    {
+        return LogLevel::Error;
+    }
+
+    let lower = content.to_ascii_lowercase();
+    if lower.contains("panic") || lower.contains("fatal") {
         LogLevel::Error
     } else if lower.contains("warn") {
         LogLevel::Warn

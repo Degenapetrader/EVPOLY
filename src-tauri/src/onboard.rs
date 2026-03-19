@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct OnboardResult {
+    pub remote_signer_token: Option<String>,
     pub signer_token: Option<String>,
     pub discovery_token: Option<String>,
     pub premarket_alpha_token: Option<String>,
@@ -43,10 +44,17 @@ pub async fn run_onboarding(
         ));
     }
 
-    let result: OnboardResult = resp
+    let mut result: OnboardResult = resp
         .json()
         .await
         .map_err(|e| format!("parse onboard response: {e}. Try manual token entry."))?;
+
+    if result.remote_signer_token.is_none() {
+        result.remote_signer_token = result.signer_token.clone();
+    }
+    if result.signer_token.is_none() {
+        result.signer_token = result.remote_signer_token.clone();
+    }
 
     Ok(result)
 }

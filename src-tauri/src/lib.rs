@@ -3,6 +3,7 @@ pub mod bot_manager;
 pub mod config_io;
 pub mod crypto_vault;
 pub mod log_stream;
+pub mod manual_manager;
 pub mod notifications;
 pub mod onboard;
 pub mod profile_manager;
@@ -10,6 +11,7 @@ pub mod wallet_rpc;
 
 use crate::auth::AppAuth;
 use crate::bot_manager::BotManager;
+use crate::manual_manager::ManualServiceManager;
 use crate::profile_manager::{Profile, ProfileManager};
 
 use chrono::{TimeZone, Utc};
@@ -30,6 +32,7 @@ struct AppDataDir(PathBuf);
 type AuthState = Arc<Mutex<AppAuth>>;
 type ProfileState = Arc<Mutex<ProfileManager>>;
 type BotState = Arc<Mutex<BotManager>>;
+type ManualState = Arc<Mutex<ManualServiceManager>>;
 
 const DESKTOP_SYMBOL_ORDER: [&str; 7] = ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"];
 
@@ -587,6 +590,91 @@ fn get_log_lines(bot: State<'_, BotState>, count: usize) -> Vec<serde_json::Valu
         .collect()
 }
 
+#[tauri::command]
+fn start_manual_service(
+    app: AppHandle,
+    manual: State<'_, ManualState>,
+    profiles: State<'_, ProfileState>,
+    auth: State<'_, AuthState>,
+    data_dir: State<'_, AppDataDir>,
+    simulation: bool,
+    port: Option<u16>,
+) -> Result<(), String> {
+    let (env_path, config_path) = {
+        let pm = profiles.lock().map_err(|e| e.to_string())?;
+        let auth = auth.lock().map_err(|e| e.to_string())?;
+        build_runtime_paths(&pm, &auth, &data_dir.0)?
+    };
+    manual
+        .lock()
+        .map_err(|e| e.to_string())?
+        .start(&app, env_path, config_path, simulation, port)
+}
+
+#[tauri::command]
+fn stop_manual_service(manual: State<'_, ManualState>) -> Result<(), String> {
+    manual.lock().map_err(|e| e.to_string())?.stop()
+}
+
+#[tauri::command]
+fn get_manual_service_status(manual: State<'_, ManualState>) -> String {
+    match manual
+        .lock()
+        .map(|m| m.get_status())
+        .unwrap_or(manual_manager::ManualServiceStatus::Error(
+            "lock failed".to_string(),
+        )) {
+        manual_manager::ManualServiceStatus::Stopped => "stopped".to_string(),
+        manual_manager::ManualServiceStatus::Starting => "starting".to_string(),
+        manual_manager::ManualServiceStatus::Running => "running".to_string(),
+        manual_manager::ManualServiceStatus::Stopping => "stopping".to_string(),
+        manual_manager::ManualServiceStatus::Error(e) => format!("error:{e}"),
+    }
+}
+
+#[tauri::command]
+fn get_manual_log_lines(manual: State<'_, ManualState>, count: usize) -> Vec<serde_json::Value> {
+    let mgr = match manual.lock() {
+        Ok(mgr) => mgr,
+        Err(_) => return vec![],
+    };
+    let log_buf = mgr.get_log_buffer();
+    let buf = match log_buf.lock() {
+        Ok(buf) => buf,
+        Err(_) => return vec![],
+    };
+    buf.get_lines(count)
+        .into_iter()
+        .map(|line| {
+            let level = match line.level {
+                log_stream::LogLevel::Info => "INFO",
+                log_stream::LogLevel::Warn => "WARN",
+                log_stream::LogLevel::Error => "ERROR",
+            };
+            serde_json::json!({
+                "timestamp": line.timestamp,
+                "level": level,
+                "content": line.content,
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+async fn manual_api_request(
+    manual: State<'_, ManualState>,
+    method: String,
+    path: String,
+    query: Option<serde_json::Value>,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let request_ctx = {
+        let mgr = manual.lock().map_err(|e| e.to_string())?;
+        mgr.request_context()?
+    };
+    manual_manager::send_manual_request(request_ctx, method, path, query, body).await
+}
+
 // ── Config ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -938,6 +1026,7 @@ pub fn run() {
     let auth: AuthState = Arc::new(Mutex::new(AppAuth::new(data_dir.clone())));
     let profiles: ProfileState = Arc::new(Mutex::new(ProfileManager::new(data_dir.clone())));
     let bot: BotState = Arc::new(Mutex::new(BotManager::new(data_dir.clone())));
+    let manual: ManualState = Arc::new(Mutex::new(ManualServiceManager::new(data_dir.clone())));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -947,6 +1036,7 @@ pub fn run() {
         .manage(auth)
         .manage(profiles)
         .manage(bot)
+        .manage(manual)
         .setup(|app| {
             let status_item =
                 MenuItem::with_id(app, "status", "EVPoly: Stopped", false, None::<&str>)?;
@@ -1008,6 +1098,9 @@ pub fn run() {
                         if let Ok(bm) = app.state::<BotState>().lock() {
                             let _ = bm.stop();
                         }
+                        if let Ok(mm) = app.state::<ManualState>().lock() {
+                            let _ = mm.stop();
+                        }
                         app.exit(0);
                     }
                     _ => {}
@@ -1066,6 +1159,11 @@ pub fn run() {
             restart_bot,
             get_bot_status,
             get_log_lines,
+            start_manual_service,
+            stop_manual_service,
+            get_manual_service_status,
+            get_manual_log_lines,
+            manual_api_request,
             save_config,
             get_saved_config,
             export_config,

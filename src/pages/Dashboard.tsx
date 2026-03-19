@@ -234,6 +234,13 @@ export function Dashboard() {
             onSwitch={setActiveProfileId}
           />
           <button
+            onClick={() => navigate("/manual")}
+            className="px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors text-xs text-[var(--text-primary)]"
+            title="Manual Trading"
+          >
+            Manual
+          </button>
+          <button
             onClick={() => navigate("/config")}
             className="p-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
             title="Settings"

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Login } from "./pages/Login";
 import { Dashboard } from "./pages/Dashboard";
 import { Config } from "./pages/Config";
+import { Manual } from "./pages/Manual";
 
 interface AppState {
   isAuthenticated: boolean;
@@ -55,6 +56,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <Config />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/manual"
+            element={
+              <ProtectedRoute>
+                <Manual />
               </ProtectedRoute>
             }
           />

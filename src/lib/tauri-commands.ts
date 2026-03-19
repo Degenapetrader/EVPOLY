@@ -44,6 +44,7 @@ export interface Position {
 }
 
 export interface OnboardResult {
+  remote_signer_token?: string;
   signer_token?: string;
   discovery_token?: string;
   premarket_alpha_token?: string;
@@ -51,6 +52,7 @@ export interface OnboardResult {
   mm_rewards_alpha_token?: string;
   evsnipe_discovery_token?: string;
   admin_api_token?: string;
+  [key: string]: unknown;
 }
 
 export interface BotConfig {
@@ -148,6 +150,34 @@ export const getBotStatus = (): Promise<string> =>
 
 export const getLogLines = (count: number): Promise<LogLine[]> =>
   invoke("get_log_lines", { count });
+
+export const startManualService = (
+  simulation: boolean,
+  port?: number
+): Promise<void> =>
+  invoke("start_manual_service", { simulation, port });
+
+export const stopManualService = (): Promise<void> =>
+  invoke("stop_manual_service");
+
+export const getManualServiceStatus = (): Promise<string> =>
+  invoke("get_manual_service_status");
+
+export const getManualLogLines = (count: number): Promise<LogLine[]> =>
+  invoke("get_manual_log_lines", { count });
+
+export const manualApiRequest = (
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+  path: string,
+  query?: Record<string, unknown>,
+  body?: Record<string, unknown>
+): Promise<unknown> =>
+  invoke("manual_api_request", {
+    method,
+    path,
+    query: query ?? null,
+    body: body ?? null,
+  });
 
 // Config
 export const saveConfig = (

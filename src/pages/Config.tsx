@@ -5,11 +5,13 @@ import {
   getSavedConfig,
   exportConfig,
   importConfig,
+  runOnboarding,
   listProfiles,
   createProfile,
   setActiveProfile,
   getActiveProfileId,
   type BotConfig,
+  type OnboardResult,
 } from "../lib/tauri-commands";
 
 const CORE_SYMBOLS = ["BTC", "ETH", "SOL", "XRP"] as const;
@@ -137,6 +139,9 @@ export function Config() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
+  const [onboardWallet, setOnboardWallet] = useState("");
+  const [onboardLoading, setOnboardLoading] = useState(false);
+  const [onboardResult, setOnboardResult] = useState<OnboardResult | null>(null);
   const [exportPw, setExportPw] = useState("");
   const [importPw, setImportPw] = useState("");
   const [importData, setImportData] = useState("");
@@ -270,6 +275,43 @@ export function Config() {
     }
   };
 
+  const handleRunOnboarding = async () => {
+    setOnboardLoading(true);
+    setSaveMsg("");
+    try {
+      const wallet = onboardWallet.trim() || config.proxy_wallet.trim();
+      if (!wallet) {
+        throw new Error("Enter wallet address for onboarding");
+      }
+      if (!config.private_key.trim()) {
+        throw new Error("Private key is required for onboarding");
+      }
+
+      const result = await runOnboarding(
+        wallet,
+        config.private_key,
+        config.sig_type,
+        config.proxy_wallet
+      );
+      setOnboardResult(result);
+
+      const signerToken =
+        (result.remote_signer_token as string | undefined) ||
+        (result.signer_token as string | undefined) ||
+        "";
+      if (signerToken) {
+        update("remote_signer_token", signerToken);
+      }
+
+      setSaveMsg("Onboarding finished. Review values and click Save Configuration.");
+      setTimeout(() => setSaveMsg(""), 5000);
+    } catch (err) {
+      setSaveMsg(`Onboarding error: ${err}`);
+    } finally {
+      setOnboardLoading(false);
+    }
+  };
+
   return (
     <div className="h-full bg-[var(--bg-primary)] flex flex-col overflow-hidden">
       {/* Top Bar */}
@@ -297,6 +339,12 @@ export function Config() {
             Configuration
           </h1>
         </div>
+        <button
+          onClick={() => navigate("/manual")}
+          className="px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors text-xs text-[var(--text-primary)]"
+        >
+          Manual
+        </button>
       </div>
 
       {/* Content */}
@@ -354,6 +402,29 @@ export function Config() {
                 <option value={2}>Safe (2)</option>
               </select>
             </div>
+          </div>
+
+          {/* Onboarding */}
+          <SectionHeader title="Onboarding" />
+          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4 space-y-3">
+            <InputField
+              label="EOA Wallet Address (optional)"
+              value={onboardWallet}
+              onChange={setOnboardWallet}
+              placeholder="Uses Proxy Wallet Address when empty"
+            />
+            <button
+              onClick={handleRunOnboarding}
+              disabled={onboardLoading}
+              className="px-4 py-2 text-sm rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {onboardLoading ? "Running onboarding..." : "Run Onboarding"}
+            </button>
+            {onboardResult ? (
+              <pre className="text-xs text-[var(--text-secondary)] bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg p-3 overflow-auto max-h-44">
+                {JSON.stringify(onboardResult, null, 2)}
+              </pre>
+            ) : null}
           </div>
 
           {/* Symbols */}

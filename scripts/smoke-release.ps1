@@ -1,5 +1,6 @@
 param(
   [string]$BotBin = "src-tauri\binaries\evpoly-bot-x86_64-pc-windows-msvc.exe",
+  [string]$ManualBotBin = "src-tauri\binaries\evpoly-manual-bot-x86_64-pc-windows-msvc.exe",
   [int]$TimeoutSeconds = 15
 )
 
@@ -7,6 +8,9 @@ $ErrorActionPreference = "Stop"
 
 if (-not (Test-Path $BotBin)) {
   throw "bot binary not found: $BotBin"
+}
+if (-not (Test-Path $ManualBotBin)) {
+  throw "manual bot binary not found: $ManualBotBin"
 }
 
 $workDir = Join-Path $env:RUNNER_TEMP ("evpoly-smoke-" + [Guid]::NewGuid().ToString("N"))
@@ -73,8 +77,67 @@ try {
     Write-Host "smoke ok: mode=$Mode"
   }
 
+  function Run-ManualServiceSmoke {
+    param(
+      [string]$ConfigPath
+    )
+
+    $manualPort = 18000 + (Get-Random -Minimum 0 -Maximum 20000)
+    $manualToken = "smoke-" + [Guid]::NewGuid().ToString("N")
+    $manualOut = Join-Path $workDir "manual.stdout.log"
+    $manualErr = Join-Path $workDir "manual.stderr.log"
+    $manualLog = Join-Path $workDir "manual.log"
+    if (Test-Path $manualOut) { Remove-Item $manualOut -Force }
+    if (Test-Path $manualErr) { Remove-Item $manualErr -Force }
+    if (Test-Path $manualLog) { Remove-Item $manualLog -Force }
+
+    $env:EVPOLY_MANUAL_BOT_TOKEN = $manualToken
+    $manualProc = Start-Process -FilePath $ManualBotBin -ArgumentList @("--config", $ConfigPath, "--bind", "127.0.0.1", "--port", $manualPort.ToString(), "--simulation") -RedirectStandardOutput $manualOut -RedirectStandardError $manualErr -PassThru -NoNewWindow
+
+    $ready = $false
+    try {
+      for ($i = 0; $i -lt 40; $i++) {
+        try {
+          $response = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}/manual/health" -f $manualPort) -Headers @{ "x-evpoly-manual-token" = $manualToken } -Method Get -TimeoutSec 2
+          if ($response.ok -eq $true) {
+            $ready = $true
+            break
+          }
+        } catch {
+          # keep polling
+        }
+        Start-Sleep -Milliseconds 500
+      }
+    } finally {
+      if (-not $manualProc.HasExited) {
+        Stop-Process -Id $manualProc.Id -Force
+      }
+      Remove-Item Env:EVPOLY_MANUAL_BOT_TOKEN -ErrorAction SilentlyContinue
+    }
+
+    if (-not (Test-Path $manualOut)) { New-Item -Path $manualOut -ItemType File | Out-Null }
+    if (-not (Test-Path $manualErr)) { New-Item -Path $manualErr -ItemType File | Out-Null }
+    Get-Content -Path $manualOut, $manualErr | Set-Content -Path $manualLog
+
+    if (-not $ready) {
+      Get-Content -Path $manualLog -TotalCount 200
+      throw "manual service smoke health check failed"
+    }
+
+    foreach ($pat in $patterns) {
+      if (Select-String -Path $manualLog -Pattern $pat -Quiet) {
+        Write-Host "blocked pattern matched in manual service log: $pat"
+        Get-Content -Path $manualLog -TotalCount 200
+        throw "manual service smoke failed"
+      }
+    }
+
+    Write-Host "smoke ok: manual service"
+  }
+
   Run-SmokeMode -Mode "simulation" -Flag "--simulation"
   Run-SmokeMode -Mode "live" -Flag "--no-simulation"
+  Run-ManualServiceSmoke -ConfigPath (Join-Path $workDir "runtime-simulation.config.json")
   Write-Host "all smoke checks passed"
 }
 finally {

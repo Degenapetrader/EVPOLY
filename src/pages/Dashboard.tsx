@@ -70,7 +70,7 @@ function StatCard({
 
 export function Dashboard() {
   const navigate = useNavigate();
-  const { isRunning } = useBotStatus();
+  const { status, isRunning, errorMessage } = useBotStatus();
   const { stats, trades, positions } = useTradeData(isRunning);
   const { balance } = useWalletBalance();
 
@@ -78,6 +78,7 @@ export function Dashboard() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [simulation, setSimulation] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateDownloading, setUpdateDownloading] = useState(false);
   const pendingUpdateRef = useRef<Awaited<ReturnType<typeof check>> | null>(null);
@@ -144,12 +145,22 @@ export function Dashboard() {
     stickLogToBottomRef.current = distanceFromBottom < 16;
   }, []);
 
+  const getErrorText = (err: unknown, fallback: string): string => {
+    if (typeof err === "string" && err.trim()) return err;
+    if (err && typeof err === "object" && "toString" in err) {
+      const text = String(err);
+      if (text && text !== "[object Object]") return text;
+    }
+    return fallback;
+  };
+
   const handleStart = async () => {
     setActionLoading(true);
     try {
       await startBot(simulation);
-    } catch {
-      // error handled by status poll
+      setActionError(null);
+    } catch (err) {
+      setActionError(getErrorText(err, "failed to start bot"));
     }
     setActionLoading(false);
   };
@@ -158,8 +169,9 @@ export function Dashboard() {
     setActionLoading(true);
     try {
       await stopBot();
-    } catch {
-      // error handled by status poll
+      setActionError(null);
+    } catch (err) {
+      setActionError(getErrorText(err, "failed to stop bot"));
     }
     setActionLoading(false);
   };
@@ -168,8 +180,9 @@ export function Dashboard() {
     setActionLoading(true);
     try {
       await restartBot(simulation);
-    } catch {
-      // error handled by status poll
+      setActionError(null);
+    } catch (err) {
+      setActionError(getErrorText(err, "failed to restart bot"));
     }
     setActionLoading(false);
   };
@@ -196,6 +209,8 @@ export function Dashboard() {
       console.error("Failed to open logs folder", err);
     }
   };
+
+  const displayError = errorMessage?.trim() || actionError;
 
   const pnlValue = stats?.total_pnl ?? 0;
   const pnlColor =
@@ -251,7 +266,7 @@ export function Dashboard() {
         {/* Status + Controls */}
         <div className="flex items-center justify-between bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-4 py-3">
           <div className="flex items-center gap-4">
-            <StatusBadge isRunning={isRunning} />
+            <StatusBadge status={status} />
             <span
               className={`text-xs px-2 py-0.5 rounded font-medium ${
                 simulation
@@ -298,6 +313,11 @@ export function Dashboard() {
             )}
           </div>
         </div>
+        {displayError ? (
+          <div className="text-xs text-[var(--red)] bg-[var(--red)]/10 border border-[var(--red)]/40 rounded-lg px-3 py-2">
+            {displayError}
+          </div>
+        ) : null}
 
         {/* Stats Row */}
         <div className="grid grid-cols-4 gap-4">

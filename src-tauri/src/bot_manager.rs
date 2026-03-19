@@ -119,14 +119,36 @@ impl BotManager {
                             }
                         }
                     }
-                    CommandEvent::Terminated(_) => {
-                        append_debug_line(&debug_log, "SYSTEM", "Bot process terminated");
+                    CommandEvent::Error(err) => {
+                        let line = format!("Bot process event error: {err}");
+                        if let Ok(mut buf) = log_buf.lock() {
+                            buf.push(line.clone());
+                        }
+                        append_debug_line(&debug_log, "SYSTEM", &line);
                         if let Ok(mut inner) = inner_ref.lock() {
+                            inner.status = BotStatus::Error(line);
+                        }
+                    }
+                    CommandEvent::Terminated(payload) => {
+                        let exit_line = format!(
+                            "Bot process terminated (code={:?}, signal={:?})",
+                            payload.code, payload.signal
+                        );
+                        if let Ok(mut buf) = log_buf.lock() {
+                            buf.push(exit_line.clone());
+                        }
+                        append_debug_line(&debug_log, "SYSTEM", &exit_line);
+                        if let Ok(mut inner) = inner_ref.lock() {
+                            let was_stopping = inner.status == BotStatus::Stopping;
                             if let Some(path) = inner.env_path.take() {
                                 config_io::cleanup_env_file(&path);
                             }
                             inner.child = None;
-                            inner.status = BotStatus::Stopped;
+                            if was_stopping || payload.code == Some(0) {
+                                inner.status = BotStatus::Stopped;
+                            } else {
+                                inner.status = BotStatus::Error(exit_line);
+                            }
                         }
                     }
                     _ => {}

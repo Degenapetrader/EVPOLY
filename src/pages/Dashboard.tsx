@@ -1,4 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useLayoutEffect,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import {
   LineChart,
@@ -25,6 +31,20 @@ import {
   openLogsFolder,
   type LogLine,
 } from "../lib/tauri-commands";
+
+function sameLogLines(a: LogLine[], b: LogLine[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (
+      a[i].timestamp !== b[i].timestamp ||
+      a[i].level !== b[i].level ||
+      a[i].content !== b[i].content
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function StatCard({
   label,
@@ -62,6 +82,7 @@ export function Dashboard() {
   const [updateDownloading, setUpdateDownloading] = useState(false);
   const pendingUpdateRef = useRef<Awaited<ReturnType<typeof check>> | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const stickLogToBottomRef = useRef(true);
 
   useEffect(() => {
     getActiveProfileId()
@@ -89,8 +110,14 @@ export function Dashboard() {
 
   const pollLogs = useCallback(async () => {
     try {
+      const node = logRef.current;
+      if (node) {
+        const distanceFromBottom =
+          node.scrollHeight - node.scrollTop - node.clientHeight;
+        stickLogToBottomRef.current = distanceFromBottom < 16;
+      }
       const lines = await getLogLines(50);
-      setLogs(lines);
+      setLogs((prev) => (sameLogLines(prev, lines) ? prev : lines));
     } catch {
       // ignore
     }
@@ -102,11 +129,20 @@ export function Dashboard() {
     return () => clearInterval(interval);
   }, [pollLogs]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (logRef.current) {
-      logRef.current.scrollTop = logRef.current.scrollHeight;
+      if (stickLogToBottomRef.current) {
+        logRef.current.scrollTop = logRef.current.scrollHeight;
+      }
     }
   }, [logs]);
+
+  const handleLogScroll = useCallback(() => {
+    const node = logRef.current;
+    if (!node) return;
+    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
+    stickLogToBottomRef.current = distanceFromBottom < 16;
+  }, []);
 
   const handleStart = async () => {
     setActionLoading(true);
@@ -502,6 +538,7 @@ export function Dashboard() {
           </div>
           <div
             ref={logRef}
+            onScroll={handleLogScroll}
             className="h-48 overflow-y-auto p-4 font-mono text-xs leading-5"
           >
             {logs.length === 0 ? (

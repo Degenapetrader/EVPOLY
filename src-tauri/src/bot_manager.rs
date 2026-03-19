@@ -2,8 +2,10 @@
 
 use crate::config_io;
 use crate::log_stream::LogBuffer;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
@@ -70,6 +72,9 @@ impl BotManager {
             args.push("--no-simulation".to_string());
         }
 
+        let debug_log_path = self.data_dir.join("evpoly-debug.log.txt");
+        append_debug_session_start(&debug_log_path, simulation, &args);
+
         let env_vars = read_env_file_pairs(&env_path)?;
 
         let (mut rx, child) = app_handle
@@ -89,6 +94,7 @@ impl BotManager {
 
         let log_buf = self.log_buffer.clone();
         let inner_ref = self.inner.clone();
+        let debug_log = debug_log_path.clone();
 
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -98,6 +104,7 @@ impl BotManager {
                             if let Ok(mut buf) = log_buf.lock() {
                                 for line in text.lines() {
                                     buf.push(line.to_string());
+                                    append_debug_line(&debug_log, "STDOUT", line);
                                 }
                             }
                         }
@@ -107,11 +114,13 @@ impl BotManager {
                             if let Ok(mut buf) = log_buf.lock() {
                                 for line in text.lines() {
                                     buf.push(line.to_string());
+                                    append_debug_line(&debug_log, "STDERR", line);
                                 }
                             }
                         }
                     }
                     CommandEvent::Terminated(_) => {
+                        append_debug_line(&debug_log, "SYSTEM", "Bot process terminated");
                         if let Ok(mut inner) = inner_ref.lock() {
                             if let Some(path) = inner.env_path.take() {
                                 config_io::cleanup_env_file(&path);
@@ -211,4 +220,23 @@ fn read_env_file_pairs(path: &PathBuf) -> Result<HashMap<String, String>, String
     }
 
     Ok(vars)
+}
+
+fn append_debug_session_start(path: &PathBuf, simulation: bool, args: &[String]) {
+    let mode = if simulation { "simulation" } else { "live" };
+    let line = format!(
+        "==================== session start {} mode={} args={} ====================",
+        Utc::now().to_rfc3339(),
+        mode,
+        args.join(" ")
+    );
+    append_debug_line(path, "SYSTEM", &line);
+}
+
+fn append_debug_line(path: &PathBuf, source: &str, line: &str) {
+    let ts = Utc::now().to_rfc3339();
+    let content = format!("[{ts}] [{source}] {line}\n");
+    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
+        let _ = file.write_all(content.as_bytes());
+    }
 }

@@ -51,7 +51,7 @@ try {
     }
 
     if (-not (Test-Path $cfg)) {
-      throw "expected config file was not created for mode=$Mode: $cfg"
+      throw ("expected config file was not created for mode={0}: {1}" -f $Mode, $cfg)
     }
 
     foreach ($pat in $patterns) {

@@ -170,7 +170,7 @@ export function Dashboard() {
   const chartData = stats?.pnl_history ?? [];
 
   return (
-    <div className="min-h-screen bg-[var(--bg-primary)] flex flex-col">
+    <div className="h-full bg-[var(--bg-primary)] flex flex-col overflow-hidden">
       <UpdateBanner
         version={updateDownloading ? "Downloading..." : updateVersion}
         onUpdate={handleUpdate}

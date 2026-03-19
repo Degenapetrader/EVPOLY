@@ -32,6 +32,13 @@ body {
   user-select: none;
 }
 
+#root {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
 }

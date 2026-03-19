@@ -271,7 +271,7 @@ export function Config() {
   };
 
   return (
-    <div className="min-h-screen bg-[var(--bg-primary)] flex flex-col">
+    <div className="h-full bg-[var(--bg-primary)] flex flex-col overflow-hidden">
       {/* Top Bar */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
         <div className="flex items-center gap-3">

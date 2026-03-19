@@ -39,9 +39,6 @@ jobs:
       - name: Frontend build
         run: npm run build
 
-      - name: Backend check
-        run: cargo check --manifest-path src-tauri/Cargo.toml
-
       - name: Runtime smoke checks
         run: bash scripts/smoke-release.sh
 

@@ -40,15 +40,23 @@ try {
     )
 
     $cfg = Join-Path $workDir ("runtime-" + $Mode + ".config.json")
+    $stdoutLog = Join-Path $workDir ("bot-" + $Mode + ".stdout.log")
+    $stderrLog = Join-Path $workDir ("bot-" + $Mode + ".stderr.log")
     $log = Join-Path $workDir ("bot-" + $Mode + ".log")
     if (Test-Path $cfg) { Remove-Item $cfg -Force }
+    if (Test-Path $stdoutLog) { Remove-Item $stdoutLog -Force }
+    if (Test-Path $stderrLog) { Remove-Item $stderrLog -Force }
     if (Test-Path $log) { Remove-Item $log -Force }
 
-    $proc = Start-Process -FilePath $BotBin -ArgumentList @("--config", $cfg, $Flag) -RedirectStandardOutput $log -RedirectStandardError $log -PassThru -NoNewWindow
+    $proc = Start-Process -FilePath $BotBin -ArgumentList @("--config", $cfg, $Flag) -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru -NoNewWindow
     $exited = $proc.WaitForExit($TimeoutSeconds * 1000)
     if (-not $exited) {
       Stop-Process -Id $proc.Id -Force
     }
+
+    if (-not (Test-Path $stdoutLog)) { New-Item -Path $stdoutLog -ItemType File | Out-Null }
+    if (-not (Test-Path $stderrLog)) { New-Item -Path $stderrLog -ItemType File | Out-Null }
+    Get-Content -Path $stdoutLog, $stderrLog | Set-Content -Path $log
 
     if (-not (Test-Path $cfg)) {
       throw ("expected config file was not created for mode={0}: {1}" -f $Mode, $cfg)

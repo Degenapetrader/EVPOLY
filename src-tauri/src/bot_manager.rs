@@ -3,6 +3,7 @@
 use crate::config_io;
 use crate::log_stream::LogBuffer;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
@@ -62,21 +63,22 @@ impl BotManager {
         }
         inner.status = BotStatus::Starting;
 
-        let mut args = vec![
-            "--env-file".to_string(),
-            env_path.to_string_lossy().to_string(),
-            "--config".to_string(),
-            config_path.to_string_lossy().to_string(),
-        ];
+        let mut args = vec!["--config".to_string(), config_path.to_string_lossy().to_string()];
         if simulation {
             args.push("--simulation".to_string());
+        } else {
+            args.push("--no-simulation".to_string());
         }
+
+        let env_vars = read_env_file_pairs(&env_path)?;
 
         let (mut rx, child) = app_handle
             .shell()
             .sidecar("evpoly-bot")
             .map_err(|e| format!("sidecar init: {e}"))?
             .args(&args)
+            .envs(env_vars)
+            .current_dir(&self.data_dir)
             .spawn()
             .map_err(|e| format!("spawn: {e}"))?;
 
@@ -188,4 +190,25 @@ impl BotManager {
         let state: LastState = serde_json::from_str(&json).ok()?;
         Some((state.was_running, state.simulation))
     }
+}
+
+fn read_env_file_pairs(path: &PathBuf) -> Result<HashMap<String, String>, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| format!("read env file: {e}"))?;
+    let mut vars = HashMap::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once('=') {
+            let k = key.trim();
+            if k.is_empty() {
+                continue;
+            }
+            vars.insert(k.to_string(), value.trim().to_string());
+        }
+    }
+
+    Ok(vars)
 }

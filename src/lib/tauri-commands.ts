@@ -112,7 +112,9 @@ export const createProfile = (
 ): Promise<Profile> =>
   invoke("create_profile", {
     name,
+    walletAddress: wallet,
     wallet_address: wallet,
+    signatureType: sigType,
     signature_type: sigType,
   });
 
@@ -152,18 +154,18 @@ export const saveConfig = (
   profileId: string,
   config: BotConfig
 ): Promise<void> =>
-  invoke("save_config", { profile_id: profileId, config });
+  invoke("save_config", { profileId, profile_id: profileId, config });
 
 export const getSavedConfig = (
   profileId: string
 ): Promise<BotConfig> =>
-  invoke("get_saved_config", { profile_id: profileId });
+  invoke("get_saved_config", { profileId, profile_id: profileId });
 
 export const exportConfig = (
   profileId: string,
   password: string
 ): Promise<string> =>
-  invoke("export_config", { profile_id: profileId, password });
+  invoke("export_config", { profileId, profile_id: profileId, password });
 
 export const importConfig = (
   data: string,
@@ -193,8 +195,11 @@ export const runOnboarding = (
 ): Promise<OnboardResult> =>
   invoke("run_onboarding", {
     wallet,
+    privateKey,
     private_key: privateKey,
+    signatureType: sigType,
     signature_type: sigType,
+    proxyWallet,
     proxy_wallet: proxyWallet,
   });
 

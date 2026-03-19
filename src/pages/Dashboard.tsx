@@ -178,9 +178,7 @@ export function Dashboard() {
 
       {/* Top Bar */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
-        <h1 className="text-xl font-bold text-[var(--text-primary)] tracking-tight">
-          EVPoly
-        </h1>
+        <img src="/logo.png" alt="EVPoly" className="h-8" />
         <div className="flex items-center gap-3">
           <ProfileSwitcher
             activeProfileId={activeProfileId}

@@ -84,9 +84,7 @@ export function Login() {
     <div className="min-h-screen flex items-center justify-center bg-[var(--bg-primary)]">
       <div className="w-full max-w-sm mx-4">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-[var(--text-primary)] tracking-tight">
-            EVPoly
-          </h1>
+          <img src="/logo.png" alt="EVPoly" className="h-12 mx-auto" />
           <p className="text-[var(--text-secondary)] text-sm mt-2">
             {initialized ? "Welcome back" : "Set up your account"}
           </p>

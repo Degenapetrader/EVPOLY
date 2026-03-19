@@ -936,7 +936,12 @@ pub fn run() {
                 ],
             )?;
 
-            TrayIconBuilder::new()
+            let mut tray_builder = TrayIconBuilder::new();
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray_builder = tray_builder.icon(icon);
+            }
+
+            tray_builder
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {

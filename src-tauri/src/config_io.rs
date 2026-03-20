@@ -184,8 +184,8 @@ pub fn generate_env_file(
     Ok(env_path)
 }
 
-pub fn generate_config_json(profile: &Profile, data_dir: &Path) -> Result<PathBuf> {
-    let config = serde_json::json!({
+fn build_config_json(profile: &Profile) -> serde_json::Value {
+    serde_json::json!({
         "polymarket": {
             "gamma_api_url": "https://gamma-api.polymarket.com",
             "clob_api_url": "https://clob.polymarket.com",
@@ -200,12 +200,19 @@ pub fn generate_config_json(profile: &Profile, data_dir: &Path) -> Result<PathBu
             "strategy_config": profile.strategy_config,
             "sizing_config": profile.sizing_config
         }
-    });
+    })
+}
 
-    let config_path = data_dir.join("config.json");
+pub fn write_config_json(profile: &Profile, path: &Path) -> Result<PathBuf> {
+    let config = build_config_json(profile);
     let json = serde_json::to_string_pretty(&config)?;
-    std::fs::write(&config_path, json)?;
-    Ok(config_path)
+    std::fs::write(path, json)?;
+    Ok(path.to_path_buf())
+}
+
+pub fn generate_config_json(profile: &Profile, data_dir: &Path) -> Result<PathBuf> {
+    let config_path = data_dir.join("config.json");
+    write_config_json(profile, &config_path)
 }
 
 pub fn cleanup_env_file(path: &Path) {

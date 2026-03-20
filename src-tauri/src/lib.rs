@@ -36,6 +36,19 @@ type BotState = Arc<Mutex<BotManager>>;
 type ManualState = Arc<Mutex<ManualServiceManager>>;
 
 const DESKTOP_SYMBOL_ORDER: [&str; 7] = ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"];
+const DESKTOP_SECRET_KEYS: [&str; 11] = [
+    "POLY_PRIVATE_KEY",
+    "RELAYER_API_KEY",
+    "RELAYER_API_KEY_ADDRESS",
+    "EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN",
+    "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN",
+    "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN",
+    "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
+    "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
+    "EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN",
+    "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
+    "EVPOLY_ADMIN_API_TOKEN",
+];
 const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
 const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
 const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
@@ -170,8 +183,19 @@ fn build_runtime_paths(
     let env_path =
         config_io::generate_env_file(&profile, &secrets, data_dir).map_err(|e| e.to_string())?;
     let config_path = data_dir.join("runtime.config.json");
-    let _ = std::fs::remove_file(&config_path);
+    config_io::write_config_json(&profile, &config_path).map_err(|e| e.to_string())?;
     Ok((env_path, config_path))
+}
+
+fn merge_desktop_secrets(
+    mut existing: HashMap<String, String>,
+    updates: HashMap<String, String>,
+) -> HashMap<String, String> {
+    for key in DESKTOP_SECRET_KEYS {
+        existing.remove(key);
+    }
+    existing.extend(updates);
+    existing
 }
 
 fn desktop_config_to_profile_payload(
@@ -773,6 +797,7 @@ async fn manual_api_request(
 fn save_config(
     auth: State<'_, AuthState>,
     profiles: State<'_, ProfileState>,
+    data_dir: State<'_, AppDataDir>,
     profile_id: String,
     config: DesktopConfig,
 ) -> Result<(), String> {
@@ -791,23 +816,17 @@ fn save_config(
 
     profile.strategy_config = strategy_config;
     profile.sizing_config = sizing_config;
-    if !eoa_wallet_address.is_empty() {
-        profile.eoa_wallet_address = eoa_wallet_address;
-    }
-    if !proxy_wallet_address.is_empty() {
-        profile.proxy_wallet_address = proxy_wallet_address;
-    }
+    profile.eoa_wallet_address = eoa_wallet_address;
+    profile.proxy_wallet_address = proxy_wallet_address;
     profile.signature_type = signature_type;
     profile.normalize_wallet_fields();
 
-    let mut merged_secrets = if profile.encrypted_secrets.trim().is_empty() {
+    let merged_secrets = if profile.encrypted_secrets.trim().is_empty() {
         HashMap::new()
     } else {
         decrypt_profile_secrets(&profile, &auth)?
     };
-    for (k, v) in new_secrets {
-        merged_secrets.insert(k, v);
-    }
+    let merged_secrets = merge_desktop_secrets(merged_secrets, new_secrets);
     if merged_secrets.is_empty() {
         profile.encrypted_secrets.clear();
     } else {
@@ -818,7 +837,9 @@ fn save_config(
         profile.encrypted_secrets =
             crypto_vault::encrypt_data(&blob, &password).map_err(|e| e.to_string())?;
     }
-    pm.update_profile(profile).map_err(|e| e.to_string())
+    pm.update_profile(profile.clone()).map_err(|e| e.to_string())?;
+    config_io::generate_config_json(&profile, &data_dir.0).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -1351,4 +1372,29 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_desktop_secrets;
+    use std::collections::HashMap;
+
+    #[test]
+    fn merge_desktop_secrets_clears_blank_managed_fields() {
+        let existing = HashMap::from([
+            ("POLY_PRIVATE_KEY".to_string(), "old-private".to_string()),
+            ("RELAYER_API_KEY".to_string(), "old-relayer".to_string()),
+            ("CUSTOM_KEEP".to_string(), "keep-me".to_string()),
+        ]);
+        let updates = HashMap::from([(
+            "RELAYER_API_KEY".to_string(),
+            "new-relayer".to_string(),
+        )]);
+
+        let merged = merge_desktop_secrets(existing, updates);
+
+        assert_eq!(merged.get("RELAYER_API_KEY"), Some(&"new-relayer".to_string()));
+        assert_eq!(merged.get("CUSTOM_KEEP"), Some(&"keep-me".to_string()));
+        assert!(!merged.contains_key("POLY_PRIVATE_KEY"));
+    }
 }

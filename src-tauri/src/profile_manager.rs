@@ -87,22 +87,25 @@ impl ProfileManager {
 
     fn load(&self) -> ProfileStore {
         let mut store = match std::fs::read_to_string(&self.store_path) {
-            Ok(content) => match serde_json::from_str::<ProfileStore>(&content) {
-                Ok(store) => store,
-                Err(_) => {
-                    if !content.trim().is_empty() {
-                        let backup = self.store_path.with_extension(format!(
-                            "json.corrupt.{}",
-                            Utc::now().format("%Y%m%d%H%M%S")
-                        ));
-                        let _ = std::fs::write(&backup, content);
-                    }
-                    ProfileStore {
-                        profiles: Vec::new(),
-                        active_profile_id: None,
+            Ok(content) => {
+                let normalized = content.trim_start_matches('\u{feff}');
+                match serde_json::from_str::<ProfileStore>(normalized) {
+                    Ok(store) => store,
+                    Err(_) => {
+                        if !content.trim().is_empty() {
+                            let backup = self.store_path.with_extension(format!(
+                                "json.corrupt.{}",
+                                Utc::now().format("%Y%m%d%H%M%S")
+                            ));
+                            let _ = std::fs::write(&backup, content);
+                        }
+                        ProfileStore {
+                            profiles: Vec::new(),
+                            active_profile_id: None,
+                        }
                     }
                 }
-            },
+            }
             Err(_) => ProfileStore {
                 profiles: Vec::new(),
                 active_profile_id: None,
@@ -216,7 +219,7 @@ impl ProfileManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{Profile, ProfileManager};
+    use super::{Profile, ProfileManager, ProfileStore};
 
     fn base_profile(signature_type: u8) -> Profile {
         Profile {
@@ -289,6 +292,34 @@ mod tests {
         assert_eq!(loaded.sizing_config, sizing_config);
 
         let _ = std::fs::remove_file(temp_dir.join("profiles.json"));
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn load_accepts_utf8_bom_profile_store() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "evpoly-profile-manager-bom-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let pm = ProfileManager::new(temp_dir.clone());
+        let store = ProfileStore {
+            profiles: vec![base_profile(1)],
+            active_profile_id: Some("p1".to_string()),
+        };
+        let json = serde_json::to_string_pretty(&store).expect("serialize store");
+        let content = format!("\u{feff}{json}");
+        let path = temp_dir.join("profiles.json");
+        std::fs::write(&path, content.as_bytes()).expect("write profile store");
+
+        let profiles = pm.list_profiles();
+
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(pm.get_active_profile_id().as_deref(), Some("p1"));
+
+        let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 }

@@ -47,6 +47,19 @@ function sameLogLines(a: LogLine[], b: LogLine[]): boolean {
   return true;
 }
 
+function formatLatency(ms: number | null | undefined): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
+    return "--";
+  }
+  if (ms < 1000) {
+    return `${Math.round(ms)}ms`;
+  }
+  if (ms < 10_000) {
+    return `${(ms / 1000).toFixed(2)}s`;
+  }
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 function StatCard({
   label,
   value,
@@ -251,6 +264,9 @@ export function Dashboard() {
     pnlValue >= 0 ? "var(--green)" : "var(--red)";
 
   const chartData = stats?.pnl_history ?? [];
+  const avgAckLatency = stats?.ack_sample_count
+    ? formatLatency(stats.avg_ack_latency_ms)
+    : "--";
 
   return (
     <div className="h-full bg-[var(--bg-primary)] flex flex-col overflow-hidden">
@@ -368,7 +384,7 @@ export function Dashboard() {
         ) : null}
 
         {/* Stats Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
           <StatCard
             label="Total PnL"
             value={`$${pnlValue.toFixed(2)}`}
@@ -381,6 +397,10 @@ export function Dashboard() {
           <StatCard
             label="Total Trades"
             value={String(stats?.total_trades ?? 0)}
+          />
+          <StatCard
+            label="Avg Ack Latency"
+            value={avgAckLatency}
           />
           <StatCard
             label="USDC Balance"

@@ -904,6 +904,8 @@ fn get_trade_stats(data_dir: State<'_, AppDataDir>) -> serde_json::Value {
         "total_trades": 0,
         "winning_trades": 0,
         "losing_trades": 0,
+        "avg_ack_latency_ms": Value::Null,
+        "ack_sample_count": 0,
         "pnl_history": []
     });
     let db_path = resolve_tracking_db_path(&data_dir.0);
@@ -939,6 +941,16 @@ fn get_trade_stats(data_dir: State<'_, AppDataDir>) -> serde_json::Value {
     } else {
         0.0
     };
+    let (ack_sample_count, avg_ack_latency_ms): (i64, Option<f64>) = conn
+        .query_row(
+            "SELECT \
+                COALESCE(SUM(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN 1 ELSE 0 END), 0), \
+                AVG(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN CAST(ack_ts_ms - submit_ts_ms AS REAL) END) \
+             FROM strategy_feature_snapshots_v1",
+            [],
+            |row| Ok((row.get(0)?, row.get::<_, Option<f64>>(1)?)),
+        )
+        .unwrap_or((0, None));
 
     let mut pnl_history = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
@@ -971,6 +983,8 @@ fn get_trade_stats(data_dir: State<'_, AppDataDir>) -> serde_json::Value {
         "total_trades": total_trades,
         "winning_trades": winning_trades,
         "losing_trades": losing_trades,
+        "avg_ack_latency_ms": avg_ack_latency_ms,
+        "ack_sample_count": ack_sample_count,
         "pnl_history": pnl_history
     })
 }

@@ -169,7 +169,6 @@ export function Config() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
-  const [onboardWallet, setOnboardWallet] = useState("");
   const [onboardLoading, setOnboardLoading] = useState(false);
   const [onboardResult, setOnboardResult] = useState<OnboardResult | null>(null);
   const [exportPw, setExportPw] = useState("");
@@ -304,7 +303,7 @@ export function Config() {
     setOnboardLoading(true);
     setSaveMsg("");
     try {
-      const wallet = onboardWallet.trim() || config.eoa_wallet.trim();
+      const wallet = config.eoa_wallet.trim();
       if (!config.private_key.trim()) {
         throw new Error("Private key is required for onboarding");
       }
@@ -321,7 +320,11 @@ export function Config() {
       setOnboardResult(result);
 
       const updateFields: Partial<BotConfig> = {};
-      if (wallet) updateFields.eoa_wallet = wallet;
+      if (typeof result.eoa_wallet === "string" && result.eoa_wallet.trim()) {
+        updateFields.eoa_wallet = result.eoa_wallet.trim();
+      } else if (wallet) {
+        updateFields.eoa_wallet = wallet;
+      }
 
       const signerToken =
         (result.remote_signer_token as string | undefined) ||
@@ -363,6 +366,8 @@ export function Config() {
       setOnboardLoading(false);
     }
   };
+
+  const onboardedWallet = config.eoa_wallet.trim();
 
   return (
     <div className="h-full bg-[var(--bg-primary)] flex flex-col overflow-hidden">
@@ -460,17 +465,31 @@ export function Config() {
                 <option value={2}>Safe (2)</option>
               </select>
             </div>
+            <InputField
+              label="Relayer API Key"
+              value={config.relayer_api_key}
+              onChange={(v) => update("relayer_api_key", v)}
+            />
+            <InputField
+              label="Relayer API Key Address"
+              value={config.relayer_api_key_address}
+              onChange={(v) => update("relayer_api_key_address", v)}
+              placeholder="0x..."
+            />
           </div>
 
           {/* Onboarding */}
           <SectionHeader title="Onboarding" />
           <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4 space-y-3">
-            <InputField
-              label="EOA Wallet Address (optional)"
-              value={onboardWallet}
-              onChange={setOnboardWallet}
-              placeholder="Uses EOA Wallet Address when empty"
-            />
+            <div className="bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg p-3">
+              <div className="text-xs text-[var(--text-secondary)] mb-1.5">
+                Onboarded EOA Wallet
+              </div>
+              <div className="text-sm text-[var(--text-primary)] font-mono break-all">
+                {onboardedWallet ||
+                  "Not onboarded yet. The EOA wallet will be derived from the private key when onboarding runs."}
+              </div>
+            </div>
             <button
               onClick={handleRunOnboarding}
               disabled={onboardLoading}
@@ -756,16 +775,6 @@ export function Config() {
             </button>
             {advancedOpen && (
               <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4 space-y-3">
-                <InputField
-                  label="Relayer API Key"
-                  value={config.relayer_api_key}
-                  onChange={(v) => update("relayer_api_key", v)}
-                />
-                <InputField
-                  label="Relayer API Key Address"
-                  value={config.relayer_api_key_address}
-                  onChange={(v) => update("relayer_api_key_address", v)}
-                />
                 <InputField
                   label="Remote Signer Token"
                   value={config.remote_signer_token}

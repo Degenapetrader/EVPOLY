@@ -50,6 +50,8 @@ async fn post_json(client: &reqwest::Client, url: &str, payload: &Value) -> Resu
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct OnboardResult {
+    pub eoa_wallet: Option<String>,
+    pub bound_wallet: Option<String>,
     pub remote_signer_token: Option<String>,
     pub signer_token: Option<String>,
     pub discovery_token: Option<String>,
@@ -168,6 +170,8 @@ pub async fn run_onboarding(
     ]);
 
     let mut result = OnboardResult {
+        eoa_wallet: Some(derived_eoa),
+        bound_wallet: Some(bind_wallet.clone()),
         remote_signer_token: remote_signer_token.clone(),
         signer_token: remote_signer_token,
         discovery_token: first_nonempty(&[

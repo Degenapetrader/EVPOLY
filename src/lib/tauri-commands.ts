@@ -22,6 +22,8 @@ export interface TradeStats {
   total_trades: number;
   winning_trades: number;
   losing_trades: number;
+  avg_ack_latency_ms: number | null;
+  ack_sample_count: number;
   pnl_history: { timestamp: string; pnl: number }[];
 }
 
@@ -48,6 +50,8 @@ export interface Position {
 }
 
 export interface OnboardResult {
+  eoa_wallet?: string;
+  bound_wallet?: string;
   remote_signer_token?: string;
   signer_token?: string;
   discovery_token?: string;

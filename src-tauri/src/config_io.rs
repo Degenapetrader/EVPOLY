@@ -7,13 +7,16 @@ use std::path::{Path, PathBuf};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon-bor-rpc.publicnode.com";
+const DEFAULT_POLYGON_RPC_FALLBACK_URL: &str = "https://polygon.drpc.org";
+
 const DEFAULT_ENV_TEMPLATE: &str = r#"# EVPOLY runtime env template
 
 # Public API endpoints (safe defaults)
 POLY_GAMMA_API_URL=https://gamma-api.polymarket.com
 POLY_CLOB_API_URL=https://clob.polymarket.com
-POLY_POLYGON_RPC_HTTP_URL=https://1rpc.io/matic
-POLY_POLYGON_RPC_HTTP_FALLBACK_URL=https://polygon-rpc.com
+POLY_POLYGON_RPC_HTTP_URL=https://polygon-bor-rpc.publicnode.com
+POLY_POLYGON_RPC_HTTP_FALLBACK_URL=https://polygon.drpc.org
 
 POLY_PRIVATE_KEY=
 
@@ -46,6 +49,14 @@ EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN=
 EVPOLY_REMOTE_ENDGAME_ALPHA_URL=https://alpha.evplus.ai/v1/alpha/endgame/policy
 EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN=
 EVPOLY_ENDGAME_ALPHA_REQUIRED=true
+
+# VPS-hosted EVcurve alpha
+EVPOLY_REMOTE_EVCURVE_ALPHA_URL=https://alpha.evplus.ai/v1/alpha/evcurve
+EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN=
+
+# VPS-hosted SessionBand alpha
+EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL=https://alpha.evplus.ai/v1/alpha/sessionband
+EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN=
 
 # VPS-hosted MM rewards alpha
 EVPOLY_REMOTE_MM_REWARDS_SELECTION_ALPHA_URL=https://alpha.evplus.ai/v1/alpha/mm-rewards/selection
@@ -116,6 +127,12 @@ fn bool_from_config(config: &Value, key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+fn nonempty_map_value(map: &HashMap<String, String>, key: &str) -> Option<String> {
+    map.get(key)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 pub fn generate_env_file(
     profile: &Profile,
     secrets: &HashMap<String, String>,
@@ -156,6 +173,60 @@ pub fn generate_env_file(
 
     for (k, v) in secrets {
         env_map.insert(k.clone(), v.clone());
+    }
+
+    let shared_alpha_token = [
+        "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
+        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
+        "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
+        "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
+        "EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN",
+        "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN",
+        "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
+    ]
+    .iter()
+    .find_map(|key| nonempty_map_value(&env_map, key));
+
+    if env_map
+        .get("POLY_POLYGON_RPC_HTTP_URL")
+        .map(|value| value.trim().is_empty() || value.trim() == "https://1rpc.io/matic")
+        .unwrap_or(true)
+    {
+        env_map.insert(
+            "POLY_POLYGON_RPC_HTTP_URL".into(),
+            DEFAULT_POLYGON_RPC_URL.to_string(),
+        );
+    }
+
+    if env_map
+        .get("POLY_POLYGON_RPC_HTTP_FALLBACK_URL")
+        .map(|value| value.trim().is_empty() || value.trim() == "https://polygon-rpc.com")
+        .unwrap_or(true)
+    {
+        env_map.insert(
+            "POLY_POLYGON_RPC_HTTP_FALLBACK_URL".into(),
+            DEFAULT_POLYGON_RPC_FALLBACK_URL.to_string(),
+        );
+    }
+
+    if env_map
+        .get("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN")
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        if let Some(shared_token) = shared_alpha_token.clone() {
+            env_map.insert("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN".into(), shared_token);
+        }
+    }
+
+    if env_map
+        .get("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN")
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        if let Some(shared_token) = shared_alpha_token {
+            env_map.insert("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN".into(), shared_token);
+        }
     }
 
     let mut output = String::new();
@@ -203,8 +274,8 @@ fn build_config_json(profile: &Profile) -> serde_json::Value {
         "polymarket": {
             "gamma_api_url": "https://gamma-api.polymarket.com",
             "clob_api_url": "https://clob.polymarket.com",
-            "rpc_url": "https://1rpc.io/matic",
-            "rpc_fallback_url": "https://polygon-rpc.com",
+            "rpc_url": DEFAULT_POLYGON_RPC_URL,
+            "rpc_fallback_url": DEFAULT_POLYGON_RPC_FALLBACK_URL,
             "wallet_address": profile.primary_wallet_address(),
             "eoa_wallet_address": profile.eoa_wallet_address,
             "proxy_wallet_address": profile.proxy_wallet_address,
@@ -268,8 +339,9 @@ pub fn cleanup_env_file(path: &Path) {
 
 #[cfg(test)]
 mod tests {
-    use super::build_config_json;
+    use super::{build_config_json, generate_env_file};
     use crate::profile_manager::Profile;
+    use std::collections::HashMap;
 
     fn sample_profile() -> Profile {
         Profile {
@@ -304,6 +376,14 @@ mod tests {
         assert_eq!(config["trading"]["enable_solana_trading"], true);
         assert_eq!(config["trading"]["enable_xrp_trading"], false);
         assert_eq!(
+            config["polymarket"]["rpc_url"],
+            "https://polygon-bor-rpc.publicnode.com"
+        );
+        assert_eq!(
+            config["polymarket"]["rpc_fallback_url"],
+            "https://polygon.drpc.org"
+        );
+        assert_eq!(
             config["trading"]["proxy_wallet_address"],
             "0x2222222222222222222222222222222222222222"
         );
@@ -326,5 +406,32 @@ mod tests {
             config["polymarket"]["wallet_address"],
             "0x2222222222222222222222222222222222222222"
         );
+    }
+
+    #[test]
+    fn generate_env_file_reuses_shared_alpha_token_for_missing_strategy_tokens() {
+        let profile = sample_profile();
+        let mut secrets = HashMap::new();
+        secrets.insert(
+            "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN".to_string(),
+            "shared-alpha-token".to_string(),
+        );
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "evpoly-config-io-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let env_path = generate_env_file(&profile, &secrets, &temp_dir).expect("generate env");
+        let content = std::fs::read_to_string(&env_path).expect("read env");
+
+        assert!(content.contains("POLY_POLYGON_RPC_HTTP_URL=https://polygon-bor-rpc.publicnode.com"));
+        assert!(content.contains("POLY_POLYGON_RPC_HTTP_FALLBACK_URL=https://polygon.drpc.org"));
+        assert!(content.contains("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN=shared-alpha-token"));
+        assert!(content.contains("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN=shared-alpha-token"));
+
+        let _ = std::fs::remove_file(env_path);
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }

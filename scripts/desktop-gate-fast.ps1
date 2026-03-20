@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $true
 
 $shouldInstallDeps = $InstallDeps -or -not (Test-Path "node_modules")
 Write-Host ("[desktop-gate-fast] install_deps={0} frontend_build={1} cargo_check={2} smoke={3}" -f $shouldInstallDeps, $RunFrontendBuild, $RunCargoCheck, $RunSmoke)

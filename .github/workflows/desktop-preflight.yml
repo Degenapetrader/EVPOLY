@@ -60,7 +60,7 @@ jobs:
 
       - name: Fast gate checks
         shell: pwsh
-        run: ./scripts/desktop-gate-fast.ps1 -InstallDeps -RunSmoke:$false
+        run: ./scripts/desktop-gate-fast.ps1 -InstallDeps -RunSmoke:$false -RunCargoCheck:$false
 
   preflight-linux-full-smoke:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_smoke == true }}

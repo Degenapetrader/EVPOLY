@@ -75,6 +75,7 @@ $workRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::
 $workDir = Join-Path $workRoot ("evpoly-core-windows-" + [Guid]::NewGuid().ToString("N"))
 $useLocalWorktree = $false
 $sourceMode = "remote-clone"
+$buildProfile = "release"
 
 function Test-GitCommitExists([string]$Ref) {
   & git rev-parse --verify ("{0}^{{commit}}" -f $Ref) *> $null
@@ -106,33 +107,31 @@ try {
   Write-Host ("[build-sidecar-windows] building sidecar binaries ref={0} target={1}" -f $CoreRef, $targetTriple)
   cargo build --release --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot --bin manual_bot
   if ($LASTEXITCODE -ne 0) {
-    throw "cargo build failed"
+    Write-Warning ("[build-sidecar-windows] release build failed exit_code={0}; retrying debug fallback" -f $LASTEXITCODE)
+    $env:CARGO_BUILD_JOBS = "1"
+    cargo build --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot --bin manual_bot
+    if ($LASTEXITCODE -ne 0) {
+      throw "cargo build failed"
+    }
+    $buildProfile = "debug"
   }
 
   New-Item -ItemType Directory -Force -Path $binariesDir | Out-Null
   New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
   New-Item -ItemType Directory -Force -Path $coreContractDir | Out-Null
 
-  $releaseDir = Join-Path (Join-Path $targetDir $targetTriple) "release"
-  Copy-Item (Join-Path $releaseDir "polymarket-arbitrage-bot.exe") $botOutput -Force
-  Copy-Item (Join-Path $releaseDir "manual_bot.exe") $manualOutput -Force
-  $coreEnvPath = Join-Path $coreContractDir ".env.example"
-  Copy-Item (Join-Path $workDir ".env.example") $coreEnvPath -Force
-  $coreEnvContent = Get-Content -Path $coreEnvPath -Raw
-  if ($coreEnvContent -notmatch '(?m)^EVPOLY_MM_MARKET_MODE=') {
-    Add-Content -Path $coreEnvPath -Value @"
-
-# MM rewards market selection mode (`auto` = local rewards discovery only;
-# `hybrid` also honors single-market selectors when present)
-EVPOLY_MM_MARKET_MODE=auto
-"@
-  }
+  $profileDir = Join-Path (Join-Path $targetDir $targetTriple) $buildProfile
+  Copy-Item (Join-Path $profileDir "polymarket-arbitrage-bot.exe") $botOutput -Force
+  Copy-Item (Join-Path $profileDir "manual_bot.exe") $manualOutput -Force
+  # Desktop owns its runtime env template in this branch. We sync the core bot
+  # code from the pinned ref, but keep desktop defaults versioned locally.
 
   @(
     "CORE_REF=$CoreRef",
     "CORE_REPO=$CoreRepo",
     "TARGET_TRIPLE=$targetTriple",
     "SOURCE_MODE=$sourceMode",
+    "BUILD_PROFILE=$buildProfile",
     "PREPARED_AT_UTC=$([DateTime]::UtcNow.ToString('o'))"
   ) | Set-Content -Path $stampPath -Encoding UTF8
 

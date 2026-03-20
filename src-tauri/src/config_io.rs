@@ -8,8 +8,8 @@ use std::sync::OnceLock;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-pub(crate) const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon-bor-rpc.publicnode.com";
-pub(crate) const DEFAULT_POLYGON_RPC_FALLBACK_URL: &str = "https://polygon.drpc.org";
+pub(crate) const DEFAULT_POLYGON_RPC_URL: &str = "https://1rpc.io/matic";
+pub(crate) const DEFAULT_POLYGON_RPC_FALLBACK_URL: &str = "https://polygon-rpc.com";
 pub(crate) const DEFAULT_MM_MARKET_MODE: &str = "auto";
 
 const CORE_ENV_TEMPLATE: &str = include_str!("../core-contract/.env.example");
@@ -370,10 +370,8 @@ mod tests {
         let env_path = generate_env_file(&profile, &secrets, &temp_dir).expect("generate env");
         let content = std::fs::read_to_string(&env_path).expect("read env");
 
-        assert!(
-            content.contains("POLY_POLYGON_RPC_HTTP_URL=https://polygon-bor-rpc.publicnode.com")
-        );
-        assert!(content.contains("POLY_POLYGON_RPC_HTTP_FALLBACK_URL=https://polygon.drpc.org"));
+        assert!(content.contains("POLY_POLYGON_RPC_HTTP_URL=https://1rpc.io/matic"));
+        assert!(content.contains("POLY_POLYGON_RPC_HTTP_FALLBACK_URL=https://polygon-rpc.com"));
         assert!(content
             .contains("POLY_PROXY_WALLET_ADDRESS=0x2222222222222222222222222222222222222222"));
         assert!(content.contains("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN=shared-alpha-token"));
@@ -425,4 +423,5 @@ mod tests {
         let _ = std::fs::remove_file(env_path);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
+
 }

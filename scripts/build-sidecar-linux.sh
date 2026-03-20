@@ -90,15 +90,8 @@ cargo build --release --manifest-path "${WORK_DIR}/Cargo.toml" --target-dir "${T
 mkdir -p "${BINARIES_DIR}" "${TARGET_DIR}" "${CORE_CONTRACT_DIR}"
 cp "${TARGET_DIR}/${TARGET_TRIPLE}/release/polymarket-arbitrage-bot" "${BOT_OUTPUT}"
 cp "${TARGET_DIR}/${TARGET_TRIPLE}/release/manual_bot" "${MANUAL_OUTPUT}"
-cp "${WORK_DIR}/.env.example" "${CORE_CONTRACT_DIR}/.env.example"
-if ! grep -q '^EVPOLY_MM_MARKET_MODE=' "${CORE_CONTRACT_DIR}/.env.example"; then
-  cat >> "${CORE_CONTRACT_DIR}/.env.example" <<'EOF'
-
-# MM rewards market selection mode (`auto` = local rewards discovery only;
-# `hybrid` also honors single-market selectors when present)
-EVPOLY_MM_MARKET_MODE=auto
-EOF
-fi
+# Desktop owns its runtime env template in this branch. We sync the core bot
+# code from the pinned ref, but keep desktop defaults versioned locally.
 chmod +x "${BOT_OUTPUT}" "${MANUAL_OUTPUT}"
 
 cat > "${STAMP_PATH}" <<EOF

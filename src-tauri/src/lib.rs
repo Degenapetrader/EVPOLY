@@ -135,6 +135,74 @@ fn f64_from_object(obj: &Map<String, Value>, key: &str, default: f64) -> f64 {
     obj.get(key).and_then(Value::as_f64).unwrap_or(default)
 }
 
+fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8) -> DesktopConfig {
+    DesktopConfig {
+        private_key: String::new(),
+        eoa_wallet,
+        proxy_wallet,
+        sig_type,
+        symbols: DESKTOP_SYMBOL_ORDER
+            .iter()
+            .map(|symbol| (*symbol).to_string())
+            .collect(),
+        strategies: DesktopStrategies {
+            premarket: config_io::env_template_default_bool(
+                "EVPOLY_STRATEGY_PREMARKET_ENABLE",
+                true,
+            ),
+            endgame: config_io::env_template_default_bool("EVPOLY_STRATEGY_ENDGAME_ENABLE", true),
+            evcurve: config_io::env_template_default_bool("EVPOLY_STRATEGY_EVCURVE_ENABLE", false),
+            session_band: config_io::env_template_default_bool(
+                "EVPOLY_STRATEGY_SESSIONBAND_ENABLE",
+                false,
+            ),
+            evsnipe: config_io::env_template_default_bool("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),
+            mm_rewards: config_io::env_template_default_bool(
+                "EVPOLY_STRATEGY_MM_REWARDS_ENABLE",
+                false,
+            ),
+            mm_sport: config_io::env_template_default_bool(
+                "EVPOLY_STRATEGY_MM_SPORT_ENABLE",
+                false,
+            ),
+        },
+        sizing: DesktopSizing {
+            premarket: 10.0,
+            endgame: 10.0,
+            evcurve: 10.0,
+            session_band: 10.0,
+            evsnipe_per_hit: 10.0,
+        },
+        caps: DesktopCaps {
+            premarket: 100000.0,
+            endgame: 100000.0,
+            evcurve: 100000.0,
+            session_band: 100000.0,
+            evsnipe: 100000.0,
+        },
+        mm_tuning: DesktopMmTuning {
+            rewards_min_share_multiple: config_io::env_template_default_f64(
+                "EVPOLY_MM_REWARD_MIN_TARGET_MULT",
+                1.0,
+            ),
+            sport_quote_size_multiplier: config_io::env_template_default_f64(
+                "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT",
+                1.2,
+            ),
+        },
+        simulation: config_io::env_template_default_bool("APP_SIMULATION", true),
+        relayer_api_key: String::new(),
+        relayer_api_key_address: String::new(),
+        remote_signer_token: String::new(),
+        remote_discovery_token: String::new(),
+        remote_premarket_alpha_token: String::new(),
+        remote_endgame_alpha_token: String::new(),
+        remote_mm_rewards_alpha_token: String::new(),
+        remote_evsnipe_discovery_token: String::new(),
+        admin_api_token: String::new(),
+    }
+}
+
 fn normalize_symbols(symbols: &[String]) -> Vec<String> {
     let mut selected = symbols
         .iter()
@@ -167,24 +235,60 @@ fn decrypt_profile_secrets(
     serde_json::from_slice::<HashMap<String, String>>(&decrypted).map_err(|e| e.to_string())
 }
 
-fn build_runtime_paths(
-    pm: &ProfileManager,
+fn active_profile(pm: &ProfileManager) -> Result<Profile, String> {
+    let active_id = pm.get_active_profile_id().ok_or("no active profile set")?;
+    pm.get_profile(&active_id)
+        .ok_or("active profile not found".to_string())
+}
+
+fn build_runtime_paths_for_profile(
+    profile: &Profile,
     auth: &AppAuth,
     data_dir: &Path,
 ) -> Result<(PathBuf, PathBuf), String> {
-    let active_id = pm.get_active_profile_id().ok_or("no active profile set")?;
-    let profile = pm
-        .get_profile(&active_id)
-        .ok_or("active profile not found")?;
-    let secrets = decrypt_profile_secrets(&profile, auth)?;
+    let secrets = decrypt_profile_secrets(profile, auth)?;
     if !secrets.contains_key("POLY_PRIVATE_KEY") {
         return Err("missing POLY_PRIVATE_KEY in profile secrets".to_string());
     }
     let env_path =
-        config_io::generate_env_file(&profile, &secrets, data_dir).map_err(|e| e.to_string())?;
+        config_io::generate_env_file(profile, &secrets, data_dir).map_err(|e| e.to_string())?;
     let config_path = data_dir.join("runtime.config.json");
-    config_io::write_config_json(&profile, &config_path).map_err(|e| e.to_string())?;
+    config_io::write_config_json(profile, &config_path).map_err(|e| e.to_string())?;
     Ok((env_path, config_path))
+}
+
+fn simulation_mode_from_profile(profile: &Profile) -> bool {
+    profile
+        .sizing_config
+        .as_object()
+        .and_then(|obj| obj.get("APP_SIMULATION"))
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| config_io::env_template_default_bool("APP_SIMULATION", true))
+}
+
+fn persist_profile_simulation_mode(
+    pm: &ProfileManager,
+    profile_id: &str,
+    simulation: bool,
+) -> Result<Profile, String> {
+    let mut profile = pm.get_profile(profile_id).ok_or("profile not found")?;
+    if !profile.sizing_config.is_object() {
+        profile.sizing_config = Value::Object(Map::new());
+    }
+    if let Some(obj) = profile.sizing_config.as_object_mut() {
+        obj.insert("APP_SIMULATION".to_string(), Value::Bool(simulation));
+    }
+    pm.update_profile(profile.clone())
+        .map_err(|e| e.to_string())?;
+    Ok(profile)
+}
+
+fn persist_active_profile_simulation_mode(
+    pm: &ProfileManager,
+    simulation: bool,
+) -> Result<Profile, String> {
+    let active_id = pm.get_active_profile_id().ok_or("no active profile set")?;
+    persist_profile_simulation_mode(pm, &active_id, simulation)
 }
 
 fn merge_desktop_secrets(
@@ -401,6 +505,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
     let default_solana_enabled =
         config_io::env_template_default_bool("POLY_ENABLE_SOLANA_TRADING", true);
     let default_xrp_enabled = config_io::env_template_default_bool("POLY_ENABLE_XRP_TRADING", true);
+    let default_simulation = config_io::env_template_default_bool("APP_SIMULATION", true);
 
     let mut symbols = vec!["BTC".to_string()];
     if bool_from_object(&strategy, "POLY_ENABLE_ETH_TRADING", default_eth_enabled) {
@@ -472,7 +577,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
             "rewards_min_share_multiple": f64_from_object(&strategy, "EVPOLY_MM_REWARD_MIN_TARGET_MULT", config_io::env_template_default_f64("EVPOLY_MM_REWARD_MIN_TARGET_MULT", 1.0)),
             "sport_quote_size_multiplier": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2))
         },
-        "simulation": bool_from_object(&sizing, "APP_SIMULATION", true),
+        "simulation": bool_from_object(&sizing, "APP_SIMULATION", default_simulation),
         "relayer_api_key": secrets.get("RELAYER_API_KEY").cloned().unwrap_or_default(),
         "relayer_api_key_address": secrets.get("RELAYER_API_KEY_ADDRESS").cloned().unwrap_or_default(),
         "remote_signer_token": secrets.get("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN")
@@ -591,6 +696,20 @@ fn create_profile(
     proxy_wallet_address: String,
     signature_type: u8,
 ) -> Result<Profile, String> {
+    let default_config = default_desktop_config(
+        eoa_wallet_address.trim().to_string(),
+        proxy_wallet_address.trim().to_string(),
+        signature_type,
+    );
+    let (
+        strategy_config,
+        sizing_config,
+        _,
+        eoa_wallet_address,
+        proxy_wallet_address,
+        signature_type,
+    ) = desktop_config_to_profile_payload(&default_config);
+
     profiles
         .lock()
         .map_err(|e| e.to_string())?
@@ -599,6 +718,8 @@ fn create_profile(
             eoa_wallet_address,
             proxy_wallet_address,
             signature_type,
+            strategy_config,
+            sizing_config,
         )
         .map_err(|e| e.to_string())
 }
@@ -653,8 +774,9 @@ fn start_bot(
 ) -> Result<(), String> {
     let (env_path, config_path) = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
+        let profile = persist_active_profile_simulation_mode(&pm, simulation)?;
         let auth = auth.lock().map_err(|e| e.to_string())?;
-        build_runtime_paths(&pm, &auth, &data_dir.0)?
+        build_runtime_paths_for_profile(&profile, &auth, &data_dir.0)?
     };
     bot.lock()
         .map_err(|e| e.to_string())?
@@ -677,8 +799,9 @@ fn restart_bot(
 ) -> Result<(), String> {
     let (env_path, config_path) = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
+        let profile = persist_active_profile_simulation_mode(&pm, simulation)?;
         let auth = auth.lock().map_err(|e| e.to_string())?;
-        build_runtime_paths(&pm, &auth, &data_dir.0)?
+        build_runtime_paths_for_profile(&profile, &auth, &data_dir.0)?
     };
     bot.lock()
         .map_err(|e| e.to_string())?
@@ -740,8 +863,9 @@ fn start_manual_service(
 ) -> Result<(), String> {
     let (env_path, config_path) = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
+        let profile = persist_active_profile_simulation_mode(&pm, simulation)?;
         let auth = auth.lock().map_err(|e| e.to_string())?;
-        build_runtime_paths(&pm, &auth, &data_dir.0)?
+        build_runtime_paths_for_profile(&profile, &auth, &data_dir.0)?
     };
     manual
         .lock()
@@ -856,7 +980,8 @@ fn save_config(
         profile.encrypted_secrets =
             crypto_vault::encrypt_data(&blob, &password).map_err(|e| e.to_string())?;
     }
-    pm.update_profile(profile.clone()).map_err(|e| e.to_string())?;
+    pm.update_profile(profile.clone())
+        .map_err(|e| e.to_string())?;
     config_io::generate_config_json(&profile, &data_dir.0).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -901,10 +1026,10 @@ fn import_config(
             imported.eoa_wallet_address,
             imported.proxy_wallet_address,
             imported.signature_type,
+            imported.strategy_config.clone(),
+            imported.sizing_config.clone(),
         )
         .map_err(|e| e.to_string())?;
-    created.strategy_config = imported.strategy_config;
-    created.sizing_config = imported.sizing_config;
     created.encrypted_secrets = imported.encrypted_secrets;
     pm.update_profile(created.clone())
         .map_err(|e| e.to_string())?;
@@ -1302,14 +1427,18 @@ pub fn run() {
                         let ps = app.state::<ProfileState>();
                         let auth = app.state::<AuthState>();
                         let bs = app.state::<BotState>();
-                        let configs = || -> Option<(PathBuf, PathBuf)> {
+                        let configs = || -> Option<(PathBuf, PathBuf, bool)> {
                             let pm = ps.lock().ok()?;
                             let auth = auth.lock().ok()?;
-                            build_runtime_paths(&pm, &auth, &dd.0).ok()
+                            let profile = active_profile(&pm).ok()?;
+                            let simulation = simulation_mode_from_profile(&profile);
+                            let (env_path, config_path) =
+                                build_runtime_paths_for_profile(&profile, &auth, &dd.0).ok()?;
+                            Some((env_path, config_path, simulation))
                         };
-                        if let Some((env_path, config_path)) = configs() {
+                        if let Some((env_path, config_path, simulation)) = configs() {
                             if let Ok(bm) = bs.lock() {
-                                let _ = bm.start(app, env_path, config_path, false);
+                                let _ = bm.start(app, env_path, config_path, simulation);
                             }
                         }
                     }
@@ -1412,8 +1541,30 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_desktop_secrets;
+    use super::{merge_desktop_secrets, simulation_mode_from_profile};
+    use crate::{config_io, profile_manager::Profile};
     use std::collections::HashMap;
+
+    fn profile_with_simulation(simulation: Option<bool>) -> Profile {
+        let sizing_config = match simulation {
+            Some(value) => serde_json::json!({ "APP_SIMULATION": value }),
+            None => serde_json::json!({}),
+        };
+
+        Profile {
+            id: "p1".to_string(),
+            name: "desktop".to_string(),
+            eoa_wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
+            proxy_wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            signature_type: 1,
+            encrypted_secrets: String::new(),
+            strategy_config: serde_json::json!({}),
+            sizing_config,
+            created_at: "now".to_string(),
+            last_used: "now".to_string(),
+        }
+    }
 
     #[test]
     fn merge_desktop_secrets_clears_blank_managed_fields() {
@@ -1426,16 +1577,31 @@ mod tests {
             ),
             ("CUSTOM_KEEP".to_string(), "keep-me".to_string()),
         ]);
-        let updates = HashMap::from([(
-            "RELAYER_API_KEY".to_string(),
-            "new-relayer".to_string(),
-        )]);
+        let updates = HashMap::from([("RELAYER_API_KEY".to_string(), "new-relayer".to_string())]);
 
         let merged = merge_desktop_secrets(existing, updates);
 
-        assert_eq!(merged.get("RELAYER_API_KEY"), Some(&"new-relayer".to_string()));
+        assert_eq!(
+            merged.get("RELAYER_API_KEY"),
+            Some(&"new-relayer".to_string())
+        );
         assert_eq!(merged.get("CUSTOM_KEEP"), Some(&"keep-me".to_string()));
         assert!(!merged.contains_key("POLY_PRIVATE_KEY"));
         assert!(!merged.contains_key("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN"));
+    }
+
+    #[test]
+    fn simulation_mode_from_profile_prefers_saved_value() {
+        let profile = profile_with_simulation(Some(false));
+        assert!(!simulation_mode_from_profile(&profile));
+    }
+
+    #[test]
+    fn simulation_mode_from_profile_falls_back_to_template_default() {
+        let profile = profile_with_simulation(None);
+        assert_eq!(
+            simulation_mode_from_profile(&profile),
+            config_io::env_template_default_bool("APP_SIMULATION", true)
+        );
     }
 }

@@ -148,6 +148,8 @@ impl ProfileManager {
         eoa_wallet_address: String,
         proxy_wallet_address: String,
         sig_type: u8,
+        strategy_config: serde_json::Value,
+        sizing_config: serde_json::Value,
     ) -> Result<Profile> {
         let now = Utc::now().to_rfc3339();
         let mut profile = Profile {
@@ -158,8 +160,8 @@ impl ProfileManager {
             wallet_address: String::new(),
             signature_type: sig_type,
             encrypted_secrets: String::new(),
-            strategy_config: serde_json::Value::Object(serde_json::Map::new()),
-            sizing_config: serde_json::Value::Object(serde_json::Map::new()),
+            strategy_config,
+            sizing_config,
             created_at: now.clone(),
             last_used: now,
         };
@@ -214,7 +216,7 @@ impl ProfileManager {
 
 #[cfg(test)]
 mod tests {
-    use super::Profile;
+    use super::{Profile, ProfileManager};
 
     fn base_profile(signature_type: u8) -> Profile {
         Profile {
@@ -250,5 +252,43 @@ mod tests {
         assert_eq!(profile.proxy_wallet_address, "0xabc");
         assert_eq!(profile.wallet_address, "0xabc");
         assert_eq!(profile.primary_wallet_address(), "0xabc");
+    }
+
+    #[test]
+    fn create_profile_persists_supplied_runtime_defaults() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "evpoly-profile-manager-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let pm = ProfileManager::new(temp_dir.clone());
+        let strategy_config = serde_json::json!({
+            "EVPOLY_STRATEGY_PREMARKET_ENABLE": true,
+            "EVPOLY_STRATEGY_ENDGAME_ENABLE": true
+        });
+        let sizing_config = serde_json::json!({
+            "APP_SIMULATION": true,
+            "EVPOLY_PREMARKET_BASE_SIZE_USD": 10.0
+        });
+
+        let created = pm
+            .create_profile(
+                "desktop".to_string(),
+                "0x111".to_string(),
+                "0x222".to_string(),
+                1,
+                strategy_config.clone(),
+                sizing_config.clone(),
+            )
+            .expect("create profile");
+        let loaded = pm.get_profile(&created.id).expect("load profile");
+
+        assert_eq!(loaded.strategy_config, strategy_config);
+        assert_eq!(loaded.sizing_config, sizing_config);
+
+        let _ = std::fs::remove_file(temp_dir.join("profiles.json"));
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }

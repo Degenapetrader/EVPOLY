@@ -116,7 +116,17 @@ try {
   $releaseDir = Join-Path (Join-Path $targetDir $targetTriple) "release"
   Copy-Item (Join-Path $releaseDir "polymarket-arbitrage-bot.exe") $botOutput -Force
   Copy-Item (Join-Path $releaseDir "manual_bot.exe") $manualOutput -Force
-  Copy-Item (Join-Path $workDir ".env.example") (Join-Path $coreContractDir ".env.example") -Force
+  $coreEnvPath = Join-Path $coreContractDir ".env.example"
+  Copy-Item (Join-Path $workDir ".env.example") $coreEnvPath -Force
+  $coreEnvContent = Get-Content -Path $coreEnvPath -Raw
+  if ($coreEnvContent -notmatch '(?m)^EVPOLY_MM_MARKET_MODE=') {
+    Add-Content -Path $coreEnvPath -Value @"
+
+# MM rewards market selection mode (`auto` = local rewards discovery only;
+# `hybrid` also honors single-market selectors when present)
+EVPOLY_MM_MARKET_MODE=auto
+"@
+  }
 
   @(
     "CORE_REF=$CoreRef",

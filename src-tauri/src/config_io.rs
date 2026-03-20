@@ -10,6 +10,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 pub(crate) const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon-bor-rpc.publicnode.com";
 pub(crate) const DEFAULT_POLYGON_RPC_FALLBACK_URL: &str = "https://polygon.drpc.org";
+pub(crate) const DEFAULT_MM_MARKET_MODE: &str = "auto";
 
 const CORE_ENV_TEMPLATE: &str = include_str!("../core-contract/.env.example");
 
@@ -79,6 +80,18 @@ fn nonempty_map_value(map: &HashMap<String, String>, key: &str) -> Option<String
     map.get(key)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn normalized_mm_market_mode(env_map: &HashMap<String, String>) -> String {
+    match env_map
+        .get("EVPOLY_MM_MARKET_MODE")
+        .map(|value| value.trim().to_ascii_lowercase())
+    {
+        Some(value) if value == "hybrid" => "hybrid".to_string(),
+        Some(value) if value == "auto" || value == "target" => DEFAULT_MM_MARKET_MODE.to_string(),
+        Some(value) if !value.is_empty() => DEFAULT_MM_MARKET_MODE.to_string(),
+        _ => DEFAULT_MM_MARKET_MODE.to_string(),
+    }
 }
 
 pub fn generate_env_file(
@@ -176,6 +189,13 @@ pub fn generate_env_file(
             env_map.insert("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN".into(), shared_token);
         }
     }
+
+    // Keep MM rewards selection mode explicit so all core codepaths and telemetry
+    // agree on AUTO behavior instead of falling back to older implicit defaults.
+    env_map.insert(
+        "EVPOLY_MM_MARKET_MODE".into(),
+        normalized_mm_market_mode(&env_map),
+    );
 
     let mut output = String::new();
     let mut written_keys: HashSet<String> = HashSet::new();
@@ -343,20 +363,64 @@ mod tests {
             "shared-alpha-token".to_string(),
         );
 
-        let temp_dir = std::env::temp_dir().join(format!(
-            "evpoly-config-io-test-{}",
-            std::process::id()
-        ));
+        let temp_dir =
+            std::env::temp_dir().join(format!("evpoly-config-io-test-{}", std::process::id()));
         std::fs::create_dir_all(&temp_dir).expect("create temp dir");
 
         let env_path = generate_env_file(&profile, &secrets, &temp_dir).expect("generate env");
         let content = std::fs::read_to_string(&env_path).expect("read env");
 
-        assert!(content.contains("POLY_POLYGON_RPC_HTTP_URL=https://polygon-bor-rpc.publicnode.com"));
+        assert!(
+            content.contains("POLY_POLYGON_RPC_HTTP_URL=https://polygon-bor-rpc.publicnode.com")
+        );
         assert!(content.contains("POLY_POLYGON_RPC_HTTP_FALLBACK_URL=https://polygon.drpc.org"));
-        assert!(content.contains("POLY_PROXY_WALLET_ADDRESS=0x2222222222222222222222222222222222222222"));
+        assert!(content
+            .contains("POLY_PROXY_WALLET_ADDRESS=0x2222222222222222222222222222222222222222"));
         assert!(content.contains("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN=shared-alpha-token"));
         assert!(content.contains("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN=shared-alpha-token"));
+        assert!(content.contains("EVPOLY_MM_MARKET_MODE=auto"));
+
+        let _ = std::fs::remove_file(env_path);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn generate_env_file_normalizes_legacy_mm_market_mode_to_auto() {
+        let mut profile = sample_profile();
+        profile.strategy_config = serde_json::json!({
+            "EVPOLY_MM_MARKET_MODE": "target"
+        });
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("evpoly-config-io-mm-mode-test-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let env_path = generate_env_file(&profile, &HashMap::new(), &temp_dir).expect("generate env");
+        let content = std::fs::read_to_string(&env_path).expect("read env");
+
+        assert!(content.contains("EVPOLY_MM_MARKET_MODE=auto"));
+
+        let _ = std::fs::remove_file(env_path);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn generate_env_file_preserves_hybrid_mm_market_mode() {
+        let mut profile = sample_profile();
+        profile.strategy_config = serde_json::json!({
+            "EVPOLY_MM_MARKET_MODE": "hybrid"
+        });
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "evpoly-config-io-mm-mode-hybrid-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let env_path = generate_env_file(&profile, &HashMap::new(), &temp_dir).expect("generate env");
+        let content = std::fs::read_to_string(&env_path).expect("read env");
+
+        assert!(content.contains("EVPOLY_MM_MARKET_MODE=hybrid"));
 
         let _ = std::fs::remove_file(env_path);
         let _ = std::fs::remove_dir_all(temp_dir);

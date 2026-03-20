@@ -302,6 +302,16 @@ fn merge_desktop_secrets(
     existing
 }
 
+fn merge_config_object(existing: &Value, updates: &Value) -> Value {
+    let mut merged = existing.as_object().cloned().unwrap_or_else(Map::new);
+    if let Some(update_obj) = updates.as_object() {
+        for (key, value) in update_obj {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    Value::Object(merged)
+}
+
 fn desktop_config_to_profile_payload(
     config: &DesktopConfig,
 ) -> (Value, Value, HashMap<String, String>, String, String, u8) {
@@ -957,8 +967,8 @@ fn save_config(
         signature_type,
     ) = desktop_config_to_profile_payload(&config);
 
-    profile.strategy_config = strategy_config;
-    profile.sizing_config = sizing_config;
+    profile.strategy_config = merge_config_object(&profile.strategy_config, &strategy_config);
+    profile.sizing_config = merge_config_object(&profile.sizing_config, &sizing_config);
     profile.eoa_wallet_address = eoa_wallet_address;
     profile.proxy_wallet_address = proxy_wallet_address;
     profile.signature_type = signature_type;
@@ -1541,7 +1551,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_desktop_secrets, simulation_mode_from_profile};
+    use super::{merge_config_object, merge_desktop_secrets, simulation_mode_from_profile};
     use crate::{config_io, profile_manager::Profile};
     use std::collections::HashMap;
 
@@ -1602,6 +1612,30 @@ mod tests {
         assert_eq!(
             simulation_mode_from_profile(&profile),
             config_io::env_template_default_bool("APP_SIMULATION", true)
+        );
+    }
+
+    #[test]
+    fn merge_config_object_preserves_unknown_keys() {
+        let existing = serde_json::json!({
+            "EVPOLY_MM_REWARDS_GAMMA_FALLBACK_ENABLE": true,
+            "CUSTOM_KEEP": "keep"
+        });
+        let updates = serde_json::json!({
+            "EVPOLY_STRATEGY_MM_REWARDS_ENABLE": true,
+            "CUSTOM_KEEP": "override"
+        });
+
+        let merged = merge_config_object(&existing, &updates);
+
+        assert_eq!(
+            merged["EVPOLY_MM_REWARDS_GAMMA_FALLBACK_ENABLE"],
+            serde_json::json!(true)
+        );
+        assert_eq!(merged["CUSTOM_KEEP"], serde_json::json!("override"));
+        assert_eq!(
+            merged["EVPOLY_STRATEGY_MM_REWARDS_ENABLE"],
+            serde_json::json!(true)
         );
     }
 }

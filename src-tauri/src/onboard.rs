@@ -7,6 +7,10 @@ use serde_json::Value;
 const DEFAULT_ONBOARD_API_BASE: &str =
     "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign";
 
+fn wallet_address_hex(wallet: &LocalWallet) -> String {
+    format!("{:#x}", wallet.address())
+}
+
 fn first_nonempty(values: &[Option<&Value>]) -> Option<String> {
     values
         .iter()
@@ -69,7 +73,7 @@ pub async fn run_onboarding(
     let local_wallet: LocalWallet = key
         .parse()
         .map_err(|e| format!("invalid private key: {e}"))?;
-    let derived_eoa = local_wallet.address().to_string();
+    let derived_eoa = wallet_address_hex(&local_wallet);
 
     let provided_wallet = wallet.trim();
     let signature_wallet = if provided_wallet.is_empty() {
@@ -190,4 +194,24 @@ pub async fn run_onboarding(
     }
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wallet_address_hex;
+    use ethers_signers::LocalWallet;
+
+    #[test]
+    fn wallet_address_hex_uses_full_address() {
+        let wallet: LocalWallet =
+            "0x59d07efa05b4c7f6f1f450f0a3cb2ed0d49b98f6000000000000000000000001"
+                .parse()
+                .expect("valid private key");
+
+        let address = wallet_address_hex(&wallet);
+
+        assert_eq!(address.len(), 42);
+        assert!(address.starts_with("0x"));
+        assert!(!address.contains('…'));
+    }
 }

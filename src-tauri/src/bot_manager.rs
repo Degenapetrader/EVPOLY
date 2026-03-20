@@ -6,12 +6,17 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum BotStatus {
@@ -249,6 +254,14 @@ impl BotManager {
     fn reconcile_runtime_state(&self) {
         #[cfg(target_os = "windows")]
         {
+            let current_status = match self.inner.lock() {
+                Ok(inner) => inner.status.clone(),
+                Err(_) => return,
+            };
+            if current_status != BotStatus::Stopping {
+                return;
+            }
+
             let config_marker = self
                 .data_dir
                 .join("runtime.config.json")
@@ -266,35 +279,23 @@ impl BotManager {
                 Err(_) => return,
             };
 
-            match inner.status {
-                BotStatus::Stopping => {
-                    if processes_running {
-                        drop(inner);
-                        self.force_cleanup_orphan_processes();
-                        if let Some(false) = windows_processes_running(
-                            &["evpoly-bot.exe", "evpoly-bot-real.exe"],
-                            &config_marker,
-                        ) {
-                            if let Ok(mut inner) = self.inner.lock() {
-                                finalize_stop(&mut inner);
-                            }
-                        }
-                    } else {
+            if inner.status != BotStatus::Stopping {
+                return;
+            }
+
+            if processes_running {
+                drop(inner);
+                self.force_cleanup_orphan_processes();
+                if let Some(false) = windows_processes_running(
+                    &["evpoly-bot.exe", "evpoly-bot-real.exe"],
+                    &config_marker,
+                ) {
+                    if let Ok(mut inner) = self.inner.lock() {
                         finalize_stop(&mut inner);
                     }
                 }
-                BotStatus::Running => {
-                    if !processes_running {
-                        let line = "bot process exited without a shutdown event".to_string();
-                        if let Some(path) = inner.env_path.take() {
-                            config_io::cleanup_env_file(&path);
-                        }
-                        inner.child = None;
-                        inner.stop_requested = false;
-                        inner.status = BotStatus::Error(line);
-                    }
-                }
-                _ => {}
+            } else {
+                finalize_stop(&mut inner);
             }
         }
 
@@ -343,6 +344,14 @@ fn escape_powershell_literal(value: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
+fn hidden_powershell(script: &str) -> Command {
+    let mut command = Command::new("powershell");
+    command.creation_flags(CREATE_NO_WINDOW);
+    command.args(["-NoProfile", "-Command", script]);
+    command
+}
+
+#[cfg(target_os = "windows")]
 fn windows_processes_running(image_names: &[&str], command_marker: &str) -> Option<bool> {
     let names = image_names
         .iter()
@@ -357,8 +366,7 @@ fn windows_processes_running(image_names: &[&str], command_marker: &str) -> Opti
          [Console]::Out.Write($count)"
     );
 
-    Command::new("powershell")
-        .args(["-NoProfile", "-Command", &script])
+    hidden_powershell(&script)
         .output()
         .ok()
         .and_then(|output| String::from_utf8(output.stdout).ok())
@@ -381,8 +389,7 @@ fn windows_stop_processes(image_names: &[&str], command_marker: &str) -> bool {
          if ($procs) {{ $procs | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}; exit 0 }} else {{ exit 1 }}"
     );
 
-    Command::new("powershell")
-        .args(["-NoProfile", "-Command", &script])
+    hidden_powershell(&script)
         .status()
         .map(|status| status.success())
         .unwrap_or(false)

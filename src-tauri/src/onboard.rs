@@ -142,7 +142,7 @@ pub async fn run_onboarding(
         "signature_type": signature_type,
     });
     if matches!(signature_type, 1 | 2) {
-        finish_payload["proxy_wallet"] = Value::String(bind_wallet);
+        finish_payload["proxy_wallet"] = Value::String(bind_wallet.clone());
     }
     let finish_response = post_json(&client, &finish_url, &finish_payload).await?;
     let runtime = finish_response

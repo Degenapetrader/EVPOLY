@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use crate::profile_manager::Profile;
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -101,10 +102,18 @@ EVPOLY_RETENTION_CRON_EXPR=17 * * * *
 EVPOLY_STARTUP_PENDING_RECONCILE_ENABLE=true
 "#;
 
-fn value_to_env_string(v: &serde_json::Value) -> String {
+fn value_to_env_string(v: &Value) -> String {
     v.as_str()
         .map(|s| s.to_string())
         .unwrap_or_else(|| v.to_string())
+}
+
+fn bool_from_config(config: &Value, key: &str, default: bool) -> bool {
+    config
+        .as_object()
+        .and_then(|obj| obj.get(key))
+        .and_then(Value::as_bool)
+        .unwrap_or(default)
 }
 
 pub fn generate_env_file(
@@ -185,14 +194,46 @@ pub fn generate_env_file(
 }
 
 fn build_config_json(profile: &Profile) -> serde_json::Value {
+    let enable_eth = bool_from_config(&profile.strategy_config, "POLY_ENABLE_ETH_TRADING", true);
+    let enable_solana =
+        bool_from_config(&profile.strategy_config, "POLY_ENABLE_SOLANA_TRADING", true);
+    let enable_xrp = bool_from_config(&profile.strategy_config, "POLY_ENABLE_XRP_TRADING", true);
+
     serde_json::json!({
         "polymarket": {
             "gamma_api_url": "https://gamma-api.polymarket.com",
             "clob_api_url": "https://clob.polymarket.com",
             "rpc_url": "https://1rpc.io/matic",
-            "rpc_fallback_url": "https://polygon-rpc.com"
+            "rpc_fallback_url": "https://polygon-rpc.com",
+            "wallet_address": profile.primary_wallet_address(),
+            "eoa_wallet_address": profile.eoa_wallet_address,
+            "proxy_wallet_address": profile.proxy_wallet_address,
+            "signature_type": profile.signature_type
         },
         "trading": {
+            "eth_condition_id": null,
+            "btc_condition_id": null,
+            "solana_condition_id": null,
+            "xrp_condition_id": null,
+            "check_interval_ms": 1000,
+            "fixed_trade_amount": 1.0,
+            "trigger_price": 0.9,
+            "min_elapsed_minutes": 10,
+            "sell_price": 0.99,
+            "hold_to_resolution": true,
+            "hold_to_resolution_ladder": null,
+            "hold_to_resolution_reactive": null,
+            "max_buy_price": 0.95,
+            "stop_loss_price": 0.85,
+            "hedge_price": 0.5,
+            "market_closure_check_interval_seconds": 60,
+            "min_time_remaining_seconds": 30,
+            "enable_eth_trading": enable_eth,
+            "enable_solana_trading": enable_solana,
+            "enable_xrp_trading": enable_xrp,
+            "dual_limit_price": null,
+            "dual_limit_shares": null,
+            "order_ttl_seconds": 1200,
             "wallet_address": profile.primary_wallet_address(),
             "eoa_wallet_address": profile.eoa_wallet_address,
             "proxy_wallet_address": profile.proxy_wallet_address,
@@ -222,5 +263,68 @@ pub fn cleanup_env_file(path: &Path) {
             let _ = std::fs::write(path, &zeros);
         }
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_config_json;
+    use crate::profile_manager::Profile;
+
+    fn sample_profile() -> Profile {
+        Profile {
+            id: "p1".to_string(),
+            name: "desktop".to_string(),
+            eoa_wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
+            proxy_wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            signature_type: 2,
+            encrypted_secrets: String::new(),
+            strategy_config: serde_json::json!({
+                "POLY_ENABLE_ETH_TRADING": false,
+                "POLY_ENABLE_SOLANA_TRADING": true,
+                "POLY_ENABLE_XRP_TRADING": false
+            }),
+            sizing_config: serde_json::json!({
+                "APP_SIMULATION": true,
+                "EVPOLY_PREMARKET_BASE_SIZE_USD": 10.0
+            }),
+            created_at: "now".to_string(),
+            last_used: "now".to_string(),
+        }
+    }
+
+    #[test]
+    fn build_config_json_includes_required_runtime_fields() {
+        let config = build_config_json(&sample_profile());
+
+        assert_eq!(config["trading"]["check_interval_ms"], 1000);
+        assert_eq!(config["trading"]["fixed_trade_amount"], 1.0);
+        assert_eq!(config["trading"]["enable_eth_trading"], false);
+        assert_eq!(config["trading"]["enable_solana_trading"], true);
+        assert_eq!(config["trading"]["enable_xrp_trading"], false);
+        assert_eq!(
+            config["trading"]["proxy_wallet_address"],
+            "0x2222222222222222222222222222222222222222"
+        );
+        assert!(config["trading"]["dual_limit_price"].is_null());
+    }
+
+    #[test]
+    fn build_config_json_preserves_desktop_metadata() {
+        let config = build_config_json(&sample_profile());
+
+        assert_eq!(
+            config["trading"]["strategy_config"]["POLY_ENABLE_SOLANA_TRADING"],
+            true
+        );
+        assert_eq!(
+            config["trading"]["sizing_config"]["EVPOLY_PREMARKET_BASE_SIZE_USD"],
+            10.0
+        );
+        assert_eq!(
+            config["polymarket"]["wallet_address"],
+            "0x2222222222222222222222222222222222222222"
+        );
     }
 }

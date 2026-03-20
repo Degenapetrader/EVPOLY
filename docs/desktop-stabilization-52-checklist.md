@@ -21,11 +21,11 @@
 18. [x] Return onboarding tokens back through config load API.
 
 ## Frontend/Backend Boundary
-19. [x] Remove camelCase fallback args for `create_profile`.
-20. [x] Remove camelCase fallback args for `save_config`.
-21. [x] Remove camelCase fallback args for `get_saved_config`.
-22. [x] Remove camelCase fallback args for `export_config`.
-23. [x] Remove camelCase fallback args for `run_onboarding`.
+19. [x] Send compatible camelCase + snake_case args for `create_profile`.
+20. [x] Send compatible camelCase + snake_case args for `save_config`.
+21. [x] Send compatible camelCase + snake_case args for `get_saved_config`.
+22. [x] Send compatible camelCase + snake_case args for `export_config`.
+23. [x] Send compatible camelCase + snake_case args for `run_onboarding`.
 24. [x] Add command-contract unit tests for invoke payloads.
 25. [x] Add `npm test` script for CI command-contract checks.
 26. [x] Wire frontend tests into desktop preflight workflow.
@@ -61,4 +61,3 @@
 50. [x] Remove global `user-select: none`.
 51. [x] Remove global hidden-overflow lock on `body/#root`.
 52. [x] Add responsive breakpoints for dashboard core grids.
-

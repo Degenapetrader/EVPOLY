@@ -247,8 +247,8 @@ pub async fn send_manual_request(
     query: Option<Value>,
     body: Option<Value>,
 ) -> Result<Value, String> {
-    let method = Method::from_bytes(method.trim().as_bytes())
-        .map_err(|e| format!("invalid method: {e}"))?;
+    let method =
+        Method::from_bytes(method.trim().as_bytes()).map_err(|e| format!("invalid method: {e}"))?;
     let clean_path = if path.trim().starts_with('/') {
         path.trim().to_string()
     } else {
@@ -301,7 +301,10 @@ pub async fn send_manual_request(
     };
 
     if !status.is_success() {
-        return Err(format!("manual api {} {} -> {}: {}", method, clean_path, status, payload));
+        return Err(format!(
+            "manual api {} {} -> {}: {}",
+            method, clean_path, status, payload
+        ));
     }
     Ok(payload)
 }
@@ -370,7 +373,11 @@ fn append_debug_line(path: &PathBuf, source: &str, line: &str) {
 }
 
 fn write_debug_line(path: &PathBuf, content: &str) {
-    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+    {
         let _ = file.write_all(content.as_bytes());
     }
 }

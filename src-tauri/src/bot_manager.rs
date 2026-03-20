@@ -65,7 +65,10 @@ impl BotManager {
         }
         inner.status = BotStatus::Starting;
 
-        let mut args = vec!["--config".to_string(), config_path.to_string_lossy().to_string()];
+        let mut args = vec![
+            "--config".to_string(),
+            config_path.to_string_lossy().to_string(),
+        ];
         if simulation {
             args.push("--simulation".to_string());
         } else {
@@ -272,7 +275,11 @@ fn append_debug_line(path: &PathBuf, source: &str, line: &str) {
 }
 
 fn write_debug_line(path: &PathBuf, content: &str) {
-    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+    {
         let _ = file.write_all(content.as_bytes());
     }
 }

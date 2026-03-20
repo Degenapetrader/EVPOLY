@@ -4,7 +4,8 @@ use ethers_signers::{LocalWallet, Signer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-const DEFAULT_ONBOARD_API_BASE: &str = "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign";
+const DEFAULT_ONBOARD_API_BASE: &str =
+    "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign";
 
 fn first_nonempty(values: &[Option<&Value>]) -> Option<String> {
     values

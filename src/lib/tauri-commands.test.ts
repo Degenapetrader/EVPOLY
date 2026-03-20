@@ -10,6 +10,8 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import {
   createProfile,
+  exportConfig,
+  getSavedConfig,
   runOnboarding,
   saveConfig,
   type BotConfig,
@@ -66,34 +68,60 @@ describe("tauri command payload contracts", () => {
     invokeMock.mockResolvedValue(undefined);
   });
 
-  it("uses canonical snake_case payload for create_profile", async () => {
+  it("sends compatible payload keys for create_profile", async () => {
     await createProfile("Default", "0xeoa", "0xproxy", 1);
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith("create_profile", {
       name: "Default",
+      eoaWalletAddress: "0xeoa",
       eoa_wallet_address: "0xeoa",
+      proxyWalletAddress: "0xproxy",
       proxy_wallet_address: "0xproxy",
+      signatureType: 1,
       signature_type: 1,
     });
   });
 
-  it("uses canonical snake_case payload for save_config", async () => {
+  it("sends compatible payload keys for save_config", async () => {
     await saveConfig("profile-1", SAMPLE_CONFIG);
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith("save_config", {
+      profileId: "profile-1",
       profile_id: "profile-1",
       config: SAMPLE_CONFIG,
     });
   });
 
-  it("uses canonical snake_case payload for run_onboarding", async () => {
+  it("sends compatible payload keys for run_onboarding", async () => {
     await runOnboarding("0xeoa", "0xprivate", 1, "0xproxy");
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith("run_onboarding", {
       wallet: "0xeoa",
+      privateKey: "0xprivate",
       private_key: "0xprivate",
+      signatureType: 1,
       signature_type: 1,
+      proxyWallet: "0xproxy",
       proxy_wallet: "0xproxy",
+    });
+  });
+
+  it("sends compatible payload keys for get_saved_config", async () => {
+    await getSavedConfig("profile-1");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("get_saved_config", {
+      profileId: "profile-1",
+      profile_id: "profile-1",
+    });
+  });
+
+  it("sends compatible payload keys for export_config", async () => {
+    await exportConfig("profile-1", "secret");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("export_config", {
+      profileId: "profile-1",
+      profile_id: "profile-1",
+      password: "secret",
     });
   });
 });

@@ -479,7 +479,11 @@ fn append_desktop_debug_line(data_dir: &Path, source: &str, line: &str) {
     let content = format!("[{ts}] [{source}] {line}\n");
     for file_name in [DESKTOP_DEBUG_LOG_NAME, FULL_DEBUG_LOG_NAME] {
         let path = data_dir.join(file_name);
-        if let Ok(mut file) = std::fs::OpenOptions::new().append(true).create(true).open(path) {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .open(path)
+        {
             let _ = file.write_all(content.as_bytes());
         }
     }
@@ -709,12 +713,9 @@ fn stop_manual_service(manual: State<'_, ManualState>) -> Result<(), String> {
 
 #[tauri::command]
 fn get_manual_service_status(manual: State<'_, ManualState>) -> String {
-    match manual
-        .lock()
-        .map(|m| m.get_status())
-        .unwrap_or(manual_manager::ManualServiceStatus::Error(
-            "lock failed".to_string(),
-        )) {
+    match manual.lock().map(|m| m.get_status()).unwrap_or(
+        manual_manager::ManualServiceStatus::Error("lock failed".to_string()),
+    ) {
         manual_manager::ManualServiceStatus::Stopped => "stopped".to_string(),
         manual_manager::ManualServiceStatus::Starting => "starting".to_string(),
         manual_manager::ManualServiceStatus::Running => "running".to_string(),
@@ -786,8 +787,7 @@ fn save_config(
         eoa_wallet_address,
         proxy_wallet_address,
         signature_type,
-    ) =
-        desktop_config_to_profile_payload(&config);
+    ) = desktop_config_to_profile_payload(&config);
 
     profile.strategy_config = strategy_config;
     profile.sizing_config = sizing_config;
@@ -866,8 +866,10 @@ fn import_config(
     created.strategy_config = imported.strategy_config;
     created.sizing_config = imported.sizing_config;
     created.encrypted_secrets = imported.encrypted_secrets;
-    pm.update_profile(created.clone()).map_err(|e| e.to_string())?;
-    pm.set_active_profile(&created.id).map_err(|e| e.to_string())?;
+    pm.update_profile(created.clone())
+        .map_err(|e| e.to_string())?;
+    pm.set_active_profile(&created.id)
+        .map_err(|e| e.to_string())?;
     Ok(created.id)
 }
 
@@ -1092,7 +1094,11 @@ async fn get_wallet_balance(app: AppHandle) -> Result<f64, String> {
         let p = pm.get_profile(&id).ok_or("profile not found")?;
         p.primary_wallet_address()
     };
-    wallet_rpc::fetch_usdc_balance("https://1rpc.io/matic", &wallet).await
+    wallet_rpc::fetch_usdc_balance_with_fallback(
+        &["https://1rpc.io/matic", "https://polygon-rpc.com"],
+        &wallet,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1157,7 +1163,11 @@ async fn run_onboarding(
     let result = onboard::run_onboarding(&wallet, &private_key, signature_type, &proxy_wallet)
         .await
         .map_err(|e| {
-            append_desktop_debug_line(&data_dir.0, "ONBOARD", format!("run_onboarding error: {e}").as_str());
+            append_desktop_debug_line(
+                &data_dir.0,
+                "ONBOARD",
+                format!("run_onboarding error: {e}").as_str(),
+            );
             e
         })?;
 

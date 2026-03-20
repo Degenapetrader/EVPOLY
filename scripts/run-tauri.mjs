@@ -15,6 +15,15 @@ if (!currentPath.split(pathSep).includes(cargoBin)) {
   env[pathKey] = currentPath ? `${cargoBin}${pathSep}${currentPath}` : cargoBin;
 }
 
+if (process.platform === "win32") {
+  // This Windows machine has been crashing inside rustc during optimized
+  // desktop builds. Keep Tauri release builds on the safer local profile.
+  env.CARGO_BUILD_JOBS ??= "1";
+  env.CARGO_INCREMENTAL ??= "0";
+  env.CARGO_PROFILE_RELEASE_OPT_LEVEL ??= "0";
+  env.CARGO_PROFILE_RELEASE_CODEGEN_UNITS ??= "1";
+}
+
 const tauriCli = path.join(
   repoRoot,
   "node_modules",

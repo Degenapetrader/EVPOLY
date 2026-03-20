@@ -18,6 +18,22 @@ if ((Test-Path $cargoBin) -and -not (($env:Path -split ';') -contains $cargoBin)
   $env:Path = "$cargoBin;$env:Path"
 }
 
+# This Windows machine has been crashing inside rustc during optimized
+# release builds. Keep sidecar release builds on the same conservative
+# local profile used by the desktop shell build path.
+if (-not $env:CARGO_BUILD_JOBS) {
+  $env:CARGO_BUILD_JOBS = "1"
+}
+if (-not $env:CARGO_INCREMENTAL) {
+  $env:CARGO_INCREMENTAL = "0"
+}
+if (-not $env:CARGO_PROFILE_RELEASE_OPT_LEVEL) {
+  $env:CARGO_PROFILE_RELEASE_OPT_LEVEL = "0"
+}
+if (-not $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS) {
+  $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
+}
+
 if (Test-Path $lockPath) {
   foreach ($line in Get-Content $lockPath) {
     if ($line -match '^\s*#') {

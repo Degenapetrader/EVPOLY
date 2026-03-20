@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -31,6 +32,7 @@ struct BotInner {
     status: BotStatus,
     child: Option<CommandChild>,
     env_path: Option<PathBuf>,
+    stop_requested: bool,
 }
 
 pub struct BotManager {
@@ -47,6 +49,7 @@ impl BotManager {
                 status: BotStatus::Stopped,
                 child: None,
                 env_path: None,
+                stop_requested: false,
             })),
             log_buffer: Arc::new(Mutex::new(LogBuffer::new())),
         }
@@ -64,6 +67,7 @@ impl BotManager {
             return Err(format!("bot is busy ({:?})", inner.status));
         }
         inner.status = BotStatus::Starting;
+        inner.stop_requested = false;
 
         let mut args = vec![
             "--config".to_string(),
@@ -152,11 +156,13 @@ impl BotManager {
                         append_debug_line(&debug_log, "SYSTEM", &exit_line);
                         if let Ok(mut inner) = inner_ref.lock() {
                             let was_stopping = inner.status == BotStatus::Stopping;
+                            let stop_requested = inner.stop_requested;
                             if let Some(path) = inner.env_path.take() {
                                 config_io::cleanup_env_file(&path);
                             }
                             inner.child = None;
-                            if was_stopping || payload.code == Some(0) {
+                            inner.stop_requested = false;
+                            if was_stopping || stop_requested || payload.code == Some(0) {
                                 inner.status = BotStatus::Stopped;
                             } else {
                                 inner.status = BotStatus::Error(exit_line);
@@ -173,15 +179,23 @@ impl BotManager {
     }
 
     pub fn stop(&self) -> Result<(), String> {
-        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        if let Some(child) = inner.child.take() {
-            inner.status = BotStatus::Stopping;
-            child.kill().map_err(|e| format!("kill: {e}"))?;
-        } else if let Some(path) = inner.env_path.take() {
-            config_io::cleanup_env_file(&path);
-            inner.status = BotStatus::Stopped;
+        let should_force_cleanup = {
+            let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+            inner.stop_requested = true;
+            if let Some(child) = inner.child.take() {
+                inner.status = BotStatus::Stopping;
+                child.kill().map_err(|e| format!("kill: {e}"))?;
+                true
+            } else {
+                inner.status = BotStatus::Stopping;
+                true
+            }
+        };
+
+        if should_force_cleanup {
+            self.force_cleanup_orphan_processes();
         }
-        drop(inner);
+        self.reconcile_runtime_state();
         self.save_last_state(false, false);
         Ok(())
     }
@@ -205,6 +219,7 @@ impl BotManager {
     }
 
     pub fn get_status(&self) -> BotStatus {
+        self.reconcile_runtime_state();
         self.inner
             .lock()
             .map(|inner| inner.status.clone())
@@ -230,6 +245,147 @@ impl BotManager {
         let state: LastState = serde_json::from_str(&json).ok()?;
         Some((state.was_running, state.simulation))
     }
+
+    fn reconcile_runtime_state(&self) {
+        #[cfg(target_os = "windows")]
+        {
+            let config_marker = self
+                .data_dir
+                .join("runtime.config.json")
+                .to_string_lossy()
+                .to_string();
+            let Some(processes_running) = windows_processes_running(
+                &["evpoly-bot.exe", "evpoly-bot-real.exe"],
+                &config_marker,
+            ) else {
+                return;
+            };
+
+            let mut inner = match self.inner.lock() {
+                Ok(inner) => inner,
+                Err(_) => return,
+            };
+
+            match inner.status {
+                BotStatus::Stopping => {
+                    if processes_running {
+                        drop(inner);
+                        self.force_cleanup_orphan_processes();
+                        if let Some(false) = windows_processes_running(
+                            &["evpoly-bot.exe", "evpoly-bot-real.exe"],
+                            &config_marker,
+                        ) {
+                            if let Ok(mut inner) = self.inner.lock() {
+                                finalize_stop(&mut inner);
+                            }
+                        }
+                    } else {
+                        finalize_stop(&mut inner);
+                    }
+                }
+                BotStatus::Running => {
+                    if !processes_running {
+                        let line = "bot process exited without a shutdown event".to_string();
+                        if let Some(path) = inner.env_path.take() {
+                            config_io::cleanup_env_file(&path);
+                        }
+                        inner.child = None;
+                        inner.stop_requested = false;
+                        inner.status = BotStatus::Error(line);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut inner = match self.inner.lock() {
+                Ok(inner) => inner,
+                Err(_) => return,
+            };
+            if inner.status == BotStatus::Stopping && inner.child.is_none() {
+                finalize_stop(&mut inner);
+            }
+        }
+    }
+
+    fn force_cleanup_orphan_processes(&self) {
+        #[cfg(target_os = "windows")]
+        {
+            let config_marker = self
+                .data_dir
+                .join("runtime.config.json")
+                .to_string_lossy()
+                .to_string();
+            if windows_stop_processes(&["evpoly-bot.exe", "evpoly-bot-real.exe"], &config_marker) {
+                append_debug_line(
+                    &self.data_dir.join("evpoly-debug.log.txt"),
+                    "SYSTEM",
+                    "forced bot orphan cleanup via process scan",
+                );
+            }
+        }
+    }
+}
+
+fn finalize_stop(inner: &mut BotInner) {
+    if let Some(path) = inner.env_path.take() {
+        config_io::cleanup_env_file(&path);
+    }
+    inner.child = None;
+    inner.status = BotStatus::Stopped;
+}
+
+#[cfg(target_os = "windows")]
+fn escape_powershell_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_processes_running(image_names: &[&str], command_marker: &str) -> Option<bool> {
+    let names = image_names
+        .iter()
+        .map(|name| format!("'{}'", escape_powershell_literal(name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let marker = escape_powershell_literal(command_marker);
+    let script = format!(
+        "$names = @({names}); \
+         $marker = '{marker}'; \
+         $count = @(Get-CimInstance Win32_Process | Where-Object {{ $names -contains $_.Name -and $_.CommandLine -like ('*' + $marker + '*') }}).Count; \
+         [Console]::Out.Write($count)"
+    );
+
+    Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| stdout.trim().parse::<usize>().ok())
+        .map(|count| count > 0)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_stop_processes(image_names: &[&str], command_marker: &str) -> bool {
+    let names = image_names
+        .iter()
+        .map(|name| format!("'{}'", escape_powershell_literal(name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let marker = escape_powershell_literal(command_marker);
+    let script = format!(
+        "$names = @({names}); \
+         $marker = '{marker}'; \
+         $procs = Get-CimInstance Win32_Process | Where-Object {{ $names -contains $_.Name -and $_.CommandLine -like ('*' + $marker + '*') }}; \
+         if ($procs) {{ $procs | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}; exit 0 }} else {{ exit 1 }}"
+    );
+
+    Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn read_env_file_pairs(path: &PathBuf) -> Result<HashMap<String, String>, String> {

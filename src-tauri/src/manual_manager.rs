@@ -9,6 +9,7 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tauri::AppHandle;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -35,6 +36,7 @@ struct ManualInner {
     auth_token: Option<String>,
     simulation: bool,
     port: u16,
+    stop_requested: bool,
 }
 
 #[derive(Clone)]
@@ -61,6 +63,7 @@ impl ManualServiceManager {
                 auth_token: None,
                 simulation: true,
                 port: DEFAULT_PORT,
+                stop_requested: false,
             })),
             log_buffer: Arc::new(Mutex::new(LogBuffer::new())),
         }
@@ -82,6 +85,7 @@ impl ManualServiceManager {
             return Err(format!("manual service is busy ({:?})", inner.status));
         }
         inner.status = ManualServiceStatus::Starting;
+        inner.stop_requested = false;
 
         let token = format!("manual-{}", Uuid::new_v4().simple());
         let mut env_vars = read_env_file_pairs(&env_path)?;
@@ -178,13 +182,15 @@ impl ManualServiceManager {
                         append_debug_line(&debug_log, "SYSTEM", &line);
                         if let Ok(mut inner) = inner_ref.lock() {
                             let was_stopping = inner.status == ManualServiceStatus::Stopping;
+                            let stop_requested = inner.stop_requested;
                             if let Some(path) = inner.env_path.take() {
                                 config_io::cleanup_env_file(&path);
                             }
                             inner.child = None;
                             inner.base_url = None;
                             inner.auth_token = None;
-                            if was_stopping || payload.code == Some(0) {
+                            inner.stop_requested = false;
+                            if was_stopping || stop_requested || payload.code == Some(0) {
                                 inner.status = ManualServiceStatus::Stopped;
                             } else {
                                 inner.status = ManualServiceStatus::Error(line);
@@ -200,20 +206,28 @@ impl ManualServiceManager {
     }
 
     pub fn stop(&self) -> Result<(), String> {
-        let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        if let Some(child) = inner.child.take() {
-            inner.status = ManualServiceStatus::Stopping;
-            child.kill().map_err(|e| format!("manual kill: {e}"))?;
-        } else if let Some(path) = inner.env_path.take() {
-            config_io::cleanup_env_file(&path);
-            inner.base_url = None;
-            inner.auth_token = None;
-            inner.status = ManualServiceStatus::Stopped;
+        let should_force_cleanup = {
+            let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+            inner.stop_requested = true;
+            if let Some(child) = inner.child.take() {
+                inner.status = ManualServiceStatus::Stopping;
+                child.kill().map_err(|e| format!("manual kill: {e}"))?;
+                true
+            } else {
+                inner.status = ManualServiceStatus::Stopping;
+                true
+            }
+        };
+
+        if should_force_cleanup {
+            self.force_cleanup_orphan_processes();
         }
+        self.reconcile_runtime_state();
         Ok(())
     }
 
     pub fn get_status(&self) -> ManualServiceStatus {
+        self.reconcile_runtime_state();
         self.inner
             .lock()
             .map(|inner| inner.status.clone())
@@ -238,6 +252,154 @@ impl ManualServiceManager {
             auth_token: inner.auth_token.clone(),
         })
     }
+
+    fn reconcile_runtime_state(&self) {
+        #[cfg(target_os = "windows")]
+        {
+            let config_marker = self
+                .data_dir
+                .join("runtime.config.json")
+                .to_string_lossy()
+                .to_string();
+            let Some(processes_running) = windows_processes_running(
+                &["evpoly-manual-bot.exe", "evpoly-manual-bot-real.exe"],
+                &config_marker,
+            ) else {
+                return;
+            };
+
+            let mut inner = match self.inner.lock() {
+                Ok(inner) => inner,
+                Err(_) => return,
+            };
+
+            match inner.status {
+                ManualServiceStatus::Stopping => {
+                    if processes_running {
+                        drop(inner);
+                        self.force_cleanup_orphan_processes();
+                        if let Some(false) = windows_processes_running(
+                            &["evpoly-manual-bot.exe", "evpoly-manual-bot-real.exe"],
+                            &config_marker,
+                        ) {
+                            if let Ok(mut inner) = self.inner.lock() {
+                                finalize_stop(&mut inner);
+                            }
+                        }
+                    } else {
+                        finalize_stop(&mut inner);
+                    }
+                }
+                ManualServiceStatus::Running => {
+                    if !processes_running {
+                        let line = "manual service exited without a shutdown event".to_string();
+                        if let Some(path) = inner.env_path.take() {
+                            config_io::cleanup_env_file(&path);
+                        }
+                        inner.child = None;
+                        inner.base_url = None;
+                        inner.auth_token = None;
+                        inner.stop_requested = false;
+                        inner.status = ManualServiceStatus::Error(line);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let mut inner = match self.inner.lock() {
+                Ok(inner) => inner,
+                Err(_) => return,
+            };
+            if inner.status == ManualServiceStatus::Stopping && inner.child.is_none() {
+                finalize_stop(&mut inner);
+            }
+        }
+    }
+
+    fn force_cleanup_orphan_processes(&self) {
+        #[cfg(target_os = "windows")]
+        {
+            let config_marker = self
+                .data_dir
+                .join("runtime.config.json")
+                .to_string_lossy()
+                .to_string();
+            if windows_stop_processes(
+                &["evpoly-manual-bot.exe", "evpoly-manual-bot-real.exe"],
+                &config_marker,
+            ) {
+                append_debug_line(
+                    &self.data_dir.join("evpoly-manual-debug.log.txt"),
+                    "SYSTEM",
+                    "forced manual orphan cleanup via process scan",
+                );
+            }
+        }
+    }
+}
+
+fn finalize_stop(inner: &mut ManualInner) {
+    if let Some(path) = inner.env_path.take() {
+        config_io::cleanup_env_file(&path);
+    }
+    inner.child = None;
+    inner.base_url = None;
+    inner.auth_token = None;
+    inner.status = ManualServiceStatus::Stopped;
+}
+
+#[cfg(target_os = "windows")]
+fn escape_powershell_literal(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[cfg(target_os = "windows")]
+fn windows_processes_running(image_names: &[&str], command_marker: &str) -> Option<bool> {
+    let names = image_names
+        .iter()
+        .map(|name| format!("'{}'", escape_powershell_literal(name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let marker = escape_powershell_literal(command_marker);
+    let script = format!(
+        "$names = @({names}); \
+         $marker = '{marker}'; \
+         $count = @(Get-CimInstance Win32_Process | Where-Object {{ $names -contains $_.Name -and $_.CommandLine -like ('*' + $marker + '*') }}).Count; \
+         [Console]::Out.Write($count)"
+    );
+
+    Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|stdout| stdout.trim().parse::<usize>().ok())
+        .map(|count| count > 0)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_stop_processes(image_names: &[&str], command_marker: &str) -> bool {
+    let names = image_names
+        .iter()
+        .map(|name| format!("'{}'", escape_powershell_literal(name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let marker = escape_powershell_literal(command_marker);
+    let script = format!(
+        "$names = @({names}); \
+         $marker = '{marker}'; \
+         $procs = Get-CimInstance Win32_Process | Where-Object {{ $names -contains $_.Name -and $_.CommandLine -like ('*' + $marker + '*') }}; \
+         if ($procs) {{ $procs | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}; exit 0 }} else {{ exit 1 }}"
+    );
+
+    Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 pub async fn send_manual_request(

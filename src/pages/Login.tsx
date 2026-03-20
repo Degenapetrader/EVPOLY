@@ -13,16 +13,33 @@ export function Login() {
   const navigate = useNavigate();
   const { setAuthenticated } = useAppContext();
   const [initialized, setInitialized] = useState<boolean | null>(null);
+  const [authInitError, setAuthInitError] = useState<string | null>(null);
   const [password, setPasswordVal] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const [showLegal, setShowLegal] = useState(!hasAcceptedTerms());
+  const [showLegal, setShowLegal] = useState(false);
+
+  const resolveInit = async () => {
+    setAuthInitError(null);
+    try {
+      const init = await isAuthInitialized();
+      setInitialized(init);
+      setShowLegal(!hasAcceptedTerms());
+    } catch (err) {
+      const message =
+        typeof err === "string"
+          ? err
+          : err instanceof Error
+          ? err.message
+          : "failed to initialize auth state";
+      setAuthInitError(message);
+      setInitialized(null);
+    }
+  };
 
   useEffect(() => {
-    isAuthInitialized()
-      .then(setInitialized)
-      .catch(() => setInitialized(false));
+    resolveInit();
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -68,16 +85,36 @@ export function Login() {
     }
   };
 
-  if (showLegal) {
-    return <LegalModal onAccept={() => setShowLegal(false)} />;
-  }
-
-  if (initialized === null) {
+  if (initialized === null && !authInitError) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[var(--bg-primary)]">
         <div className="text-[var(--text-secondary)] text-sm">Loading...</div>
       </div>
     );
+  }
+
+  if (authInitError) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[var(--bg-primary)]">
+        <div className="w-full max-w-sm mx-4 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-6 space-y-4">
+          <h2 className="text-lg font-medium text-[var(--text-primary)]">
+            Auth Initialization Error
+          </h2>
+          <div className="text-sm text-[var(--red)]">{authInitError}</div>
+          <button
+            type="button"
+            onClick={resolveInit}
+            className="w-full py-2.5 rounded-lg font-medium text-sm transition-colors bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (showLegal) {
+    return <LegalModal onAccept={() => setShowLegal(false)} />;
   }
 
   return (

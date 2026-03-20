@@ -79,6 +79,7 @@ struct DesktopMmTuning {
 #[derive(Clone, serde::Deserialize)]
 struct DesktopConfig {
     private_key: String,
+    eoa_wallet: String,
     proxy_wallet: String,
     sig_type: u8,
     symbols: Vec<String>,
@@ -90,6 +91,12 @@ struct DesktopConfig {
     relayer_api_key: String,
     relayer_api_key_address: String,
     remote_signer_token: String,
+    remote_discovery_token: String,
+    remote_premarket_alpha_token: String,
+    remote_endgame_alpha_token: String,
+    remote_mm_rewards_alpha_token: String,
+    remote_evsnipe_discovery_token: String,
+    admin_api_token: String,
 }
 
 fn iso_from_ms(ms: i64) -> String {
@@ -169,7 +176,7 @@ fn build_runtime_paths(
 
 fn desktop_config_to_profile_payload(
     config: &DesktopConfig,
-) -> (Value, Value, HashMap<String, String>, String, u8) {
+) -> (Value, Value, HashMap<String, String>, String, String, u8) {
     let mut strategy = Map::new();
     let mut sizing = Map::new();
     let mut secrets = HashMap::new();
@@ -308,11 +315,48 @@ fn desktop_config_to_profile_payload(
             config.remote_signer_token.trim().to_string(),
         );
     }
+    if !config.remote_discovery_token.trim().is_empty() {
+        secrets.insert(
+            "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN".to_string(),
+            config.remote_discovery_token.trim().to_string(),
+        );
+    }
+    if !config.remote_premarket_alpha_token.trim().is_empty() {
+        secrets.insert(
+            "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN".to_string(),
+            config.remote_premarket_alpha_token.trim().to_string(),
+        );
+    }
+    if !config.remote_endgame_alpha_token.trim().is_empty() {
+        secrets.insert(
+            "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN".to_string(),
+            config.remote_endgame_alpha_token.trim().to_string(),
+        );
+    }
+    if !config.remote_mm_rewards_alpha_token.trim().is_empty() {
+        secrets.insert(
+            "EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN".to_string(),
+            config.remote_mm_rewards_alpha_token.trim().to_string(),
+        );
+    }
+    if !config.remote_evsnipe_discovery_token.trim().is_empty() {
+        secrets.insert(
+            "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN".to_string(),
+            config.remote_evsnipe_discovery_token.trim().to_string(),
+        );
+    }
+    if !config.admin_api_token.trim().is_empty() {
+        secrets.insert(
+            "EVPOLY_ADMIN_API_TOKEN".to_string(),
+            config.admin_api_token.trim().to_string(),
+        );
+    }
 
     (
         Value::Object(strategy),
         Value::Object(sizing),
         secrets,
+        config.eoa_wallet.trim().to_string(),
         config.proxy_wallet.trim().to_string(),
         config.sig_type,
     )
@@ -357,7 +401,8 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
 
     Ok(serde_json::json!({
         "private_key": secrets.get("POLY_PRIVATE_KEY").cloned().unwrap_or_default(),
-        "proxy_wallet": profile.wallet_address,
+        "eoa_wallet": profile.eoa_wallet_address.clone(),
+        "proxy_wallet": profile.proxy_wallet_address.clone(),
         "sig_type": profile.signature_type,
         "symbols": symbols,
         "strategies": {
@@ -390,7 +435,13 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "simulation": bool_from_object(&sizing, "APP_SIMULATION", true),
         "relayer_api_key": secrets.get("RELAYER_API_KEY").cloned().unwrap_or_default(),
         "relayer_api_key_address": secrets.get("RELAYER_API_KEY_ADDRESS").cloned().unwrap_or_default(),
-        "remote_signer_token": secrets.get("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN").cloned().unwrap_or_default()
+        "remote_signer_token": secrets.get("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN").cloned().unwrap_or_default(),
+        "remote_discovery_token": secrets.get("EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN").cloned().unwrap_or_default(),
+        "remote_premarket_alpha_token": secrets.get("EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN").cloned().unwrap_or_default(),
+        "remote_endgame_alpha_token": secrets.get("EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN").cloned().unwrap_or_default(),
+        "remote_mm_rewards_alpha_token": secrets.get("EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN").cloned().unwrap_or_default(),
+        "remote_evsnipe_discovery_token": secrets.get("EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN").cloned().unwrap_or_default(),
+        "admin_api_token": secrets.get("EVPOLY_ADMIN_API_TOKEN").cloned().unwrap_or_default()
     }))
 }
 
@@ -489,13 +540,19 @@ fn list_profiles(profiles: State<'_, ProfileState>) -> Vec<Profile> {
 fn create_profile(
     profiles: State<'_, ProfileState>,
     name: String,
-    wallet_address: String,
+    eoa_wallet_address: String,
+    proxy_wallet_address: String,
     signature_type: u8,
 ) -> Result<Profile, String> {
     profiles
         .lock()
         .map_err(|e| e.to_string())?
-        .create_profile(name, wallet_address, signature_type)
+        .create_profile(
+            name,
+            eoa_wallet_address,
+            proxy_wallet_address,
+            signature_type,
+        )
         .map_err(|e| e.to_string())
 }
 
@@ -722,15 +779,26 @@ fn save_config(
     let auth = auth.lock().map_err(|e| e.to_string())?;
     let mut profile = pm.get_profile(&profile_id).ok_or("profile not found")?;
 
-    let (strategy_config, sizing_config, new_secrets, wallet_address, signature_type) =
+    let (
+        strategy_config,
+        sizing_config,
+        new_secrets,
+        eoa_wallet_address,
+        proxy_wallet_address,
+        signature_type,
+    ) =
         desktop_config_to_profile_payload(&config);
 
     profile.strategy_config = strategy_config;
     profile.sizing_config = sizing_config;
-    if !wallet_address.is_empty() {
-        profile.wallet_address = wallet_address;
+    if !eoa_wallet_address.is_empty() {
+        profile.eoa_wallet_address = eoa_wallet_address;
+    }
+    if !proxy_wallet_address.is_empty() {
+        profile.proxy_wallet_address = proxy_wallet_address;
     }
     profile.signature_type = signature_type;
+    profile.normalize_wallet_fields();
 
     let mut merged_secrets = if profile.encrypted_secrets.trim().is_empty() {
         HashMap::new()
@@ -782,21 +850,25 @@ fn import_config(
     profiles: State<'_, ProfileState>,
     data: String,
     password: String,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let decrypted = crypto_vault::decrypt_data(&data, &password).map_err(|e| e.to_string())?;
-    let imported: Profile = serde_json::from_slice(&decrypted).map_err(|e| e.to_string())?;
+    let mut imported: Profile = serde_json::from_slice(&decrypted).map_err(|e| e.to_string())?;
+    imported.normalize_wallet_fields();
     let pm = profiles.lock().map_err(|e| e.to_string())?;
     let mut created = pm
         .create_profile(
             imported.name,
-            imported.wallet_address,
+            imported.eoa_wallet_address,
+            imported.proxy_wallet_address,
             imported.signature_type,
         )
         .map_err(|e| e.to_string())?;
     created.strategy_config = imported.strategy_config;
     created.sizing_config = imported.sizing_config;
     created.encrypted_secrets = imported.encrypted_secrets;
-    pm.update_profile(created).map_err(|e| e.to_string())
+    pm.update_profile(created.clone()).map_err(|e| e.to_string())?;
+    pm.set_active_profile(&created.id).map_err(|e| e.to_string())?;
+    Ok(created.id)
 }
 
 // ── Data (tracking.db) ──────────────────────────────────────────────
@@ -951,32 +1023,57 @@ fn get_open_positions(data_dir: State<'_, AppDataDir>) -> Vec<serde_json::Value>
         Err(_) => return vec![],
     };
 
-    let mut stmt = match conn.prepare(
-        "SELECT token_id, \
+    let query_with_marks = "SELECT p.token_id, \
+                (COALESCE(p.entry_units, 0.0) - COALESCE(p.exit_units, 0.0) - COALESCE(p.inventory_consumed_units, 0.0)) AS net_units, \
+                CASE WHEN COALESCE(p.entry_units, 0.0) > 0.0 THEN COALESCE(p.entry_notional_usd, 0.0) / p.entry_units ELSE 0.0 END AS avg_entry_price, \
+                COALESCE(p.realized_pnl_usd, 0.0) AS realized_pnl_usd, \
+                lm.price AS mark_price \
+         FROM positions_v2 p \
+         LEFT JOIN ( \
+           SELECT m.position_key, m.price \
+           FROM marks_v2 m \
+           INNER JOIN ( \
+             SELECT position_key, MAX(ts_ms) AS max_ts \
+             FROM marks_v2 \
+             GROUP BY position_key \
+           ) latest ON latest.position_key = m.position_key AND latest.max_ts = m.ts_ms \
+         ) lm ON lm.position_key = p.position_key \
+         WHERE p.status='OPEN' \
+           AND (COALESCE(p.entry_units, 0.0) - COALESCE(p.exit_units, 0.0) - COALESCE(p.inventory_consumed_units, 0.0)) > 1e-9";
+    let query_without_marks = "SELECT token_id, \
                 (COALESCE(entry_units, 0.0) - COALESCE(exit_units, 0.0) - COALESCE(inventory_consumed_units, 0.0)) AS net_units, \
                 CASE WHEN COALESCE(entry_units, 0.0) > 0.0 THEN COALESCE(entry_notional_usd, 0.0) / entry_units ELSE 0.0 END AS avg_entry_price, \
-                COALESCE(realized_pnl_usd, 0.0) \
+                COALESCE(realized_pnl_usd, 0.0) AS realized_pnl_usd \
          FROM positions_v2 \
          WHERE status='OPEN' \
-           AND (COALESCE(entry_units, 0.0) - COALESCE(exit_units, 0.0) - COALESCE(inventory_consumed_units, 0.0)) > 1e-9",
-    ) {
-        Ok(s) => s,
-        Err(_) => return vec![],
+           AND (COALESCE(entry_units, 0.0) - COALESCE(exit_units, 0.0) - COALESCE(inventory_consumed_units, 0.0)) > 1e-9";
+
+    let (mut stmt, with_marks) = match conn.prepare(query_with_marks) {
+        Ok(s) => (s, true),
+        Err(_) => match conn.prepare(query_without_marks) {
+            Ok(s) => (s, false),
+            Err(_) => return vec![],
+        },
     };
 
     let rows = stmt.query_map([], |row| {
         let token_id: String = row.get(0)?;
         let size: f64 = row.get(1)?;
         let entry: f64 = row.get(2)?;
-        let upnl: f64 = row.get(3)?;
+        let realized_pnl: f64 = row.get(3)?;
+        let mark_price: Option<f64> = if with_marks { row.get(4)? } else { None };
+        let unrealized_pnl = mark_price.map(|mark| (mark - entry) * size);
+        let total_pnl = unrealized_pnl.unwrap_or(0.0) + realized_pnl;
         Ok(serde_json::json!({
             "market": token_id,
             "side": "buy",
             "token_id": token_id,
             "size": size,
             "entry_price": entry,
-            "current_price": entry,
-            "pnl": upnl,
+            "current_price": mark_price,
+            "realized_pnl": realized_pnl,
+            "unrealized_pnl": unrealized_pnl,
+            "pnl": total_pnl,
         }))
     });
 
@@ -993,7 +1090,7 @@ async fn get_wallet_balance(app: AppHandle) -> Result<f64, String> {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
         let id = pm.get_active_profile_id().ok_or("no active profile")?;
         let p = pm.get_profile(&id).ok_or("profile not found")?;
-        p.wallet_address.clone()
+        p.primary_wallet_address()
     };
     wallet_rpc::fetch_usdc_balance("https://1rpc.io/matic", &wallet).await
 }

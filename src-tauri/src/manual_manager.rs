@@ -76,8 +76,10 @@ impl ManualServiceManager {
     ) -> Result<(), String> {
         let selected_port = port.unwrap_or(DEFAULT_PORT);
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        if inner.status == ManualServiceStatus::Running {
-            return Err("manual service already running".to_string());
+        if inner.status != ManualServiceStatus::Stopped
+            && !matches!(inner.status, ManualServiceStatus::Error(_))
+        {
+            return Err(format!("manual service is busy ({:?})", inner.status));
         }
         inner.status = ManualServiceStatus::Starting;
 
@@ -116,7 +118,6 @@ impl ManualServiceManager {
         inner.auth_token = Some(token);
         inner.simulation = simulation;
         inner.port = selected_port;
-        inner.status = ManualServiceStatus::Running;
         drop(inner);
 
         let log_buf = self.log_buffer.clone();
@@ -134,6 +135,11 @@ impl ManualServiceManager {
                                     append_debug_line(&debug_log, "STDOUT", line);
                                 }
                             }
+                            if let Ok(mut inner) = inner_ref.lock() {
+                                if inner.status == ManualServiceStatus::Starting {
+                                    inner.status = ManualServiceStatus::Running;
+                                }
+                            }
                         }
                     }
                     CommandEvent::Stderr(bytes) => {
@@ -142,6 +148,11 @@ impl ManualServiceManager {
                                 for line in text.lines() {
                                     buf.push(line.to_string());
                                     append_debug_line(&debug_log, "STDERR", line);
+                                }
+                            }
+                            if let Ok(mut inner) = inner_ref.lock() {
+                                if inner.status == ManualServiceStatus::Starting {
+                                    inner.status = ManualServiceStatus::Running;
                                 }
                             }
                         }
@@ -193,14 +204,11 @@ impl ManualServiceManager {
         if let Some(child) = inner.child.take() {
             inner.status = ManualServiceStatus::Stopping;
             child.kill().map_err(|e| format!("manual kill: {e}"))?;
-            if let Some(path) = inner.env_path.take() {
-                config_io::cleanup_env_file(&path);
-            }
+        } else if let Some(path) = inner.env_path.take() {
+            config_io::cleanup_env_file(&path);
             inner.base_url = None;
             inner.auth_token = None;
             inner.status = ManualServiceStatus::Stopped;
-        } else if let Some(path) = inner.env_path.take() {
-            config_io::cleanup_env_file(&path);
         }
         Ok(())
     }

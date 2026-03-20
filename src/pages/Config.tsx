@@ -31,6 +31,7 @@ type StrategyKey = (typeof STRATEGIES)[number]["key"];
 
 const DEFAULT_CONFIG: BotConfig = {
   private_key: "",
+  eoa_wallet: "",
   proxy_wallet: "",
   sig_type: 1,
   symbols: ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"],
@@ -65,7 +66,36 @@ const DEFAULT_CONFIG: BotConfig = {
   relayer_api_key: "",
   relayer_api_key_address: "",
   remote_signer_token: "",
+  remote_discovery_token: "",
+  remote_premarket_alpha_token: "",
+  remote_endgame_alpha_token: "",
+  remote_mm_rewards_alpha_token: "",
+  remote_evsnipe_discovery_token: "",
+  admin_api_token: "",
 };
+
+function mergeConfig(saved: Partial<BotConfig>): BotConfig {
+  return {
+    ...DEFAULT_CONFIG,
+    ...saved,
+    strategies: {
+      ...DEFAULT_CONFIG.strategies,
+      ...saved.strategies,
+    },
+    sizing: {
+      ...DEFAULT_CONFIG.sizing,
+      ...saved.sizing,
+    },
+    caps: {
+      ...DEFAULT_CONFIG.caps,
+      ...saved.caps,
+    },
+    mm_tuning: {
+      ...DEFAULT_CONFIG.mm_tuning,
+      ...saved.mm_tuning,
+    },
+  };
+}
 
 function Toggle({
   enabled,
@@ -146,6 +176,11 @@ export function Config() {
   const [importPw, setImportPw] = useState("");
   const [importData, setImportData] = useState("");
 
+  const loadProfileConfig = async (id: string) => {
+    const saved = await getSavedConfig(id);
+    setConfig(mergeConfig(saved));
+  };
+
   useEffect(() => {
     (async () => {
       try {
@@ -159,30 +194,16 @@ export function Config() {
         }
         if (id) {
           setProfileId(id);
-          const saved = await getSavedConfig(id);
-          setConfig({
-            ...DEFAULT_CONFIG,
-            ...saved,
-            strategies: {
-              ...DEFAULT_CONFIG.strategies,
-              ...saved.strategies,
-            },
-            sizing: {
-              ...DEFAULT_CONFIG.sizing,
-              ...saved.sizing,
-            },
-            caps: {
-              ...DEFAULT_CONFIG.caps,
-              ...saved.caps,
-            },
-            mm_tuning: {
-              ...DEFAULT_CONFIG.mm_tuning,
-              ...saved.mm_tuning,
-            },
-          });
+          await loadProfileConfig(id);
         }
-      } catch {
-        // keep defaults when no profile exists yet
+      } catch (err) {
+        const message =
+          typeof err === "string"
+            ? err
+            : err instanceof Error
+            ? err.message
+            : "failed to load profile config";
+        setSaveMsg(`Load warning: ${message}`);
       }
     })();
   }, []);
@@ -203,6 +224,7 @@ export function Config() {
     }
     const created = await createProfile(
       "Default",
+      config.eoa_wallet.trim(),
       config.proxy_wallet.trim(),
       config.sig_type
     );
@@ -267,8 +289,11 @@ export function Config() {
   const handleImport = async () => {
     if (!importData || !importPw) return;
     try {
-      await importConfig(importData, importPw);
-      setSaveMsg("Config imported successfully");
+      const importedProfileId = await importConfig(importData, importPw);
+      await setActiveProfile(importedProfileId);
+      setProfileId(importedProfileId);
+      await loadProfileConfig(importedProfileId);
+      setSaveMsg("Config imported and activated");
       setTimeout(() => setSaveMsg(""), 3000);
     } catch (err) {
       setSaveMsg(`Import error: ${err}`);
@@ -279,7 +304,7 @@ export function Config() {
     setOnboardLoading(true);
     setSaveMsg("");
     try {
-      const wallet = onboardWallet.trim();
+      const wallet = onboardWallet.trim() || config.eoa_wallet.trim();
       if (!config.private_key.trim()) {
         throw new Error("Private key is required for onboarding");
       }
@@ -295,12 +320,39 @@ export function Config() {
       );
       setOnboardResult(result);
 
+      const updateFields: Partial<BotConfig> = {};
+      if (wallet) updateFields.eoa_wallet = wallet;
+
       const signerToken =
         (result.remote_signer_token as string | undefined) ||
         (result.signer_token as string | undefined) ||
         "";
       if (signerToken) {
-        update("remote_signer_token", signerToken);
+        updateFields.remote_signer_token = signerToken;
+      }
+      if (typeof result.discovery_token === "string" && result.discovery_token.trim()) {
+        updateFields.remote_discovery_token = result.discovery_token.trim();
+      }
+      if (typeof result.premarket_alpha_token === "string" && result.premarket_alpha_token.trim()) {
+        updateFields.remote_premarket_alpha_token = result.premarket_alpha_token.trim();
+      }
+      if (typeof result.endgame_alpha_token === "string" && result.endgame_alpha_token.trim()) {
+        updateFields.remote_endgame_alpha_token = result.endgame_alpha_token.trim();
+      }
+      if (typeof result.mm_rewards_alpha_token === "string" && result.mm_rewards_alpha_token.trim()) {
+        updateFields.remote_mm_rewards_alpha_token = result.mm_rewards_alpha_token.trim();
+      }
+      if (
+        typeof result.evsnipe_discovery_token === "string" &&
+        result.evsnipe_discovery_token.trim()
+      ) {
+        updateFields.remote_evsnipe_discovery_token = result.evsnipe_discovery_token.trim();
+      }
+      if (typeof result.admin_api_token === "string" && result.admin_api_token.trim()) {
+        updateFields.admin_api_token = result.admin_api_token.trim();
+      }
+      if (Object.keys(updateFields).length > 0) {
+        setConfig((prev) => ({ ...prev, ...updateFields }));
       }
 
       setSaveMsg("Onboarding finished. Review values and click Save Configuration.");
@@ -383,6 +435,12 @@ export function Config() {
               </div>
             </div>
             <InputField
+              label="EOA Wallet Address"
+              value={config.eoa_wallet}
+              onChange={(v) => update("eoa_wallet", v)}
+              placeholder="0x..."
+            />
+            <InputField
               label="Proxy Wallet Address"
               value={config.proxy_wallet}
               onChange={(v) => update("proxy_wallet", v)}
@@ -411,7 +469,7 @@ export function Config() {
               label="EOA Wallet Address (optional)"
               value={onboardWallet}
               onChange={setOnboardWallet}
-              placeholder="Uses Proxy Wallet Address when empty"
+              placeholder="Uses EOA Wallet Address when empty"
             />
             <button
               onClick={handleRunOnboarding}
@@ -712,6 +770,36 @@ export function Config() {
                   label="Remote Signer Token"
                   value={config.remote_signer_token}
                   onChange={(v) => update("remote_signer_token", v)}
+                />
+                <InputField
+                  label="Remote Discovery Token"
+                  value={config.remote_discovery_token}
+                  onChange={(v) => update("remote_discovery_token", v)}
+                />
+                <InputField
+                  label="Premarket Alpha Token"
+                  value={config.remote_premarket_alpha_token}
+                  onChange={(v) => update("remote_premarket_alpha_token", v)}
+                />
+                <InputField
+                  label="Endgame Alpha Token"
+                  value={config.remote_endgame_alpha_token}
+                  onChange={(v) => update("remote_endgame_alpha_token", v)}
+                />
+                <InputField
+                  label="MM Rewards Alpha Token"
+                  value={config.remote_mm_rewards_alpha_token}
+                  onChange={(v) => update("remote_mm_rewards_alpha_token", v)}
+                />
+                <InputField
+                  label="EVSnipe Discovery Token"
+                  value={config.remote_evsnipe_discovery_token}
+                  onChange={(v) => update("remote_evsnipe_discovery_token", v)}
+                />
+                <InputField
+                  label="Admin API Token"
+                  value={config.admin_api_token}
+                  onChange={(v) => update("admin_api_token", v)}
                 />
               </div>
             )}

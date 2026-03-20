@@ -51,7 +51,7 @@ export function LegalModal({ onAccept }: { onAccept: () => void }) {
         <button
           onClick={() =>
             open(
-              "https://github.com/Degenapetrader/EVPOLY/blob/main/poly-desktop/TERMS_OF_SERVICE.md"
+              "https://github.com/Degenapetrader/EVPOLY/blob/desktop/TERMS_OF_SERVICE.md"
             )
           }
           className="text-sm text-[var(--accent)] hover:underline mb-4 block"

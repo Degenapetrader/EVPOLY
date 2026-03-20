@@ -19,6 +19,7 @@ export function ProfileSwitcher({
 }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [open, setOpen] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -43,8 +44,15 @@ export function ProfileSwitcher({
     try {
       await setActiveProfile(id);
       onSwitch(id);
-    } catch {
-      // handle error silently
+      setSwitchError(null);
+    } catch (err) {
+      setSwitchError(
+        typeof err === "string"
+          ? err
+          : err instanceof Error
+          ? err.message
+          : "failed to switch profile"
+      );
     }
     setOpen(false);
   };
@@ -107,6 +115,9 @@ export function ProfileSwitcher({
           )}
         </div>
       )}
+      {switchError ? (
+        <div className="mt-1 text-xs text-[var(--red)]">{switchError}</div>
+      ) : null}
     </div>
   );
 }

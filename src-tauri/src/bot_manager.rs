@@ -60,8 +60,8 @@ impl BotManager {
         simulation: bool,
     ) -> Result<(), String> {
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
-        if inner.status == BotStatus::Running {
-            return Err("bot already running".into());
+        if inner.status != BotStatus::Stopped && !matches!(inner.status, BotStatus::Error(_)) {
+            return Err(format!("bot is busy ({:?})", inner.status));
         }
         inner.status = BotStatus::Starting;
 
@@ -89,7 +89,6 @@ impl BotManager {
 
         inner.child = Some(child);
         inner.env_path = Some(env_path.clone());
-        inner.status = BotStatus::Running;
         drop(inner);
 
         let log_buf = self.log_buffer.clone();
@@ -107,6 +106,11 @@ impl BotManager {
                                     append_debug_line(&debug_log, "STDOUT", line);
                                 }
                             }
+                            if let Ok(mut inner) = inner_ref.lock() {
+                                if inner.status == BotStatus::Starting {
+                                    inner.status = BotStatus::Running;
+                                }
+                            }
                         }
                     }
                     CommandEvent::Stderr(bytes) => {
@@ -115,6 +119,11 @@ impl BotManager {
                                 for line in text.lines() {
                                     buf.push(line.to_string());
                                     append_debug_line(&debug_log, "STDERR", line);
+                                }
+                            }
+                            if let Ok(mut inner) = inner_ref.lock() {
+                                if inner.status == BotStatus::Starting {
+                                    inner.status = BotStatus::Running;
                                 }
                             }
                         }
@@ -165,12 +174,9 @@ impl BotManager {
         if let Some(child) = inner.child.take() {
             inner.status = BotStatus::Stopping;
             child.kill().map_err(|e| format!("kill: {e}"))?;
-            if let Some(path) = inner.env_path.take() {
-                config_io::cleanup_env_file(&path);
-            }
-            inner.status = BotStatus::Stopped;
         } else if let Some(path) = inner.env_path.take() {
             config_io::cleanup_env_file(&path);
+            inner.status = BotStatus::Stopped;
         }
         drop(inner);
         self.save_last_state(false, false);

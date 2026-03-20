@@ -4,14 +4,25 @@ import { getWalletBalance } from "../lib/tauri-commands";
 export function useWalletBalance() {
   const [balance, setBalance] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [isStale, setIsStale] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetch = useCallback(async () => {
     try {
       const b = await getWalletBalance();
       setBalance(b);
-    } catch {
-      // keep last known balance
+      setIsStale(false);
+      setError(null);
+    } catch (err) {
+      setIsStale(true);
+      setError(
+        typeof err === "string"
+          ? err
+          : err instanceof Error
+          ? err.message
+          : "wallet balance refresh failed"
+      );
     } finally {
       setIsLoading(false);
     }
@@ -25,5 +36,5 @@ export function useWalletBalance() {
     };
   }, [fetch]);
 
-  return { balance, isLoading };
+  return { balance, isLoading, isStale, error, refresh: fetch };
 }

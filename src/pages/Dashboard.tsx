@@ -28,6 +28,7 @@ import {
   restartBot,
   getLogLines,
   getActiveProfileId,
+  getSavedConfig,
   openLogsFolder,
   type LogLine,
 } from "../lib/tauri-commands";
@@ -71,8 +72,21 @@ function StatCard({
 export function Dashboard() {
   const navigate = useNavigate();
   const { status, isRunning, errorMessage } = useBotStatus();
-  const { stats, trades, positions } = useTradeData(isRunning);
-  const { balance } = useWalletBalance();
+  const {
+    stats,
+    trades,
+    positions,
+    isStale: tradeStale,
+    error: tradeError,
+    refresh: refreshTradeData,
+  } =
+    useTradeData(isRunning);
+  const {
+    balance,
+    isStale: balanceStale,
+    error: balanceError,
+    refresh: refreshBalance,
+  } = useWalletBalance();
 
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [logs, setLogs] = useState<LogLine[]>([]);
@@ -85,11 +99,24 @@ export function Dashboard() {
   const logRef = useRef<HTMLDivElement>(null);
   const stickLogToBottomRef = useRef(true);
 
+  const loadSimulationForProfile = useCallback(async (profileId: string | null) => {
+    if (!profileId) return;
+    try {
+      const saved = await getSavedConfig(profileId);
+      setSimulation(saved.simulation);
+    } catch {
+      // keep existing simulation mode
+    }
+  }, []);
+
   useEffect(() => {
     getActiveProfileId()
-      .then(setActiveProfileId)
+      .then(async (id) => {
+        setActiveProfileId(id);
+        await loadSimulationForProfile(id);
+      })
       .catch(() => {});
-  }, []);
+  }, [loadSimulationForProfile]);
 
   useEffect(() => {
     (async () => {
@@ -210,7 +237,14 @@ export function Dashboard() {
     }
   };
 
-  const displayError = errorMessage?.trim() || actionError;
+  const displayError =
+    errorMessage?.trim() || actionError || tradeError || balanceError;
+
+  const handleProfileSwitch = async (id: string) => {
+    setActiveProfileId(id);
+    await loadSimulationForProfile(id);
+    await Promise.all([refreshTradeData(), refreshBalance()]);
+  };
 
   const pnlValue = stats?.total_pnl ?? 0;
   const pnlColor =
@@ -231,7 +265,9 @@ export function Dashboard() {
         <div className="flex items-center gap-3">
           <ProfileSwitcher
             activeProfileId={activeProfileId}
-            onSwitch={setActiveProfileId}
+            onSwitch={(id) => {
+              void handleProfileSwitch(id);
+            }}
           />
           <button
             onClick={() => navigate("/manual")}
@@ -325,9 +361,14 @@ export function Dashboard() {
             {displayError}
           </div>
         ) : null}
+        {!displayError && (tradeStale || balanceStale) ? (
+          <div className="text-xs text-[var(--yellow)] bg-[var(--yellow)]/10 border border-[var(--yellow)]/40 rounded-lg px-3 py-2">
+            Data is stale. Last known values are shown until backend refresh recovers.
+          </div>
+        ) : null}
 
         {/* Stats Row */}
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
           <StatCard
             label="Total PnL"
             value={`$${pnlValue.toFixed(2)}`}
@@ -395,7 +436,7 @@ export function Dashboard() {
         </div>
 
         {/* Tables */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
           {/* Open Positions */}
           <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-[var(--border)]">
@@ -412,14 +453,15 @@ export function Dashboard() {
                     <th className="px-4 py-2 font-medium text-right">Size</th>
                     <th className="px-4 py-2 font-medium text-right">Entry</th>
                     <th className="px-4 py-2 font-medium text-right">Current</th>
-                    <th className="px-4 py-2 font-medium text-right">PnL</th>
+                    <th className="px-4 py-2 font-medium text-right">Realized</th>
+                    <th className="px-4 py-2 font-medium text-right">Unrealized</th>
                   </tr>
                 </thead>
                 <tbody>
                   {positions.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={6}
+                        colSpan={7}
                         className="px-4 py-6 text-center text-[var(--text-secondary)]"
                       >
                         No open positions
@@ -452,16 +494,31 @@ export function Dashboard() {
                           ${pos.entry_price.toFixed(2)}
                         </td>
                         <td className="px-4 py-2 text-right text-[var(--text-secondary)]">
-                          ${pos.current_price.toFixed(2)}
+                          {typeof pos.current_price === "number"
+                            ? `$${pos.current_price.toFixed(2)}`
+                            : "N/A"}
                         </td>
                         <td
                           className="px-4 py-2 text-right font-medium"
                           style={{
                             color:
-                              pos.pnl >= 0 ? "var(--green)" : "var(--red)",
+                              pos.realized_pnl >= 0 ? "var(--green)" : "var(--red)",
                           }}
                         >
-                          ${pos.pnl.toFixed(2)}
+                          ${pos.realized_pnl.toFixed(2)}
+                        </td>
+                        <td
+                          className="px-4 py-2 text-right font-medium"
+                          style={{
+                            color:
+                              (pos.unrealized_pnl ?? 0) >= 0
+                                ? "var(--green)"
+                                : "var(--red)",
+                          }}
+                        >
+                          {typeof pos.unrealized_pnl === "number"
+                            ? `$${pos.unrealized_pnl.toFixed(2)}`
+                            : "N/A"}
                         </td>
                       </tr>
                     ))

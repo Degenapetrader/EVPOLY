@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { getBotStatus } from "../lib/tauri-commands";
 
 export function useBotStatus() {
-  const [status, setStatus] = useState<string>("stopped");
+  const [status, setStatus] = useState<string>("unknown");
   const [isLoading, setIsLoading] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -10,8 +10,14 @@ export function useBotStatus() {
     try {
       const s = await getBotStatus();
       setStatus(s);
-    } catch {
-      setStatus("stopped");
+    } catch (err) {
+      const message =
+        typeof err === "string"
+          ? err
+          : err instanceof Error
+          ? err.message
+          : "status poll failed";
+      setStatus(`error:${message}`);
     } finally {
       setIsLoading(false);
     }
@@ -30,6 +36,7 @@ export function useBotStatus() {
     isRunning: status === "running",
     isStarting: status === "starting",
     isStopping: status === "stopping",
+    isUnknown: status === "unknown",
     isError: status.startsWith("error:"),
     errorMessage: status.startsWith("error:")
       ? status.slice("error:".length)

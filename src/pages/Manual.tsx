@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import {
   getManualLogLines,
   getManualServiceStatus,
+  getActiveProfileId,
+  getSavedConfig,
   manualApiRequest,
   startManualService,
   stopManualService,
@@ -102,6 +104,19 @@ export function Manual() {
       setError(String(err));
     }
   }, [serviceStatus]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const profileId = await getActiveProfileId();
+        if (!profileId) return;
+        const saved = await getSavedConfig(profileId);
+        setSimulation(saved.simulation);
+      } catch {
+        // keep current simulation mode
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     refreshStatus();

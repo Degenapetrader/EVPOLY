@@ -28,15 +28,14 @@ body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
-  overflow: hidden;
-  user-select: none;
+  overflow: auto;
 }
 
 #root {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  overflow: hidden;
+  overflow: auto;
 }
 
 ::-webkit-scrollbar {

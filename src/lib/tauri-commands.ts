@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 export interface Profile {
   id: string;
   name: string;
+  eoa_wallet_address: string;
+  proxy_wallet_address: string;
   wallet_address: string;
   signature_type: number;
   created_at: string;
@@ -39,7 +41,9 @@ export interface Position {
   side: string;
   size: number;
   entry_price: number;
-  current_price: number;
+  current_price: number | null;
+  realized_pnl: number;
+  unrealized_pnl: number | null;
   pnl: number;
 }
 
@@ -57,6 +61,7 @@ export interface OnboardResult {
 
 export interface BotConfig {
   private_key: string;
+  eoa_wallet: string;
   proxy_wallet: string;
   sig_type: number;
   symbols: string[];
@@ -91,6 +96,12 @@ export interface BotConfig {
   relayer_api_key: string;
   relayer_api_key_address: string;
   remote_signer_token: string;
+  remote_discovery_token: string;
+  remote_premarket_alpha_token: string;
+  remote_endgame_alpha_token: string;
+  remote_mm_rewards_alpha_token: string;
+  remote_evsnipe_discovery_token: string;
+  admin_api_token: string;
 }
 
 // Auth
@@ -109,14 +120,14 @@ export const listProfiles = (): Promise<Profile[]> =>
 
 export const createProfile = (
   name: string,
-  wallet: string,
+  eoaWallet: string,
+  proxyWallet: string,
   sigType: number
 ): Promise<Profile> =>
   invoke("create_profile", {
     name,
-    walletAddress: wallet,
-    wallet_address: wallet,
-    signatureType: sigType,
+    eoa_wallet_address: eoaWallet,
+    proxy_wallet_address: proxyWallet,
     signature_type: sigType,
   });
 
@@ -184,23 +195,23 @@ export const saveConfig = (
   profileId: string,
   config: BotConfig
 ): Promise<void> =>
-  invoke("save_config", { profileId, profile_id: profileId, config });
+  invoke("save_config", { profile_id: profileId, config });
 
 export const getSavedConfig = (
   profileId: string
 ): Promise<BotConfig> =>
-  invoke("get_saved_config", { profileId, profile_id: profileId });
+  invoke("get_saved_config", { profile_id: profileId });
 
 export const exportConfig = (
   profileId: string,
   password: string
 ): Promise<string> =>
-  invoke("export_config", { profileId, profile_id: profileId, password });
+  invoke("export_config", { profile_id: profileId, password });
 
 export const importConfig = (
   data: string,
   password: string
-): Promise<void> =>
+): Promise<string> =>
   invoke("import_config", { data, password });
 
 // Data
@@ -225,11 +236,8 @@ export const runOnboarding = (
 ): Promise<OnboardResult> =>
   invoke("run_onboarding", {
     wallet,
-    privateKey,
     private_key: privateKey,
-    signatureType: sigType,
     signature_type: sigType,
-    proxyWallet,
     proxy_wallet: proxyWallet,
   });
 

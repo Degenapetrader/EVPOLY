@@ -130,7 +130,7 @@ pub fn generate_env_file(
     );
     env_map.insert(
         "POLY_PROXY_WALLET_ADDRESS".into(),
-        profile.wallet_address.clone(),
+        profile.primary_wallet_address(),
     );
 
     if let Some(obj) = profile.strategy_config.as_object() {
@@ -193,7 +193,9 @@ pub fn generate_config_json(profile: &Profile, data_dir: &Path) -> Result<PathBu
             "rpc_fallback_url": "https://polygon-rpc.com"
         },
         "trading": {
-            "wallet_address": profile.wallet_address,
+            "wallet_address": profile.primary_wallet_address(),
+            "eoa_wallet_address": profile.eoa_wallet_address,
+            "proxy_wallet_address": profile.proxy_wallet_address,
             "signature_type": profile.signature_type,
             "strategy_config": profile.strategy_config,
             "sizing_config": profile.sizing_config

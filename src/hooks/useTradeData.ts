@@ -13,6 +13,8 @@ export function useTradeData(isRunning: boolean) {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isStale, setIsStale] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -25,8 +27,17 @@ export function useTradeData(isRunning: boolean) {
       setStats(s);
       setTrades(t);
       setPositions(p);
-    } catch {
-      // keep existing data on error
+      setIsStale(false);
+      setError(null);
+    } catch (err) {
+      setIsStale(true);
+      setError(
+        typeof err === "string"
+          ? err
+          : err instanceof Error
+          ? err.message
+          : "trade data refresh failed"
+      );
     } finally {
       setIsLoading(false);
     }
@@ -46,5 +57,5 @@ export function useTradeData(isRunning: boolean) {
     };
   }, [isRunning, refresh]);
 
-  return { stats, trades, positions, isLoading, refresh };
+  return { stats, trades, positions, isLoading, isStale, error, refresh };
 }

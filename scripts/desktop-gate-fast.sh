@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+CARGO_BIN="${HOME}/.cargo/bin"
+if [[ -d "${CARGO_BIN}" && ":${PATH}:" != *":${CARGO_BIN}:"* ]]; then
+  export PATH="${CARGO_BIN}:${PATH}"
+fi
+
 INSTALL_DEPS="${INSTALL_DEPS:-0}"
 RUN_FRONTEND_BUILD="${RUN_FRONTEND_BUILD:-1}"
 RUN_CARGO_CHECK="${RUN_CARGO_CHECK:-1}"

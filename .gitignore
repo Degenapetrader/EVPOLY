@@ -11,6 +11,17 @@ node_modules
 dist
 dist-ssr
 *.local
+events.jsonl
+events.jsonl.*
+history/
+history.toml
+history.toml.*
+price_monitor.toml
+simulation.toml
+tracking.db
+tracking.db-*
+src-tauri/binaries/evpoly-bot-x86_64-pc-windows-msvc.exe
+src-tauri/binaries/evpoly-manual-bot-x86_64-pc-windows-msvc.exe
 
 # Editor directories and files
 .vscode/*

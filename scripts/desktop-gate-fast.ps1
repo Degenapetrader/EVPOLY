@@ -7,6 +7,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
+$cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+
+if ((Test-Path $cargoBin) -and -not (($env:Path -split ';') -contains $cargoBin)) {
+  $env:Path = "$cargoBin;$env:Path"
+}
 
 $shouldInstallDeps = $InstallDeps -or -not (Test-Path "node_modules")
 Write-Host ("[desktop-gate-fast] install_deps={0} frontend_build={1} cargo_check={2} smoke={3}" -f $shouldInstallDeps, $RunFrontendBuild, $RunCargoCheck, $RunSmoke)

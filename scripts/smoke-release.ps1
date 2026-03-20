@@ -13,7 +13,8 @@ if (-not (Test-Path $ManualBotBin)) {
   throw "manual bot binary not found: $ManualBotBin"
 }
 
-$workDir = Join-Path $env:RUNNER_TEMP ("evpoly-smoke-" + [Guid]::NewGuid().ToString("N"))
+$workRoot = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+$workDir = Join-Path $workRoot ("evpoly-smoke-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $workDir | Out-Null
 
 try {
@@ -52,7 +53,7 @@ try {
     if (Test-Path $stderrLog) { Remove-Item $stderrLog -Force }
     if (Test-Path $log) { Remove-Item $log -Force }
 
-    $proc = Start-Process -FilePath $BotBin -ArgumentList @("--config", $cfg, $Flag) -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru -NoNewWindow
+    $proc = Start-Process -FilePath $BotBin -ArgumentList @("--config", ('"{0}"' -f $cfg), $Flag) -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru -NoNewWindow
     $exited = $proc.WaitForExit($TimeoutSeconds * 1000)
     if (-not $exited) {
       Stop-Process -Id $proc.Id -Force
@@ -92,7 +93,7 @@ try {
     if (Test-Path $manualLog) { Remove-Item $manualLog -Force }
 
     $env:EVPOLY_MANUAL_BOT_TOKEN = $manualToken
-    $manualProc = Start-Process -FilePath $ManualBotBin -ArgumentList @("--config", $ConfigPath, "--bind", "127.0.0.1", "--port", $manualPort.ToString(), "--simulation") -RedirectStandardOutput $manualOut -RedirectStandardError $manualErr -PassThru -NoNewWindow
+    $manualProc = Start-Process -FilePath $ManualBotBin -ArgumentList @("--config", ('"{0}"' -f $ConfigPath), "--bind", "127.0.0.1", "--port", $manualPort.ToString(), "--simulation") -RedirectStandardOutput $manualOut -RedirectStandardError $manualErr -PassThru -NoNewWindow
 
     $ready = $false
     try {

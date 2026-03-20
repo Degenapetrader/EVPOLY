@@ -6,12 +6,15 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "desktop:prepare": "node scripts/prepare-desktop-sidecars.mjs",
+    "desktop:build": "npm run desktop:prepare && npm run build",
+    "desktop:dev": "npm run desktop:prepare && npm run dev",
     "test": "vitest run",
     "lint": "eslint .",
     "preview": "vite preview",
-    "tauri": "tauri",
-    "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri": "node scripts/run-tauri.mjs",
+    "tauri:dev": "node scripts/run-tauri.mjs dev",
+    "tauri:build": "node scripts/run-tauri.mjs build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",

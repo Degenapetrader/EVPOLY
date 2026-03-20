@@ -53,6 +53,23 @@ git push origin UI-v1.0.0
 
 The GitHub workflow builds and publishes a **Windows NSIS installer (.exe)** on tag push.
 
+### Fast Release Lane (Recommended for Hotfixes)
+
+Before push/tag, run the fast gate locally:
+
+```bash
+INSTALL_DEPS=1 RUN_FRONTEND_BUILD=1 RUN_CARGO_CHECK=1 RUN_SMOKE=1 bash scripts/desktop-gate-fast.sh
+```
+
+You can also use hotfix tags:
+
+```bash
+git tag UI-hotfix-v1.0.13
+git push origin UI-hotfix-v1.0.13
+```
+
+Both `UI-v*` and `UI-hotfix-v*` trigger the release workflow. The fast lane now builds EVPOLY sidecars once (in the installer job), instead of rebuilding in every preflight job.
+
 ### One-Click Windows Installer
 
 - The installer target is NSIS (`.exe`) and includes WebView2 via `offlineInstaller` mode.

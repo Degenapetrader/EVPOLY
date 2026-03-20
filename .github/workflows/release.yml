@@ -4,12 +4,17 @@ on:
   push:
     tags:
       - "UI-v*"
+      - "UI-hotfix-v*"
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
-  preflight-linux:
+  preflight-linux-fast:
     runs-on: ubuntu-latest
 
     steps:
@@ -25,30 +30,12 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build EVPOLY sidecar (Linux)
-        run: |
-          git clone --depth 1 --branch main https://github.com/Degenapetrader/EVPOLY.git "$RUNNER_TEMP/evpoly-core"
-          cargo build --release --manifest-path "$RUNNER_TEMP/evpoly-core/Cargo.toml" --bin polymarket-arbitrage-bot
-          cargo build --release --manifest-path "$RUNNER_TEMP/evpoly-core/Cargo.toml" --bin manual_bot
-          mkdir -p src-tauri/binaries
-          cp "$RUNNER_TEMP/evpoly-core/target/release/polymarket-arbitrage-bot" "src-tauri/binaries/evpoly-bot-x86_64-unknown-linux-gnu"
-          cp "$RUNNER_TEMP/evpoly-core/target/release/manual_bot" "src-tauri/binaries/evpoly-manual-bot-x86_64-unknown-linux-gnu"
-          chmod +x "src-tauri/binaries/evpoly-bot-x86_64-unknown-linux-gnu"
-          chmod +x "src-tauri/binaries/evpoly-manual-bot-x86_64-unknown-linux-gnu"
+      - name: Fast gate checks
+        run: INSTALL_DEPS=1 RUN_FRONTEND_BUILD=1 RUN_CARGO_CHECK=0 RUN_SMOKE=0 bash scripts/desktop-gate-fast.sh
 
-      - name: Install desktop dependencies
-        run: npm ci
-
-      - name: Frontend build
-        run: npm run build
-
-      - name: Frontend tests
-        run: npm test
-
-      - name: Runtime smoke checks
-        run: bash scripts/smoke-release.sh
-
-  preflight-windows:
+  windows-installer:
+    needs:
+      - preflight-linux-fast
     runs-on: windows-latest
 
     steps:
@@ -66,61 +53,18 @@ jobs:
 
       - name: Build EVPOLY sidecar (Windows)
         shell: pwsh
-        run: |
-          git clone --depth 1 --branch main https://github.com/Degenapetrader/EVPOLY.git "$env:RUNNER_TEMP\evpoly-core"
-          cargo build --release --manifest-path "$env:RUNNER_TEMP\evpoly-core\Cargo.toml" --bin polymarket-arbitrage-bot
-          cargo build --release --manifest-path "$env:RUNNER_TEMP\evpoly-core\Cargo.toml" --bin manual_bot
-          New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
-          Copy-Item "$env:RUNNER_TEMP\evpoly-core\target\release\polymarket-arbitrage-bot.exe" "src-tauri\binaries\evpoly-bot-x86_64-pc-windows-msvc.exe" -Force
-          Copy-Item "$env:RUNNER_TEMP\evpoly-core\target\release\manual_bot.exe" "src-tauri\binaries\evpoly-manual-bot-x86_64-pc-windows-msvc.exe" -Force
+        run: ./scripts/build-sidecar-windows.ps1
 
       - name: Install desktop dependencies
         run: npm ci
 
-      - name: Frontend build
-        run: npm run build
-
-      - name: Frontend tests
-        run: npm test
-
-      - name: Backend check
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+      - name: Command contract checks
+        shell: pwsh
+        run: ./scripts/desktop-gate-fast.ps1 -RunSmoke:$false -InstallDeps:$false -RunFrontendBuild:$false -RunCargoCheck:$false
 
       - name: Runtime smoke checks
         shell: pwsh
         run: ./scripts/smoke-release.ps1
-
-  windows-installer:
-    needs:
-      - preflight-linux
-      - preflight-windows
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout desktop repo
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build EVPOLY sidecar (Windows)
-        shell: pwsh
-        run: |
-          git clone --depth 1 --branch main https://github.com/Degenapetrader/EVPOLY.git "$env:RUNNER_TEMP\evpoly-core"
-          cargo build --release --manifest-path "$env:RUNNER_TEMP\evpoly-core\Cargo.toml" --bin polymarket-arbitrage-bot
-          cargo build --release --manifest-path "$env:RUNNER_TEMP\evpoly-core\Cargo.toml" --bin manual_bot
-          New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
-          Copy-Item "$env:RUNNER_TEMP\evpoly-core\target\release\polymarket-arbitrage-bot.exe" "src-tauri\binaries\evpoly-bot-x86_64-pc-windows-msvc.exe" -Force
-          Copy-Item "$env:RUNNER_TEMP\evpoly-core\target\release\manual_bot.exe" "src-tauri\binaries\evpoly-manual-bot-x86_64-pc-windows-msvc.exe" -Force
-
-      - name: Install desktop dependencies
-        run: npm ci
 
       - name: Build and publish NSIS release
         uses: tauri-apps/tauri-action@v0

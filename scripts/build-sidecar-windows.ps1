@@ -11,6 +11,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $lockPath = Join-Path $repoRoot "src-tauri\sidecar-core.lock"
 $binariesDir = Join-Path $repoRoot "src-tauri\binaries"
 $targetDir = Join-Path $repoRoot "src-tauri\target\core-sidecars"
+$coreContractDir = Join-Path $repoRoot "src-tauri\core-contract"
 $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
 
 if ((Test-Path $cargoBin) -and -not (($env:Path -split ';') -contains $cargoBin)) {
@@ -110,10 +111,12 @@ try {
 
   New-Item -ItemType Directory -Force -Path $binariesDir | Out-Null
   New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+  New-Item -ItemType Directory -Force -Path $coreContractDir | Out-Null
 
   $releaseDir = Join-Path (Join-Path $targetDir $targetTriple) "release"
   Copy-Item (Join-Path $releaseDir "polymarket-arbitrage-bot.exe") $botOutput -Force
   Copy-Item (Join-Path $releaseDir "manual_bot.exe") $manualOutput -Force
+  Copy-Item (Join-Path $workDir ".env.example") (Join-Path $coreContractDir ".env.example") -Force
 
   @(
     "CORE_REF=$CoreRef",

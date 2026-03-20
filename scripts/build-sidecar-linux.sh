@@ -43,6 +43,7 @@ fi
 
 BINARIES_DIR="${REPO_ROOT}/src-tauri/binaries"
 TARGET_DIR="${REPO_ROOT}/src-tauri/target/core-sidecars"
+CORE_CONTRACT_DIR="${REPO_ROOT}/src-tauri/core-contract"
 STAMP_PATH="${TARGET_DIR}/sidecar-build-stamp-${TARGET_TRIPLE}.lock"
 BOT_OUTPUT="${BINARIES_DIR}/evpoly-bot-${TARGET_TRIPLE}"
 MANUAL_OUTPUT="${BINARIES_DIR}/evpoly-manual-bot-${TARGET_TRIPLE}"
@@ -86,9 +87,10 @@ fi
 echo "[build-sidecar-linux] building sidecar binaries ref=${CORE_REF} target=${TARGET_TRIPLE}"
 cargo build --release --manifest-path "${WORK_DIR}/Cargo.toml" --target-dir "${TARGET_DIR}" --target "${TARGET_TRIPLE}" --bin polymarket-arbitrage-bot --bin manual_bot
 
-mkdir -p "${BINARIES_DIR}" "${TARGET_DIR}"
+mkdir -p "${BINARIES_DIR}" "${TARGET_DIR}" "${CORE_CONTRACT_DIR}"
 cp "${TARGET_DIR}/${TARGET_TRIPLE}/release/polymarket-arbitrage-bot" "${BOT_OUTPUT}"
 cp "${TARGET_DIR}/${TARGET_TRIPLE}/release/manual_bot" "${MANUAL_OUTPUT}"
+cp "${WORK_DIR}/.env.example" "${CORE_CONTRACT_DIR}/.env.example"
 chmod +x "${BOT_OUTPUT}" "${MANUAL_OUTPUT}"
 
 cat > "${STAMP_PATH}" <<EOF

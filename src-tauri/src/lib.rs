@@ -397,16 +397,32 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         .as_object()
         .cloned()
         .unwrap_or_else(Map::new);
+    let default_eth_enabled = config_io::env_template_default_bool("POLY_ENABLE_ETH_TRADING", true);
+    let default_solana_enabled =
+        config_io::env_template_default_bool("POLY_ENABLE_SOLANA_TRADING", true);
+    let default_xrp_enabled = config_io::env_template_default_bool("POLY_ENABLE_XRP_TRADING", true);
 
     let mut symbols = vec!["BTC".to_string()];
-    if bool_from_object(&strategy, "POLY_ENABLE_ETH_TRADING", true) {
+    if bool_from_object(&strategy, "POLY_ENABLE_ETH_TRADING", default_eth_enabled) {
         symbols.push("ETH".to_string());
     }
-    if bool_from_object(&strategy, "POLY_ENABLE_SOLANA_TRADING", true) {
+    if bool_from_object(
+        &strategy,
+        "POLY_ENABLE_SOLANA_TRADING",
+        default_solana_enabled,
+    ) {
         symbols.push("SOL".to_string());
     }
-    if bool_from_object(&strategy, "POLY_ENABLE_XRP_TRADING", true) {
+    if bool_from_object(&strategy, "POLY_ENABLE_XRP_TRADING", default_xrp_enabled) {
         symbols.push("XRP".to_string());
+    }
+    if !strategy.contains_key("EVPOLY_ENDGAME_SYMBOLS")
+        && !strategy.contains_key("EVPOLY_EVCURVE_SYMBOLS")
+        && !strategy.contains_key("EVPOLY_EVSNIPE_SYMBOLS")
+    {
+        for sym in DESKTOP_SYMBOL_ORDER.iter().skip(4) {
+            symbols.push((*sym).to_string());
+        }
     }
     if let Some(extra) = strategy
         .get("EVPOLY_ENDGAME_SYMBOLS")
@@ -430,13 +446,13 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "sig_type": profile.signature_type,
         "symbols": symbols,
         "strategies": {
-            "premarket": bool_from_object(&strategy, "EVPOLY_STRATEGY_PREMARKET_ENABLE", true),
-            "endgame": bool_from_object(&strategy, "EVPOLY_STRATEGY_ENDGAME_ENABLE", true),
-            "evcurve": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVCURVE_ENABLE", true),
-            "session_band": bool_from_object(&strategy, "EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true),
-            "evsnipe": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),
-            "mm_rewards": bool_from_object(&strategy, "EVPOLY_STRATEGY_MM_REWARDS_ENABLE", false),
-            "mm_sport": bool_from_object(&strategy, "EVPOLY_STRATEGY_MM_SPORT_ENABLE", false)
+            "premarket": bool_from_object(&strategy, "EVPOLY_STRATEGY_PREMARKET_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_PREMARKET_ENABLE", true)),
+            "endgame": bool_from_object(&strategy, "EVPOLY_STRATEGY_ENDGAME_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_ENDGAME_ENABLE", true)),
+            "evcurve": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVCURVE_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_EVCURVE_ENABLE", false)),
+            "session_band": bool_from_object(&strategy, "EVPOLY_STRATEGY_SESSIONBAND_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", false)),
+            "evsnipe": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVSNIPE_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true)),
+            "mm_rewards": bool_from_object(&strategy, "EVPOLY_STRATEGY_MM_REWARDS_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_MM_REWARDS_ENABLE", false)),
+            "mm_sport": bool_from_object(&strategy, "EVPOLY_STRATEGY_MM_SPORT_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false))
         },
         "sizing": {
             "premarket": f64_from_object(&sizing, "EVPOLY_PREMARKET_BASE_SIZE_USD", 10.0),
@@ -453,13 +469,16 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
             "evsnipe": f64_from_object(&sizing, "EVPOLY_ARB_STRAT_EVSNIPE_MAX_USD", 100000.0)
         },
         "mm_tuning": {
-            "rewards_min_share_multiple": f64_from_object(&strategy, "EVPOLY_MM_REWARD_MIN_TARGET_MULT", 2.0),
-            "sport_quote_size_multiplier": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2)
+            "rewards_min_share_multiple": f64_from_object(&strategy, "EVPOLY_MM_REWARD_MIN_TARGET_MULT", config_io::env_template_default_f64("EVPOLY_MM_REWARD_MIN_TARGET_MULT", 1.0)),
+            "sport_quote_size_multiplier": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2))
         },
         "simulation": bool_from_object(&sizing, "APP_SIMULATION", true),
         "relayer_api_key": secrets.get("RELAYER_API_KEY").cloned().unwrap_or_default(),
         "relayer_api_key_address": secrets.get("RELAYER_API_KEY_ADDRESS").cloned().unwrap_or_default(),
-        "remote_signer_token": secrets.get("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN").cloned().unwrap_or_default(),
+        "remote_signer_token": secrets.get("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN")
+            .cloned()
+            .or_else(|| secrets.get("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN").cloned())
+            .unwrap_or_default(),
         "remote_discovery_token": secrets.get("EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN").cloned().unwrap_or_default(),
         "remote_premarket_alpha_token": secrets.get("EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN").cloned().unwrap_or_default(),
         "remote_endgame_alpha_token": secrets.get("EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN").cloned().unwrap_or_default(),
@@ -1130,7 +1149,10 @@ async fn get_wallet_balance(app: AppHandle) -> Result<f64, String> {
         p.primary_wallet_address()
     };
     wallet_rpc::fetch_usdc_balance_with_fallback(
-        &["https://1rpc.io/matic", "https://polygon-rpc.com"],
+        &[
+            config_io::DEFAULT_POLYGON_RPC_URL,
+            config_io::DEFAULT_POLYGON_RPC_FALLBACK_URL,
+        ],
         &wallet,
     )
     .await
@@ -1398,6 +1420,10 @@ mod tests {
         let existing = HashMap::from([
             ("POLY_PRIVATE_KEY".to_string(), "old-private".to_string()),
             ("RELAYER_API_KEY".to_string(), "old-relayer".to_string()),
+            (
+                "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN".to_string(),
+                "old-signer".to_string(),
+            ),
             ("CUSTOM_KEEP".to_string(), "keep-me".to_string()),
         ]);
         let updates = HashMap::from([(
@@ -1410,5 +1436,6 @@ mod tests {
         assert_eq!(merged.get("RELAYER_API_KEY"), Some(&"new-relayer".to_string()));
         assert_eq!(merged.get("CUSTOM_KEEP"), Some(&"keep-me".to_string()));
         assert!(!merged.contains_key("POLY_PRIVATE_KEY"));
+        assert!(!merged.contains_key("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN"));
     }
 }

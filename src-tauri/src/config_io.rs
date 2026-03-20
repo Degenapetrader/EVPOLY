@@ -4,114 +4,62 @@ use crate::profile_manager::Profile;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon-bor-rpc.publicnode.com";
-const DEFAULT_POLYGON_RPC_FALLBACK_URL: &str = "https://polygon.drpc.org";
+pub(crate) const DEFAULT_POLYGON_RPC_URL: &str = "https://polygon-bor-rpc.publicnode.com";
+pub(crate) const DEFAULT_POLYGON_RPC_FALLBACK_URL: &str = "https://polygon.drpc.org";
 
-const DEFAULT_ENV_TEMPLATE: &str = r#"# EVPOLY runtime env template
+const CORE_ENV_TEMPLATE: &str = include_str!("../core-contract/.env.example");
 
-# Public API endpoints (safe defaults)
-POLY_GAMMA_API_URL=https://gamma-api.polymarket.com
-POLY_CLOB_API_URL=https://clob.polymarket.com
-POLY_POLYGON_RPC_HTTP_URL=https://polygon-bor-rpc.publicnode.com
-POLY_POLYGON_RPC_HTTP_FALLBACK_URL=https://polygon.drpc.org
+fn parse_env_template(template: &str) -> HashMap<String, String> {
+    let mut env_map = HashMap::new();
+    for line in template.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once('=') {
+            env_map.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    env_map
+}
 
-POLY_PRIVATE_KEY=
+fn core_env_defaults() -> &'static HashMap<String, String> {
+    static CORE_ENV_DEFAULTS: OnceLock<HashMap<String, String>> = OnceLock::new();
+    CORE_ENV_DEFAULTS.get_or_init(|| parse_env_template(CORE_ENV_TEMPLATE))
+}
 
-# Wallet mode
-# 1 = Proxy wallet (email signup): no gas fee paid by user (relayer/gasless)
-# 2 = Safe wallet (web3 wallet signup like MetaMask/Rabby): no gas fee paid by user (relayer/gasless)
-# 0 = EOA wallet: user pays gas fee directly
-POLY_SIGNATURE_TYPE=1
-POLY_PROXY_WALLET_ADDRESS=
+fn parse_env_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "y" | "on" => Some(true),
+        "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
 
-# Remote builder signer (required on poly-remote)
-EVPOLY_ORDER_SIGNER_PRIMARY_URL=https://signer.evplus.ai/sign/order
-EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN=
-EVPOLY_ORDER_SIGNER_FALLBACK_URL=
-EVPOLY_SUBMIT_SIGNER_URL=
-EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN=
-RELAYER_API_KEY=
-RELAYER_API_KEY_ADDRESS=
-EVPOLY_ADMIN_API_TOKEN=
+pub(crate) fn env_template_default_bool(key: &str, default: bool) -> bool {
+    core_env_defaults()
+        .get(key)
+        .and_then(|value| parse_env_bool(value))
+        .unwrap_or(default)
+}
 
-# Optional VPS-hosted market discovery
-EVPOLY_REMOTE_MARKET_DISCOVERY_URL=https://alpha.evplus.ai/v1/discovery/timeframe
-EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN=
+pub(crate) fn env_template_default_string(key: &str) -> Option<String> {
+    core_env_defaults()
+        .get(key)
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
 
-# VPS-hosted Premarket alpha gate
-EVPOLY_REMOTE_PREMARKET_ALPHA_URL=https://alpha.evplus.ai/v1/alpha/premarket/should-trade
-EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN=
-
-# VPS-hosted Endgame alpha policy
-EVPOLY_REMOTE_ENDGAME_ALPHA_URL=https://alpha.evplus.ai/v1/alpha/endgame/policy
-EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN=
-EVPOLY_ENDGAME_ALPHA_REQUIRED=true
-
-# VPS-hosted EVcurve alpha
-EVPOLY_REMOTE_EVCURVE_ALPHA_URL=https://alpha.evplus.ai/v1/alpha/evcurve
-EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN=
-
-# VPS-hosted SessionBand alpha
-EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL=https://alpha.evplus.ai/v1/alpha/sessionband
-EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN=
-
-# VPS-hosted MM rewards alpha
-EVPOLY_REMOTE_MM_REWARDS_SELECTION_ALPHA_URL=https://alpha.evplus.ai/v1/alpha/mm-rewards/selection
-EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN=
-
-# Optional VPS-hosted EVSnipe market-spec discovery
-EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL=https://alpha.evplus.ai/v1/discovery/evsnipe
-EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN=
-
-# Strategy toggles
-EVPOLY_STRATEGY_PREMARKET_ENABLE=true
-EVPOLY_STRATEGY_ENDGAME_ENABLE=true
-EVPOLY_STRATEGY_EVCURVE_ENABLE=true
-EVPOLY_STRATEGY_SESSIONBAND_ENABLE=true
-EVPOLY_STRATEGY_EVSNIPE_ENABLE=true
-EVPOLY_STRATEGY_MM_REWARDS_ENABLE=false
-EVPOLY_STRATEGY_MM_SPORT_ENABLE=false
-POLY_ENABLE_ETH_TRADING=true
-POLY_ENABLE_SOLANA_TRADING=true
-POLY_ENABLE_XRP_TRADING=true
-EVPOLY_ENDGAME_SYMBOLS=BTC,ETH,SOL,XRP,DOGE,BNB,HYPE
-EVPOLY_EVCURVE_SYMBOLS=BTC,ETH,SOL,XRP,DOGE,BNB,HYPE
-EVPOLY_EVSNIPE_SYMBOLS=BTC,ETH,SOL,XRP,DOGE,BNB,HYPE
-
-# Optional MM Sport strategy
-EVPOLY_MM_SPORT_EVENT_DRIVEN_ENABLE=true
-EVPOLY_MM_SPORT_EVENT_FALLBACK_POLL_MS=1000
-EVPOLY_MM_SPORT_WS_STALE_MS=2500
-EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY=300
-EVPOLY_MM_SPORT_QUOTE_SIZE_MULT=1.2
-EVPOLY_MM_SPORT_MAX_SHARE_RATIO=0.02
-EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD=100000
-EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC=900
-
-# Optional MM rewards tuning
-EVPOLY_MM_REWARD_MIN_TARGET_MULT=1
-
-# Unified strategy base sizing
-EVPOLY_PREMARKET_BASE_SIZE_USD=
-EVPOLY_PREMARKET_TP_ENABLE=true
-EVPOLY_ENDGAME_BASE_SIZE_USD=
-EVPOLY_EVCURVE_BASE_SIZE_USD=
-EVPOLY_SESSIONBAND_BASE_SIZE_USD=
-EVPOLY_EVSNIPE_SIZE_USD=
-
-# Retention
-EVPOLY_EVENTS_ROTATE_KEEP=3
-EVPOLY_HISTORY_ROTATE_KEEP=3
-EVPOLY_DB_BACKUP_RETENTION_DAYS=3
-EVPOLY_HISTORY_DIR_RETENTION_DAYS=3
-EVPOLY_RETENTION_CRON_EXPR=17 * * * *
-
-# Startup controls
-EVPOLY_STARTUP_PENDING_RECONCILE_ENABLE=true
-"#;
+pub(crate) fn env_template_default_f64(key: &str, default: f64) -> f64 {
+    core_env_defaults()
+        .get(key)
+        .and_then(|value| value.trim().parse::<f64>().ok())
+        .unwrap_or(default)
+}
 
 fn value_to_env_string(v: &Value) -> String {
     v.as_str()
@@ -140,7 +88,7 @@ pub fn generate_env_file(
 ) -> Result<PathBuf> {
     let mut env_map: HashMap<String, String> = HashMap::new();
 
-    for line in DEFAULT_ENV_TEMPLATE.lines() {
+    for line in CORE_ENV_TEMPLATE.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
@@ -156,7 +104,7 @@ pub fn generate_env_file(
     );
     env_map.insert(
         "POLY_PROXY_WALLET_ADDRESS".into(),
-        profile.primary_wallet_address(),
+        profile.proxy_wallet_address.trim().to_string(),
     );
 
     if let Some(obj) = profile.strategy_config.as_object() {
@@ -232,7 +180,7 @@ pub fn generate_env_file(
     let mut output = String::new();
     let mut written_keys: HashSet<String> = HashSet::new();
 
-    for line in DEFAULT_ENV_TEMPLATE.lines() {
+    for line in CORE_ENV_TEMPLATE.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
             output.push_str(line);
@@ -274,11 +222,11 @@ fn build_config_json(profile: &Profile) -> serde_json::Value {
         "polymarket": {
             "gamma_api_url": "https://gamma-api.polymarket.com",
             "clob_api_url": "https://clob.polymarket.com",
-            "rpc_url": DEFAULT_POLYGON_RPC_URL,
-            "rpc_fallback_url": DEFAULT_POLYGON_RPC_FALLBACK_URL,
-            "wallet_address": profile.primary_wallet_address(),
-            "eoa_wallet_address": profile.eoa_wallet_address,
-            "proxy_wallet_address": profile.proxy_wallet_address,
+            "api_key": "",
+            "api_secret": "",
+            "api_passphrase": "",
+            "private_key": "",
+            "proxy_wallet_address": profile.proxy_wallet_address.clone(),
             "signature_type": profile.signature_type
         },
         "trading": {
@@ -304,13 +252,7 @@ fn build_config_json(profile: &Profile) -> serde_json::Value {
             "enable_xrp_trading": enable_xrp,
             "dual_limit_price": null,
             "dual_limit_shares": null,
-            "order_ttl_seconds": 1200,
-            "wallet_address": profile.primary_wallet_address(),
-            "eoa_wallet_address": profile.eoa_wallet_address,
-            "proxy_wallet_address": profile.proxy_wallet_address,
-            "signature_type": profile.signature_type,
-            "strategy_config": profile.strategy_config,
-            "sizing_config": profile.sizing_config
+            "order_ttl_seconds": 1200
         }
     })
 }
@@ -376,36 +318,20 @@ mod tests {
         assert_eq!(config["trading"]["enable_solana_trading"], true);
         assert_eq!(config["trading"]["enable_xrp_trading"], false);
         assert_eq!(
-            config["polymarket"]["rpc_url"],
-            "https://polygon-bor-rpc.publicnode.com"
-        );
-        assert_eq!(
-            config["polymarket"]["rpc_fallback_url"],
-            "https://polygon.drpc.org"
-        );
-        assert_eq!(
-            config["trading"]["proxy_wallet_address"],
+            config["polymarket"]["proxy_wallet_address"],
             "0x2222222222222222222222222222222222222222"
         );
         assert!(config["trading"]["dual_limit_price"].is_null());
+        assert!(config["trading"]["strategy_config"].is_null());
     }
 
     #[test]
     fn build_config_json_preserves_desktop_metadata() {
         let config = build_config_json(&sample_profile());
 
-        assert_eq!(
-            config["trading"]["strategy_config"]["POLY_ENABLE_SOLANA_TRADING"],
-            true
-        );
-        assert_eq!(
-            config["trading"]["sizing_config"]["EVPOLY_PREMARKET_BASE_SIZE_USD"],
-            10.0
-        );
-        assert_eq!(
-            config["polymarket"]["wallet_address"],
-            "0x2222222222222222222222222222222222222222"
-        );
+        assert_eq!(config["polymarket"]["api_key"], "");
+        assert_eq!(config["polymarket"]["signature_type"], 2);
+        assert_eq!(config["trading"]["order_ttl_seconds"], 1200);
     }
 
     #[test]
@@ -428,6 +354,7 @@ mod tests {
 
         assert!(content.contains("POLY_POLYGON_RPC_HTTP_URL=https://polygon-bor-rpc.publicnode.com"));
         assert!(content.contains("POLY_POLYGON_RPC_HTTP_FALLBACK_URL=https://polygon.drpc.org"));
+        assert!(content.contains("POLY_PROXY_WALLET_ADDRESS=0x2222222222222222222222222222222222222222"));
         assert!(content.contains("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN=shared-alpha-token"));
         assert!(content.contains("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN=shared-alpha-token"));
 

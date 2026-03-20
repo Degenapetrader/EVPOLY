@@ -38,8 +38,8 @@ const DEFAULT_CONFIG: BotConfig = {
   strategies: {
     premarket: true,
     endgame: true,
-    evcurve: true,
-    session_band: true,
+    evcurve: false,
+    session_band: false,
     evsnipe: true,
     mm_rewards: false,
     mm_sport: false,

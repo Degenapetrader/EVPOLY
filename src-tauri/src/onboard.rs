@@ -5,10 +5,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const DEFAULT_ONBOARD_API_BASE: &str =
-    "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign";
+    "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com";
 
 fn wallet_address_hex(wallet: &LocalWallet) -> String {
     format!("{:#x}", wallet.address())
+}
+
+fn onboard_url(operation: &str) -> String {
+    format!("{DEFAULT_ONBOARD_API_BASE}/onboard/{operation}")
 }
 
 fn first_nonempty(values: &[Option<&Value>]) -> Option<String> {
@@ -99,8 +103,8 @@ pub async fn run_onboarding(
     };
 
     let client = reqwest::Client::new();
-    let start_url = format!("{DEFAULT_ONBOARD_API_BASE}/onboard/start");
-    let finish_url = format!("{DEFAULT_ONBOARD_API_BASE}/onboard/finish");
+    let start_url = onboard_url("start");
+    let finish_url = onboard_url("finish");
 
     let mut start_payload = serde_json::json!({
         "wallet": signature_wallet,
@@ -198,7 +202,7 @@ pub async fn run_onboarding(
 
 #[cfg(test)]
 mod tests {
-    use super::wallet_address_hex;
+    use super::{onboard_url, wallet_address_hex};
     use ethers_signers::LocalWallet;
 
     #[test]
@@ -212,6 +216,19 @@ mod tests {
 
         assert_eq!(address.len(), 42);
         assert!(address.starts_with("0x"));
+        assert!(address.chars().skip(2).all(|c| c.is_ascii_hexdigit()));
         assert!(!address.contains('…'));
+    }
+
+    #[test]
+    fn onboard_url_points_to_root_api_gateway_path() {
+        assert_eq!(
+            onboard_url("start"),
+            "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/onboard/start"
+        );
+        assert_eq!(
+            onboard_url("finish"),
+            "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/onboard/finish"
+        );
     }
 }

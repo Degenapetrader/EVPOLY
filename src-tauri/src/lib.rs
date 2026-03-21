@@ -944,6 +944,21 @@ async fn manual_api_request(
     manual_manager::send_manual_request(request_ctx, method, path, query, body).await
 }
 
+#[tauri::command]
+async fn bot_api_request(
+    bot: State<'_, BotState>,
+    method: String,
+    path: String,
+    query: Option<serde_json::Value>,
+    body: Option<serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let request_ctx = {
+        let mgr = bot.lock().map_err(|e| e.to_string())?;
+        mgr.request_context()?
+    };
+    bot_manager::send_bot_request(request_ctx, method, path, query, body).await
+}
+
 // ── Config ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1533,6 +1548,7 @@ pub fn run() {
             get_manual_service_status,
             get_manual_log_lines,
             manual_api_request,
+            bot_api_request,
             save_config,
             get_saved_config,
             export_config,

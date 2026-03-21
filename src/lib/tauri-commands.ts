@@ -16,6 +16,121 @@ export interface LogLine {
   content: string;
 }
 
+export interface UiDashboardSummary {
+  bot_state: string;
+  mode: "live" | "dry_run" | string;
+  headline: string;
+  detail: string;
+  last_activity_at_ms: number | null;
+  last_activity_at: string | null;
+  recent_result: string | null;
+  blocker_reason: string | null;
+  enabled_strategies: string[];
+  open_positions_count: number;
+  recent_orders_count: number;
+  free_balance: number | null;
+  avg_ack_latency_ms: number | null;
+  total_pnl: number;
+  total_trades: number;
+  winning_trades: number;
+  losing_trades: number;
+}
+
+export interface UiStrategyState {
+  strategy_id: string;
+  slug: string;
+  label: string;
+  enabled: boolean;
+  state: string;
+  summary: string;
+  scope_summary: string;
+  last_action: string | null;
+  last_action_at_ms: number | null;
+  last_action_at: string | null;
+  blocker_reason: string | null;
+  open_orders_count: number;
+  open_positions_count: number;
+}
+
+export interface UiMarketSide {
+  token_id: string;
+  label: string;
+  outcome: string;
+  price: number | null;
+}
+
+export interface UiMarket {
+  condition_id: string;
+  market_slug: string;
+  title: string;
+  subtitle: string;
+  description?: string | null;
+  status: string;
+  tradable: boolean;
+  close_time?: string | null;
+  symbol?: string | null;
+  timeframe?: string | null;
+  sides: UiMarketSide[];
+}
+
+export interface UiManualRun {
+  run_id: string;
+  kind: string;
+  kind_label: string;
+  status: string;
+  status_label: string;
+  condition_id: string;
+  market_slug: string;
+  market_title: string;
+  market_subtitle: string;
+  side: string;
+  side_label: string;
+  mode: string;
+  mode_label: string;
+  target_shares: number;
+  filled_shares: number;
+  remaining_shares: number;
+  requested_size_usd: number | null;
+  progress_ratio: number;
+  progress_summary: string;
+  started_at_ms: number;
+  started_at: string;
+  updated_at_ms: number;
+  updated_at: string;
+  error_message?: string | null;
+}
+
+export interface UiManualPosition {
+  condition_id: string;
+  market_slug: string;
+  market_title: string;
+  market_subtitle: string;
+  side: string;
+  side_label: string;
+  size: number;
+  entry_price: number | null;
+  current_price: number | null;
+  realized_pnl: number | null;
+  unrealized_pnl: number | null;
+  redeemable: boolean;
+  mergeable: boolean;
+}
+
+export interface UiManualHealth {
+  status: string;
+  mode: string;
+  message: string;
+  ready: boolean;
+}
+
+export interface UiManualBalanceSummary {
+  available_cash_usd: number | null;
+  available_allowance_usd: number | null;
+  positions_value_usd: number | null;
+  estimated_total_equity_usd: number | null;
+  message: string;
+}
+
 export interface TradeStats {
   total_pnl: number;
   win_rate: number;
@@ -169,6 +284,19 @@ export const getBotStatus = (): Promise<string> =>
 export const getLogLines = (count: number): Promise<LogLine[]> =>
   invoke("get_log_lines", { count });
 
+export const botApiRequest = <T = unknown>(
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+  path: string,
+  query?: Record<string, unknown>,
+  body?: Record<string, unknown>
+): Promise<T> =>
+  invoke("bot_api_request", {
+    method,
+    path,
+    query: query ?? null,
+    body: body ?? null,
+  });
+
 export const startManualService = (
   simulation: boolean,
   port?: number
@@ -184,12 +312,12 @@ export const getManualServiceStatus = (): Promise<string> =>
 export const getManualLogLines = (count: number): Promise<LogLine[]> =>
   invoke("get_manual_log_lines", { count });
 
-export const manualApiRequest = (
+export const manualApiRequest = <T = unknown>(
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
   path: string,
   query?: Record<string, unknown>,
   body?: Record<string, unknown>
-): Promise<unknown> =>
+): Promise<T> =>
   invoke("manual_api_request", {
     method,
     path,

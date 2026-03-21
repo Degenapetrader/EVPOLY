@@ -1,13 +1,78 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  isAuthInitialized,
-  verifyPassword,
-  setPassword,
-  getActiveProfileId,
-} from "../lib/tauri-commands";
+import { InfoPill } from "../components/InfoPill";
+import { SectionPanel } from "../components/SectionPanel";
 import { LegalModal, hasAcceptedTerms } from "../components/LegalModal";
+import {
+  getActiveProfileId,
+  isAuthInitialized,
+  setPassword,
+  verifyPassword,
+} from "../lib/tauri-commands";
 import { useAppContext } from "../App";
+
+function AuthShell({
+  badge,
+  title,
+  description,
+  panel,
+}: {
+  badge: string;
+  title: string;
+  description: string;
+  panel: ReactNode;
+}) {
+  return (
+    <div className="min-h-[100dvh] bg-[radial-gradient(circle_at_top_left,rgba(54,211,153,0.08),transparent_26%),radial-gradient(circle_at_bottom_right,rgba(73,116,255,0.08),transparent_24%),var(--bg-primary)]">
+      <div className="mx-auto grid min-h-[100dvh] max-w-6xl gap-6 px-5 py-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(24rem,0.88fr)] lg:px-8 lg:py-8">
+        <section className="flex min-h-[16rem] flex-col justify-between rounded-[32px] border border-[var(--border)] bg-[linear-gradient(180deg,rgba(18,25,36,0.96),rgba(12,17,25,0.96))] px-6 py-6 shadow-[var(--shadow-soft)] lg:px-8 lg:py-8">
+          <div>
+            <div className="flex items-center gap-3">
+              <img src="/logo.png" alt="EVPoly" className="h-10 w-auto" />
+              <InfoPill tone="accent">{badge}</InfoPill>
+            </div>
+            <div className="mt-8 max-w-xl">
+              <div className="text-xs uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                Secure desktop trading
+              </div>
+              <h1 className="mt-3 text-[clamp(2.2rem,1.8rem+1.5vw,3.8rem)] font-semibold tracking-[-0.05em] text-[var(--text-primary)]">
+                {title}
+              </h1>
+              <p className="mt-4 max-w-lg text-base leading-7 text-[var(--text-secondary)]">
+                {description}
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4">
+              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Private</div>
+              <div className="mt-2 text-sm text-[var(--text-secondary)]">
+                Your password protects your desktop profiles on this machine.
+              </div>
+            </div>
+            <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4">
+              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Simple</div>
+              <div className="mt-2 text-sm text-[var(--text-secondary)]">
+                One password unlocks the app and your saved trading setup.
+              </div>
+            </div>
+            <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4">
+              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Local first</div>
+              <div className="mt-2 text-sm text-[var(--text-secondary)]">
+                Nothing changes until you unlock and choose what to do next.
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div className="flex items-center">
+          <div className="w-full">{panel}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function Login() {
   const navigate = useNavigate();
@@ -39,22 +104,23 @@ export function Login() {
   };
 
   useEffect(() => {
-    resolveInit();
+    void resolveInit();
   }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
     setError("");
 
     if (!initialized) {
       if (password.length < 8) {
-        setError("Password must be at least 8 characters");
+        setError("Password must be at least 8 characters.");
         return;
       }
       if (password !== confirm) {
-        setError("Passwords do not match");
+        setError("Passwords do not match.");
         return;
       }
+
       setLoading(true);
       try {
         await setPassword(password);
@@ -66,50 +132,67 @@ export function Login() {
       } finally {
         setLoading(false);
       }
-    } else {
-      setLoading(true);
-      try {
-        const valid = await verifyPassword(password);
-        if (valid) {
-          setAuthenticated(true);
-          const active = await getActiveProfileId();
-          navigate(active ? "/dashboard" : "/config");
-        } else {
-          setError("Incorrect password");
-        }
-      } catch (err) {
-        setError(String(err));
-      } finally {
-        setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const valid = await verifyPassword(password);
+      if (valid) {
+        setAuthenticated(true);
+        const active = await getActiveProfileId();
+        navigate(active ? "/dashboard" : "/config");
+      } else {
+        setError("Incorrect password.");
       }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setLoading(false);
     }
   };
 
   if (initialized === null && !authInitError) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[var(--bg-primary)]">
-        <div className="text-[var(--text-secondary)] text-sm">Loading...</div>
-      </div>
+      <AuthShell
+        badge="Starting"
+        title="Loading your secure workspace"
+        description="EVPoly is checking whether this desktop already has a password and profile ready."
+        panel={
+          <SectionPanel title="Loading" subtitle="This usually only takes a moment.">
+            <div className="space-y-3">
+              <div className="text-sm text-[var(--text-secondary)]">
+                Preparing the auth state and opening the correct flow for this machine.
+              </div>
+              <div className="inline-alert inline-alert--warning">Please wait...</div>
+            </div>
+          </SectionPanel>
+        }
+      />
     );
   }
 
   if (authInitError) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-[var(--bg-primary)]">
-        <div className="w-full max-w-sm mx-4 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-6 space-y-4">
-          <h2 className="text-lg font-medium text-[var(--text-primary)]">
-            Auth Initialization Error
-          </h2>
-          <div className="text-sm text-[var(--red)]">{authInitError}</div>
-          <button
-            type="button"
-            onClick={resolveInit}
-            className="w-full py-2.5 rounded-lg font-medium text-sm transition-colors bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white"
-          >
-            Retry
-          </button>
-        </div>
-      </div>
+      <AuthShell
+        badge="Needs attention"
+        title="EVPoly could not open the auth state"
+        description="The app hit an initialization problem before the password screen could load."
+        panel={
+          <SectionPanel title="Auth initialization error" subtitle="Retry once before digging into anything technical.">
+            <div className="space-y-4">
+              <div className="inline-alert">{authInitError}</div>
+              <button
+                type="button"
+                onClick={() => void resolveInit()}
+                className="ui-button ui-button--primary w-full justify-center"
+              >
+                Retry
+              </button>
+            </div>
+          </SectionPanel>
+        }
+      />
     );
   }
 
@@ -118,67 +201,67 @@ export function Login() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[var(--bg-primary)]">
-      <div className="w-full max-w-sm mx-4">
-        <div className="text-center mb-8">
-          <img src="/logo.png" alt="EVPoly" className="h-12 mx-auto" />
-          <p className="text-[var(--text-secondary)] text-sm mt-2">
-            {initialized ? "Welcome back" : "Set up your account"}
-          </p>
-        </div>
-
-        <form
-          onSubmit={handleSubmit}
-          className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-6 space-y-4"
+    <AuthShell
+      badge={initialized ? "Welcome back" : "New setup"}
+      title={initialized ? "Unlock EVPoly" : "Create your EVPoly password"}
+      description={
+        initialized
+          ? "Enter the password you already chose for this desktop to unlock your trading profiles."
+          : "Pick one password for this desktop. You will use it to unlock your saved profiles and settings."
+      }
+      panel={
+        <SectionPanel
+          title={initialized ? "Enter password" : "Create password"}
+          subtitle={
+            initialized
+              ? "Use the same password you created earlier."
+              : "Use at least 8 characters so your local profile stays protected."
+          }
         >
-          <h2 className="text-lg font-medium text-[var(--text-primary)]">
-            {initialized ? "Enter Password" : "Create Password"}
-          </h2>
-
-          <div>
-            <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-              Password
-            </label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPasswordVal(e.target.value)}
-              className="w-full bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg px-3 py-2 text-[var(--text-primary)] text-sm outline-none focus:border-[var(--accent)] transition-colors"
-              autoFocus
-            />
-          </div>
-
-          {!initialized && (
+          <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                Confirm Password
-              </label>
+              <label className="mb-1.5 block text-xs text-[var(--text-secondary)]">Password</label>
               <input
                 type="password"
-                value={confirm}
-                onChange={(e) => setConfirm(e.target.value)}
-                className="w-full bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg px-3 py-2 text-[var(--text-primary)] text-sm outline-none focus:border-[var(--accent)] transition-colors"
+                value={password}
+                onChange={(event) => setPasswordVal(event.target.value)}
+                autoFocus
+                className="w-full rounded-[18px] border border-[var(--border)] bg-[var(--bg-tertiary)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)]"
               />
             </div>
-          )}
 
-          {error && (
-            <div className="text-[var(--red)] text-sm">{error}</div>
-          )}
+            {!initialized ? (
+              <div>
+                <label className="mb-1.5 block text-xs text-[var(--text-secondary)]">
+                  Confirm password
+                </label>
+                <input
+                  type="password"
+                  value={confirm}
+                  onChange={(event) => setConfirm(event.target.value)}
+                  className="w-full rounded-[18px] border border-[var(--border)] bg-[var(--bg-tertiary)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)]"
+                />
+              </div>
+            ) : null}
 
-          <button
-            type="submit"
-            disabled={loading || !password}
-            className="w-full py-2.5 rounded-lg font-medium text-sm transition-colors bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {loading
-              ? "..."
-              : initialized
-              ? "Unlock"
-              : "Create & Continue"}
-          </button>
-        </form>
-      </div>
-    </div>
+            {error ? <div className="inline-alert">{error}</div> : null}
+
+            <button
+              type="submit"
+              disabled={loading || !password}
+              className="ui-button ui-button--primary w-full justify-center"
+            >
+              {loading ? "Working..." : initialized ? "Unlock" : "Create and Continue"}
+            </button>
+
+            <div className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.76)] px-4 py-4 text-sm text-[var(--text-secondary)]">
+              {initialized
+                ? "Your password never needs to be typed anywhere else in the app."
+                : "After this step, EVPoly will take you straight to setup or the dashboard."}
+            </div>
+          </form>
+        </SectionPanel>
+      }
+    />
   );
 }

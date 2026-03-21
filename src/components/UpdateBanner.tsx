@@ -8,14 +8,18 @@ export function UpdateBanner({
   if (!version) return null;
 
   return (
-    <div className="flex items-center justify-center gap-3 px-4 py-2 bg-[var(--accent)] text-white text-sm">
-      <span>Update available ({version})</span>
-      <button
-        onClick={onUpdate}
-        className="px-3 py-0.5 rounded bg-white/20 hover:bg-white/30 transition-colors text-xs font-medium"
-      >
-        Update Now
-      </button>
+    <div className="surface-panel">
+      <div className="surface-panel__body flex flex-wrap items-center justify-between gap-3 pt-[var(--space-5)]">
+        <span className="text-sm text-[var(--text-primary)]">
+          Update available <span className="mono-data text-[var(--text-secondary)]">({version})</span>
+        </span>
+        <button
+          onClick={onUpdate}
+          className="ui-button ui-button--accent text-sm"
+        >
+          Update Now
+        </button>
+      </div>
     </div>
   );
 }

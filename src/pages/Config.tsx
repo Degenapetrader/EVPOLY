@@ -1,5 +1,8 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { AppShell } from "../components/AppShell";
+import { InfoPill } from "../components/InfoPill";
+import { LogsDrawer } from "../components/LogsDrawer";
+import { SectionPanel } from "../components/SectionPanel";
 import {
   saveConfig,
   getSavedConfig,
@@ -28,6 +31,77 @@ const STRATEGIES = [
 ] as const;
 
 type StrategyKey = (typeof STRATEGIES)[number]["key"];
+type SizeKey = keyof BotConfig["sizing"];
+type CapKey = keyof BotConfig["caps"];
+
+const STRATEGY_DETAILS: Record<
+  StrategyKey,
+  { description: string; tone?: "accent" | "success" }
+> = {
+  premarket: {
+    description: "Looks for early pricing moves before the crowd catches up.",
+  },
+  endgame: {
+    description: "Waits for a better late price before taking the trade.",
+    tone: "accent",
+  },
+  evcurve: {
+    description: "Trades curve-based setups when the shape lines up cleanly.",
+  },
+  session_band: {
+    description: "Looks for session swings and reversal bands.",
+  },
+  evsnipe: {
+    description: "Takes quick entries only when the setup is strong enough.",
+  },
+  mm_rewards: {
+    description: "Refreshes quotes automatically on reward markets.",
+    tone: "success",
+  },
+  mm_sport: {
+    description: "Quotes sports reward markets when you want extra activity.",
+  },
+};
+
+const SIZE_FIELDS: Array<{
+  key: SizeKey;
+  label: string;
+  help: string;
+}> = [
+  {
+    key: "premarket",
+    label: "Premarket size",
+    help: "How much to risk on each premarket trade.",
+  },
+  {
+    key: "endgame",
+    label: "Endgame size",
+    help: "Base size when Endgame finds a fillable exit.",
+  },
+  {
+    key: "evcurve",
+    label: "EVCurve size",
+    help: "Base size for curve-based entries.",
+  },
+  {
+    key: "session_band",
+    label: "SessionBand size",
+    help: "Base size for band reversal trades.",
+  },
+  {
+    key: "evsnipe_per_hit",
+    label: "EVSnipe per hit",
+    help: "How much EVSnipe uses on each triggered entry.",
+  },
+];
+
+const CAP_FIELDS: Array<{ key: CapKey; label: string }> = [
+  { key: "premarket", label: "Premarket cap" },
+  { key: "endgame", label: "Endgame cap" },
+  { key: "evcurve", label: "EVCurve cap" },
+  { key: "session_band", label: "SessionBand cap" },
+  { key: "evsnipe", label: "EVSnipe cap" },
+];
 
 const DEFAULT_CONFIG: BotConfig = {
   private_key: "",
@@ -121,14 +195,6 @@ function Toggle({
   );
 }
 
-function SectionHeader({ title }: { title: string }) {
-  return (
-    <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-3 mt-6 first:mt-0">
-      {title}
-    </h3>
-  );
-}
-
 function InputField({
   label,
   value,
@@ -161,8 +227,97 @@ function InputField({
   );
 }
 
+function SummaryRow({
+  label,
+  value,
+  muted,
+}: {
+  label: string;
+  value: string;
+  muted?: boolean;
+}) {
+  return (
+    <div className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-3">
+      <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
+        {label}
+      </div>
+      <div
+        className={`mt-2 text-lg font-semibold tracking-[-0.03em] ${
+          muted ? "text-[var(--text-secondary)]" : "text-[var(--text-primary)]"
+        }`}
+      >
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function SimpleModeCard({
+  title,
+  description,
+  active,
+  onClick,
+}: {
+  title: string;
+  description: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`w-full rounded-[20px] border px-4 py-4 text-left transition-colors ${
+        active
+          ? "border-[rgba(54,211,153,0.32)] bg-[rgba(20,35,29,0.96)]"
+          : "border-[var(--border)] bg-[rgba(16,22,31,0.78)] hover:border-[var(--border-strong)]"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-base font-semibold text-[var(--text-primary)]">{title}</div>
+          <div className="mt-1 text-sm text-[var(--text-secondary)]">{description}</div>
+        </div>
+        <InfoPill tone={active ? "success" : "neutral"}>
+          {active ? "Selected" : "Off"}
+        </InfoPill>
+      </div>
+    </button>
+  );
+}
+
+function StrategyCard({
+  label,
+  description,
+  enabled,
+  onToggle,
+  tone = "neutral",
+}: {
+  label: string;
+  description: string;
+  enabled: boolean;
+  onToggle: () => void;
+  tone?: "neutral" | "accent" | "success";
+}) {
+  return (
+    <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-base font-semibold text-[var(--text-primary)]">{label}</div>
+          <div className="mt-1 text-sm text-[var(--text-secondary)]">{description}</div>
+        </div>
+        <div className="flex items-center gap-3">
+          <InfoPill tone={enabled ? tone : "neutral"}>
+            {enabled ? "On" : "Off"}
+          </InfoPill>
+          <Toggle enabled={enabled} onChange={onToggle} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Config() {
-  const navigate = useNavigate();
   const [config, setConfig] = useState<BotConfig>(DEFAULT_CONFIG);
   const [profileId, setProfileId] = useState<string | null>(null);
   const [showPrivateKey, setShowPrivateKey] = useState(false);
@@ -174,6 +329,7 @@ export function Config() {
   const [exportPw, setExportPw] = useState("");
   const [importPw, setImportPw] = useState("");
   const [importData, setImportData] = useState("");
+  const [logsOpen, setLogsOpen] = useState(false);
 
   const loadProfileConfig = async (id: string) => {
     const saved = await getSavedConfig(id);
@@ -368,528 +524,506 @@ export function Config() {
   };
 
   const onboardedWallet = config.eoa_wallet.trim();
+  const enabledStrategies = STRATEGIES.filter((strategy) => config.strategies[strategy.key]);
+  const strategySummary =
+    enabledStrategies.length > 0
+      ? enabledStrategies.map((strategy) => strategy.label).join(" + ")
+      : "No strategy selected";
+  const primarySizeKey: SizeKey = config.strategies.endgame
+    ? "endgame"
+    : config.strategies.premarket
+    ? "premarket"
+    : config.strategies.evcurve
+    ? "evcurve"
+    : config.strategies.session_band
+    ? "session_band"
+    : "evsnipe_per_hit";
+  const sizeSummary = `$${config.sizing[primarySizeKey]} base size`;
+  const setupReady = Boolean(
+    config.private_key.trim() && (config.sig_type === 0 || config.proxy_wallet.trim())
+  );
+  const symbolSummary = config.symbols.join(", ");
+  const railItems = [
+    { label: "Dashboard", to: "/dashboard" },
+    { label: "Manual Trade", to: "/manual" },
+    { label: "Settings", to: "/config" },
+    { label: "Open Logs", onClick: () => setLogsOpen(true) },
+  ];
 
   return (
-    <div className="h-full bg-[var(--bg-primary)] flex flex-col overflow-hidden">
-      {/* Top Bar */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => navigate("/dashboard")}
-            className="p-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
+    <AppShell
+      railSubtitle="Settings"
+      railItems={railItems}
+      railChildren={
+        <SectionPanel title="Keep it simple" subtitle="Most people only need setup, mode, strategy choice, and size.">
+          <div className="space-y-3 text-sm text-[var(--text-secondary)]">
+            <p>Use advanced settings only when you are fixing a specific issue.</p>
+            <div className="flex flex-wrap gap-2">
+              <InfoPill tone={setupReady ? "success" : "warning"}>
+                {setupReady ? "Setup ready" : "Needs setup"}
+              </InfoPill>
+              <InfoPill tone={config.simulation ? "warning" : "success"}>
+                {config.simulation ? "Dry Run" : "Live"}
+              </InfoPill>
+            </div>
+          </div>
+        </SectionPanel>
+      }
+      eyebrow={profileId ? "Profile ready" : "Setup"}
+      title="Setup Your Trading"
+      description="Choose how the bot should trade, set your size, and keep the technical details tucked away until you need them."
+      meta={
+        <>
+          <InfoPill tone={config.simulation ? "warning" : "success"}>
+            {config.simulation ? "Dry Run" : "Live Trading"}
+          </InfoPill>
+          {saveMsg ? (
+            <InfoPill tone={saveMsg.startsWith("Error") || saveMsg.includes("error") ? "danger" : "accent"}>
+              {saveMsg}
+            </InfoPill>
+          ) : null}
+        </>
+      }
+      contentClassName="page-stack"
+    >
+      <div className="page-split xl:grid-cols-[minmax(0,1.35fr)_minmax(19rem,0.75fr)]">
+        <div className="space-y-[var(--space-6)]">
+          <SectionPanel
+            title="Easy Setup"
+            subtitle="Connect the wallet details the bot needs, then run onboarding once."
+            actions={
+              <InfoPill tone={setupReady ? "success" : "warning"}>
+                {setupReady ? "Ready to onboard" : "Needs wallet details"}
+              </InfoPill>
+            }
           >
-            <svg
-              className="w-4 h-4 text-[var(--text-secondary)]"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M15 19l-7-7 7-7"
-              />
-            </svg>
-          </button>
-          <h1 className="text-lg font-semibold text-[var(--text-primary)]">
-            Configuration
-          </h1>
-        </div>
-        <button
-          onClick={() => navigate("/manual")}
-          className="px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors text-xs text-[var(--text-primary)]"
-        >
-          Manual
-        </button>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto px-6 py-4 pb-24">
-        <div className="max-w-2xl mx-auto space-y-0">
-          {/* Credentials */}
-          <SectionHeader title="Credentials" />
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4 space-y-3">
-            <div>
-              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                Private Key
-              </label>
-              <div className="relative">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="lg:col-span-2">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="block text-xs text-[var(--text-secondary)]">Private key</label>
+                  <button
+                    type="button"
+                    onClick={() => setShowPrivateKey((current) => !current)}
+                    className="text-xs text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+                  >
+                    {showPrivateKey ? "Hide" : "Show"}
+                  </button>
+                </div>
                 <input
                   type={showPrivateKey ? "text" : "password"}
                   value={config.private_key}
                   onChange={(e) => update("private_key", e.target.value)}
-                  className="w-full bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg px-3 py-2 pr-10 text-[var(--text-primary)] text-sm outline-none focus:border-[var(--accent)] transition-colors"
+                  placeholder="Paste your private key"
+                  className="mt-1.5 w-full rounded-[16px] border border-[var(--border)] bg-[var(--bg-tertiary)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)]"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowPrivateKey(!showPrivateKey)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] p-1"
-                >
-                  {showPrivateKey ? (
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                    </svg>
-                  ) : (
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                    </svg>
-                  )}
-                </button>
               </div>
+              <InputField
+                label="Proxy wallet address"
+                value={config.proxy_wallet}
+                onChange={(v) => update("proxy_wallet", v)}
+                placeholder="0x..."
+              />
+              <div>
+                <label className="mb-1.5 block text-xs text-[var(--text-secondary)]">Wallet mode</label>
+                <select
+                  value={config.sig_type}
+                  onChange={(e) => update("sig_type", Number(e.target.value))}
+                  className="w-full rounded-[16px] border border-[var(--border)] bg-[var(--bg-tertiary)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)]"
+                >
+                  <option value={1}>Proxy wallet</option>
+                  <option value={2}>Safe wallet</option>
+                  <option value={0}>EOA wallet</option>
+                </select>
+              </div>
+              <InputField
+                label="Relayer API key"
+                value={config.relayer_api_key}
+                onChange={(v) => update("relayer_api_key", v)}
+              />
+              <InputField
+                label="Relayer API key address"
+                value={config.relayer_api_key_address}
+                onChange={(v) => update("relayer_api_key_address", v)}
+                placeholder="0x..."
+              />
             </div>
-            <InputField
-              label="EOA Wallet Address"
-              value={config.eoa_wallet}
-              onChange={(v) => update("eoa_wallet", v)}
-              placeholder="0x..."
-            />
-            <InputField
-              label="Proxy Wallet Address"
-              value={config.proxy_wallet}
-              onChange={(v) => update("proxy_wallet", v)}
-              placeholder="0x..."
-            />
-            <div>
-              <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                Signature Type
-              </label>
-              <select
-                value={config.sig_type}
-                onChange={(e) => update("sig_type", Number(e.target.value))}
-                className="w-full bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg px-3 py-2 text-[var(--text-primary)] text-sm outline-none focus:border-[var(--accent)] transition-colors"
+            <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+              <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
+                <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                  Onboarded wallet
+                </div>
+                <div className="mt-2 break-all font-mono text-sm text-[var(--text-primary)]">
+                  {onboardedWallet || "Not onboarded yet. Run setup to derive the wallet from your key."}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleRunOnboarding}
+                disabled={onboardLoading}
+                className="ui-button ui-button--primary min-w-[12rem] justify-center"
               >
-                <option value={0}>EOA (0)</option>
-                <option value={1}>Proxy (1)</option>
-                <option value={2}>Safe (2)</option>
-              </select>
+                {onboardLoading ? "Running setup..." : onboardedWallet ? "Run setup again" : "Run setup"}
+              </button>
             </div>
-            <InputField
-              label="Relayer API Key"
-              value={config.relayer_api_key}
-              onChange={(v) => update("relayer_api_key", v)}
-            />
-            <InputField
-              label="Relayer API Key Address"
-              value={config.relayer_api_key_address}
-              onChange={(v) => update("relayer_api_key_address", v)}
-              placeholder="0x..."
-            />
-          </div>
-
-          {/* Onboarding */}
-          <SectionHeader title="Onboarding" />
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4 space-y-3">
-            <div className="bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg p-3">
-              <div className="text-xs text-[var(--text-secondary)] mb-1.5">
-                Onboarded EOA Wallet
-              </div>
-              <div className="text-sm text-[var(--text-primary)] font-mono break-all">
-                {onboardedWallet ||
-                  "Not onboarded yet. The EOA wallet will be derived from the private key when onboarding runs."}
-              </div>
-            </div>
-            <button
-              onClick={handleRunOnboarding}
-              disabled={onboardLoading}
-              className="px-4 py-2 text-sm rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {onboardLoading ? "Running onboarding..." : "Run Onboarding"}
-            </button>
             {onboardResult ? (
-              <pre className="text-xs text-[var(--text-secondary)] bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg p-3 overflow-auto max-h-44">
-                {JSON.stringify(onboardResult, null, 2)}
-              </pre>
+              <details className="mt-4 rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.62)] px-4 py-3">
+                <summary className="cursor-pointer text-sm font-medium text-[var(--text-primary)]">
+                  View onboarding details
+                </summary>
+                <pre className="mt-3 max-h-56 overflow-auto rounded-[14px] border border-[var(--border)] bg-[var(--bg-tertiary)] p-3 text-xs text-[var(--text-secondary)]">
+                  {JSON.stringify(onboardResult, null, 2)}
+                </pre>
+              </details>
             ) : null}
-          </div>
+          </SectionPanel>
 
-          {/* Symbols */}
-          <SectionHeader title="Symbols" />
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4 space-y-3">
-            <div className="flex flex-wrap gap-2">
-              {CORE_SYMBOLS.map((sym) => (
-                <label
-                  key={sym}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm cursor-pointer transition-colors ${
-                    config.symbols.includes(sym)
-                      ? "bg-[var(--accent)]/10 border-[var(--accent)] text-[var(--accent)]"
-                      : "bg-[var(--bg-tertiary)] border-[var(--border)] text-[var(--text-secondary)]"
-                  } ${sym === "BTC" ? "opacity-70 cursor-not-allowed" : ""}`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={config.symbols.includes(sym)}
-                    onChange={() => toggleSymbol(sym)}
-                    disabled={sym === "BTC"}
-                    className="sr-only"
-                  />
-                  {sym}
-                </label>
-              ))}
+          <SectionPanel
+            title="Trading Rules"
+            subtitle="Pick the mode, strategies, and size that match how active you want the bot to be."
+          >
+            <div className="grid gap-4 lg:grid-cols-2">
+              <SimpleModeCard
+                title="Live Trading"
+                description="Places real orders and manages them for you."
+                active={!config.simulation}
+                onClick={() => update("simulation", false)}
+              />
+              <SimpleModeCard
+                title="Dry Run"
+                description="Lets you watch the bot behave without placing real orders."
+                active={config.simulation}
+                onClick={() => update("simulation", true)}
+              />
             </div>
-            <div>
-              <p className="text-xs text-[var(--text-secondary)] mb-2">
-                Endgame / EVCurve / EVSnipe only
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {EXTRA_SYMBOLS.map((sym) => (
-                  <label
-                    key={sym}
-                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-sm cursor-pointer transition-colors ${
-                      config.symbols.includes(sym)
-                        ? "bg-[var(--accent)]/10 border-[var(--accent)] text-[var(--accent)]"
-                        : "bg-[var(--bg-tertiary)] border-[var(--border)] text-[var(--text-secondary)]"
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={config.symbols.includes(sym)}
-                      onChange={() => toggleSymbol(sym)}
-                      className="sr-only"
-                    />
-                    {sym}
-                  </label>
+
+            <div className="mt-5">
+              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                Strategies
+              </div>
+              <div className="mt-3 grid gap-3">
+                {STRATEGIES.map((strategy) => (
+                  <StrategyCard
+                    key={strategy.key}
+                    label={strategy.label}
+                    description={STRATEGY_DETAILS[strategy.key].description}
+                    enabled={config.strategies[strategy.key]}
+                    tone={STRATEGY_DETAILS[strategy.key].tone}
+                    onToggle={() => toggleStrategy(strategy.key)}
+                  />
                 ))}
               </div>
             </div>
-          </div>
 
-          {/* Strategies */}
-          <SectionHeader title="Strategies" />
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4">
-            <div className="grid grid-cols-2 gap-3">
-              {STRATEGIES.map((s) => (
-                <div
-                  key={s.key}
-                  className="flex items-center justify-between px-3 py-2 bg-[var(--bg-tertiary)] rounded-lg"
-                >
-                  <span className="text-sm text-[var(--text-primary)]">
-                    {s.label}
-                  </span>
-                  <Toggle
-                    enabled={config.strategies[s.key]}
-                    onChange={() => toggleStrategy(s.key)}
+            <div className="mt-5">
+              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                Base trade sizes
+              </div>
+              <div className="mt-3 grid gap-4 md:grid-cols-2">
+                {SIZE_FIELDS.map((field) => (
+                  <div
+                    key={field.key}
+                    className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4"
+                  >
+                    <InputField
+                      label={field.label}
+                      value={config.sizing[field.key]}
+                      onChange={(v) =>
+                        update("sizing", {
+                          ...config.sizing,
+                          [field.key]: Number(v) || 0,
+                        })
+                      }
+                      type="number"
+                    />
+                    <div className="mt-2 text-xs text-[var(--text-secondary)]">{field.help}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </SectionPanel>
+
+          <SectionPanel
+            title="Profile Tools"
+            subtitle="Back up your settings or move them to another machine when you need to."
+          >
+            <div className="grid gap-4 xl:grid-cols-2">
+              <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
+                <div className="text-sm font-semibold text-[var(--text-primary)]">Export profile</div>
+                <div className="mt-1 text-sm text-[var(--text-secondary)]">
+                  Copy your encrypted config to the clipboard using a password you choose.
+                </div>
+                <div className="mt-4 space-y-3">
+                  <InputField
+                    label="Export password"
+                    value={exportPw}
+                    onChange={setExportPw}
+                    type="password"
+                    placeholder="Create an export password"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleExport}
+                    disabled={!exportPw || !profileId}
+                    className="ui-button w-full justify-center"
+                  >
+                    Export Config
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
+                <div className="text-sm font-semibold text-[var(--text-primary)]">Import profile</div>
+                <div className="mt-1 text-sm text-[var(--text-secondary)]">
+                  Paste encrypted config data and unlock it with the matching password.
+                </div>
+                <div className="mt-4 space-y-3">
+                  <div>
+                    <label className="mb-1.5 block text-xs text-[var(--text-secondary)]">Import data</label>
+                    <textarea
+                      value={importData}
+                      onChange={(e) => setImportData(e.target.value)}
+                      rows={4}
+                      className="w-full resize-none rounded-[16px] border border-[var(--border)] bg-[var(--bg-tertiary)] px-4 py-3 font-mono text-sm text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)]"
+                      placeholder="Paste encrypted config data"
+                    />
+                  </div>
+                  <InputField
+                    label="Import password"
+                    value={importPw}
+                    onChange={setImportPw}
+                    type="password"
+                    placeholder="Enter the import password"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleImport}
+                    disabled={!importData || !importPw}
+                    className="ui-button w-full justify-center"
+                  >
+                    Import Config
+                  </button>
+                </div>
+              </div>
+            </div>
+          </SectionPanel>
+
+          <SectionPanel
+            title="Advanced"
+            subtitle="Only open this if you need raw tokens, market scope, or extra limits."
+            actions={
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((current) => !current)}
+                className="ui-button"
+              >
+                {advancedOpen ? "Hide advanced" : "Open advanced"}
+              </button>
+            }
+          >
+            {advancedOpen ? (
+              <div className="space-y-5">
+                <div>
+                  <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                    Market scope
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {CORE_SYMBOLS.map((symbol) => (
+                      <label
+                        key={symbol}
+                        className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                          config.symbols.includes(symbol)
+                            ? "border-[rgba(54,211,153,0.28)] bg-[rgba(20,35,29,0.94)] text-[var(--text-primary)]"
+                            : "border-[var(--border)] bg-[rgba(16,22,31,0.78)] text-[var(--text-secondary)]"
+                        } ${symbol === "BTC" ? "cursor-not-allowed opacity-70" : "cursor-pointer"}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={config.symbols.includes(symbol)}
+                          onChange={() => toggleSymbol(symbol)}
+                          disabled={symbol === "BTC"}
+                          className="sr-only"
+                        />
+                        {symbol}
+                      </label>
+                    ))}
+                    {EXTRA_SYMBOLS.map((symbol) => (
+                      <label
+                        key={symbol}
+                        className={`cursor-pointer rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                          config.symbols.includes(symbol)
+                            ? "border-[rgba(73,116,255,0.32)] bg-[rgba(24,29,44,0.94)] text-[var(--text-primary)]"
+                            : "border-[var(--border)] bg-[rgba(16,22,31,0.78)] text-[var(--text-secondary)]"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={config.symbols.includes(symbol)}
+                          onChange={() => toggleSymbol(symbol)}
+                          className="sr-only"
+                        />
+                        {symbol}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <InputField
+                    label="Remote signer token"
+                    value={config.remote_signer_token}
+                    onChange={(v) => update("remote_signer_token", v)}
+                  />
+                  <InputField
+                    label="Remote discovery token"
+                    value={config.remote_discovery_token}
+                    onChange={(v) => update("remote_discovery_token", v)}
+                  />
+                  <InputField
+                    label="Premarket alpha token"
+                    value={config.remote_premarket_alpha_token}
+                    onChange={(v) => update("remote_premarket_alpha_token", v)}
+                  />
+                  <InputField
+                    label="Endgame alpha token"
+                    value={config.remote_endgame_alpha_token}
+                    onChange={(v) => update("remote_endgame_alpha_token", v)}
+                  />
+                  <InputField
+                    label="MM rewards alpha token"
+                    value={config.remote_mm_rewards_alpha_token}
+                    onChange={(v) => update("remote_mm_rewards_alpha_token", v)}
+                  />
+                  <InputField
+                    label="EVSnipe discovery token"
+                    value={config.remote_evsnipe_discovery_token}
+                    onChange={(v) => update("remote_evsnipe_discovery_token", v)}
+                  />
+                  <InputField
+                    label="Admin API token"
+                    value={config.admin_api_token}
+                    onChange={(v) => update("admin_api_token", v)}
                   />
                 </div>
-              ))}
-            </div>
-          </div>
 
-          {/* Sizing */}
-          <SectionHeader title="Sizing (USD)" />
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4">
-            <div className="grid grid-cols-2 gap-3">
-              <InputField
-                label="Premarket"
-                value={config.sizing.premarket}
-                onChange={(v) =>
-                  update("sizing", {
-                    ...config.sizing,
-                    premarket: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-              <InputField
-                label="Endgame"
-                value={config.sizing.endgame}
-                onChange={(v) =>
-                  update("sizing", {
-                    ...config.sizing,
-                    endgame: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-              <InputField
-                label="EVCurve"
-                value={config.sizing.evcurve}
-                onChange={(v) =>
-                  update("sizing", {
-                    ...config.sizing,
-                    evcurve: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-              <InputField
-                label="SessionBand"
-                value={config.sizing.session_band}
-                onChange={(v) =>
-                  update("sizing", {
-                    ...config.sizing,
-                    session_band: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-              <InputField
-                label="EVSnipe per hit"
-                value={config.sizing.evsnipe_per_hit}
-                onChange={(v) =>
-                  update("sizing", {
-                    ...config.sizing,
-                    evsnipe_per_hit: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-            </div>
-          </div>
-
-          {/* Strategy Caps */}
-          <SectionHeader title="Strategy Caps (Max USD)" />
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4">
-            <div className="grid grid-cols-2 gap-3">
-              <InputField
-                label="Premarket"
-                value={config.caps.premarket}
-                onChange={(v) =>
-                  update("caps", {
-                    ...config.caps,
-                    premarket: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-              <InputField
-                label="Endgame"
-                value={config.caps.endgame}
-                onChange={(v) =>
-                  update("caps", {
-                    ...config.caps,
-                    endgame: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-              <InputField
-                label="EVCurve"
-                value={config.caps.evcurve}
-                onChange={(v) =>
-                  update("caps", {
-                    ...config.caps,
-                    evcurve: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-              <InputField
-                label="SessionBand"
-                value={config.caps.session_band}
-                onChange={(v) =>
-                  update("caps", {
-                    ...config.caps,
-                    session_band: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-              <InputField
-                label="EVSnipe"
-                value={config.caps.evsnipe}
-                onChange={(v) =>
-                  update("caps", {
-                    ...config.caps,
-                    evsnipe: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-            </div>
-          </div>
-
-          {/* MM Tuning */}
-          <SectionHeader title="MM Tuning" />
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4">
-            <div className="grid grid-cols-2 gap-3">
-              <InputField
-                label="MM Rewards Min Share Multiple"
-                value={config.mm_tuning.rewards_min_share_multiple}
-                onChange={(v) =>
-                  update("mm_tuning", {
-                    ...config.mm_tuning,
-                    rewards_min_share_multiple: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-              <InputField
-                label="MM Sport Quote Size Multiplier"
-                value={config.mm_tuning.sport_quote_size_multiplier}
-                onChange={(v) =>
-                  update("mm_tuning", {
-                    ...config.mm_tuning,
-                    sport_quote_size_multiplier: Number(v) || 0,
-                  })
-                }
-                type="number"
-              />
-            </div>
-          </div>
-
-          {/* Mode */}
-          <SectionHeader title="Mode" />
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <span className="text-sm text-[var(--text-primary)]">
-                  {config.simulation ? "Dry Run" : "Live Trading"}
-                </span>
-                <p className="text-xs text-[var(--text-secondary)] mt-0.5">
-                  {config.simulation
-                    ? "Paper trading mode -- no real orders"
-                    : "Real orders will be placed"}
-                </p>
+                <div className="grid gap-4 md:grid-cols-2">
+                  {CAP_FIELDS.map((field) => (
+                    <InputField
+                      key={field.key}
+                      label={field.label}
+                      value={config.caps[field.key]}
+                      onChange={(v) =>
+                        update("caps", {
+                          ...config.caps,
+                          [field.key]: Number(v) || 0,
+                        })
+                      }
+                      type="number"
+                    />
+                  ))}
+                  <InputField
+                    label="MM rewards minimum share multiple"
+                    value={config.mm_tuning.rewards_min_share_multiple}
+                    onChange={(v) =>
+                      update("mm_tuning", {
+                        ...config.mm_tuning,
+                        rewards_min_share_multiple: Number(v) || 0,
+                      })
+                    }
+                    type="number"
+                  />
+                  <InputField
+                    label="MM sport quote size multiplier"
+                    value={config.mm_tuning.sport_quote_size_multiplier}
+                    onChange={(v) =>
+                      update("mm_tuning", {
+                        ...config.mm_tuning,
+                        sport_quote_size_multiplier: Number(v) || 0,
+                      })
+                    }
+                    type="number"
+                  />
+                </div>
               </div>
-              <Toggle
-                enabled={!config.simulation}
-                onChange={(live) => update("simulation", !live)}
-              />
-            </div>
-          </div>
-
-          {/* Advanced */}
-          <div className="mt-6">
-            <button
-              onClick={() => setAdvancedOpen(!advancedOpen)}
-              className="flex items-center gap-2 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors mb-3"
-            >
-              <svg
-                className={`w-4 h-4 transition-transform ${
-                  advancedOpen ? "rotate-90" : ""
-                }`}
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M9 5l7 7-7 7"
-                />
-              </svg>
-              Advanced
-            </button>
-            {advancedOpen && (
-              <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4 space-y-3">
-                <InputField
-                  label="Remote Signer Token"
-                  value={config.remote_signer_token}
-                  onChange={(v) => update("remote_signer_token", v)}
-                />
-                <InputField
-                  label="Remote Discovery Token"
-                  value={config.remote_discovery_token}
-                  onChange={(v) => update("remote_discovery_token", v)}
-                />
-                <InputField
-                  label="Premarket Alpha Token"
-                  value={config.remote_premarket_alpha_token}
-                  onChange={(v) => update("remote_premarket_alpha_token", v)}
-                />
-                <InputField
-                  label="Endgame Alpha Token"
-                  value={config.remote_endgame_alpha_token}
-                  onChange={(v) => update("remote_endgame_alpha_token", v)}
-                />
-                <InputField
-                  label="MM Rewards Alpha Token"
-                  value={config.remote_mm_rewards_alpha_token}
-                  onChange={(v) => update("remote_mm_rewards_alpha_token", v)}
-                />
-                <InputField
-                  label="EVSnipe Discovery Token"
-                  value={config.remote_evsnipe_discovery_token}
-                  onChange={(v) => update("remote_evsnipe_discovery_token", v)}
-                />
-                <InputField
-                  label="Admin API Token"
-                  value={config.admin_api_token}
-                  onChange={(v) => update("admin_api_token", v)}
-                />
+            ) : (
+              <div className="text-sm text-[var(--text-secondary)]">
+                Advanced fields stay out of the way until you need them for deeper tuning or troubleshooting.
               </div>
             )}
-          </div>
+          </SectionPanel>
+        </div>
 
-          {/* Profile Export / Import */}
-          <SectionHeader title="Profile" />
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4 space-y-4">
-            <div className="flex items-end gap-3">
-              <div className="flex-1">
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                  Export Password
-                </label>
-                <input
-                  type="password"
-                  value={exportPw}
-                  onChange={(e) => setExportPw(e.target.value)}
-                  className="w-full bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg px-3 py-2 text-[var(--text-primary)] text-sm outline-none focus:border-[var(--accent)] transition-colors"
-                  placeholder="Encryption password"
-                />
+        <div className="page-aside space-y-[var(--space-6)] xl:sticky xl:top-[var(--space-6)]">
+          <SectionPanel
+            title="Before You Save"
+            subtitle="A quick plain-English summary of what this profile will do."
+          >
+            <div className="grid gap-3">
+              <SummaryRow label="Mode" value={config.simulation ? "Dry Run" : "Live Trading"} />
+              <SummaryRow
+                label="Main strategies"
+                value={strategySummary}
+                muted={enabledStrategies.length === 0}
+              />
+              <SummaryRow label="Trade size" value={sizeSummary} />
+              <SummaryRow
+                label="Wallet mode"
+                value={
+                  config.sig_type === 1
+                    ? "Proxy wallet"
+                    : config.sig_type === 2
+                    ? "Safe wallet"
+                    : "EOA wallet"
+                }
+              />
+              <SummaryRow
+                label="Wallet"
+                value={onboardedWallet || "Needs onboarding"}
+                muted={!onboardedWallet}
+              />
+              <SummaryRow label="Markets" value={symbolSummary} />
+            </div>
+
+            <div className="mt-5 rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
+              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">Message</div>
+              <div className="mt-2 text-sm text-[var(--text-secondary)]">
+                {saveMsg ||
+                  "Save after you finish setup. Advanced fields are optional unless you know you need them."}
               </div>
+            </div>
+
+            <div className="mt-5 space-y-3">
               <button
-                onClick={handleExport}
-                disabled={!exportPw || !profileId}
-                className="px-4 py-2 text-sm rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-primary)] hover:border-[var(--accent)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
+                type="button"
+                onClick={handleSave}
+                disabled={saving}
+                className="ui-button ui-button--primary w-full justify-center"
               >
-                Export Config
+                {saving ? "Saving..." : "Save Settings"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdvancedOpen((current) => !current)}
+                className="ui-button w-full justify-center"
+              >
+                {advancedOpen ? "Hide Advanced Settings" : "Open Advanced Settings"}
               </button>
             </div>
-            <div className="border-t border-[var(--border)] pt-4 space-y-3">
-              <div>
-                <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                  Import Data
-                </label>
-                <textarea
-                  value={importData}
-                  onChange={(e) => setImportData(e.target.value)}
-                  rows={3}
-                  className="w-full bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg px-3 py-2 text-[var(--text-primary)] text-sm outline-none focus:border-[var(--accent)] transition-colors resize-none font-mono"
-                  placeholder="Paste encrypted config data"
-                />
-              </div>
-              <div className="flex items-end gap-3">
-                <div className="flex-1">
-                  <label className="block text-xs text-[var(--text-secondary)] mb-1.5">
-                    Import Password
-                  </label>
-                  <input
-                    type="password"
-                    value={importPw}
-                    onChange={(e) => setImportPw(e.target.value)}
-                    className="w-full bg-[var(--bg-tertiary)] border border-[var(--border)] rounded-lg px-3 py-2 text-[var(--text-primary)] text-sm outline-none focus:border-[var(--accent)] transition-colors"
-                    placeholder="Decryption password"
-                  />
-                </div>
-                <button
-                  onClick={handleImport}
-                  disabled={!importData || !importPw}
-                  className="px-4 py-2 text-sm rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-primary)] hover:border-[var(--accent)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
-                >
-                  Import Config
-                </button>
-              </div>
+          </SectionPanel>
+
+          <SectionPanel title="What this means" subtitle="The page should stay readable, calm, and fullscreen-safe.">
+            <div className="space-y-3 text-sm text-[var(--text-secondary)]">
+              <p>
+                The main screen shows only the choices most users make often: setup, mode, strategies,
+                and sizing.
+              </p>
+              <p>
+                Raw tokens, market scope, and deeper caps stay hidden until you open Advanced.
+              </p>
             </div>
-          </div>
+          </SectionPanel>
         </div>
       </div>
-
-      {/* Sticky Save Bar */}
-      <div className="fixed bottom-0 left-0 right-0 bg-[var(--bg-secondary)] border-t border-[var(--border)] px-6 py-3 flex items-center justify-between">
-        <span className="text-sm text-[var(--text-secondary)]">
-          {saveMsg}
-        </span>
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="px-6 py-2 text-sm font-medium rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          {saving ? "Saving..." : "Save Configuration"}
-        </button>
-      </div>
-    </div>
+      <LogsDrawer open={logsOpen} mode="bot" onClose={() => setLogsOpen(false)} />
+    </AppShell>
   );
 }

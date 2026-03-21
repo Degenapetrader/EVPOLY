@@ -3,7 +3,9 @@
 use crate::config_io;
 use crate::log_stream::LogBuffer;
 use chrono::Utc;
+use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::io::Write;
 #[cfg(target_os = "windows")]
@@ -31,6 +33,12 @@ pub enum BotStatus {
 struct LastState {
     was_running: bool,
     simulation: bool,
+}
+
+#[derive(Clone)]
+pub struct BotRequestContext {
+    pub base_url: String,
+    pub auth_token: Option<String>,
 }
 
 struct BotInner {
@@ -233,6 +241,47 @@ impl BotManager {
 
     pub fn get_log_buffer(&self) -> Arc<Mutex<LogBuffer>> {
         self.log_buffer.clone()
+    }
+
+    pub fn request_context(&self) -> Result<BotRequestContext, String> {
+        let inner = self.inner.lock().map_err(|e| e.to_string())?;
+        if inner.status != BotStatus::Running {
+            return Err("bot is not running".to_string());
+        }
+        let env_path = inner
+            .env_path
+            .clone()
+            .ok_or("bot env path missing")?;
+        drop(inner);
+
+        let env_vars = read_env_file_pairs(&env_path)?;
+        let admin_enabled = env_vars
+            .get("EVPOLY_ADMIN_API_ENABLE")
+            .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        if !admin_enabled {
+            return Err("bot admin api is not enabled".to_string());
+        }
+
+        let bind = env_vars
+            .get("EVPOLY_ADMIN_API_BIND")
+            .or_else(|| env_vars.get("EVPOLY_ADMIN_BIND"))
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "127.0.0.1:8787".to_string());
+        let base_url = if bind.starts_with("http://") || bind.starts_with("https://") {
+            bind
+        } else {
+            format!("http://{bind}")
+        };
+
+        Ok(BotRequestContext {
+            base_url,
+            auth_token: env_vars
+                .get("EVPOLY_ADMIN_API_TOKEN")
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+        })
     }
 
     fn save_last_state(&self, was_running: bool, simulation: bool) {
@@ -445,4 +494,111 @@ fn write_debug_line(path: &PathBuf, content: &str) {
     {
         let _ = file.write_all(content.as_bytes());
     }
+}
+
+pub async fn send_bot_request(
+    ctx: BotRequestContext,
+    method: String,
+    path: String,
+    query: Option<Value>,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let method =
+        Method::from_bytes(method.trim().as_bytes()).map_err(|e| format!("invalid method: {e}"))?;
+    let clean_path = if path.trim().starts_with('/') {
+        path.trim().to_string()
+    } else {
+        format!("/{}", path.trim())
+    };
+    let url = format!("{}{}", ctx.base_url, clean_path);
+
+    let client = reqwest::Client::new();
+    let mut request = client.request(method.clone(), &url);
+    if let Some(token) = ctx.auth_token {
+        if !token.trim().is_empty() {
+            request = request.header("x-evpoly-admin-token", token);
+        }
+    }
+    if let Some(query_value) = query {
+        if let Some(query_obj) = query_value.as_object() {
+            let query_pairs = query_obj
+                .iter()
+                .filter_map(|(k, v)| json_value_to_query_pair(k, v))
+                .collect::<Vec<_>>();
+            if !query_pairs.is_empty() {
+                request = request.query(&query_pairs);
+            }
+        }
+    }
+    if method != Method::GET {
+        if let Some(body_value) = body {
+            request = request.json(&body_value);
+        }
+    }
+
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("bot request failed: {e}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|e| format!("bot response read failed: {e}"))?;
+
+    let payload = if text.trim().is_empty() {
+        Value::Object(Map::new())
+    } else {
+        serde_json::from_str::<Value>(&text).unwrap_or_else(|_| {
+            let mut m = Map::new();
+            m.insert("raw".to_string(), Value::String(text));
+            Value::Object(m)
+        })
+    };
+
+    if !status.is_success() {
+        return Err(format!(
+            "bot api {} {} -> {}: {}",
+            method, clean_path, status, payload
+        ));
+    }
+    Ok(payload)
+}
+
+fn json_value_to_query_pair(key: &str, value: &Value) -> Option<(String, String)> {
+    if value.is_null() {
+        return None;
+    }
+    if let Some(s) = value.as_str() {
+        return Some((key.to_string(), s.to_string()));
+    }
+    if let Some(b) = value.as_bool() {
+        return Some((key.to_string(), b.to_string()));
+    }
+    if let Some(n) = value.as_i64() {
+        return Some((key.to_string(), n.to_string()));
+    }
+    if let Some(n) = value.as_u64() {
+        return Some((key.to_string(), n.to_string()));
+    }
+    if let Some(n) = value.as_f64() {
+        return Some((key.to_string(), n.to_string()));
+    }
+    if let Some(arr) = value.as_array() {
+        let joined = arr
+            .iter()
+            .filter_map(|item| match item {
+                Value::String(s) => Some(s.clone()),
+                Value::Number(n) => Some(n.to_string()),
+                Value::Bool(b) => Some(b.to_string()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        if joined.is_empty() {
+            return None;
+        }
+        return Some((key.to_string(), joined));
+    }
+    Some((key.to_string(), value.to_string()))
 }

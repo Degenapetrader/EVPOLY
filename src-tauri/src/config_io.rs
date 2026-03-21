@@ -197,6 +197,17 @@ pub fn generate_env_file(
         normalized_mm_market_mode(&env_map),
     );
 
+    if env_map
+        .get("EVPOLY_ADMIN_API_TOKEN")
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        env_map.insert("EVPOLY_ADMIN_API_ENABLE".into(), "true".to_string());
+        env_map
+            .entry("EVPOLY_ADMIN_API_BIND".into())
+            .or_insert_with(|| "127.0.0.1:8787".to_string());
+    }
+
     let mut output = String::new();
     let mut written_keys: HashSet<String> = HashSet::new();
 

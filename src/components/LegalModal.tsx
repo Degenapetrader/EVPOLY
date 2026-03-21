@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { open } from "@tauri-apps/plugin-shell";
+import { InfoPill } from "./InfoPill";
 
 const STORAGE_KEY = "evpoly_legal_accepted";
 
@@ -16,68 +17,92 @@ export function LegalModal({ onAccept }: { onAccept: () => void }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
-      <div className="w-full max-w-lg mx-4 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-6">
-        <h2 className="text-xl font-semibold text-[var(--text-primary)] mb-4">
-          Terms of Use & Risk Disclaimer
-        </h2>
+    <div className="fixed inset-0 z-50 bg-[rgba(5,8,12,0.84)] backdrop-blur-md">
+      <div className="mx-auto flex min-h-[100dvh] max-w-4xl items-center px-5 py-6 lg:px-8">
+        <div className="w-full overflow-hidden rounded-[32px] border border-[var(--border)] bg-[linear-gradient(180deg,rgba(18,25,36,0.98),rgba(12,17,25,0.98))] shadow-[var(--shadow-soft)]">
+          <div className="grid lg:grid-cols-[minmax(0,0.88fr)_minmax(0,1.12fr)]">
+            <div className="border-b border-[var(--border)] px-6 py-6 lg:border-b-0 lg:border-r lg:px-8 lg:py-8">
+              <div className="flex items-center gap-3">
+                <img src="/logo.png" alt="EVPoly" className="h-10 w-auto" />
+                <InfoPill tone="warning">Before you continue</InfoPill>
+              </div>
+              <div className="mt-8">
+                <div className="text-xs uppercase tracking-[0.12em] text-[var(--text-muted)]">
+                  Terms and risk
+                </div>
+                <h2 className="mt-3 text-[clamp(1.8rem,1.5rem+1vw,2.8rem)] font-semibold tracking-[-0.05em] text-[var(--text-primary)]">
+                  Read this once, then continue with a clear head.
+                </h2>
+                <p className="mt-4 max-w-md text-base leading-7 text-[var(--text-secondary)]">
+                  EVPoly is experimental trading software. You stay in control, and you accept the
+                  risk of using it.
+                </p>
+              </div>
 
-        <div className="text-sm text-[var(--text-secondary)] space-y-3 mb-6 max-h-60 overflow-y-auto pr-2">
-          <p>
-            This software is experimental and provided "as-is" without warranty
-            of any kind. By using this application, you acknowledge that:
-          </p>
-          <ul className="list-disc pl-5 space-y-2">
-            <li>
-              Trading digital assets involves substantial risk of loss. You may
-              lose some or all of your invested capital.
-            </li>
-            <li>
-              The developers of this software are not financial advisors. Nothing
-              in this application constitutes financial, investment, or trading
-              advice.
-            </li>
-            <li>
-              You are solely responsible for all trading decisions and outcomes
-              resulting from the use of this software.
-            </li>
-            <li>
-              Past performance is not indicative of future results. Simulated
-              results do not guarantee live performance.
-            </li>
-          </ul>
+              <div className="mt-8 space-y-3">
+                <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4 text-sm text-[var(--text-secondary)]">
+                  Trading can lose money quickly. Only trade with risk you understand and accept.
+                </div>
+                <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4 text-sm text-[var(--text-secondary)]">
+                  Nothing in the app is financial advice. You are responsible for every order and every outcome.
+                </div>
+              </div>
+            </div>
+
+            <div className="px-6 py-6 lg:px-8 lg:py-8">
+              <div className="space-y-4 text-sm leading-7 text-[var(--text-secondary)]">
+                <p>
+                  By using EVPoly, you confirm that you understand the software is provided as-is and
+                  that live trading always carries real financial risk.
+                </p>
+                <ul className="space-y-3">
+                  <li className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3">
+                    You may lose some or all of the capital you trade with.
+                  </li>
+                  <li className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3">
+                    Simulated results do not guarantee live results.
+                  </li>
+                  <li className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3">
+                    You are solely responsible for your trading decisions and their consequences.
+                  </li>
+                </ul>
+              </div>
+
+              <div className="mt-6 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() =>
+                    open("https://github.com/Degenapetrader/EVPOLY/blob/desktop/TERMS_OF_SERVICE.md")
+                  }
+                  className="ui-button"
+                >
+                  View full terms
+                </button>
+              </div>
+
+              <label className="mt-6 flex cursor-pointer items-start gap-3 rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4">
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(event) => setChecked(event.target.checked)}
+                  className="mt-1 h-4 w-4 rounded border-[var(--border)] bg-[var(--bg-tertiary)] accent-[var(--accent)]"
+                />
+                <span className="text-sm text-[var(--text-primary)]">
+                  I have read and accept the terms and understand the risks of using this software.
+                </span>
+              </label>
+
+              <button
+                type="button"
+                onClick={handleAccept}
+                disabled={!checked}
+                className="ui-button ui-button--primary mt-6 w-full justify-center"
+              >
+                Accept and Continue
+              </button>
+            </div>
+          </div>
         </div>
-
-        <button
-          onClick={() =>
-            open(
-              "https://github.com/Degenapetrader/EVPOLY/blob/desktop/TERMS_OF_SERVICE.md"
-            )
-          }
-          className="text-sm text-[var(--accent)] hover:underline mb-4 block"
-        >
-          View full Terms of Service
-        </button>
-
-        <label className="flex items-center gap-3 mb-5 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={checked}
-            onChange={(e) => setChecked(e.target.checked)}
-            className="w-4 h-4 rounded border-[var(--border)] bg-[var(--bg-tertiary)] accent-[var(--accent)]"
-          />
-          <span className="text-sm text-[var(--text-primary)]">
-            I have read and accept the terms
-          </span>
-        </label>
-
-        <button
-          onClick={handleAccept}
-          disabled={!checked}
-          className="w-full py-2.5 rounded-lg font-medium text-sm transition-colors bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white disabled:opacity-40 disabled:cursor-not-allowed"
-        >
-          Accept & Continue
-        </button>
       </div>
     </div>
   );

@@ -24,25 +24,25 @@ export function StatusBadge({ status }: { status: BotStatus | string }) {
     : isUnknown
     ? "Unknown"
     : "Stopped";
-  const colorClass = isRunning
-    ? "text-[var(--green)]"
+  const toneClass = isRunning
+    ? "info-pill--success"
     : isStarting || isStopping
-    ? "text-[var(--yellow)]"
+    ? "info-pill--warning"
     : isUnknown
-    ? "text-[var(--text-secondary)]"
-    : "text-[var(--red)]";
+    ? ""
+    : "info-pill--danger";
   const dotClass = isRunning
-    ? "bg-[var(--green)] shadow-[0_0_6px_var(--green)]"
+    ? "bg-[var(--green)]"
     : isStarting || isStopping
-    ? "bg-[var(--yellow)] shadow-[0_0_6px_var(--yellow)]"
+    ? "bg-[var(--yellow)]"
     : isUnknown
     ? "bg-[var(--text-secondary)]"
     : "bg-[var(--red)]";
 
   return (
-    <span className="inline-flex items-center gap-2 text-sm font-medium">
+    <span className={`info-pill ${toneClass}`.trim()}>
       <span className={`w-2 h-2 rounded-full ${dotClass}`} />
-      <span className={colorClass}>{label}</span>
+      <span>{label}</span>
     </span>
   );
 }

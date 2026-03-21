@@ -61,13 +61,11 @@ export function ProfileSwitcher({
     <div ref={ref} className="relative">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors text-sm"
+        className="info-pill"
       >
-        <span className="text-[var(--text-primary)]">
-          {active?.name || "No Profile"}
-        </span>
+        <span>{active?.name || "No Profile"}</span>
         {active && (
-          <span className="text-[var(--text-secondary)] text-xs">
+          <span className="text-xs text-[var(--text-secondary)] mono-data">
             {truncateAddress(active.wallet_address)}
           </span>
         )}
@@ -89,7 +87,7 @@ export function ProfileSwitcher({
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 w-64 bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg shadow-xl z-40 overflow-hidden">
+        <div className="absolute right-0 top-full mt-2 w-72 surface-panel z-40 overflow-hidden">
           {profiles.map((p) => (
             <button
               key={p.id}
@@ -103,7 +101,7 @@ export function ProfileSwitcher({
               <span className="text-sm text-[var(--text-primary)]">
                 {p.name}
               </span>
-              <span className="text-xs text-[var(--text-secondary)]">
+              <span className="text-xs text-[var(--text-secondary)] mono-data">
                 {truncateAddress(p.wallet_address)}
               </span>
             </button>

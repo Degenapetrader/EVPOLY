@@ -1,21 +1,14 @@
 import {
   useState,
   useEffect,
-  useRef,
   useCallback,
-  useLayoutEffect,
 } from "react";
-import { useNavigate } from "react-router-dom";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from "recharts";
 import { check } from "@tauri-apps/plugin-updater";
+import { AppShell } from "../components/AppShell";
+import { EmptyState } from "../components/EmptyState";
+import { InfoPill } from "../components/InfoPill";
+import { LogsDrawer } from "../components/LogsDrawer";
+import { SectionPanel } from "../components/SectionPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { ProfileSwitcher } from "../components/ProfileSwitcher";
 import { UpdateBanner } from "../components/UpdateBanner";
@@ -23,42 +16,24 @@ import { useBotStatus } from "../hooks/useBotStatus";
 import { useTradeData } from "../hooks/useTradeData";
 import { useWalletBalance } from "../hooks/useWalletBalance";
 import {
+  type BotConfig,
+  type UiDashboardSummary,
+  type UiStrategyState,
+  botApiRequest,
   startBot,
   stopBot,
   restartBot,
-  getLogLines,
   getActiveProfileId,
   getSavedConfig,
-  openLogsFolder,
-  type LogLine,
 } from "../lib/tauri-commands";
-
-function sameLogLines(a: LogLine[], b: LogLine[]): boolean {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (
-      a[i].timestamp !== b[i].timestamp ||
-      a[i].level !== b[i].level ||
-      a[i].content !== b[i].content
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function formatLatency(ms: number | null | undefined): string {
-  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
-    return "--";
-  }
-  if (ms < 1000) {
-    return `${Math.round(ms)}ms`;
-  }
-  if (ms < 10_000) {
-    return `${(ms / 1000).toFixed(2)}s`;
-  }
-  return `${(ms / 1000).toFixed(1)}s`;
-}
+import {
+  buildDashboardViewModel,
+  describePositionPrices,
+  describeTradeFill,
+  formatClock,
+  formatCurrency,
+  formatQuantity,
+} from "../lib/ui-adapters";
 
 function StatCard({
   label,
@@ -70,20 +45,23 @@ function StatCard({
   color?: string;
 }) {
   return (
-    <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-4 py-3">
-      <div className="text-xs text-[var(--text-secondary)] mb-1">{label}</div>
-      <div
-        className="text-xl font-semibold"
-        style={{ color: color || "var(--text-primary)" }}
-      >
-        {value}
+    <div className="surface-panel">
+      <div className="surface-panel__body pt-[var(--space-5)]">
+        <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)] mb-2">
+          {label}
+        </div>
+        <div
+          className="text-2xl font-semibold mono-data"
+          style={{ color: color || "var(--text-primary)" }}
+        >
+          {value}
+        </div>
       </div>
     </div>
   );
 }
 
 export function Dashboard() {
-  const navigate = useNavigate();
   const { status, isRunning, errorMessage } = useBotStatus();
   const {
     stats,
@@ -102,20 +80,23 @@ export function Dashboard() {
   } = useWalletBalance();
 
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
-  const [logs, setLogs] = useState<LogLine[]>([]);
+  const [savedConfig, setSavedConfig] = useState<BotConfig | null>(null);
   const [simulation, setSimulation] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateDownloading, setUpdateDownloading] = useState(false);
-  const pendingUpdateRef = useRef<Awaited<ReturnType<typeof check>> | null>(null);
-  const logRef = useRef<HTMLDivElement>(null);
-  const stickLogToBottomRef = useRef(true);
+  const [pendingUpdate, setPendingUpdate] =
+    useState<Awaited<ReturnType<typeof check>> | null>(null);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [uiSummary, setUiSummary] = useState<UiDashboardSummary | null>(null);
+  const [uiStrategies, setUiStrategies] = useState<UiStrategyState[]>([]);
 
   const loadSimulationForProfile = useCallback(async (profileId: string | null) => {
     if (!profileId) return;
     try {
       const saved = await getSavedConfig(profileId);
+      setSavedConfig(saved);
       setSimulation(saved.simulation);
     } catch {
       // keep existing simulation mode
@@ -136,54 +117,52 @@ export function Dashboard() {
       try {
         const update = await check();
         if (update) {
-          pendingUpdateRef.current = update;
+          setPendingUpdate(update);
           setUpdateVersion(update.version);
         } else {
-          pendingUpdateRef.current = null;
+          setPendingUpdate(null);
           setUpdateVersion(null);
         }
       } catch {
-        pendingUpdateRef.current = null;
+        setPendingUpdate(null);
         setUpdateVersion(null);
       }
     })();
   }, []);
 
-  const pollLogs = useCallback(async () => {
-    try {
-      const node = logRef.current;
-      if (node) {
-        const distanceFromBottom =
-          node.scrollHeight - node.scrollTop - node.clientHeight;
-        stickLogToBottomRef.current = distanceFromBottom < 16;
-      }
-      const lines = await getLogLines(50);
-      setLogs((prev) => (sameLogLines(prev, lines) ? prev : lines));
-    } catch {
-      // ignore
+  const loadBotUi = useCallback(async () => {
+    if (!isRunning) {
+      setUiSummary(null);
+      setUiStrategies([]);
+      return;
     }
-  }, []);
+    try {
+      const [summaryResponse, strategiesResponse] = await Promise.all([
+        botApiRequest<{ summary?: UiDashboardSummary }>("GET", "/ui/summary"),
+        botApiRequest<{ strategies?: UiStrategyState[] }>("GET", "/ui/strategies"),
+      ]);
+      setUiSummary(summaryResponse.summary ?? null);
+      setUiStrategies(
+        Array.isArray(strategiesResponse.strategies)
+          ? strategiesResponse.strategies
+          : []
+      );
+    } catch {
+      setUiSummary(null);
+      setUiStrategies([]);
+    }
+  }, [isRunning]);
 
   useEffect(() => {
-    pollLogs();
-    const interval = setInterval(pollLogs, 3000);
-    return () => clearInterval(interval);
-  }, [pollLogs]);
-
-  useLayoutEffect(() => {
-    if (logRef.current) {
-      if (stickLogToBottomRef.current) {
-        logRef.current.scrollTop = logRef.current.scrollHeight;
-      }
+    if (!isRunning) {
+      setUiSummary(null);
+      setUiStrategies([]);
+      return;
     }
-  }, [logs]);
-
-  const handleLogScroll = useCallback(() => {
-    const node = logRef.current;
-    if (!node) return;
-    const distanceFromBottom = node.scrollHeight - node.scrollTop - node.clientHeight;
-    stickLogToBottomRef.current = distanceFromBottom < 16;
-  }, []);
+    void loadBotUi();
+    const timer = setInterval(() => void loadBotUi(), 4000);
+    return () => clearInterval(timer);
+  }, [isRunning, loadBotUi]);
 
   const getErrorText = (err: unknown, fallback: string): string => {
     if (typeof err === "string" && err.trim()) return err;
@@ -229,25 +208,16 @@ export function Dashboard() {
 
   const handleUpdate = async () => {
     if (updateDownloading) return;
-    const update = pendingUpdateRef.current;
-    if (!update) return;
+    if (!pendingUpdate) return;
     setUpdateDownloading(true);
     try {
-      await update.downloadAndInstall();
+      await pendingUpdate.downloadAndInstall();
       setUpdateVersion(null);
-      pendingUpdateRef.current = null;
+      setPendingUpdate(null);
     } catch {
       // keep banner visible for retry
     }
     setUpdateDownloading(false);
-  };
-
-  const handleOpenLogsFolder = async () => {
-    try {
-      await openLogsFolder();
-    } catch (err) {
-      console.error("Failed to open logs folder", err);
-    }
   };
 
   const displayError =
@@ -259,88 +229,76 @@ export function Dashboard() {
     await Promise.all([refreshTradeData(), refreshBalance()]);
   };
 
-  const pnlValue = stats?.total_pnl ?? 0;
+  const dashboardView = buildDashboardViewModel({
+    isRunning,
+    displayError,
+    positions,
+    trades,
+    simulation,
+    savedConfig,
+    stats,
+    uiSummary,
+    uiStrategies,
+  });
   const pnlColor =
-    pnlValue >= 0 ? "var(--green)" : "var(--red)";
+    dashboardView.pnlValue >= 0 ? "var(--green)" : "var(--red)";
 
-  const chartData = stats?.pnl_history ?? [];
-  const avgAckLatency = stats?.ack_sample_count
-    ? formatLatency(stats.avg_ack_latency_ms)
-    : "--";
+  const railItems = [
+    { label: "Dashboard", to: "/dashboard" },
+    { label: "Manual Trade", to: "/manual" },
+    { label: "Settings", to: "/config" },
+    { label: "Open Logs", onClick: () => setLogsOpen(true) },
+  ];
 
   return (
-    <div className="h-full bg-[var(--bg-primary)] flex flex-col overflow-hidden">
-      <UpdateBanner
-        version={updateDownloading ? "Downloading..." : updateVersion}
-        onUpdate={handleUpdate}
-      />
-
-      {/* Top Bar */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
-        <img src="/logo.png" alt="EVPoly" className="h-8" />
-        <div className="flex items-center gap-3">
+    <AppShell
+      railSubtitle="Trading desk"
+      railItems={railItems}
+      railChildren={
+        <SectionPanel title="Bot Status" subtitle="The main screen stays focused on trading, not technical noise.">
+          <div className="flex flex-wrap items-center gap-3">
+            <StatusBadge status={status} />
+            <InfoPill tone={simulation ? "warning" : "success"}>
+              {simulation ? "Dry Run" : "Live"}
+            </InfoPill>
+            {activeProfileId ? (
+              <InfoPill tone="accent">Profile loaded</InfoPill>
+            ) : null}
+          </div>
+        </SectionPanel>
+      }
+      eyebrow="Today"
+      title="Trading at a Glance"
+      description="Minimal trading-first workspace for bot state, positions, and recent order flow."
+      meta={
+        <>
+          <StatusBadge status={status} />
+          <InfoPill tone={simulation ? "warning" : "success"}>
+            {simulation ? "Dry Run" : "Live Trading"}
+          </InfoPill>
           <ProfileSwitcher
             activeProfileId={activeProfileId}
             onSwitch={(id) => {
               void handleProfileSwitch(id);
             }}
           />
-          <button
-            onClick={() => navigate("/manual")}
-            className="px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors text-xs text-[var(--text-primary)]"
-            title="Manual Trading"
-          >
-            Manual
-          </button>
-          <button
-            onClick={() => navigate("/config")}
-            className="p-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
-            title="Settings"
-          >
-            <svg
-              className="w-5 h-5 text-[var(--text-secondary)]"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.325.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.241-.438.613-.43.992a7.723 7.723 0 010 .255c-.008.378.137.75.43.991l1.004.827c.424.35.534.955.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.47 6.47 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.281c-.09.543-.56.94-1.11.94h-2.594c-.55 0-1.019-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.991a6.932 6.932 0 010-.255c.007-.38-.138-.751-.43-.992l-1.004-.827a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.086.22-.128.332-.183.582-.495.644-.869l.214-1.28z"
-              />
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={1.5}
-                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"
-              />
-            </svg>
-          </button>
-        </div>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6 space-y-4">
-        {/* Status + Controls */}
-        <div className="flex items-center justify-between bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-4 py-3">
-          <div className="flex items-center gap-4">
-            <StatusBadge status={status} />
-            <span
-              className={`text-xs px-2 py-0.5 rounded font-medium ${
-                simulation
-                  ? "bg-[var(--yellow)]/15 text-[var(--yellow)]"
-                  : "bg-[var(--green)]/15 text-[var(--green)]"
-              }`}
-            >
-              {simulation ? "Dry Run" : "Live"}
-            </span>
-          </div>
+        </>
+      }
+      banner={
+        <UpdateBanner
+          version={updateDownloading ? "Downloading..." : updateVersion}
+          onUpdate={handleUpdate}
+        />
+      }
+      contentClassName="page-stack"
+    >
+      <SectionPanel title="Bot Control" subtitle="Simple actions only. Use logs only when you need deeper troubleshooting.">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <button
               onClick={() => setSimulation(!simulation)}
               disabled={isRunning}
-              className="px-3 py-1.5 text-xs rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              className="ui-button text-sm"
             >
               {simulation ? "Switch to Live" : "Switch to Dry Run"}
             </button>
@@ -348,7 +306,7 @@ export function Dashboard() {
               <button
                 onClick={handleStart}
                 disabled={actionLoading}
-                className="px-4 py-1.5 text-xs rounded-lg font-medium bg-[var(--green)] hover:bg-[var(--green)]/80 text-white transition-colors disabled:opacity-40"
+                className="ui-button ui-button--primary text-sm"
               >
                 Start
               </button>
@@ -357,334 +315,242 @@ export function Dashboard() {
                 <button
                   onClick={handleRestart}
                   disabled={actionLoading}
-                  className="px-4 py-1.5 text-xs rounded-lg font-medium bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white transition-colors disabled:opacity-40"
+                  className="ui-button ui-button--accent text-sm"
                 >
                   Restart
                 </button>
                 <button
                   onClick={handleStop}
                   disabled={actionLoading}
-                  className="px-4 py-1.5 text-xs rounded-lg font-medium bg-[var(--red)] hover:bg-[var(--red)]/80 text-white transition-colors disabled:opacity-40"
+                  className="ui-button ui-button--danger text-sm"
                 >
                   Stop
                 </button>
               </>
             )}
           </div>
-        </div>
-        {displayError ? (
-          <div className="text-xs text-[var(--red)] bg-[var(--red)]/10 border border-[var(--red)]/40 rounded-lg px-3 py-2">
-            {displayError}
-          </div>
-        ) : null}
-        {!displayError && (tradeStale || balanceStale) ? (
-          <div className="text-xs text-[var(--yellow)] bg-[var(--yellow)]/10 border border-[var(--yellow)]/40 rounded-lg px-3 py-2">
-            Data is stale. Last known values are shown until backend refresh recovers.
-          </div>
-        ) : null}
-
-        {/* Stats Row */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
-          <StatCard
-            label="Total PnL"
-            value={`$${pnlValue.toFixed(2)}`}
-            color={pnlColor}
-          />
-          <StatCard
-            label="Win Rate"
-            value={`${(stats?.win_rate ?? 0).toFixed(1)}%`}
-          />
-          <StatCard
-            label="Total Trades"
-            value={String(stats?.total_trades ?? 0)}
-          />
-          <StatCard
-            label="Avg Ack Latency"
-            value={avgAckLatency}
-          />
-          <StatCard
-            label="USDC Balance"
-            value={`$${balance.toFixed(2)}`}
-          />
-        </div>
-
-        {/* PnL Chart */}
-        <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg p-4">
-          <div className="text-xs text-[var(--text-secondary)] mb-3">
-            PnL Over Time
-          </div>
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="var(--border)"
-                />
-                <XAxis
-                  dataKey="timestamp"
-                  tick={{ fill: "var(--text-secondary)", fontSize: 11 }}
-                  stroke="var(--border)"
-                  tickFormatter={(v: string) => {
-                    const d = new Date(v);
-                    return `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
-                  }}
-                />
-                <YAxis
-                  tick={{ fill: "var(--text-secondary)", fontSize: 11 }}
-                  stroke="var(--border)"
-                  tickFormatter={(v: number) => `$${v}`}
-                />
-                <Tooltip
-                  contentStyle={{
-                    background: "var(--bg-tertiary)",
-                    border: "1px solid var(--border)",
-                    borderRadius: 8,
-                    fontSize: 12,
-                  }}
-                  labelStyle={{ color: "var(--text-secondary)" }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="pnl"
-                  stroke="var(--accent)"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Tables */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-          {/* Open Positions */}
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-[var(--border)]">
-              <span className="text-sm font-medium text-[var(--text-primary)]">
-                Open Positions
-              </span>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-[var(--text-secondary)] border-b border-[var(--border)]">
-                    <th className="px-4 py-2 font-medium">Market</th>
-                    <th className="px-4 py-2 font-medium">Side</th>
-                    <th className="px-4 py-2 font-medium text-right">Size</th>
-                    <th className="px-4 py-2 font-medium text-right">Entry</th>
-                    <th className="px-4 py-2 font-medium text-right">Current</th>
-                    <th className="px-4 py-2 font-medium text-right">Realized</th>
-                    <th className="px-4 py-2 font-medium text-right">Unrealized</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {positions.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={7}
-                        className="px-4 py-6 text-center text-[var(--text-secondary)]"
-                      >
-                        No open positions
-                      </td>
-                    </tr>
-                  ) : (
-                    positions.map((pos, i) => (
-                      <tr
-                        key={i}
-                        className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-tertiary)] transition-colors"
-                      >
-                        <td className="px-4 py-2 text-[var(--text-primary)]">
-                          {pos.market}
-                        </td>
-                        <td className="px-4 py-2">
-                          <span
-                            className={
-                              pos.side === "long" || pos.side === "buy"
-                                ? "text-[var(--green)]"
-                                : "text-[var(--red)]"
-                            }
-                          >
-                            {pos.side.toUpperCase()}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2 text-right text-[var(--text-primary)]">
-                          {pos.size.toFixed(4)}
-                        </td>
-                        <td className="px-4 py-2 text-right text-[var(--text-secondary)]">
-                          ${pos.entry_price.toFixed(2)}
-                        </td>
-                        <td className="px-4 py-2 text-right text-[var(--text-secondary)]">
-                          {typeof pos.current_price === "number"
-                            ? `$${pos.current_price.toFixed(2)}`
-                            : "N/A"}
-                        </td>
-                        <td
-                          className="px-4 py-2 text-right font-medium"
-                          style={{
-                            color:
-                              pos.realized_pnl >= 0 ? "var(--green)" : "var(--red)",
-                          }}
-                        >
-                          ${pos.realized_pnl.toFixed(2)}
-                        </td>
-                        <td
-                          className="px-4 py-2 text-right font-medium"
-                          style={{
-                            color:
-                              (pos.unrealized_pnl ?? 0) >= 0
-                                ? "var(--green)"
-                                : "var(--red)",
-                          }}
-                        >
-                          {typeof pos.unrealized_pnl === "number"
-                            ? `$${pos.unrealized_pnl.toFixed(2)}`
-                            : "N/A"}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Recent Trades */}
-          <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg overflow-hidden">
-            <div className="px-4 py-3 border-b border-[var(--border)]">
-              <span className="text-sm font-medium text-[var(--text-primary)]">
-                Recent Trades
-              </span>
-            </div>
-            <div className="overflow-x-auto max-h-64 overflow-y-auto">
-              <table className="w-full text-xs">
-                <thead className="sticky top-0 bg-[var(--bg-secondary)]">
-                  <tr className="text-left text-[var(--text-secondary)] border-b border-[var(--border)]">
-                    <th className="px-4 py-2 font-medium">Time</th>
-                    <th className="px-4 py-2 font-medium">Market</th>
-                    <th className="px-4 py-2 font-medium">Side</th>
-                    <th className="px-4 py-2 font-medium text-right">Size</th>
-                    <th className="px-4 py-2 font-medium text-right">Price</th>
-                    <th className="px-4 py-2 font-medium text-right">
-                      Outcome
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {trades.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={6}
-                        className="px-4 py-6 text-center text-[var(--text-secondary)]"
-                      >
-                        No recent trades
-                      </td>
-                    </tr>
-                  ) : (
-                    trades.map((t) => (
-                      <tr
-                        key={t.id}
-                        className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-tertiary)] transition-colors"
-                      >
-                        <td className="px-4 py-2 text-[var(--text-secondary)]">
-                          {new Date(t.timestamp).toLocaleTimeString()}
-                        </td>
-                        <td className="px-4 py-2 text-[var(--text-primary)]">
-                          {t.market}
-                        </td>
-                        <td className="px-4 py-2">
-                          <span
-                            className={
-                              t.side === "long" || t.side === "buy"
-                                ? "text-[var(--green)]"
-                                : "text-[var(--red)]"
-                            }
-                          >
-                            {t.side.toUpperCase()}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2 text-right text-[var(--text-primary)]">
-                          {t.size.toFixed(4)}
-                        </td>
-                        <td className="px-4 py-2 text-right text-[var(--text-secondary)]">
-                          ${t.price.toFixed(2)}
-                        </td>
-                        <td
-                          className="px-4 py-2 text-right font-medium"
-                          style={{
-                            color:
-                              t.outcome === "win"
-                                ? "var(--green)"
-                                : t.outcome === "loss"
-                                ? "var(--red)"
-                                : "var(--text-secondary)",
-                          }}
-                        >
-                          {t.outcome}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        {/* Log Tail */}
-        <div className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg overflow-hidden">
-          <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
-            <span className="text-sm font-medium text-[var(--text-primary)]">
-              Logs
-            </span>
-            <span className="text-xs text-[var(--text-secondary)]">
-              Last 50 lines
-            </span>
-          </div>
-          <div
-            ref={logRef}
-            onScroll={handleLogScroll}
-            className="h-48 overflow-y-auto p-4 font-mono text-xs leading-5"
-          >
-            {logs.length === 0 ? (
-              <div className="text-[var(--text-secondary)]">
-                No log output yet
-              </div>
-            ) : (
-              logs.map((line, i) => (
-                <div key={i} className="flex gap-2">
-                  <span className="text-[var(--text-secondary)] shrink-0">
-                    {new Date(line.timestamp).toLocaleTimeString()}
-                  </span>
-                  <span
-                    className={`shrink-0 w-12 text-right ${
-                      line.level === "ERROR"
-                        ? "text-[var(--red)]"
-                        : line.level === "WARN"
-                        ? "text-[var(--yellow)]"
-                        : "text-[var(--text-secondary)]"
-                    }`}
-                  >
-                    {line.level}
-                  </span>
-                  <span className="text-[var(--text-primary)]">
-                    {line.content}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="flex justify-end pb-2">
           <button
-            onClick={handleOpenLogsFolder}
-            className="text-xs text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors"
+            onClick={() => setLogsOpen(true)}
+            className="ui-button text-sm"
           >
-            Open Logs Folder
+            Open Logs
           </button>
         </div>
+      </SectionPanel>
+
+      {displayError ? (
+        <div className="inline-alert">{displayError}</div>
+      ) : null}
+      {!displayError && (tradeStale || balanceStale) ? (
+        <div className="inline-alert inline-alert--warning">
+          Data is stale. Last known values are shown until the backend refresh recovers.
+        </div>
+      ) : null}
+
+      <SectionPanel
+        title="Active Trading"
+        subtitle="Plain-English status instead of a noisy operator console."
+        actions={<InfoPill tone={dashboardView.activity.tone}>{dashboardView.activity.eyebrow}</InfoPill>}
+      >
+        <div className="page-grid page-grid--two">
+          <div className="space-y-3">
+            <div>
+              <div className="text-[clamp(1.9rem,1.55rem+0.9vw,2.5rem)] font-bold tracking-[-0.05em] leading-tight">
+                {dashboardView.activity.headline}
+              </div>
+              <p className="mt-2 max-w-2xl text-sm text-[var(--text-secondary)]">
+                {dashboardView.activity.detail}
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              {dashboardView.enabledStrategies.length === 0 ? (
+                <EmptyState
+                  title="No strategies are turned on"
+                  description="Turn on the strategies you want in Settings, then come back here to start the bot."
+                />
+              ) : (
+                dashboardView.enabledStrategies.map((strategy) => (
+                  <div
+                    key={strategy.key}
+                    className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-base font-semibold text-[var(--text-primary)]">
+                          {strategy.label}
+                        </div>
+                        <div className="mt-1 text-sm text-[var(--text-secondary)]">
+                          {strategy.summary}
+                        </div>
+                      </div>
+                      <InfoPill tone={strategy.stateTone}>{strategy.stateLabel}</InfoPill>
+                    </div>
+                    <div className="mt-3 text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                      Scope
+                    </div>
+                    <div className="mt-1 text-sm text-[var(--text-primary)]">
+                      {strategy.scopeSummary}
+                    </div>
+                    {strategy.blockerReason ? (
+                      <div className="mt-3 rounded-[14px] border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.03)] px-3 py-2 text-sm text-[var(--text-secondary)]">
+                        {strategy.blockerReason}
+                      </div>
+                    ) : null}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
+              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                Recent result
+              </div>
+              <div className="mt-2 text-xl font-semibold tracking-[-0.03em] text-[var(--text-primary)]">
+                {dashboardView.recentResult}
+              </div>
+              {dashboardView.latestTrade ? (
+                <div className="mt-2 text-sm text-[var(--text-secondary)]">
+                  Latest activity at {formatClock(dashboardView.latestTrade.timestamp)}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
+              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                If nothing happens
+              </div>
+              <div className="mt-2 text-xl font-semibold tracking-[-0.03em] text-[var(--text-primary)]">
+                {dashboardView.idleHelp}
+              </div>
+            </div>
+          </div>
+        </div>
+      </SectionPanel>
+
+      <div className="page-grid page-grid--three">
+        <StatCard
+          label="Open Positions"
+          value={String(dashboardView.openPositionsCount)}
+        />
+        <StatCard
+          label="Recent Orders"
+          value={String(dashboardView.recentOrdersCount)}
+        />
+        <StatCard
+          label="Free Balance"
+          value={formatCurrency(dashboardView.freeBalanceValue ?? balance)}
+        />
+        <StatCard
+          label="Avg Ack"
+          value={dashboardView.avgAckLatency}
+        />
+        <StatCard
+          label="Total PnL"
+          value={formatCurrency(dashboardView.pnlValue)}
+          color={pnlColor}
+        />
       </div>
-    </div>
+
+      <div className="page-grid page-grid--two">
+        <SectionPanel title="Open Positions" subtitle="What is live right now.">
+          <div className="space-y-3">
+            {positions.length === 0 ? (
+              <EmptyState title="No open positions" />
+            ) : (
+              positions.map((pos, index) => {
+                const pnl =
+                  typeof pos.unrealized_pnl === "number"
+                    ? pos.unrealized_pnl
+                    : pos.realized_pnl;
+                return (
+                  <div
+                    key={`${pos.market}-${index}`}
+                    className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <div className="text-base font-semibold text-[var(--text-primary)]">
+                          {pos.market}
+                        </div>
+                        <div className="mt-1 text-sm text-[var(--text-secondary)]">
+                          {describePositionPrices(pos)}
+                        </div>
+                      </div>
+                      <InfoPill tone={pos.side === "long" || pos.side === "buy" ? "success" : "danger"}>
+                        {pos.side.toUpperCase()}
+                      </InfoPill>
+                    </div>
+
+                      <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
+                      <div className="text-[var(--text-secondary)]">
+                        Size <span className="mono-data text-[var(--text-primary)]">{formatQuantity(pos.size)}</span>
+                      </div>
+                      <div
+                        className="mono-data font-semibold"
+                        style={{ color: pnl >= 0 ? "var(--green)" : "var(--red)" }}
+                      >
+                        {formatCurrency(pnl)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </SectionPanel>
+
+        <SectionPanel title="Recent Trades" subtitle="Latest fills and outcomes.">
+          <div className="space-y-3">
+            {trades.length === 0 ? (
+              <EmptyState title="No recent trades" />
+            ) : (
+              trades.slice(0, 8).map((trade) => {
+                const outcomeTone =
+                  trade.outcome === "win"
+                    ? "success"
+                    : trade.outcome === "loss"
+                    ? "danger"
+                    : "neutral";
+                return (
+                  <div
+                    key={trade.id}
+                    className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-base font-semibold text-[var(--text-primary)]">
+                          {trade.market}
+                        </div>
+                        <div className="mt-1 text-sm text-[var(--text-secondary)]">
+                          {describeTradeFill(trade)}
+                        </div>
+                      </div>
+                      <InfoPill tone={outcomeTone}>{trade.outcome}</InfoPill>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
+                      <div className="text-[var(--text-secondary)]">
+                        {formatClock(trade.timestamp)}
+                      </div>
+                      <div
+                        className="mono-data font-semibold"
+                        style={{ color: trade.pnl >= 0 ? "var(--green)" : "var(--red)" }}
+                      >
+                        {formatCurrency(trade.pnl)}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </SectionPanel>
+      </div>
+      <LogsDrawer open={logsOpen} mode="bot" onClose={() => setLogsOpen(false)} />
+    </AppShell>
   );
 }
+

@@ -235,6 +235,7 @@ function RunCard({
 
 export function Manual() {
   const [serviceStatus, setServiceStatus] = useState("stopped");
+  const [serviceStopping, setServiceStopping] = useState(false);
   const [simulation, setSimulation] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -285,13 +286,17 @@ export function Manual() {
     try {
       const next = await getManualServiceStatus();
       setServiceStatus(next);
+      if (!next.startsWith("running")) {
+        setServiceStopping(false);
+      }
     } catch (err) {
       setServiceStatus(`error:${String(err)}`);
+      setServiceStopping(false);
     }
   }, []);
 
   const fetchRecentMarkets = useCallback(async () => {
-    if (!serviceRunning) {
+    if (!serviceRunning || serviceStopping) {
       setRecentMarkets([]);
       return;
     }
@@ -305,10 +310,10 @@ export function Manual() {
     } catch {
       setRecentMarkets([]);
     }
-  }, [serviceRunning]);
+  }, [serviceRunning, serviceStopping]);
 
   const fetchOverview = useCallback(async () => {
-    if (!serviceRunning) return;
+    if (!serviceRunning || serviceStopping) return;
     try {
       const [healthResp, balanceResp, positionsResp, openRunsResp, closeRunsResp] =
         await Promise.all([
@@ -324,9 +329,12 @@ export function Manual() {
       setOpenRuns(parseRuns(openRunsResp));
       setCloseRuns(parseRuns(closeRunsResp));
     } catch (err) {
+      if (serviceStopping) {
+        return;
+      }
       setError(String(err));
     }
-  }, [serviceRunning]);
+  }, [serviceRunning, serviceStopping]);
 
   useEffect(() => {
     void (async () => {
@@ -348,15 +356,15 @@ export function Manual() {
   }, [refreshStatus]);
 
   useEffect(() => {
-    if (!serviceRunning) return;
+    if (!serviceRunning || serviceStopping) return;
     void fetchOverview();
     void fetchRecentMarkets();
     const timer = setInterval(() => void fetchOverview(), 4000);
     return () => clearInterval(timer);
-  }, [serviceRunning, fetchOverview, fetchRecentMarkets]);
+  }, [serviceRunning, serviceStopping, fetchOverview, fetchRecentMarkets]);
 
   useEffect(() => {
-    if (!serviceRunning) {
+    if (!serviceRunning || serviceStopping) {
       setSearchResults([]);
       setMarketSearchLoading(false);
       return;
@@ -387,7 +395,7 @@ export function Manual() {
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [marketSearch, serviceRunning]);
+  }, [marketSearch, serviceRunning, serviceStopping]);
 
   useEffect(() => {
     const nextSelectedMarket =
@@ -396,7 +404,7 @@ export function Manual() {
   }, [ticketKind, selectedOpenMarket, selectedCloseMarket]);
 
   useEffect(() => {
-    if (!serviceRunning) return;
+    if (!serviceRunning || serviceStopping) return;
     const conditionId = activeOrder.conditionId.trim();
     if (!conditionId) return;
     if (activeSelectedMarket?.condition_id === conditionId) return;
@@ -423,6 +431,7 @@ export function Manual() {
     activeOrder.conditionId,
     activeSelectedMarket,
     serviceRunning,
+    serviceStopping,
     setSelectedMarketForKind,
     ticketKind,
   ]);
@@ -443,6 +452,7 @@ export function Manual() {
     clearMessages();
     setBusy(true);
     try {
+      setServiceStopping(false);
       await startManualService(simulation);
       setNotice(`Manual service started in ${simulation ? "dry run" : "live"} mode.`);
       await refreshStatus();
@@ -458,8 +468,8 @@ export function Manual() {
     clearMessages();
     setBusy(true);
     try {
-      await stopManualService();
-      setNotice("Manual service stopped.");
+      setServiceStopping(true);
+      setServiceStatus("stopping");
       setHealth(null);
       setBalance(null);
       setPositions(null);
@@ -467,8 +477,11 @@ export function Manual() {
       setCloseRuns([]);
       setRecentMarkets([]);
       setSearchResults([]);
+      await stopManualService();
+      setNotice("Manual service stopped.");
       await refreshStatus();
     } catch (err) {
+      setServiceStopping(false);
       setError(String(err));
     } finally {
       setBusy(false);

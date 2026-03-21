@@ -25,13 +25,13 @@
   --red: #ff6b6b;
   --yellow: #f0c45b;
 
-  --space-1: clamp(0.35rem, 0.32rem + 0.15vw, 0.5rem);
-  --space-2: clamp(0.55rem, 0.5rem + 0.2vw, 0.75rem);
-  --space-3: clamp(0.8rem, 0.72rem + 0.35vw, 1rem);
-  --space-4: clamp(1rem, 0.9rem + 0.45vw, 1.25rem);
-  --space-5: clamp(1.25rem, 1.1rem + 0.7vw, 1.75rem);
-  --space-6: clamp(1.6rem, 1.4rem + 0.9vw, 2.2rem);
-  --space-7: clamp(2rem, 1.7rem + 1.2vw, 2.8rem);
+  --space-1: clamp(0.3rem, 0.28rem + 0.12vw, 0.42rem);
+  --space-2: clamp(0.48rem, 0.44rem + 0.16vw, 0.65rem);
+  --space-3: clamp(0.68rem, 0.62rem + 0.26vw, 0.88rem);
+  --space-4: clamp(0.88rem, 0.8rem + 0.35vw, 1.08rem);
+  --space-5: clamp(1.05rem, 0.95rem + 0.55vw, 1.45rem);
+  --space-6: clamp(1.35rem, 1.2rem + 0.7vw, 1.85rem);
+  --space-7: clamp(1.7rem, 1.45rem + 0.95vw, 2.35rem);
 
   --radius-sm: 14px;
   --radius-md: 18px;
@@ -39,7 +39,7 @@
 
   --app-pad: clamp(12px, 1vw, 22px);
   --rail-width: clamp(220px, 18vw, 252px);
-  --top-strip-height: clamp(84px, 10vh, 104px);
+  --top-strip-height: clamp(72px, 9vh, 90px);
   --shadow-soft: 0 24px 60px rgba(0, 0, 0, 0.28);
 }
 
@@ -95,16 +95,17 @@ a {
 }
 
 .app-shell {
-  min-height: 100dvh;
+  height: 100dvh;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-4);
   padding: var(--app-pad);
+  overflow: hidden;
 }
 
 .app-shell__main {
   min-width: 0;
-  min-height: calc(100dvh - (var(--app-pad) * 2));
+  height: calc(100dvh - (var(--app-pad) * 2));
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -113,7 +114,9 @@ a {
 .app-shell__scroll {
   min-height: 0;
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
   padding-right: 2px;
 }
 
@@ -163,14 +166,14 @@ a {
 }
 
 .app-rail__title {
-  font-size: clamp(1.85rem, 1.45rem + 1.2vw, 2.3rem);
+  font-size: clamp(1.45rem, 1.18rem + 0.9vw, 1.85rem);
   font-weight: 800;
   letter-spacing: -0.04em;
 }
 
 .app-rail__subtitle {
   color: var(--text-secondary);
-  font-size: 0.95rem;
+  font-size: 0.88rem;
 }
 
 .app-rail__nav {
@@ -249,7 +252,7 @@ a {
 }
 
 .top-strip__title {
-  font-size: clamp(1.65rem, 1.3rem + 1vw, 2.2rem);
+  font-size: clamp(1.3rem, 1.08rem + 0.75vw, 1.75rem);
   font-weight: 800;
   letter-spacing: -0.04em;
   line-height: 1.05;
@@ -257,7 +260,7 @@ a {
 
 .top-strip__description {
   color: var(--text-secondary);
-  font-size: 0.98rem;
+  font-size: 0.9rem;
   max-width: 70ch;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -294,14 +297,14 @@ a {
 }
 
 .surface-panel__title {
-  font-size: clamp(1rem, 0.96rem + 0.3vw, 1.2rem);
+  font-size: clamp(0.94rem, 0.9rem + 0.22vw, 1.08rem);
   font-weight: 700;
   letter-spacing: -0.03em;
 }
 
 .surface-panel__subtitle {
   color: var(--text-secondary);
-  font-size: 0.92rem;
+  font-size: 0.86rem;
 }
 
 .surface-panel__body {
@@ -312,13 +315,13 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 0.55rem;
-  min-height: 44px;
-  padding: 0.75rem 1rem;
+  min-height: 38px;
+  padding: 0.6rem 0.85rem;
   border-radius: 18px;
   border: 1px solid var(--border);
   background: rgba(19, 26, 35, 0.92);
   color: var(--text-primary);
-  font-size: 0.95rem;
+  font-size: 0.86rem;
   font-weight: 600;
 }
 
@@ -351,13 +354,14 @@ a {
   align-items: center;
   justify-content: center;
   gap: 0.55rem;
-  min-height: 46px;
-  padding: 0.78rem 1.1rem;
+  min-height: 40px;
+  padding: 0.66rem 0.95rem;
   border-radius: 16px;
   border: 1px solid var(--border);
   background: rgba(18, 24, 34, 0.88);
   color: var(--text-primary);
   font-weight: 600;
+  font-size: 0.9rem;
   transition:
     border-color 180ms ease,
     color 180ms ease,
@@ -473,7 +477,7 @@ a {
   margin-top: 0.45rem;
   max-width: 52ch;
   color: var(--text-secondary);
-  font-size: 0.95rem;
+  font-size: 0.88rem;
 }
 
 .logs-drawer__actions {
@@ -553,7 +557,7 @@ a {
 }
 
 .market-picker-shell__title {
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 700;
   color: var(--text-primary);
 }
@@ -562,7 +566,7 @@ a {
   margin-top: 0.3rem;
   max-width: 54ch;
   color: var(--text-secondary);
-  font-size: 0.92rem;
+  font-size: 0.86rem;
 }
 
 .market-picker-shell__search,
@@ -580,7 +584,7 @@ a {
   background: var(--bg-tertiary);
   color: var(--text-primary);
   padding: 0.9rem 1rem;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   outline: none;
   transition: border-color 180ms ease, opacity 180ms ease;
 }
@@ -623,14 +627,14 @@ a {
 }
 
 .market-picker-shell__card-title {
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   font-weight: 600;
 }
 
 .market-picker-shell__card-subtitle {
   margin-top: 0.22rem;
   color: var(--text-secondary);
-  font-size: 0.88rem;
+  font-size: 0.82rem;
 }
 
 .market-picker-shell__hint {
@@ -704,7 +708,7 @@ a {
   }
 
   .app-shell__main {
-    min-height: auto;
+    height: auto;
   }
 
   .app-shell__scroll {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppShell } from "../components/AppShell";
 import { InfoPill } from "../components/InfoPill";
 import { LogsDrawer } from "../components/LogsDrawer";
@@ -330,6 +330,7 @@ export function Config() {
   const [importPw, setImportPw] = useState("");
   const [importData, setImportData] = useState("");
   const [logsOpen, setLogsOpen] = useState(false);
+  const advancedSectionRef = useRef<HTMLDivElement | null>(null);
 
   const loadProfileConfig = async (id: string) => {
     const saved = await getSavedConfig(id);
@@ -362,6 +363,14 @@ export function Config() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (!advancedOpen) return;
+    advancedSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start",
+    });
+  }, [advancedOpen]);
 
   const ensureProfile = async (): Promise<string> => {
     if (profileId) return profileId;
@@ -807,7 +816,8 @@ export function Config() {
             </div>
           </SectionPanel>
 
-          <SectionPanel
+          <div ref={advancedSectionRef}>
+            <SectionPanel
             title="Advanced"
             subtitle="Only open this if you need raw tokens, market scope, or extra limits."
             actions={
@@ -949,7 +959,8 @@ export function Config() {
                 Advanced fields stay out of the way until you need them for deeper tuning or troubleshooting.
               </div>
             )}
-          </SectionPanel>
+            </SectionPanel>
+          </div>
         </div>
 
         <div className="page-aside space-y-[var(--space-6)] xl:sticky xl:top-[var(--space-6)]">

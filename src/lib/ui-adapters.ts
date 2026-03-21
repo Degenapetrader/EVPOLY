@@ -308,6 +308,19 @@ function strategyStateLabel(state: string, enabled: boolean): string {
   return sentenceCase(state, "Ready");
 }
 
+function looksTechnicalRecentResult(value: string): boolean {
+  return (
+    /0x[a-f0-9]{12,}/i.test(value) ||
+    /\b(BUY|SELL)\s+\d{16,}\b/.test(value) ||
+    /\b\d{24,}\b/.test(value)
+  );
+}
+
+function humanizeTradeResult(trade: Trade | null): string | null {
+  if (!trade) return null;
+  return `Recent order: ${sentenceCase(trade.side, "Trade")} ${trade.market}`;
+}
+
 export function buildDashboardViewModel({
   isRunning,
   displayError,
@@ -347,14 +360,17 @@ export function buildDashboardViewModel({
       });
 
   const latestTrade = trades[0] ?? null;
+  const preferredSummaryResult =
+    uiSummary?.recent_result && !looksTechnicalRecentResult(uiSummary.recent_result)
+      ? uiSummary.recent_result
+      : null;
   const recentResult =
-    uiSummary?.recent_result ||
-    (latestTrade
-      ? `${latestTrade.side.toUpperCase()} ${latestTrade.market}`
-      : positions.length > 0
-      ? `${positions.length} ${positions.length === 1 ? "position" : "positions"} currently open`
+    preferredSummaryResult ||
+    humanizeTradeResult(latestTrade) ||
+    (positions.length > 0
+      ? `Currently managing ${positions.length} ${positions.length === 1 ? "position" : "positions"}`
       : isRunning
-      ? "No recent orders yet"
+      ? "Watching for the next clean setup"
       : "Bot is stopped");
 
   const idleHelp = !isRunning

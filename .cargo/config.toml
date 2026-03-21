@@ -1,0 +1,15 @@
+[build]
+# This Windows machine has been crashing inside rustc/rustc_driver during
+# heavier desktop builds. Keep compilation single-threaded to lower pressure
+# and make local builds more deterministic.
+jobs = 1
+
+[env]
+# Disable incremental compilation locally on this repo to avoid reusing
+# possibly-corrupted artifacts across repeated desktop rebuilds.
+CARGO_INCREMENTAL = "0"
+# Release builds on this machine are stable only with lower codegen pressure.
+# Keep this repo on a conservative local release profile until Windows Defender
+# exclusions or a deeper machine-level fix can be applied with admin rights.
+CARGO_PROFILE_RELEASE_OPT_LEVEL = "0"
+CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"

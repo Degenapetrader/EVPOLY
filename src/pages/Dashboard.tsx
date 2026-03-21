@@ -1,87 +1,231 @@
-import {
-  useState,
-  useEffect,
-  useCallback,
-} from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { check } from "@tauri-apps/plugin-updater";
 import { AppShell } from "../components/AppShell";
 import { EmptyState } from "../components/EmptyState";
 import { InfoPill } from "../components/InfoPill";
 import { LogsDrawer } from "../components/LogsDrawer";
+import { MarketBadge } from "../components/MarketBadge";
+import { ProfileSwitcher } from "../components/ProfileSwitcher";
 import { SectionPanel } from "../components/SectionPanel";
 import { StatusBadge } from "../components/StatusBadge";
-import { ProfileSwitcher } from "../components/ProfileSwitcher";
 import { UpdateBanner } from "../components/UpdateBanner";
 import { useBotStatus } from "../hooks/useBotStatus";
-import { useTradeData } from "../hooks/useTradeData";
-import { useWalletBalance } from "../hooks/useWalletBalance";
 import {
-  type BotConfig,
+  type PortfolioHistoryRow,
+  type PortfolioOpenOrderRow,
+  type PortfolioPositionRow,
+  type TradeStats,
   type UiDashboardSummary,
-  type UiStrategyState,
   botApiRequest,
+  getActiveProfileId,
+  getPortfolioHistory,
+  getPortfolioOpenOrders,
+  getPortfolioPositions,
+  getSavedConfig,
+  getTradeStats,
+  getWalletBalance,
+  restartBot,
   startBot,
   stopBot,
-  restartBot,
-  getActiveProfileId,
-  getSavedConfig,
 } from "../lib/tauri-commands";
 import {
-  buildDashboardViewModel,
-  describePositionPrices,
-  describeTradeFill,
-  formatClock,
+  formatCents,
   formatCurrency,
-  formatQuantity,
-  humanMarketLabel,
+  formatLatency,
+  formatRelativeTime,
+  formatUsd,
 } from "../lib/ui-adapters";
 
-function StatCard({
+type PortfolioTab = "positions" | "open-orders" | "history";
+
+function TabButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`workspace-tab ${active ? "workspace-tab--active" : ""}`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function SummaryMetric({
   label,
   value,
-  color,
+  detail,
+  tone = "neutral",
 }: {
   label: string;
   value: string;
-  color?: string;
+  detail?: string;
+  tone?: "neutral" | "success" | "danger" | "accent";
 }) {
   return (
-    <div className="surface-panel">
-      <div className="surface-panel__body pt-[var(--space-5)]">
-        <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)] mb-2">
-          {label}
-        </div>
-        <div
-          className="text-[1.35rem] font-semibold mono-data"
-          style={{ color: color || "var(--text-primary)" }}
-        >
-          {value}
+    <div className="desk-metric">
+      <div className="desk-metric__label">{label}</div>
+      <div className={`desk-metric__value desk-metric__value--${tone}`}>{value}</div>
+      {detail ? <div className="desk-metric__detail">{detail}</div> : null}
+    </div>
+  );
+}
+
+function DeskButton({
+  children,
+  tone = "default",
+  onClick,
+  disabled,
+}: {
+  children: ReactNode;
+  tone?: "default" | "primary" | "danger";
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  const className =
+    tone === "primary"
+      ? "ui-button ui-button--primary"
+      : tone === "danger"
+      ? "ui-button ui-button--danger"
+      : "ui-button";
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} className={className}>
+      {children}
+    </button>
+  );
+}
+
+function PositionRow({ row }: { row: PortfolioPositionRow }) {
+  const valueTone = row.pnl_usd > 0 ? "success" : row.pnl_usd < 0 ? "danger" : "neutral";
+  return (
+    <div className="portfolio-row portfolio-row--positions">
+      <div className="portfolio-market">
+        <MarketBadge
+          title={row.market_title}
+          symbol={row.symbol}
+          imageUrl={row.image_url}
+          iconUrl={row.icon_url}
+        />
+        <div className="portfolio-market__copy">
+          <div className="portfolio-market__title">{row.market_title}</div>
+          <div className="portfolio-market__meta">
+            <InfoPill tone="accent">{row.side_label}</InfoPill>
+            <span className="mono-data">{row.shares.toFixed(row.shares >= 100 ? 0 : 2)} shares</span>
+          </div>
         </div>
       </div>
+      <div className="portfolio-cell">
+        <div className="portfolio-cell__value">
+          {formatCents(row.avg_price)}{row.current_price !== null ? ` -> ${formatCents(row.current_price)}` : ""}
+        </div>
+        <div className="portfolio-cell__label">Avg to now</div>
+      </div>
+      <div className="portfolio-cell">
+        <div className="portfolio-cell__value">{formatUsd(row.traded_usd)}</div>
+        <div className="portfolio-cell__label">Traded</div>
+      </div>
+      <div className="portfolio-cell">
+        <div className="portfolio-cell__value">{formatUsd(row.to_win_usd)}</div>
+        <div className="portfolio-cell__label">To win</div>
+      </div>
+      <div className="portfolio-cell portfolio-cell--value">
+        <div className="portfolio-cell__value">{formatUsd(row.value_usd)}</div>
+        <div className={`portfolio-cell__pnl portfolio-cell__pnl--${valueTone}`}>
+          {formatCurrency(row.pnl_usd)}
+        </div>
+      </div>
+      <div className="portfolio-action">
+        <button type="button" className="portfolio-action__button" disabled>
+          {row.action_label}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OpenOrderRow({ row }: { row: PortfolioOpenOrderRow }) {
+  return (
+    <div className="portfolio-row portfolio-row--orders">
+      <div className="portfolio-market">
+        <MarketBadge
+          title={row.market_title}
+          symbol={row.symbol}
+          imageUrl={row.image_url}
+          iconUrl={row.icon_url}
+        />
+        <div className="portfolio-market__copy">
+          <div className="portfolio-market__title">{row.market_title}</div>
+          <div className="portfolio-market__meta">
+            <span>{row.market_subtitle}</span>
+          </div>
+        </div>
+      </div>
+      <div className="portfolio-cell">
+        <div className="portfolio-cell__value">{row.order_count}</div>
+        <div className="portfolio-cell__label">Orders</div>
+      </div>
+      <div className="portfolio-cell">
+        <div className="portfolio-cell__value">{formatUsd(row.total_size_usd)}</div>
+        <div className="portfolio-cell__label">Quoted</div>
+      </div>
+      <div className="portfolio-cell">
+        <div className="portfolio-cell__value">
+          {row.updated_at ? formatRelativeTime(row.updated_at) : "--"}
+        </div>
+        <div className="portfolio-cell__label">Updated</div>
+      </div>
+      <div className="portfolio-action">
+        <button type="button" className="portfolio-action__button" disabled>
+          {row.action_label}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HistoryRow({ row }: { row: PortfolioHistoryRow }) {
+  const valueTone = row.pnl_usd > 0 ? "success" : row.pnl_usd < 0 ? "danger" : "neutral";
+  return (
+    <div className="portfolio-row portfolio-row--history">
+      <div className="portfolio-history__activity">
+        <div className="portfolio-history__badge">
+          {row.action_label === "Exit" ? "-" : "+"}
+        </div>
+        <div className="portfolio-history__label">{row.action_label}</div>
+      </div>
+      <div className="portfolio-market">
+        <MarketBadge
+          title={row.market_title}
+          symbol={row.symbol}
+          imageUrl={row.image_url}
+          iconUrl={row.icon_url}
+        />
+        <div className="portfolio-market__copy">
+          <div className="portfolio-market__title">{row.market_title}</div>
+          <div className="portfolio-market__meta">
+            <InfoPill tone="accent">{row.side_label}</InfoPill>
+            <span className="mono-data">{row.shares.toFixed(row.shares >= 100 ? 0 : 2)} shares</span>
+          </div>
+        </div>
+      </div>
+      <div className={`portfolio-cell__value portfolio-cell__pnl portfolio-cell__pnl--${valueTone}`}>
+        {formatUsd(row.value_usd)}
+      </div>
+      <div className="portfolio-cell__value">{formatRelativeTime(row.timestamp)}</div>
     </div>
   );
 }
 
 export function Dashboard() {
   const { status, isRunning, errorMessage } = useBotStatus();
-  const {
-    stats,
-    trades,
-    positions,
-    isStale: tradeStale,
-    error: tradeError,
-    refresh: refreshTradeData,
-  } =
-    useTradeData(isRunning);
-  const {
-    balance,
-    isStale: balanceStale,
-    error: balanceError,
-    refresh: refreshBalance,
-  } = useWalletBalance();
-
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
-  const [savedConfig, setSavedConfig] = useState<BotConfig | null>(null);
   const [simulation, setSimulation] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -90,17 +234,23 @@ export function Dashboard() {
   const [pendingUpdate, setPendingUpdate] =
     useState<Awaited<ReturnType<typeof check>> | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
-  const [uiSummary, setUiSummary] = useState<UiDashboardSummary | null>(null);
-  const [uiStrategies, setUiStrategies] = useState<UiStrategyState[]>([]);
+  const [workspaceTab, setWorkspaceTab] = useState<PortfolioTab>("positions");
+  const [search, setSearch] = useState("");
+  const [summary, setSummary] = useState<UiDashboardSummary | null>(null);
+  const [positions, setPositions] = useState<PortfolioPositionRow[]>([]);
+  const [openOrders, setOpenOrders] = useState<PortfolioOpenOrderRow[]>([]);
+  const [history, setHistory] = useState<PortfolioHistoryRow[]>([]);
+  const [stats, setStats] = useState<TradeStats | null>(null);
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
 
   const loadSimulationForProfile = useCallback(async (profileId: string | null) => {
     if (!profileId) return;
     try {
       const saved = await getSavedConfig(profileId);
-      setSavedConfig(saved);
       setSimulation(saved.simulation);
     } catch {
-      // keep existing simulation mode
+      // keep existing mode
     }
   }, []);
 
@@ -114,7 +264,7 @@ export function Dashboard() {
   }, [loadSimulationForProfile]);
 
   useEffect(() => {
-    (async () => {
+    void (async () => {
       try {
         const update = await check();
         if (update) {
@@ -131,39 +281,59 @@ export function Dashboard() {
     })();
   }, []);
 
-  const loadBotUi = useCallback(async () => {
+  const loadSummary = useCallback(async () => {
     if (!isRunning) {
-      setUiSummary(null);
-      setUiStrategies([]);
+      setSummary(null);
       return;
     }
     try {
-      const [summaryResponse, strategiesResponse] = await Promise.all([
-        botApiRequest<{ summary?: UiDashboardSummary }>("GET", "/ui/summary"),
-        botApiRequest<{ strategies?: UiStrategyState[] }>("GET", "/ui/strategies"),
-      ]);
-      setUiSummary(summaryResponse.summary ?? null);
-      setUiStrategies(
-        Array.isArray(strategiesResponse.strategies)
-          ? strategiesResponse.strategies
-          : []
-      );
+      const response = await botApiRequest<{ summary?: UiDashboardSummary }>("GET", "/ui/summary");
+      setSummary(response.summary ?? null);
     } catch {
-      setUiSummary(null);
-      setUiStrategies([]);
+      setSummary(null);
     }
   }, [isRunning]);
 
-  useEffect(() => {
-    if (!isRunning) {
-      setUiSummary(null);
-      setUiStrategies([]);
-      return;
+  const refreshWorkspace = useCallback(async () => {
+    const results = await Promise.allSettled([
+      getPortfolioPositions(),
+      getPortfolioOpenOrders(),
+      getPortfolioHistory(80),
+      getTradeStats(),
+      getWalletBalance(),
+    ]);
+
+    const [positionsResult, ordersResult, historyResult, statsResult, balanceResult] = results;
+
+    if (positionsResult.status === "fulfilled") {
+      setPositions(positionsResult.value);
     }
-    void loadBotUi();
-    const timer = setInterval(() => void loadBotUi(), 4000);
+    if (ordersResult.status === "fulfilled") {
+      setOpenOrders(ordersResult.value);
+    }
+    if (historyResult.status === "fulfilled") {
+      setHistory(historyResult.value);
+    }
+    if (statsResult.status === "fulfilled") {
+      setStats(statsResult.value);
+    }
+    if (balanceResult.status === "fulfilled") {
+      setWalletBalance(balanceResult.value);
+    }
+
+    const allFailed = results.every((result) => result.status === "rejected");
+    setWorkspaceError(allFailed ? "Portfolio data is not available yet." : null);
+  }, []);
+
+  useEffect(() => {
+    void refreshWorkspace();
+    void loadSummary();
+    const timer = setInterval(() => {
+      void refreshWorkspace();
+      void loadSummary();
+    }, isRunning ? 5000 : 12000);
     return () => clearInterval(timer);
-  }, [isRunning, loadBotUi]);
+  }, [isRunning, loadSummary, refreshWorkspace]);
 
   const getErrorText = (err: unknown, fallback: string): string => {
     if (typeof err === "string" && err.trim()) return err;
@@ -181,8 +351,9 @@ export function Dashboard() {
       setActionError(null);
     } catch (err) {
       setActionError(getErrorText(err, "failed to start bot"));
+    } finally {
+      setActionLoading(false);
     }
-    setActionLoading(false);
   };
 
   const handleStop = async () => {
@@ -192,8 +363,9 @@ export function Dashboard() {
       setActionError(null);
     } catch (err) {
       setActionError(getErrorText(err, "failed to stop bot"));
+    } finally {
+      setActionLoading(false);
     }
-    setActionLoading(false);
   };
 
   const handleRestart = async () => {
@@ -203,49 +375,81 @@ export function Dashboard() {
       setActionError(null);
     } catch (err) {
       setActionError(getErrorText(err, "failed to restart bot"));
+    } finally {
+      setActionLoading(false);
     }
-    setActionLoading(false);
   };
 
   const handleUpdate = async () => {
-    if (updateDownloading) return;
-    if (!pendingUpdate) return;
+    if (updateDownloading || !pendingUpdate) return;
     setUpdateDownloading(true);
     try {
       await pendingUpdate.downloadAndInstall();
       setUpdateVersion(null);
       setPendingUpdate(null);
-    } catch {
-      // keep banner visible for retry
+    } finally {
+      setUpdateDownloading(false);
     }
-    setUpdateDownloading(false);
   };
-
-  const displayError =
-    errorMessage?.trim() || actionError || tradeError || balanceError;
 
   const handleProfileSwitch = async (id: string) => {
     setActiveProfileId(id);
     await loadSimulationForProfile(id);
-    await Promise.all([refreshTradeData(), refreshBalance()]);
+    await refreshWorkspace();
   };
 
-  const dashboardView = buildDashboardViewModel({
-    isRunning,
-    displayError,
-    positions,
-    trades,
-    simulation,
-    savedConfig,
-    stats,
-    uiSummary,
-    uiStrategies,
-  });
-  const pnlColor =
-    dashboardView.pnlValue >= 0 ? "var(--green)" : "var(--red)";
+  const displayError = errorMessage?.trim() || actionError || workspaceError;
+  const positionsValue = positions.reduce((total, row) => total + row.value_usd, 0);
+  const portfolioValue = (walletBalance ?? 0) + positionsValue;
+  const enabledStrategyCount = summary?.enabled_strategies.length ?? 0;
+  const headline = summary?.headline || (isRunning ? "Watching markets" : "Trading is stopped");
+  const detail =
+    summary?.detail ||
+    (isRunning
+      ? "EVPOLY is running. Use the portfolio tabs below to inspect positions, open orders, and recent fills."
+      : "Press Start when you want EVPOLY to begin watching and trading again.");
+
+  const searchNeedle = search.trim().toLowerCase();
+  const filteredPositions = useMemo(
+    () =>
+      positions.filter((row) =>
+        [row.market_title, row.market_subtitle, row.symbol || ""]
+          .join(" ")
+          .toLowerCase()
+          .includes(searchNeedle)
+      ),
+    [positions, searchNeedle]
+  );
+  const filteredOpenOrders = useMemo(
+    () =>
+      openOrders.filter((row) =>
+        [row.market_title, row.market_subtitle, row.symbol || ""]
+          .join(" ")
+          .toLowerCase()
+          .includes(searchNeedle)
+      ),
+    [openOrders, searchNeedle]
+  );
+  const filteredHistory = useMemo(
+    () =>
+      history.filter((row) =>
+        [row.market_title, row.market_subtitle, row.side_label, row.symbol || ""]
+          .join(" ")
+          .toLowerCase()
+          .includes(searchNeedle)
+      ),
+    [history, searchNeedle]
+  );
+
+  const currentTabLabel =
+    workspaceTab === "positions"
+      ? "Search positions"
+      : workspaceTab === "open-orders"
+      ? "Search open orders"
+      : "Search history";
 
   const railItems = [
-    { label: "Dashboard", to: "/dashboard" },
+    { label: "Portfolio", to: "/dashboard" },
     { label: "Manual Trade", to: "/manual" },
     { label: "Settings", to: "/config" },
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
@@ -253,23 +457,18 @@ export function Dashboard() {
 
   return (
     <AppShell
-      railSubtitle="Trading desk"
+      railSubtitle="Desktop trading"
       railItems={railItems}
-      eyebrow="Today"
-      title="Trading at a Glance"
-      description="Minimal trading-first workspace for bot state, positions, and recent order flow."
+      eyebrow="Portfolio"
+      title="Desktop Trading Workspace"
+      description="Positions, open orders, and history in one dense workspace instead of scattered cards."
       meta={
         <>
           <StatusBadge status={status} />
           <InfoPill tone={simulation ? "warning" : "success"}>
-            {simulation ? "Dry Run" : "Live Trading"}
+            {simulation ? "Dry Run" : "Live"}
           </InfoPill>
-          <ProfileSwitcher
-            activeProfileId={activeProfileId}
-            onSwitch={(id) => {
-              void handleProfileSwitch(id);
-            }}
-          />
+          <ProfileSwitcher activeProfileId={activeProfileId} onSwitch={(id) => void handleProfileSwitch(id)} />
         </>
       }
       banner={
@@ -280,265 +479,153 @@ export function Dashboard() {
       }
       contentClassName="page-stack"
     >
-      <SectionPanel title="Bot Control" subtitle="Simple actions only. Use logs only when you need deeper troubleshooting.">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setSimulation(!simulation)}
-              disabled={isRunning}
-              className="ui-button text-sm"
-            >
+      <SectionPanel
+        title="Trading desk"
+        subtitle={detail}
+        actions={<InfoPill tone={summary?.blocker_reason ? "warning" : isRunning ? "success" : "neutral"}>{summary?.mode === "dry_run" ? "Dry Run" : isRunning ? "Watching" : "Stopped"}</InfoPill>}
+        bodyClassName="desk-panel__body"
+      >
+        <div className="desk-strip">
+          <div className="desk-strip__copy">
+            <div className="desk-strip__headline">{headline}</div>
+            <div className="desk-strip__detail">
+              {summary?.blocker_reason || "This workspace stays focused on inventory and actions, not operator noise."}
+            </div>
+          </div>
+          <div className="desk-strip__actions">
+            <DeskButton onClick={() => setSimulation((value) => !value)} disabled={isRunning}>
               {simulation ? "Switch to Live" : "Switch to Dry Run"}
-            </button>
+            </DeskButton>
             {!isRunning ? (
-              <button
-                onClick={handleStart}
-                disabled={actionLoading}
-                className="ui-button ui-button--primary text-sm"
-              >
+              <DeskButton tone="primary" onClick={handleStart} disabled={actionLoading}>
                 Start
-              </button>
+              </DeskButton>
             ) : (
               <>
-                <button
-                  onClick={handleRestart}
-                  disabled={actionLoading}
-                  className="ui-button ui-button--accent text-sm"
-                >
+                <DeskButton onClick={handleRestart} disabled={actionLoading}>
                   Restart
-                </button>
-                <button
-                  onClick={handleStop}
-                  disabled={actionLoading}
-                  className="ui-button ui-button--danger text-sm"
-                >
+                </DeskButton>
+                <DeskButton tone="danger" onClick={handleStop} disabled={actionLoading}>
                   Stop
-                </button>
+                </DeskButton>
               </>
             )}
+            <DeskButton onClick={() => setLogsOpen(true)}>Open Logs</DeskButton>
           </div>
-          <button
-            onClick={() => setLogsOpen(true)}
-            className="ui-button text-sm"
-          >
-            Open Logs
-          </button>
+        </div>
+
+        <div className="desk-metrics">
+          <SummaryMetric
+            label="Portfolio"
+            value={formatUsd(portfolioValue)}
+            detail={`${positions.length} live ${positions.length === 1 ? "position" : "positions"}`}
+          />
+          <SummaryMetric
+            label="Available to trade"
+            value={formatUsd(walletBalance)}
+            detail={enabledStrategyCount > 0 ? `${enabledStrategyCount} strategies enabled` : "No strategies enabled"}
+          />
+          <SummaryMetric
+            label="Profit / Loss"
+            value={formatUsd(stats?.total_pnl ?? summary?.total_pnl ?? 0)}
+            detail={`Avg ack ${formatLatency(summary?.avg_ack_latency_ms ?? stats?.avg_ack_latency_ms ?? null)}`}
+            tone={(stats?.total_pnl ?? summary?.total_pnl ?? 0) >= 0 ? "success" : "danger"}
+          />
         </div>
       </SectionPanel>
 
-      {displayError ? (
-        <div className="inline-alert">{displayError}</div>
-      ) : null}
-      {!displayError && (tradeStale || balanceStale) ? (
-        <div className="inline-alert inline-alert--warning">
-          Data is stale. Last known values are shown until the backend refresh recovers.
-        </div>
-      ) : null}
+      {displayError ? <div className="inline-alert">{displayError}</div> : null}
 
       <SectionPanel
-        title="Active Trading"
-        subtitle="Plain-English status instead of a noisy operator console."
-        actions={<InfoPill tone={dashboardView.activity.tone}>{dashboardView.activity.eyebrow}</InfoPill>}
+        title="Portfolio"
+        subtitle="Use the same familiar structure every trader expects: positions, open orders, and history."
+        className="workspace-panel"
+        bodyClassName="workspace-panel__body"
       >
-        <div className="page-grid page-grid--two">
-          <div className="space-y-3">
-            <div>
-              <div className="text-[clamp(1.45rem,1.18rem+0.65vw,2rem)] font-bold tracking-[-0.05em] leading-tight">
-                {dashboardView.activity.headline}
-              </div>
-              <p className="mt-2 max-w-2xl text-sm text-[var(--text-secondary)]">
-                {dashboardView.activity.detail}
-              </p>
-            </div>
-
-            <div className="space-y-3">
-              {dashboardView.enabledStrategies.length === 0 ? (
-                <EmptyState
-                  title="No strategies are turned on"
-                  description="Turn on the strategies you want in Settings, then come back here to start the bot."
-                />
-              ) : (
-                dashboardView.enabledStrategies.map((strategy) => (
-                  <div
-                    key={strategy.key}
-                    className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-base font-semibold text-[var(--text-primary)]">
-                          {strategy.label}
-                        </div>
-                        <div className="mt-1 text-sm text-[var(--text-secondary)]">
-                          {strategy.summary}
-                        </div>
-                      </div>
-                      <InfoPill tone={strategy.stateTone}>{strategy.stateLabel}</InfoPill>
-                    </div>
-                    <div className="mt-3 text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
-                      Scope
-                    </div>
-                    <div className="mt-1 text-sm text-[var(--text-primary)]">
-                      {strategy.scopeSummary}
-                    </div>
-                    {strategy.blockerReason ? (
-                      <div className="mt-3 rounded-[14px] border border-[rgba(255,255,255,0.08)] bg-[rgba(255,255,255,0.03)] px-3 py-2 text-sm text-[var(--text-secondary)]">
-                        {strategy.blockerReason}
-                      </div>
-                    ) : null}
-                  </div>
-                ))
-              )}
-            </div>
+        <div className="workspace-toolbar">
+          <div className="workspace-tabs">
+            <TabButton label="Positions" active={workspaceTab === "positions"} onClick={() => setWorkspaceTab("positions")} />
+            <TabButton label="Open orders" active={workspaceTab === "open-orders"} onClick={() => setWorkspaceTab("open-orders")} />
+            <TabButton label="History" active={workspaceTab === "history"} onClick={() => setWorkspaceTab("history")} />
           </div>
-
-          <div className="space-y-3">
-            <div className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
-              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
-                Recent result
-              </div>
-              <div className="mt-2 text-[1.25rem] font-semibold tracking-[-0.03em] text-[var(--text-primary)]">
-                {dashboardView.recentResult}
-              </div>
-              {dashboardView.latestTrade ? (
-                <div className="mt-2 text-sm text-[var(--text-secondary)]">
-                  Latest activity at {formatClock(dashboardView.latestTrade.timestamp)}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
-              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
-                If nothing happens
-              </div>
-              <div className="mt-2 text-[1.25rem] font-semibold tracking-[-0.03em] text-[var(--text-primary)]">
-                {dashboardView.idleHelp}
-              </div>
-            </div>
+          <div className="workspace-toolbar__actions">
+            <input
+              type="text"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder={currentTabLabel}
+              className="workspace-search"
+            />
+            <button type="button" onClick={() => void refreshWorkspace()} className="ui-button">
+              Refresh
+            </button>
           </div>
         </div>
+
+        {workspaceTab === "positions" ? (
+          filteredPositions.length === 0 ? (
+            <EmptyState title="No open positions" description="When EVPOLY is live in the market, positions will show up here." />
+          ) : (
+            <div className="portfolio-table">
+              <div className="portfolio-table__header portfolio-table__header--positions">
+                <span>Market</span>
+                <span>Avg to now</span>
+                <span>Traded</span>
+                <span>To win</span>
+                <span>Value</span>
+                <span />
+              </div>
+              <div className="portfolio-table__body">
+                {filteredPositions.map((row) => (
+                  <PositionRow key={row.id} row={row} />
+                ))}
+              </div>
+            </div>
+          )
+        ) : null}
+
+        {workspaceTab === "open-orders" ? (
+          filteredOpenOrders.length === 0 ? (
+            <EmptyState title="No open orders" description="Live pending quotes and resting orders will appear here." />
+          ) : (
+            <div className="portfolio-table">
+              <div className="portfolio-table__header portfolio-table__header--orders">
+                <span>Market</span>
+                <span>Orders</span>
+                <span>Quoted</span>
+                <span>Updated</span>
+                <span />
+              </div>
+              <div className="portfolio-table__body">
+                {filteredOpenOrders.map((row) => (
+                  <OpenOrderRow key={row.id} row={row} />
+                ))}
+              </div>
+            </div>
+          )
+        ) : null}
+
+        {workspaceTab === "history" ? (
+          filteredHistory.length === 0 ? (
+            <EmptyState title="No history yet" description="Recent fills and outcomes will appear here once the bot starts trading." />
+          ) : (
+            <div className="portfolio-table">
+              <div className="portfolio-table__header portfolio-table__header--history">
+                <span>Activity</span>
+                <span>Market</span>
+                <span>Value</span>
+                <span>Time</span>
+              </div>
+              <div className="portfolio-table__body">
+                {filteredHistory.map((row) => (
+                  <HistoryRow key={row.id} row={row} />
+                ))}
+              </div>
+            </div>
+          )
+        ) : null}
       </SectionPanel>
-
-      <div className="page-grid page-grid--three">
-        <StatCard
-          label="Open Positions"
-          value={String(dashboardView.openPositionsCount)}
-        />
-        <StatCard
-          label="Recent Orders"
-          value={String(dashboardView.recentOrdersCount)}
-        />
-        <StatCard
-          label="Free Balance"
-          value={formatCurrency(dashboardView.freeBalanceValue ?? balance)}
-        />
-        <StatCard
-          label="Avg Ack"
-          value={dashboardView.avgAckLatency}
-        />
-        <StatCard
-          label="Total PnL"
-          value={formatCurrency(dashboardView.pnlValue)}
-          color={pnlColor}
-        />
-      </div>
-
-      <div className="page-grid page-grid--two">
-        <SectionPanel title="Open Positions" subtitle="What is live right now.">
-          <div className="space-y-3">
-            {positions.length === 0 ? (
-              <EmptyState title="No open positions" />
-            ) : (
-              positions.map((pos, index) => {
-                const pnl =
-                  typeof pos.unrealized_pnl === "number"
-                    ? pos.unrealized_pnl
-                    : pos.realized_pnl;
-                return (
-                  <div
-                    key={`${pos.market}-${index}`}
-                    className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <div className="text-base font-semibold text-[var(--text-primary)]">
-                          {humanMarketLabel(pos.market, pos.token_type)}
-                        </div>
-                        <div className="mt-1 text-sm text-[var(--text-secondary)]">
-                          {describePositionPrices(pos)}
-                        </div>
-                      </div>
-                      <InfoPill tone={pos.side === "long" || pos.side === "buy" ? "success" : "danger"}>
-                        {pos.side.toUpperCase()}
-                      </InfoPill>
-                    </div>
-
-                      <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
-                      <div className="text-[var(--text-secondary)]">
-                        Size <span className="mono-data text-[var(--text-primary)]">{formatQuantity(pos.size)}</span>
-                      </div>
-                      <div
-                        className="mono-data font-semibold"
-                        style={{ color: pnl >= 0 ? "var(--green)" : "var(--red)" }}
-                      >
-                        {formatCurrency(pnl)}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </SectionPanel>
-
-        <SectionPanel title="Recent Trades" subtitle="Latest fills and outcomes.">
-          <div className="space-y-3">
-            {trades.length === 0 ? (
-              <EmptyState title="No recent trades" />
-            ) : (
-              trades.slice(0, 8).map((trade) => {
-                const outcomeTone =
-                  trade.outcome === "win"
-                    ? "success"
-                    : trade.outcome === "loss"
-                    ? "danger"
-                    : "neutral";
-                return (
-                  <div
-                    key={trade.id}
-                    className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4"
-                  >
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-base font-semibold text-[var(--text-primary)]">
-                          {humanMarketLabel(trade.market, trade.token_type, trade.strategy_id)}
-                        </div>
-                        <div className="mt-1 text-sm text-[var(--text-secondary)]">
-                          {describeTradeFill(trade)}
-                        </div>
-                      </div>
-                      <InfoPill tone={outcomeTone}>{trade.outcome}</InfoPill>
-                    </div>
-
-                    <div className="mt-4 flex flex-wrap items-center gap-4 text-sm">
-                      <div className="text-[var(--text-secondary)]">
-                        {formatClock(trade.timestamp)}
-                      </div>
-                      <div
-                        className="mono-data font-semibold"
-                        style={{ color: trade.pnl >= 0 ? "var(--green)" : "var(--red)" }}
-                      >
-                        {formatCurrency(trade.pnl)}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </SectionPanel>
-      </div>
       <LogsDrawer open={logsOpen} mode="bot" onClose={() => setLogsOpen(false)} />
     </AppShell>
   );
 }
-

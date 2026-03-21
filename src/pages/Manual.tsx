@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { AppShell } from "../components/AppShell";
 import { EmptyState } from "../components/EmptyState";
 import { InfoPill } from "../components/InfoPill";
 import { LogsDrawer } from "../components/LogsDrawer";
-import { MarketPickerShell } from "../components/MarketPickerShell";
+import { MarketBadge } from "../components/MarketBadge";
 import { SectionPanel } from "../components/SectionPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import {
@@ -18,11 +18,13 @@ import {
   type UiManualPosition,
   type UiManualRun,
   type UiMarket,
+  type UiMarketOrderbook,
 } from "../lib/tauri-commands";
 import {
   asRecord,
   buildManualOverview,
-  buildMarketPickerItems,
+  formatCents,
+  formatRelativeTime,
   formatShares,
   formatUsd,
   readString,
@@ -68,13 +70,20 @@ type ManualMarketResponse = {
   market?: UiMarket;
 };
 
+type ManualOrderbookResponse = {
+  market?: UiMarket;
+  books?: UiMarketOrderbook[];
+};
+
 const DEFAULT_ORDER: ManualOrderState = {
   conditionId: "",
   side: "up",
   size: "10",
-  sizeUnit: "shares",
+  sizeUnit: "usd",
   mode: "chase_limit",
 };
+
+const SIZE_PRESETS = [1, 5, 10, 100];
 
 function parseRuns(payload: unknown): RawManualRun[] {
   const record = asRecord(payload);
@@ -104,129 +113,166 @@ function parseMarket(payload: unknown): UiMarket | null {
   return market as UiMarket;
 }
 
-function TicketChoice({
-  label,
+function parseOrderbooks(payload: unknown): UiMarketOrderbook[] {
+  const record = asRecord(payload);
+  if (!record || !Array.isArray(record.books)) return [];
+  return record.books.filter((item) => item && typeof item === "object") as UiMarketOrderbook[];
+}
+
+function matchesSide(side: "up" | "down", outcome: string): boolean {
+  const normalized = outcome.trim().toLowerCase();
+  if (side === "up") return normalized === "up" || normalized === "yes";
+  return normalized === "down" || normalized === "no";
+}
+
+function orderModeLabel(mode: ManualOrderState["mode"]): string {
+  if (mode === "chase_limit") return "Chase Limit";
+  if (mode === "limit") return "Limit";
+  return "Market";
+}
+
+function SearchResultRow({
+  market,
+  onSelect,
+}: {
+  market: UiMarket;
+  onSelect: (market: UiMarket) => void;
+}) {
+  return (
+    <button type="button" className="market-search-row" onClick={() => onSelect(market)}>
+      <MarketBadge
+        title={market.title}
+        symbol={market.symbol}
+        imageUrl={market.image_url}
+        iconUrl={market.icon_url}
+        size="sm"
+      />
+      <div className="market-search-row__copy">
+        <div className="market-search-row__title">{market.title}</div>
+        <div className="market-search-row__subtitle">{market.subtitle}</div>
+      </div>
+      <InfoPill tone={market.tradable ? "accent" : "warning"}>
+        {market.tradable ? sentenceCase(market.status, "Active") : "Paused"}
+      </InfoPill>
+    </button>
+  );
+}
+
+function TicketToggle({
   active,
+  children,
   onClick,
 }: {
-  label: string;
   active: boolean;
+  children: ReactNode;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-full border px-4 py-2 text-sm transition-colors ${
-        active
-          ? "border-[rgba(54,211,153,0.28)] bg-[rgba(20,35,29,0.94)] text-[var(--text-primary)]"
-          : "border-[var(--border)] bg-[rgba(16,22,31,0.78)] text-[var(--text-secondary)]"
-      }`}
+      className={`ticket-toggle ${active ? "ticket-toggle--active" : ""}`}
     >
-      {label}
+      {children}
     </button>
   );
 }
 
-function SnapshotRow({
-  label,
-  value,
-  detail,
-}: {
-  label: string;
-  value: string;
-  detail?: string;
-}) {
-  return (
-    <div className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-3">
-      <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">{label}</div>
-      <div className="mt-2 text-lg font-semibold tracking-[-0.03em] text-[var(--text-primary)]">
-        {value}
-      </div>
-      {detail ? <div className="mt-1 text-sm text-[var(--text-secondary)]">{detail}</div> : null}
-    </div>
-  );
-}
-
-function InputField({
-  label,
-  value,
-  onChange,
-  type = "text",
-  placeholder,
-}: {
-  label: string;
-  value: string | number;
-  onChange: (value: string) => void;
-  type?: string;
-  placeholder?: string;
-}) {
-  return (
-    <div>
-      <label className="mb-1.5 block text-xs text-[var(--text-secondary)]">{label}</label>
-      <input
-        type={type}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        placeholder={placeholder}
-        className="w-full rounded-[16px] border border-[var(--border)] bg-[var(--bg-tertiary)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)]"
+function OrderbookTable({ book }: { book: UiMarketOrderbook | null }) {
+  if (!book) {
+    return (
+      <EmptyState
+        title="No outcome selected"
+        description="Choose Up or Down to inspect the live book."
       />
+    );
+  }
+
+  const hasDepth = book.asks.length > 0 || book.bids.length > 0;
+  if (!hasDepth) {
+    return (
+      <EmptyState
+        title="Order book is empty"
+        description="No resting depth is available for this outcome right now."
+      />
+    );
+  }
+
+  return (
+    <div className="orderbook-shell">
+      <div className="orderbook-shell__header">
+        <div>
+          <div className="orderbook-shell__title">{book.label}</div>
+          <div className="orderbook-shell__subtitle">
+            Best bid {formatCents(book.best_bid)} / Best ask {formatCents(book.best_ask)}
+          </div>
+        </div>
+        <InfoPill tone="accent">
+          Spread {book.spread !== null ? formatCents(book.spread) : "--"}
+        </InfoPill>
+      </div>
+      <div className="orderbook-columns">
+        <div className="orderbook-panel orderbook-panel--asks">
+          <div className="orderbook-panel__header">
+            <span>Ask</span>
+            <span>Shares</span>
+            <span>Total</span>
+          </div>
+          <div className="orderbook-panel__body">
+            {book.asks.map((level) => (
+              <div key={`ask-${level.price}-${level.total}`} className="orderbook-row">
+                <span className="orderbook-row__price orderbook-row__price--ask">
+                  {formatCents(level.price)}
+                </span>
+                <span>{formatShares(level.shares)}</span>
+                <span>{formatUsd(level.total * level.price)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="orderbook-panel orderbook-panel--bids">
+          <div className="orderbook-panel__header">
+            <span>Bid</span>
+            <span>Shares</span>
+            <span>Total</span>
+          </div>
+          <div className="orderbook-panel__body">
+            {book.bids.map((level) => (
+              <div key={`bid-${level.price}-${level.total}`} className="orderbook-row">
+                <span className="orderbook-row__price orderbook-row__price--bid">
+                  {formatCents(level.price)}
+                </span>
+                <span>{formatShares(level.shares)}</span>
+                <span>{formatUsd(level.total * level.price)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-function RunCard({
-  kind,
+function RunRow({
   run,
   onStop,
 }: {
-  kind: TicketKind;
   run: RawManualRun;
-  onStop: (kind: TicketKind, runId: string) => void;
+  onStop: (runId: string) => void;
 }) {
   const runId = typeof run.run_id === "string" ? run.run_id : "";
-  const title = run.market_title || (kind === "open" ? "Open run" : "Close run");
-  const detailParts = [
-    typeof run.market_subtitle === "string" && run.market_subtitle.trim()
-      ? run.market_subtitle.trim()
-      : null,
-    typeof run.side_label === "string" && run.side_label.trim()
-      ? run.side_label.trim()
-      : run.side
-      ? sentenceCase(run.side, "")
-      : null,
-    typeof run.progress_summary === "string" && run.progress_summary.trim()
-      ? run.progress_summary.trim()
-      : typeof run.target_shares === "number"
-      ? `${formatShares(run.target_shares)} shares target`
-      : null,
-  ].filter(Boolean);
-
   return (
-    <div className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-[var(--text-primary)]">{title}</div>
-          <div className="mt-1 break-all text-xs text-[var(--text-secondary)]">
-            {runId || run.condition_id || "Waiting for run details"}
-          </div>
-          <div className="mt-2 text-sm text-[var(--text-secondary)]">
-            {detailParts.length > 0 ? detailParts.join(" / ") : "Waiting for more details"}
-          </div>
+    <div className="manual-run-row">
+      <div>
+        <div className="manual-run-row__title">{run.market_title || "Manual run"}</div>
+        <div className="manual-run-row__subtitle">
+          {[run.status_label, run.side_label, run.progress_summary].filter(Boolean).join(" / ") ||
+            "Waiting for updates"}
         </div>
-        <InfoPill tone={String(run.status ?? "").startsWith("running") ? "success" : "neutral"}>
-          {typeof run.status_label === "string" && run.status_label.trim()
-            ? run.status_label
-            : sentenceCase(run.status as string | undefined, "Active")}
-        </InfoPill>
       </div>
       {runId ? (
-        <button
-          type="button"
-          onClick={() => onStop(kind, runId)}
-          className="ui-button mt-4 min-h-[40px] px-3 py-2 text-sm"
-        >
-          Stop run
+        <button type="button" className="ui-button" onClick={() => onStop(runId)}>
+          Stop
         </button>
       ) : null}
     </div>
@@ -252,8 +298,10 @@ export function Manual() {
   const [closeOrder, setCloseOrder] = useState<ManualOrderState>(DEFAULT_ORDER);
   const [selectedOpenMarket, setSelectedOpenMarket] = useState<UiMarket | null>(null);
   const [selectedCloseMarket, setSelectedCloseMarket] = useState<UiMarket | null>(null);
+  const [marketBooks, setMarketBooks] = useState<UiMarketOrderbook[]>([]);
   const [marketSearch, setMarketSearch] = useState("");
   const [marketSearchLoading, setMarketSearchLoading] = useState(false);
+  const [marketDetailLoading, setMarketDetailLoading] = useState(false);
   const [searchResults, setSearchResults] = useState<UiMarket[]>([]);
   const [recentMarkets, setRecentMarkets] = useState<UiMarket[]>([]);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -262,6 +310,7 @@ export function Manual() {
   const activeOrder = ticketKind === "open" ? openOrder : closeOrder;
   const activeSelectedMarket =
     ticketKind === "open" ? selectedOpenMarket : selectedCloseMarket;
+  const activeRuns = ticketKind === "open" ? openRuns : closeRuns;
 
   const setActiveOrder = (patch: Partial<ManualOrderState>) => {
     if (ticketKind === "open") {
@@ -271,16 +320,13 @@ export function Manual() {
     setCloseOrder((previous) => ({ ...previous, ...patch }));
   };
 
-  const setSelectedMarketForKind = useCallback(
-    (kind: TicketKind, market: UiMarket | null) => {
-      if (kind === "open") {
-        setSelectedOpenMarket(market);
-        return;
-      }
-      setSelectedCloseMarket(market);
-    },
-    []
-  );
+  const setSelectedMarketForKind = useCallback((kind: TicketKind, market: UiMarket | null) => {
+    if (kind === "open") {
+      setSelectedOpenMarket(market);
+      return;
+    }
+    setSelectedCloseMarket(market);
+  }, []);
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -329,12 +375,44 @@ export function Manual() {
       setOpenRuns(parseRuns(openRunsResp));
       setCloseRuns(parseRuns(closeRunsResp));
     } catch (err) {
-      if (serviceStopping) {
-        return;
+      if (!serviceStopping) {
+        setError(String(err));
       }
-      setError(String(err));
     }
   }, [serviceRunning, serviceStopping]);
+
+  const loadSelectedMarket = useCallback(
+    async (kind: TicketKind, marketRef: string) => {
+      if (!serviceRunning || serviceStopping || !marketRef.trim()) return;
+      setMarketDetailLoading(true);
+      try {
+        const [detailResponse, orderbookResponse] = await Promise.all([
+          manualApiRequest<ManualMarketResponse>(
+            "GET",
+            `/ui/market/${encodeURIComponent(marketRef)}/detail`
+          ),
+          manualApiRequest<ManualOrderbookResponse>(
+            "GET",
+            `/ui/market/${encodeURIComponent(marketRef)}/orderbook`,
+            { depth: 6 }
+          ),
+        ]);
+        const market = parseMarket(detailResponse);
+        if (market) {
+          setSelectedMarketForKind(kind, market);
+        }
+        setMarketBooks(parseOrderbooks(orderbookResponse));
+      } catch (err) {
+        setMarketBooks([]);
+        if (!serviceStopping) {
+          setError(String(err));
+        }
+      } finally {
+        setMarketDetailLoading(false);
+      }
+    },
+    [serviceRunning, serviceStopping, setSelectedMarketForKind]
+  );
 
   useEffect(() => {
     void (async () => {
@@ -359,7 +437,7 @@ export function Manual() {
     if (!serviceRunning || serviceStopping) return;
     void fetchOverview();
     void fetchRecentMarkets();
-    const timer = setInterval(() => void fetchOverview(), 4000);
+    const timer = setInterval(() => void fetchOverview(), 5000);
     return () => clearInterval(timer);
   }, [serviceRunning, serviceStopping, fetchOverview, fetchRecentMarkets]);
 
@@ -392,47 +470,33 @@ export function Manual() {
           setMarketSearchLoading(false);
         }
       })();
-    }, 300);
+    }, 250);
 
     return () => clearTimeout(timer);
   }, [marketSearch, serviceRunning, serviceStopping]);
 
   useEffect(() => {
-    const nextSelectedMarket =
-      ticketKind === "open" ? selectedOpenMarket : selectedCloseMarket;
-    setMarketSearch(nextSelectedMarket?.title ?? "");
+    const nextSelectedMarket = ticketKind === "open" ? selectedOpenMarket : selectedCloseMarket;
+    if (!nextSelectedMarket) return;
+    setMarketSearch(nextSelectedMarket.title);
   }, [ticketKind, selectedOpenMarket, selectedCloseMarket]);
 
   useEffect(() => {
     if (!serviceRunning || serviceStopping) return;
     const conditionId = activeOrder.conditionId.trim();
     if (!conditionId) return;
-    if (activeSelectedMarket?.condition_id === conditionId) return;
-
+    if (activeSelectedMarket?.condition_id === conditionId && marketBooks.length > 0) return;
     const timer = setTimeout(() => {
-      void (async () => {
-        try {
-          const response = await manualApiRequest<ManualMarketResponse>(
-            "GET",
-            `/manual/markets/${encodeURIComponent(conditionId)}`
-          );
-          const market = parseMarket(response);
-          if (market) {
-            setSelectedMarketForKind(ticketKind, market);
-          }
-        } catch {
-          // Keep the fallback ID flow usable even if lookup fails.
-        }
-      })();
-    }, 250);
-
+      void loadSelectedMarket(ticketKind, conditionId);
+    }, 200);
     return () => clearTimeout(timer);
   }, [
     activeOrder.conditionId,
     activeSelectedMarket,
+    loadSelectedMarket,
+    marketBooks.length,
     serviceRunning,
     serviceStopping,
-    setSelectedMarketForKind,
     ticketKind,
   ]);
 
@@ -442,7 +506,7 @@ export function Manual() {
   };
 
   const railItems = [
-    { label: "Dashboard", to: "/dashboard" },
+    { label: "Portfolio", to: "/dashboard" },
     { label: "Manual Trade", to: "/manual" },
     { label: "Settings", to: "/config" },
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
@@ -477,11 +541,38 @@ export function Manual() {
       setCloseRuns([]);
       setRecentMarkets([]);
       setSearchResults([]);
+      setMarketBooks([]);
       await stopManualService();
       setNotice("Manual service stopped.");
       await refreshStatus();
     } catch (err) {
       setServiceStopping(false);
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectMarket = async (market: UiMarket) => {
+    clearMessages();
+    setActiveOrder({ conditionId: market.condition_id });
+    setSelectedMarketForKind(ticketKind, market);
+    setMarketSearch(market.title);
+    setSearchResults([]);
+    await loadSelectedMarket(ticketKind, market.market_slug || market.condition_id);
+  };
+
+  const stopRun = async (runId: string) => {
+    clearMessages();
+    setBusy(true);
+    try {
+      await manualApiRequest(
+        "POST",
+        ticketKind === "open" ? `/manual/open/runs/${runId}/stop` : `/manual/close/runs/${runId}/stop`
+      );
+      setNotice(`Stop requested for run ${runId}.`);
+      await fetchOverview();
+    } catch (err) {
       setError(String(err));
     } finally {
       setBusy(false);
@@ -521,33 +612,13 @@ export function Manual() {
       const uiRun = asRecord(responseRecord?.ui_run);
       const runId =
         readString(uiRun, ["run_id"]) || readString(responseRecord, ["run_id", "id"]);
-      const marketTitle =
-        readString(uiRun, ["market_title"]) ||
-        activeSelectedMarket?.title ||
-        "selected market";
+      const marketTitle = activeSelectedMarket?.title || "selected market";
 
       setNotice(
         runId
-          ? `${ticketKind === "open" ? "Open" : "Close"} request sent for ${marketTitle}. Run ${runId} is now active.`
-          : `${ticketKind === "open" ? "Open" : "Close"} request sent for ${marketTitle}.`
+          ? `${ticketKind === "open" ? "Buy" : "Sell"} request sent for ${marketTitle}. Run ${runId} is active.`
+          : `${ticketKind === "open" ? "Buy" : "Sell"} request sent for ${marketTitle}.`
       );
-      await Promise.all([fetchOverview(), fetchRecentMarkets()]);
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const stopRun = async (kind: TicketKind, runId: string) => {
-    clearMessages();
-    setBusy(true);
-    try {
-      await manualApiRequest(
-        "POST",
-        kind === "open" ? `/manual/open/runs/${runId}/stop` : `/manual/close/runs/${runId}/stop`
-      );
-      setNotice(`Stop requested for run ${runId}.`);
       await fetchOverview();
     } catch (err) {
       setError(String(err));
@@ -565,47 +636,23 @@ export function Manual() {
     serviceRunning,
   });
 
-  const searchItems = useMemo(() => buildMarketPickerItems(searchResults), [searchResults]);
-  const recentItems = useMemo(() => buildMarketPickerItems(recentMarkets), [recentMarkets]);
-
-  const reviewMarketLabel = activeSelectedMarket?.title
-    ? activeSelectedMarket.title
-    : activeOrder.conditionId.trim()
-    ? "selected market"
-    : "no market yet";
-  const reviewText = `${ticketKind === "open" ? "Open" : "Close"} ${
-    activeOrder.side === "up" ? "Up" : "Down"
-  } on ${reviewMarketLabel} using ${activeOrder.size || "0"} ${activeOrder.sizeUnit} in ${
-    activeOrder.mode === "chase_limit"
-      ? "chase limit"
-      : activeOrder.mode === "limit"
-      ? "limit"
-      : "market"
-  } mode.`;
+  const selectedBook =
+    marketBooks.find((book) => matchesSide(activeOrder.side, book.outcome)) ?? marketBooks[0] ?? null;
+  const selectedSide = activeSelectedMarket?.sides.find((side) =>
+    matchesSide(activeOrder.side, side.outcome)
+  );
+  const relatedMarkets = recentMarkets.filter(
+    (market) => market.condition_id !== activeSelectedMarket?.condition_id
+  );
+  const activeUiPositions = Array.isArray(positions?.ui_positions) ? positions.ui_positions : [];
 
   return (
     <AppShell
       railSubtitle="Manual trade"
       railItems={railItems}
-      railChildren={
-        <SectionPanel
-          title="One trade at a time"
-          subtitle="Use manual mode when you want to guide a specific trade yourself."
-        >
-          <div className="space-y-3 text-sm text-[var(--text-secondary)]">
-            <p>Start the manual service once, then submit a single ticket below.</p>
-            <div className="flex flex-wrap gap-2">
-              <InfoPill tone={simulation ? "warning" : "success"}>
-                {simulation ? "Dry Run" : "Live"}
-              </InfoPill>
-              <StatusBadge status={serviceStatus} />
-            </div>
-          </div>
-        </SectionPanel>
-      }
-      eyebrow="Manual control"
-      title="Place a Manual Trade"
-      description="Start the service, pick a market, and send one clean manual ticket."
+      eyebrow="Manual trading"
+      title="Market detail and ticket"
+      description="Search a market, inspect the live order book, and place one guided trade from a sticky ticket."
       meta={
         <>
           <InfoPill tone={simulation ? "warning" : "success"}>
@@ -616,303 +663,424 @@ export function Manual() {
       }
       contentClassName="page-stack"
     >
-      <div className="page-split xl:grid-cols-[minmax(0,1.18fr)_minmax(20rem,0.82fr)]">
-        <div className="space-y-[var(--space-6)]">
-          <SectionPanel title="Service" subtitle="Start this once before sending a manual order.">
-            <div className="grid gap-3 md:grid-cols-3">
-              <SnapshotRow
-                label="Service"
-                value={serviceRunning ? "Running" : "Stopped"}
-                detail={serviceRunning ? "Ready for manual requests." : "Start it when you want to trade."}
-              />
-              <SnapshotRow
-                label="Mode"
-                value={simulation ? "Dry Run" : "Live"}
-                detail={simulation ? "No real orders will be sent." : "Real orders will be placed."}
-              />
-              <SnapshotRow
-                label="Active runs"
-                value={`${manualOverview.totalRuns}`}
-                detail={
-                  manualOverview.totalRuns === 1
-                    ? "One run is active."
-                    : "Open and close runs combined."
-                }
-              />
-            </div>
-
-            <div className="mt-5 flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={handleStart}
-                disabled={busy}
-                className="ui-button ui-button--primary"
-              >
-                Start Service
-              </button>
-              <button
-                type="button"
-                onClick={handleStop}
-                disabled={busy}
-                className="ui-button ui-button--danger"
-              >
-                Stop Service
-              </button>
-              <button
-                type="button"
-                onClick={() => void fetchOverview()}
-                disabled={busy || !serviceRunning}
-                className="ui-button"
-              >
-                Refresh
-              </button>
-              <button type="button" onClick={() => setLogsOpen(true)} className="ui-button">
-                Open Logs
-              </button>
-            </div>
-
-            <div className="mt-5">
-              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
-                Run mode
-              </div>
-              <div className="mt-3 flex flex-wrap gap-3">
-                <TicketChoice label="Live" active={!simulation} onClick={() => setSimulation(false)} />
-                <TicketChoice label="Dry Run" active={simulation} onClick={() => setSimulation(true)} />
-              </div>
-            </div>
-
-            {error ? (
-              <div className="inline-alert mt-5">{error}</div>
-            ) : notice ? (
-              <div className="mt-5 rounded-[18px] border border-[rgba(54,211,153,0.25)] bg-[rgba(20,35,29,0.92)] px-4 py-3 text-sm text-[#b5f1d0]">
-                {notice}
+      <SectionPanel
+        title="Manual desk"
+        subtitle="This is the desktop trading page: search, inspect, then buy or sell from the same surface."
+        className="workspace-panel"
+        bodyClassName="workspace-panel__body"
+      >
+        <div className="manual-toolbar">
+          <div className="manual-toolbar__search">
+            <input
+              type="text"
+              value={marketSearch}
+              onChange={(event) => setMarketSearch(event.target.value)}
+              placeholder={
+                serviceRunning
+                  ? "Search by market name, slug, or symbol"
+                  : "Start the manual service to search live markets"
+              }
+              disabled={busy || !serviceRunning}
+              className="workspace-search"
+            />
+            {(marketSearchLoading ||
+              searchResults.length > 0 ||
+              (!marketSearch.trim() && recentMarkets.length > 0)) &&
+            serviceRunning ? (
+              <div className="market-search-panel">
+                {marketSearchLoading ? (
+                  <div className="market-search-panel__empty">Searching markets...</div>
+                ) : searchResults.length > 0 ? (
+                  searchResults.map((market) => (
+                    <SearchResultRow
+                      key={market.condition_id}
+                      market={market}
+                      onSelect={selectMarket}
+                    />
+                  ))
+                ) : !marketSearch.trim() && recentMarkets.length > 0 ? (
+                  <>
+                    <div className="market-search-panel__label">Recent markets</div>
+                    {recentMarkets.map((market) => (
+                      <SearchResultRow
+                        key={market.condition_id}
+                        market={market}
+                        onSelect={selectMarket}
+                      />
+                    ))}
+                  </>
+                ) : (
+                  <div className="market-search-panel__empty">No matching markets right now.</div>
+                )}
               </div>
             ) : null}
-          </SectionPanel>
-
-          <SectionPanel title="Order Ticket" subtitle="Pick a market, set the side and size, then submit.">
-            <div className="flex flex-wrap gap-3">
-              <TicketChoice
-                label="Open position"
-                active={ticketKind === "open"}
-                onClick={() => setTicketKind("open")}
-              />
-              <TicketChoice
-                label="Close position"
-                active={ticketKind === "close"}
-                onClick={() => setTicketKind("close")}
-              />
-            </div>
-
-            <div className="mt-5 grid gap-4">
-              <MarketPickerShell
-                searchValue={marketSearch}
-                onSearchChange={setMarketSearch}
-                searchReady={serviceRunning}
-                results={searchItems}
-                recent={recentItems}
-                value={activeOrder.conditionId}
-                onValueChange={(value) => {
-                  setActiveOrder({ conditionId: value });
-                  if (activeSelectedMarket?.condition_id !== value) {
-                    setSelectedMarketForKind(ticketKind, null);
-                  }
-                }}
-                disabled={busy}
-              />
-
-              {marketSearchLoading ? (
-                <div className="text-sm text-[var(--text-secondary)]">Searching markets...</div>
-              ) : null}
-
-              {activeSelectedMarket ? (
-                <div className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
-                  <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
-                    Selected market
-                  </div>
-                  <div className="mt-2 text-base font-semibold text-[var(--text-primary)]">
-                    {activeSelectedMarket.title}
-                  </div>
-                  <div className="mt-1 text-sm text-[var(--text-secondary)]">
-                    {activeSelectedMarket.subtitle}
-                  </div>
-                </div>
-              ) : null}
-
-              <div className="grid gap-4 lg:grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)]">
-                <div>
-                  <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
-                    Side
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-3">
-                    <TicketChoice
-                      label="Up"
-                      active={activeOrder.side === "up"}
-                      onClick={() => setActiveOrder({ side: "up" })}
-                    />
-                    <TicketChoice
-                      label="Down"
-                      active={activeOrder.side === "down"}
-                      onClick={() => setActiveOrder({ side: "down" })}
-                    />
-                  </div>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto]">
-                  <InputField
-                    label="Size"
-                    value={activeOrder.size}
-                    onChange={(value) => setActiveOrder({ size: value })}
-                    type="number"
-                    placeholder="10"
-                  />
-                  <div>
-                    <label className="mb-1.5 block text-xs text-[var(--text-secondary)]">Unit</label>
-                    <select
-                      value={activeOrder.sizeUnit}
-                      onChange={(event) =>
-                        setActiveOrder({
-                          sizeUnit: event.target.value as ManualOrderState["sizeUnit"],
-                        })
-                      }
-                      className="w-full rounded-[16px] border border-[var(--border)] bg-[var(--bg-tertiary)] px-4 py-3 text-sm text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)]"
-                    >
-                      <option value="shares">Shares</option>
-                      <option value="usd">USD</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
-                  Submit style
-                </div>
-                <div className="mt-3 flex flex-wrap gap-3">
-                  <TicketChoice
-                    label="Chase Limit"
-                    active={activeOrder.mode === "chase_limit"}
-                    onClick={() => setActiveOrder({ mode: "chase_limit" })}
-                  />
-                  <TicketChoice
-                    label="Limit"
-                    active={activeOrder.mode === "limit"}
-                    onClick={() => setActiveOrder({ mode: "limit" })}
-                  />
-                  <TicketChoice
-                    label="Market"
-                    active={activeOrder.mode === "market"}
-                    onClick={() => setActiveOrder({ mode: "market" })}
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="mt-5 rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.78)] px-4 py-4">
-              <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
-                Review
-              </div>
-              <div className="mt-2 text-sm text-[var(--text-primary)]">{reviewText}</div>
-              <div className="mt-1 text-sm text-[var(--text-secondary)]">
-                {serviceRunning
-                  ? "The manual service is running and ready to receive this ticket."
-                  : "Start the manual service first, then submit the ticket."}
-              </div>
-            </div>
-
+          </div>
+          <div className="manual-toolbar__actions">
             <button
               type="button"
-              onClick={submitOrder}
-              disabled={busy || !serviceRunning}
-              className="ui-button ui-button--primary mt-5 w-full justify-center"
+              onClick={handleStart}
+              disabled={busy || serviceRunning}
+              className="ui-button ui-button--primary"
             >
-              {ticketKind === "open" ? "Submit Open" : "Submit Close"}
+              Start service
             </button>
+            <button
+              type="button"
+              onClick={handleStop}
+              disabled={busy || !serviceRunning}
+              className="ui-button ui-button--danger"
+            >
+              Stop service
+            </button>
+            <button
+              type="button"
+              onClick={() => setSimulation((value) => !value)}
+              disabled={busy || serviceRunning}
+              className="ui-button"
+            >
+              {simulation ? "Dry Run" : "Live"}
+            </button>
+            <button type="button" onClick={() => setLogsOpen(true)} className="ui-button">
+              Open Logs
+            </button>
+          </div>
+        </div>
+
+        {error ? <div className="inline-alert">{error}</div> : null}
+        {!error && notice ? <div className="manual-notice">{notice}</div> : null}
+      </SectionPanel>
+
+      <div className="manual-workspace">
+        <div className="manual-workspace__main">
+          <SectionPanel
+            title="Selected market"
+            subtitle="Manual trading should feel like a normal exchange: one market, one book, one ticket."
+            className="workspace-panel"
+            bodyClassName="workspace-panel__body"
+          >
+            {activeSelectedMarket ? (
+              <div className="manual-market-header">
+                <div className="manual-market-header__identity">
+                  <MarketBadge
+                    title={activeSelectedMarket.title}
+                    symbol={activeSelectedMarket.symbol}
+                    imageUrl={activeSelectedMarket.image_url}
+                    iconUrl={activeSelectedMarket.icon_url}
+                    size="lg"
+                  />
+                  <div className="manual-market-header__copy">
+                    <div className="manual-market-header__title">{activeSelectedMarket.title}</div>
+                    <div className="manual-market-header__subtitle">
+                      {activeSelectedMarket.subtitle}
+                    </div>
+                    <div className="manual-market-header__meta">
+                      <InfoPill tone={activeSelectedMarket.tradable ? "success" : "warning"}>
+                        {activeSelectedMarket.tradable ? "Tradable" : "Paused"}
+                      </InfoPill>
+                      {activeSelectedMarket.close_time ? (
+                        <InfoPill tone="neutral">
+                          Closes {formatRelativeTime(activeSelectedMarket.close_time)}
+                        </InfoPill>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+                <div className="manual-market-header__sides">
+                  {activeSelectedMarket.sides.map((side) => {
+                    const isActive = selectedSide?.token_id === side.token_id;
+                    return (
+                      <button
+                        key={side.token_id}
+                        type="button"
+                        className={`outcome-chip ${isActive ? "outcome-chip--active" : ""}`}
+                        onClick={() =>
+                          setActiveOrder({
+                            side: matchesSide("up", side.outcome) ? "up" : "down",
+                          })
+                        }
+                      >
+                        <span>{side.label}</span>
+                        <span>{formatCents(side.price)}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <EmptyState
+                title="Choose a market"
+                description="Search for a market above to load its title, outcomes, and order book."
+              />
+            )}
+          </SectionPanel>
+
+          <SectionPanel
+            title="Order book"
+            subtitle="Live depth for the selected outcome."
+            className="workspace-panel"
+            bodyClassName="workspace-panel__body"
+          >
+            {marketDetailLoading ? (
+              <div className="market-search-panel__empty">Loading order book...</div>
+            ) : (
+              <OrderbookTable book={selectedBook} />
+            )}
+          </SectionPanel>
+
+          <SectionPanel
+            title="Related markets"
+            subtitle="Keep one-click access to the other markets you already touched in this session."
+            className="workspace-panel"
+            bodyClassName="workspace-panel__body"
+          >
+            {relatedMarkets.length > 0 ? (
+              <div className="related-markets">
+                {relatedMarkets.map((market) => (
+                  <button
+                    key={market.condition_id}
+                    type="button"
+                    className="related-market-row"
+                    onClick={() => void selectMarket(market)}
+                  >
+                    <MarketBadge
+                      title={market.title}
+                      symbol={market.symbol}
+                      imageUrl={market.image_url}
+                      iconUrl={market.icon_url}
+                      size="sm"
+                    />
+                    <div className="related-market-row__copy">
+                      <div className="related-market-row__title">{market.title}</div>
+                      <div className="related-market-row__subtitle">{market.subtitle}</div>
+                    </div>
+                    <InfoPill tone={market.tradable ? "accent" : "warning"}>
+                      {sentenceCase(market.status, "Active")}
+                    </InfoPill>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                title="No related markets yet"
+                description="Recent manual markets will show up here after you inspect a few names."
+              />
+            )}
           </SectionPanel>
         </div>
 
-        <div className="page-aside space-y-[var(--space-6)] xl:sticky xl:top-[var(--space-6)]">
-          <SectionPanel title="Account Snapshot" subtitle="A quick view of what the manual service sees right now.">
-            <div className="grid gap-3">
-              <SnapshotRow
-                label="Balance"
-                value={formatUsd(manualOverview.balanceValue)}
-                detail="Available buying power"
-              />
-              <SnapshotRow
-                label="Positions"
-                value={`${manualOverview.positionCount}`}
-                detail={
-                  manualOverview.positionCount === 1
-                    ? "One position tracked"
-                    : "Positions currently tracked"
-                }
-              />
-              <SnapshotRow
-                label="Health"
-                value={manualOverview.healthLabel}
-                detail={manualOverview.healthDetail}
-              />
-            </div>
-          </SectionPanel>
+        <div className="manual-workspace__aside">
+          <div className="manual-ticket-sticky">
+            <SectionPanel
+              title="Trade ticket"
+              subtitle="Use the same market detail page for entry and exit."
+              className="workspace-panel manual-ticket-panel"
+              bodyClassName="workspace-panel__body"
+            >
+              <div className="manual-ticket__tabs">
+                <TicketToggle active={ticketKind === "open"} onClick={() => setTicketKind("open")}>
+                  Buy
+                </TicketToggle>
+                <TicketToggle active={ticketKind === "close"} onClick={() => setTicketKind("close")}>
+                  Sell
+                </TicketToggle>
+              </div>
 
-          <SectionPanel title="Active Runs" subtitle="Stop a run if you want to cancel manual management.">
-            <div className="space-y-4">
-              <div>
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div className="text-sm font-semibold text-[var(--text-primary)]">Open runs</div>
-                  <InfoPill tone={openRuns.length > 0 ? "accent" : "neutral"}>
-                    {openRuns.length}
-                  </InfoPill>
-                </div>
-                <div className="space-y-3">
-                  {openRuns.length === 0 ? (
-                    <EmptyState
-                      title="No open runs"
-                      description="Open trades you start manually will appear here."
+              {activeSelectedMarket ? (
+                <>
+                  <div className="manual-ticket__mode-label">
+                    {ticketKind === "open" ? "Buying" : "Selling"} {activeSelectedMarket.title}
+                  </div>
+
+                  <div className="manual-ticket__section">
+                    <div className="manual-ticket__section-label">Outcome</div>
+                    <div className="manual-ticket__outcomes">
+                      {activeSelectedMarket.sides.map((side) => {
+                        const normalizedSide = matchesSide("up", side.outcome) ? "up" : "down";
+                        return (
+                          <button
+                            key={side.token_id}
+                            type="button"
+                            className={`manual-ticket__outcome ${
+                              activeOrder.side === normalizedSide
+                                ? "manual-ticket__outcome--active"
+                                : ""
+                            }`}
+                            onClick={() => setActiveOrder({ side: normalizedSide })}
+                          >
+                            <span>{side.label}</span>
+                            <span>{formatCents(side.price)}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="manual-ticket__section">
+                    <div className="manual-ticket__section-label">Amount</div>
+                    <div className="manual-ticket__amount-row">
+                      <div>
+                        <div className="manual-ticket__amount-value">
+                          {activeOrder.sizeUnit === "usd" ? "$" : ""}
+                          {activeOrder.size || "0"}
+                        </div>
+                        <div className="manual-ticket__amount-help">
+                          Balance {formatUsd(manualOverview.balanceValue)}
+                        </div>
+                      </div>
+                      <select
+                        value={activeOrder.sizeUnit}
+                        onChange={(event) =>
+                          setActiveOrder({
+                            sizeUnit: event.target.value as ManualOrderState["sizeUnit"],
+                          })
+                        }
+                        className="manual-ticket__select"
+                      >
+                        <option value="usd">USD</option>
+                        <option value="shares">Shares</option>
+                      </select>
+                    </div>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={activeOrder.size}
+                      onChange={(event) => setActiveOrder({ size: event.target.value })}
+                      className="manual-ticket__input"
                     />
-                  ) : (
-                    openRuns.map((run, index) => (
-                      <RunCard
-                        key={String(run.run_id ?? `open-${index}`)}
-                        kind="open"
-                        run={run}
-                        onStop={stopRun}
-                      />
-                    ))
-                  )}
+                    <div className="manual-ticket__presets">
+                      {SIZE_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          className="manual-ticket__preset"
+                          onClick={() => setActiveOrder({ size: String(preset) })}
+                        >
+                          {activeOrder.sizeUnit === "usd" ? `$${preset}` : `${preset}`}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="manual-ticket__section">
+                    <div className="manual-ticket__section-label">Submit style</div>
+                    <div className="manual-ticket__mode-grid">
+                      {(["chase_limit", "limit", "market"] as const).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          className={`manual-ticket__mode ${
+                            activeOrder.mode === mode ? "manual-ticket__mode--active" : ""
+                          }`}
+                          onClick={() => setActiveOrder({ mode })}
+                        >
+                          {orderModeLabel(mode)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="manual-ticket__submit"
+                    onClick={() => void submitOrder()}
+                    disabled={busy || !serviceRunning}
+                  >
+                    {ticketKind === "open" ? "Buy" : "Sell"}{" "}
+                    {selectedSide?.label || "selected side"}
+                  </button>
+
+                  <div className="manual-ticket__footer">
+                    Manual trading uses the running service and the same wallet context already loaded in the app.
+                  </div>
+                </>
+              ) : (
+                <EmptyState
+                  title="Pick a market first"
+                  description="Search above, choose a market, then the ticket will light up here."
+                />
+              )}
+            </SectionPanel>
+
+            <SectionPanel
+              title="Active runs"
+              subtitle="Open and close requests that are still working."
+              className="workspace-panel"
+              bodyClassName="workspace-panel__body"
+            >
+              {activeRuns.length > 0 ? (
+                <div className="manual-runs">
+                  {activeRuns.map((run) => (
+                    <RunRow
+                      key={typeof run.run_id === "string" ? run.run_id : JSON.stringify(run)}
+                      run={run}
+                      onStop={(runId) => void stopRun(runId)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <EmptyState
+                  title="No active manual runs"
+                  description="Submitted manual requests will appear here until they finish or you stop them."
+                />
+              )}
+            </SectionPanel>
+
+            <SectionPanel
+              title="Account snapshot"
+              subtitle="The manual desk should tell you what matters without dumping raw JSON."
+              className="workspace-panel"
+              bodyClassName="workspace-panel__body"
+            >
+              <div className="manual-summary-grid">
+                <div className="manual-summary-card">
+                  <div className="manual-summary-card__label">Health</div>
+                  <div className="manual-summary-card__value">{manualOverview.healthLabel}</div>
+                </div>
+                <div className="manual-summary-card">
+                  <div className="manual-summary-card__label">Available</div>
+                  <div className="manual-summary-card__value">
+                    {formatUsd(manualOverview.balanceValue)}
+                  </div>
+                </div>
+                <div className="manual-summary-card">
+                  <div className="manual-summary-card__label">Positions</div>
+                  <div className="manual-summary-card__value">{manualOverview.positionCount}</div>
+                </div>
+                <div className="manual-summary-card">
+                  <div className="manual-summary-card__label">Runs</div>
+                  <div className="manual-summary-card__value">{manualOverview.totalRuns}</div>
                 </div>
               </div>
 
-              <div>
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div className="text-sm font-semibold text-[var(--text-primary)]">Close runs</div>
-                  <InfoPill tone={closeRuns.length > 0 ? "accent" : "neutral"}>
-                    {closeRuns.length}
-                  </InfoPill>
+              <p className="surface-panel__subtitle">{manualOverview.healthDetail}</p>
+
+              {activeUiPositions.length > 0 ? (
+                <div className="manual-position-list">
+                  {activeUiPositions.slice(0, 4).map((position) => {
+                    const pnl = position.unrealized_pnl ?? position.realized_pnl ?? null;
+                    return (
+                      <div
+                        key={`${position.condition_id}-${position.side}`}
+                        className="manual-position-row"
+                      >
+                        <div>
+                          <div className="manual-position-row__title">{position.market_title}</div>
+                          <div className="manual-position-row__subtitle">
+                            {position.side_label} / {formatShares(position.size)} shares
+                          </div>
+                        </div>
+                        <div className="manual-position-row__value">{formatUsd(pnl)}</div>
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="space-y-3">
-                  {closeRuns.length === 0 ? (
-                    <EmptyState
-                      title="No close runs"
-                      description="Close-side manual flows will show up here once they start."
-                    />
-                  ) : (
-                    closeRuns.map((run, index) => (
-                      <RunCard
-                        key={String(run.run_id ?? `close-${index}`)}
-                        kind="close"
-                        run={run}
-                        onStop={stopRun}
-                      />
-                    ))
-                  )}
-                </div>
-              </div>
-            </div>
-          </SectionPanel>
+              ) : null}
+            </SectionPanel>
+          </div>
         </div>
       </div>
+
       <LogsDrawer open={logsOpen} mode="manual" onClose={() => setLogsOpen(false)} />
     </AppShell>
   );

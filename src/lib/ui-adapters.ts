@@ -99,6 +99,57 @@ export function summarizeSymbols(symbols: string[]): string {
   return `${symbols.slice(0, 4).join(" / ")} +${symbols.length - 4}`;
 }
 
+export function looksTechnicalMarketLabel(value: string | null | undefined): boolean {
+  if (!value) return true;
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  return (
+    /0x[a-f0-9]{12,}/i.test(trimmed) ||
+    /^\d{20,}$/.test(trimmed) ||
+    /^[0-9a-f]{24,}$/i.test(trimmed)
+  );
+}
+
+export function fallbackMarketLabel(
+  tokenType?: string | null,
+  strategyId?: string | null
+): string {
+  const outcome =
+    tokenType?.trim().toLowerCase() === "up" || tokenType?.trim().toLowerCase() === "yes"
+      ? "Up market"
+      : tokenType?.trim().toLowerCase() === "down" || tokenType?.trim().toLowerCase() === "no"
+      ? "Down market"
+      : "Prediction market";
+
+  switch ((strategyId ?? "").trim().toLowerCase()) {
+    case "mm_rewards":
+      return `Reward ${outcome.toLowerCase()}`;
+    case "endgame":
+      return `Endgame ${outcome.toLowerCase()}`;
+    case "premarket":
+      return `Premarket ${outcome.toLowerCase()}`;
+    case "evcurve":
+      return `Curve ${outcome.toLowerCase()}`;
+    case "session_band":
+      return `Session ${outcome.toLowerCase()}`;
+    case "evsnipe":
+      return `Snipe ${outcome.toLowerCase()}`;
+    default:
+      return outcome;
+  }
+}
+
+export function humanMarketLabel(
+  market: string | null | undefined,
+  tokenType?: string | null,
+  strategyId?: string | null
+): string {
+  if (!looksTechnicalMarketLabel(market)) {
+    return (market ?? "").trim();
+  }
+  return fallbackMarketLabel(tokenType, strategyId);
+}
+
 export function describePositionPrices(position: Position): string {
   const currentPrice =
     typeof position.current_price === "number"
@@ -318,7 +369,11 @@ function looksTechnicalRecentResult(value: string): boolean {
 
 function humanizeTradeResult(trade: Trade | null): string | null {
   if (!trade) return null;
-  return `Recent order: ${sentenceCase(trade.side, "Trade")} ${trade.market}`;
+  return `Recent order: ${sentenceCase(trade.side, "Trade")} ${humanMarketLabel(
+    trade.market,
+    trade.token_type,
+    trade.strategy_id
+  )}`;
 }
 
 export function buildDashboardViewModel({

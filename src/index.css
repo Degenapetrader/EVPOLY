@@ -25,13 +25,13 @@
   --red: #ff6b6b;
   --yellow: #f0c45b;
 
-  --space-1: clamp(0.3rem, 0.28rem + 0.12vw, 0.42rem);
-  --space-2: clamp(0.48rem, 0.44rem + 0.16vw, 0.65rem);
-  --space-3: clamp(0.68rem, 0.62rem + 0.26vw, 0.88rem);
-  --space-4: clamp(0.88rem, 0.8rem + 0.35vw, 1.08rem);
-  --space-5: clamp(1.05rem, 0.95rem + 0.55vw, 1.45rem);
-  --space-6: clamp(1.35rem, 1.2rem + 0.7vw, 1.85rem);
-  --space-7: clamp(1.7rem, 1.45rem + 0.95vw, 2.35rem);
+  --space-1: clamp(0.26rem, 0.25rem + 0.08vw, 0.36rem);
+  --space-2: clamp(0.42rem, 0.4rem + 0.12vw, 0.56rem);
+  --space-3: clamp(0.58rem, 0.54rem + 0.18vw, 0.74rem);
+  --space-4: clamp(0.76rem, 0.7rem + 0.24vw, 0.92rem);
+  --space-5: clamp(0.92rem, 0.84rem + 0.36vw, 1.16rem);
+  --space-6: clamp(1.14rem, 1rem + 0.46vw, 1.42rem);
+  --space-7: clamp(1.44rem, 1.2rem + 0.65vw, 1.82rem);
 
   --radius-sm: 14px;
   --radius-md: 18px;
@@ -51,6 +51,7 @@
 
 html {
   height: 100%;
+  font-size: 15px;
 }
 
 body {
@@ -166,14 +167,14 @@ a {
 }
 
 .app-rail__title {
-  font-size: clamp(1.45rem, 1.18rem + 0.9vw, 1.85rem);
+  font-size: clamp(1.22rem, 1.08rem + 0.42vw, 1.46rem);
   font-weight: 800;
   letter-spacing: -0.04em;
 }
 
 .app-rail__subtitle {
   color: var(--text-secondary);
-  font-size: 0.88rem;
+  font-size: 0.8rem;
 }
 
 .app-rail__nav {
@@ -188,7 +189,7 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  padding: 0.9rem 1rem;
+  padding: 0.76rem 0.88rem;
   border-radius: 18px;
   border: 1px solid var(--border);
   background: rgba(18, 24, 34, 0.72);
@@ -252,7 +253,7 @@ a {
 }
 
 .top-strip__title {
-  font-size: clamp(1.3rem, 1.08rem + 0.75vw, 1.75rem);
+  font-size: clamp(1.08rem, 0.98rem + 0.34vw, 1.32rem);
   font-weight: 800;
   letter-spacing: -0.04em;
   line-height: 1.05;
@@ -260,7 +261,7 @@ a {
 
 .top-strip__description {
   color: var(--text-secondary);
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   max-width: 70ch;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -297,14 +298,14 @@ a {
 }
 
 .surface-panel__title {
-  font-size: clamp(0.94rem, 0.9rem + 0.22vw, 1.08rem);
+  font-size: clamp(0.9rem, 0.88rem + 0.12vw, 1rem);
   font-weight: 700;
   letter-spacing: -0.03em;
 }
 
 .surface-panel__subtitle {
   color: var(--text-secondary);
-  font-size: 0.86rem;
+  font-size: 0.8rem;
 }
 
 .surface-panel__body {
@@ -315,13 +316,13 @@ a {
   display: inline-flex;
   align-items: center;
   gap: 0.55rem;
-  min-height: 38px;
-  padding: 0.6rem 0.85rem;
+  min-height: 34px;
+  padding: 0.5rem 0.74rem;
   border-radius: 18px;
   border: 1px solid var(--border);
   background: rgba(19, 26, 35, 0.92);
   color: var(--text-primary);
-  font-size: 0.86rem;
+  font-size: 0.78rem;
   font-weight: 600;
 }
 
@@ -354,14 +355,14 @@ a {
   align-items: center;
   justify-content: center;
   gap: 0.55rem;
-  min-height: 40px;
-  padding: 0.66rem 0.95rem;
+  min-height: 36px;
+  padding: 0.54rem 0.82rem;
   border-radius: 16px;
   border: 1px solid var(--border);
   background: rgba(18, 24, 34, 0.88);
   color: var(--text-primary);
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.82rem;
   transition:
     border-color 180ms ease,
     color 180ms ease,
@@ -402,7 +403,7 @@ a {
   background: rgba(39, 20, 23, 0.92);
   color: #ffb1b1;
   padding: 0.9rem 1rem;
-  font-size: 0.9rem;
+  font-size: 0.84rem;
 }
 
 .inline-alert--warning {
@@ -416,7 +417,7 @@ a {
   border-radius: 18px;
   border: 1px dashed var(--border-strong);
   color: var(--text-secondary);
-  font-size: 0.92rem;
+  font-size: 0.84rem;
   background: rgba(16, 22, 32, 0.62);
 }
 
@@ -468,7 +469,7 @@ a {
 
 .logs-drawer__title {
   margin-top: 0.35rem;
-  font-size: clamp(1.45rem, 1.25rem + 0.6vw, 1.85rem);
+  font-size: clamp(1.22rem, 1.08rem + 0.42vw, 1.46rem);
   font-weight: 800;
   letter-spacing: -0.04em;
 }
@@ -536,7 +537,7 @@ a {
 
 .logs-list__content {
   color: var(--text-primary);
-  font-size: 0.95rem;
+  font-size: 0.84rem;
   line-height: 1.55;
   word-break: break-word;
 }
@@ -557,7 +558,7 @@ a {
 }
 
 .market-picker-shell__title {
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   font-weight: 700;
   color: var(--text-primary);
 }
@@ -566,7 +567,7 @@ a {
   margin-top: 0.3rem;
   max-width: 54ch;
   color: var(--text-secondary);
-  font-size: 0.86rem;
+  font-size: 0.8rem;
 }
 
 .market-picker-shell__search,
@@ -584,7 +585,7 @@ a {
   background: var(--bg-tertiary);
   color: var(--text-primary);
   padding: 0.9rem 1rem;
-  font-size: 0.9rem;
+  font-size: 0.84rem;
   outline: none;
   transition: border-color 180ms ease, opacity 180ms ease;
 }
@@ -627,14 +628,14 @@ a {
 }
 
 .market-picker-shell__card-title {
-  font-size: 0.9rem;
+  font-size: 0.84rem;
   font-weight: 600;
 }
 
 .market-picker-shell__card-subtitle {
   margin-top: 0.22rem;
   color: var(--text-secondary);
-  font-size: 0.82rem;
+  font-size: 0.76rem;
 }
 
 .market-picker-shell__hint {
@@ -758,8 +759,8 @@ a {
   }
 
   .ui-button {
-    min-height: 42px;
-    padding: 0.68rem 1rem;
+    min-height: 34px;
+    padding: 0.5rem 0.78rem;
   }
 }
 

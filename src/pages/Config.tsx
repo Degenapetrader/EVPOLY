@@ -551,6 +551,12 @@ export function Config() {
   const setupReady = Boolean(
     config.private_key.trim() && (config.sig_type === 0 || config.proxy_wallet.trim())
   );
+  const isOnboarded = Boolean(onboardedWallet);
+  const setupPillLabel = isOnboarded
+    ? "Onboarded"
+    : setupReady
+    ? "Ready for setup"
+    : "Needs wallet details";
   const symbolSummary = config.symbols.join(", ");
   const railItems = [
     { label: "Dashboard", to: "/dashboard" },
@@ -565,11 +571,11 @@ export function Config() {
       railItems={railItems}
       railChildren={
         <SectionPanel title="Keep it simple" subtitle="Most people only need setup, mode, strategy choice, and size.">
-          <div className="space-y-3 text-sm text-[var(--text-secondary)]">
-            <p>Use advanced settings only when you are fixing a specific issue.</p>
-            <div className="flex flex-wrap gap-2">
-              <InfoPill tone={setupReady ? "success" : "warning"}>
-                {setupReady ? "Setup ready" : "Needs setup"}
+            <div className="space-y-3 text-sm text-[var(--text-secondary)]">
+              <p>Use advanced settings only when you are fixing a specific issue.</p>
+              <div className="flex flex-wrap gap-2">
+              <InfoPill tone={isOnboarded ? "success" : setupReady ? "accent" : "warning"}>
+                {setupPillLabel}
               </InfoPill>
               <InfoPill tone={config.simulation ? "warning" : "success"}>
                 {config.simulation ? "Dry Run" : "Live"}
@@ -601,8 +607,8 @@ export function Config() {
             title="Easy Setup"
             subtitle="Connect the wallet details the bot needs, then run onboarding once."
             actions={
-              <InfoPill tone={setupReady ? "success" : "warning"}>
-                {setupReady ? "Ready to onboard" : "Needs wallet details"}
+              <InfoPill tone={isOnboarded ? "success" : setupReady ? "accent" : "warning"}>
+                {setupPillLabel}
               </InfoPill>
             }
           >
@@ -671,7 +677,11 @@ export function Config() {
                 disabled={onboardLoading}
                 className="ui-button ui-button--primary min-w-[12rem] justify-center"
               >
-                {onboardLoading ? "Running setup..." : onboardedWallet ? "Run setup again" : "Run setup"}
+                {onboardLoading
+                  ? "Running setup..."
+                  : onboardedWallet
+                  ? "Refresh setup"
+                  : "Run setup"}
               </button>
             </div>
             {onboardResult ? (
@@ -988,7 +998,7 @@ export function Config() {
               />
               <SummaryRow
                 label="Wallet"
-                value={onboardedWallet || "Needs onboarding"}
+                value={onboardedWallet || "Needs setup"}
                 muted={!onboardedWallet}
               />
               <SummaryRow label="Markets" value={symbolSummary} />

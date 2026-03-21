@@ -146,6 +146,10 @@ export interface Trade {
   id: string;
   timestamp: string;
   market: string;
+  condition_id?: string;
+  strategy_id?: string;
+  token_id?: string;
+  token_type?: string | null;
   side: string;
   size: number;
   price: number;
@@ -155,6 +159,9 @@ export interface Trade {
 
 export interface Position {
   market: string;
+  condition_id?: string;
+  token_id?: string;
+  token_type?: string | null;
   side: string;
   size: number;
   entry_price: number;

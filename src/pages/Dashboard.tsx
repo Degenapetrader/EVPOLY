@@ -33,6 +33,7 @@ import {
   formatClock,
   formatCurrency,
   formatQuantity,
+  humanMarketLabel,
 } from "../lib/ui-adapters";
 
 function StatCard({
@@ -51,7 +52,7 @@ function StatCard({
           {label}
         </div>
         <div
-          className="text-2xl font-semibold mono-data"
+          className="text-[1.35rem] font-semibold mono-data"
           style={{ color: color || "var(--text-primary)" }}
         >
           {value}
@@ -254,19 +255,6 @@ export function Dashboard() {
     <AppShell
       railSubtitle="Trading desk"
       railItems={railItems}
-      railChildren={
-        <SectionPanel title="Bot Status" subtitle="The main screen stays focused on trading, not technical noise.">
-          <div className="flex flex-wrap items-center gap-3">
-            <StatusBadge status={status} />
-            <InfoPill tone={simulation ? "warning" : "success"}>
-              {simulation ? "Dry Run" : "Live"}
-            </InfoPill>
-            {activeProfileId ? (
-              <InfoPill tone="accent">Profile loaded</InfoPill>
-            ) : null}
-          </div>
-        </SectionPanel>
-      }
       eyebrow="Today"
       title="Trading at a Glance"
       description="Minimal trading-first workspace for bot state, positions, and recent order flow."
@@ -355,7 +343,7 @@ export function Dashboard() {
         <div className="page-grid page-grid--two">
           <div className="space-y-3">
             <div>
-              <div className="text-[clamp(1.9rem,1.55rem+0.9vw,2.5rem)] font-bold tracking-[-0.05em] leading-tight">
+              <div className="text-[clamp(1.45rem,1.18rem+0.65vw,2rem)] font-bold tracking-[-0.05em] leading-tight">
                 {dashboardView.activity.headline}
               </div>
               <p className="mt-2 max-w-2xl text-sm text-[var(--text-secondary)]">
@@ -408,7 +396,7 @@ export function Dashboard() {
               <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
                 Recent result
               </div>
-              <div className="mt-2 text-xl font-semibold tracking-[-0.03em] text-[var(--text-primary)]">
+              <div className="mt-2 text-[1.25rem] font-semibold tracking-[-0.03em] text-[var(--text-primary)]">
                 {dashboardView.recentResult}
               </div>
               {dashboardView.latestTrade ? (
@@ -422,7 +410,7 @@ export function Dashboard() {
               <div className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
                 If nothing happens
               </div>
-              <div className="mt-2 text-xl font-semibold tracking-[-0.03em] text-[var(--text-primary)]">
+              <div className="mt-2 text-[1.25rem] font-semibold tracking-[-0.03em] text-[var(--text-primary)]">
                 {dashboardView.idleHelp}
               </div>
             </div>
@@ -473,7 +461,7 @@ export function Dashboard() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <div className="text-base font-semibold text-[var(--text-primary)]">
-                          {pos.market}
+                          {humanMarketLabel(pos.market, pos.token_type)}
                         </div>
                         <div className="mt-1 text-sm text-[var(--text-secondary)]">
                           {describePositionPrices(pos)}
@@ -522,7 +510,7 @@ export function Dashboard() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className="text-base font-semibold text-[var(--text-primary)]">
-                          {trade.market}
+                          {humanMarketLabel(trade.market, trade.token_type, trade.strategy_id)}
                         </div>
                         <div className="mt-1 text-sm text-[var(--text-secondary)]">
                           {describeTradeFill(trade)}

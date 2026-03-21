@@ -127,6 +127,66 @@ fn number_to_json(v: f64) -> Value {
     serde_json::json!(v.max(0.0))
 }
 
+fn normalize_outcome_label(token_type: Option<&str>) -> Option<&'static str> {
+    let raw = token_type?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    match raw.to_ascii_lowercase().as_str() {
+        "up" | "yes" | "long" => Some("Up"),
+        "down" | "no" | "short" => Some("Down"),
+        _ => None,
+    }
+}
+
+fn normalize_symbol_label(symbol: Option<&str>) -> Option<String> {
+    let raw = symbol?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(raw.to_ascii_uppercase())
+}
+
+fn normalize_timeframe_label(timeframe: Option<&str>) -> Option<String> {
+    let raw = timeframe?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(raw.to_ascii_lowercase())
+}
+
+fn human_market_label(
+    symbol: Option<&str>,
+    timeframe: Option<&str>,
+    token_type: Option<&str>,
+    strategy_id: Option<&str>,
+) -> String {
+    let mut parts = Vec::new();
+    if let Some(symbol) = normalize_symbol_label(symbol) {
+        parts.push(symbol);
+    }
+    if let Some(timeframe) = normalize_timeframe_label(timeframe) {
+        parts.push(timeframe);
+    }
+    if let Some(outcome) = normalize_outcome_label(token_type) {
+        parts.push(outcome.to_string());
+    }
+    if !parts.is_empty() {
+        return parts.join(" ");
+    }
+
+    match strategy_id.unwrap_or_default().trim().to_ascii_lowercase().as_str() {
+        "mm_rewards" => "Reward market".to_string(),
+        "mm_sport" => "Sports market".to_string(),
+        "endgame" => "Endgame market".to_string(),
+        "premarket" => "Premarket market".to_string(),
+        "evcurve" => "Curve market".to_string(),
+        "session_band" => "Session market".to_string(),
+        "evsnipe" => "Snipe market".to_string(),
+        _ => "Prediction market".to_string(),
+    }
+}
+
 fn bool_from_object(obj: &Map<String, Value>, key: &str, default: bool) -> bool {
     obj.get(key).and_then(Value::as_bool).unwrap_or(default)
 }
@@ -1168,12 +1228,28 @@ fn get_recent_trades(data_dir: State<'_, AppDataDir>, limit: usize) -> Vec<serde
     };
 
     let mut stmt = match conn.prepare(
-        "SELECT f.id, f.strategy_id, f.token_id, f.side, \
+        "WITH mm_market_meta AS ( \
+            SELECT condition_id, up_token_id AS token_id, MAX(symbol) AS symbol, MAX(timeframe) AS timeframe \
+            FROM mm_market_states_v1 \
+            WHERE up_token_id IS NOT NULL AND TRIM(up_token_id) <> '' \
+            GROUP BY condition_id, up_token_id \
+            UNION ALL \
+            SELECT condition_id, down_token_id AS token_id, MAX(symbol) AS symbol, MAX(timeframe) AS timeframe \
+            FROM mm_market_states_v1 \
+            WHERE down_token_id IS NOT NULL AND TRIM(down_token_id) <> '' \
+            GROUP BY condition_id, down_token_id \
+         ) \
+         SELECT f.id, f.strategy_id, f.condition_id, f.token_id, f.token_type, f.timeframe, f.side, \
                 COALESCE(f.price, 0.0), COALESCE(f.units, 0.0), \
                 COALESCE(f.ts_ms, f.created_at_ms, 0), \
-                COALESCE(te.pnl_usd, 0.0), f.source_event_type \
+                COALESCE(te.pnl_usd, 0.0), f.source_event_type, \
+                COALESCE(NULLIF(te.asset_symbol, ''), NULLIF(mm.symbol, ''), ''), \
+                COALESCE(NULLIF(te.timeframe, ''), NULLIF(mm.timeframe, ''), NULLIF(f.timeframe, ''), '') \
          FROM fills_v2 f \
          LEFT JOIN trade_events te ON te.event_key = f.event_key \
+         LEFT JOIN mm_market_meta mm \
+           ON mm.condition_id = f.condition_id \
+          AND mm.token_id = f.token_id \
          ORDER BY COALESCE(f.ts_ms, f.created_at_ms, 0) DESC \
          LIMIT ?1",
     ) {
@@ -1184,13 +1260,18 @@ fn get_recent_trades(data_dir: State<'_, AppDataDir>, limit: usize) -> Vec<serde
     let rows = stmt.query_map([limit as i64], |row| {
         let id: i64 = row.get(0)?;
         let strategy_id: String = row.get(1)?;
-        let token_id: String = row.get(2)?;
-        let side: String = row.get(3)?;
-        let price: f64 = row.get(4)?;
-        let size: f64 = row.get(5)?;
-        let ts: i64 = row.get(6)?;
-        let pnl: f64 = row.get(7)?;
-        let source_event_type: String = row.get(8)?;
+        let condition_id: String = row.get(2)?;
+        let token_id: String = row.get(3)?;
+        let token_type: Option<String> = row.get(4)?;
+        let timeframe: Option<String> = row.get(5)?;
+        let side: String = row.get(6)?;
+        let price: f64 = row.get(7)?;
+        let size: f64 = row.get(8)?;
+        let ts: i64 = row.get(9)?;
+        let pnl: f64 = row.get(10)?;
+        let source_event_type: String = row.get(11)?;
+        let asset_symbol: Option<String> = row.get(12)?;
+        let resolved_timeframe: Option<String> = row.get(13)?;
         let outcome = if pnl > 0.0 {
             "win"
         } else if pnl < 0.0 {
@@ -1200,12 +1281,22 @@ fn get_recent_trades(data_dir: State<'_, AppDataDir>, limit: usize) -> Vec<serde
         } else {
             "open"
         };
+        let market = human_market_label(
+            asset_symbol.as_deref(),
+            resolved_timeframe
+                .as_deref()
+                .or(timeframe.as_deref()),
+            token_type.as_deref(),
+            Some(strategy_id.as_str()),
+        );
         Ok(serde_json::json!({
             "id": id.to_string(),
             "timestamp": iso_from_ms(ts),
-            "market": token_id.clone(),
+            "market": market,
             "strategy_id": strategy_id,
+            "condition_id": condition_id,
             "token_id": token_id,
+            "token_type": token_type,
             "side": side.to_ascii_lowercase(),
             "price": price,
             "size": size,
@@ -1229,12 +1320,38 @@ fn get_open_positions(data_dir: State<'_, AppDataDir>) -> Vec<serde_json::Value>
         Err(_) => return vec![],
     };
 
-    let query_with_marks = "SELECT p.token_id, \
+    let query_with_marks = "WITH latest_trade_meta AS ( \
+            SELECT condition_id, token_id, MAX(asset_symbol) AS asset_symbol, MAX(timeframe) AS timeframe \
+            FROM trade_events \
+            WHERE condition_id IS NOT NULL AND TRIM(condition_id) <> '' \
+              AND token_id IS NOT NULL AND TRIM(token_id) <> '' \
+            GROUP BY condition_id, token_id \
+         ), \
+         mm_market_meta AS ( \
+            SELECT condition_id, up_token_id AS token_id, MAX(symbol) AS symbol, MAX(timeframe) AS timeframe \
+            FROM mm_market_states_v1 \
+            WHERE up_token_id IS NOT NULL AND TRIM(up_token_id) <> '' \
+            GROUP BY condition_id, up_token_id \
+            UNION ALL \
+            SELECT condition_id, down_token_id AS token_id, MAX(symbol) AS symbol, MAX(timeframe) AS timeframe \
+            FROM mm_market_states_v1 \
+            WHERE down_token_id IS NOT NULL AND TRIM(down_token_id) <> '' \
+            GROUP BY condition_id, down_token_id \
+         ) \
+         SELECT p.strategy_id, p.condition_id, p.token_id, p.token_type, p.timeframe, \
+                COALESCE(NULLIF(meta.asset_symbol, ''), NULLIF(mm.symbol, ''), '') AS asset_symbol, \
+                COALESCE(NULLIF(meta.timeframe, ''), NULLIF(mm.timeframe, ''), NULLIF(p.timeframe, ''), '') AS resolved_timeframe, \
                 (COALESCE(p.entry_units, 0.0) - COALESCE(p.exit_units, 0.0) - COALESCE(p.inventory_consumed_units, 0.0)) AS net_units, \
                 CASE WHEN COALESCE(p.entry_units, 0.0) > 0.0 THEN COALESCE(p.entry_notional_usd, 0.0) / p.entry_units ELSE 0.0 END AS avg_entry_price, \
                 COALESCE(p.realized_pnl_usd, 0.0) AS realized_pnl_usd, \
                 lm.price AS mark_price \
          FROM positions_v2 p \
+         LEFT JOIN latest_trade_meta meta \
+           ON meta.condition_id = p.condition_id \
+          AND meta.token_id = p.token_id \
+         LEFT JOIN mm_market_meta mm \
+           ON mm.condition_id = p.condition_id \
+          AND mm.token_id = p.token_id \
          LEFT JOIN ( \
            SELECT m.position_key, m.price \
            FROM marks_v2 m \
@@ -1246,11 +1363,37 @@ fn get_open_positions(data_dir: State<'_, AppDataDir>) -> Vec<serde_json::Value>
          ) lm ON lm.position_key = p.position_key \
          WHERE p.status='OPEN' \
            AND (COALESCE(p.entry_units, 0.0) - COALESCE(p.exit_units, 0.0) - COALESCE(p.inventory_consumed_units, 0.0)) > 1e-9";
-    let query_without_marks = "SELECT token_id, \
+    let query_without_marks = "WITH latest_trade_meta AS ( \
+            SELECT condition_id, token_id, MAX(asset_symbol) AS asset_symbol, MAX(timeframe) AS timeframe \
+            FROM trade_events \
+            WHERE condition_id IS NOT NULL AND TRIM(condition_id) <> '' \
+              AND token_id IS NOT NULL AND TRIM(token_id) <> '' \
+            GROUP BY condition_id, token_id \
+         ), \
+         mm_market_meta AS ( \
+            SELECT condition_id, up_token_id AS token_id, MAX(symbol) AS symbol, MAX(timeframe) AS timeframe \
+            FROM mm_market_states_v1 \
+            WHERE up_token_id IS NOT NULL AND TRIM(up_token_id) <> '' \
+            GROUP BY condition_id, up_token_id \
+            UNION ALL \
+            SELECT condition_id, down_token_id AS token_id, MAX(symbol) AS symbol, MAX(timeframe) AS timeframe \
+            FROM mm_market_states_v1 \
+            WHERE down_token_id IS NOT NULL AND TRIM(down_token_id) <> '' \
+            GROUP BY condition_id, down_token_id \
+         ) \
+         SELECT p.strategy_id, p.condition_id, p.token_id, p.token_type, p.timeframe, \
+                COALESCE(NULLIF(meta.asset_symbol, ''), NULLIF(mm.symbol, ''), '') AS asset_symbol, \
+                COALESCE(NULLIF(meta.timeframe, ''), NULLIF(mm.timeframe, ''), NULLIF(p.timeframe, ''), '') AS resolved_timeframe, \
                 (COALESCE(entry_units, 0.0) - COALESCE(exit_units, 0.0) - COALESCE(inventory_consumed_units, 0.0)) AS net_units, \
                 CASE WHEN COALESCE(entry_units, 0.0) > 0.0 THEN COALESCE(entry_notional_usd, 0.0) / entry_units ELSE 0.0 END AS avg_entry_price, \
                 COALESCE(realized_pnl_usd, 0.0) AS realized_pnl_usd \
-         FROM positions_v2 \
+         FROM positions_v2 p \
+         LEFT JOIN latest_trade_meta meta \
+           ON meta.condition_id = p.condition_id \
+          AND meta.token_id = p.token_id \
+         LEFT JOIN mm_market_meta mm \
+           ON mm.condition_id = p.condition_id \
+          AND mm.token_id = p.token_id \
          WHERE status='OPEN' \
            AND (COALESCE(entry_units, 0.0) - COALESCE(exit_units, 0.0) - COALESCE(inventory_consumed_units, 0.0)) > 1e-9";
 
@@ -1263,17 +1406,33 @@ fn get_open_positions(data_dir: State<'_, AppDataDir>) -> Vec<serde_json::Value>
     };
 
     let rows = stmt.query_map([], |row| {
-        let token_id: String = row.get(0)?;
-        let size: f64 = row.get(1)?;
-        let entry: f64 = row.get(2)?;
-        let realized_pnl: f64 = row.get(3)?;
-        let mark_price: Option<f64> = if with_marks { row.get(4)? } else { None };
+        let strategy_id: String = row.get(0)?;
+        let condition_id: String = row.get(1)?;
+        let token_id: String = row.get(2)?;
+        let token_type: Option<String> = row.get(3)?;
+        let timeframe: Option<String> = row.get(4)?;
+        let asset_symbol: Option<String> = row.get(5)?;
+        let resolved_timeframe: Option<String> = row.get(6)?;
+        let size: f64 = row.get(7)?;
+        let entry: f64 = row.get(8)?;
+        let realized_pnl: f64 = row.get(9)?;
+        let mark_price: Option<f64> = if with_marks { row.get(10)? } else { None };
         let unrealized_pnl = mark_price.map(|mark| (mark - entry) * size);
         let total_pnl = unrealized_pnl.unwrap_or(0.0) + realized_pnl;
+        let market = human_market_label(
+            asset_symbol.as_deref(),
+            resolved_timeframe
+                .as_deref()
+                .or(timeframe.as_deref()),
+            token_type.as_deref(),
+            Some(strategy_id.as_str()),
+        );
         Ok(serde_json::json!({
-            "market": token_id,
+            "market": market,
             "side": "buy",
+            "condition_id": condition_id,
             "token_id": token_id,
+            "token_type": token_type,
             "size": size,
             "entry_price": entry,
             "current_price": mark_price,

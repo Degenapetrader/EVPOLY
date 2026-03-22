@@ -2,16 +2,28 @@ use crate::strategy::Timeframe;
 use std::sync::OnceLock;
 
 const DEFAULT_BASE_SIZE_USD: f64 = 10.0;
+const DEFAULT_ENDGAME_BASE_SIZE_USD: f64 = 50.0;
 const DEFAULT_ENDGAME_TICK_MULTIPLIERS: [f64; 3] = [0.20, 0.40, 0.40];
 const DEFAULT_SESSIONBAND_TAU2_MULTIPLIER: f64 = 0.30;
 const DEFAULT_SESSIONBAND_TAU1_MULTIPLIER: f64 = 0.70;
 
 pub fn base_size_usd_from_env(env_key: &str) -> f64 {
+    base_size_usd_from_env_with_default(env_key, DEFAULT_BASE_SIZE_USD)
+}
+
+pub fn endgame_base_size_usd_from_env() -> f64 {
+    base_size_usd_from_env_with_default(
+        "EVPOLY_ENDGAME_BASE_SIZE_USD",
+        DEFAULT_ENDGAME_BASE_SIZE_USD,
+    )
+}
+
+pub fn base_size_usd_from_env_with_default(env_key: &str, default: f64) -> f64 {
     std::env::var(env_key)
         .ok()
         .and_then(|value| value.trim().parse::<f64>().ok())
         .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(DEFAULT_BASE_SIZE_USD)
+        .unwrap_or(default)
 }
 
 pub fn symbol_size_multiplier(symbol: &str) -> f64 {
@@ -167,5 +179,20 @@ mod tests {
         assert_eq!(sessionband_tau_multiplier(2), Some(0.30));
         assert_eq!(sessionband_tau_multiplier(1), Some(0.70));
         assert_eq!(sessionband_tau_multiplier(3), None);
+    }
+
+    #[test]
+    fn endgame_base_size_uses_custom_default() {
+        unsafe { std::env::remove_var("EVPOLY_TEST_ENDGAME_BASE_SIZE_USD") };
+        assert_eq!(
+            base_size_usd_from_env_with_default("EVPOLY_TEST_ENDGAME_BASE_SIZE_USD", 50.0),
+            50.0
+        );
+        unsafe { std::env::set_var("EVPOLY_TEST_ENDGAME_BASE_SIZE_USD", "75") };
+        assert_eq!(
+            base_size_usd_from_env_with_default("EVPOLY_TEST_ENDGAME_BASE_SIZE_USD", 50.0),
+            75.0
+        );
+        unsafe { std::env::remove_var("EVPOLY_TEST_ENDGAME_BASE_SIZE_USD") };
     }
 }

@@ -5459,7 +5459,7 @@ async fn main() -> Result<()> {
         .unwrap_or(0)
         .clamp(0, 5_000);
     let endgame_cfg = Arc::new(EndgameExecutionConfig::from_env());
-    let endgame_base_size_usd = size_policy::base_size_usd_from_env("EVPOLY_ENDGAME_BASE_SIZE_USD");
+    let endgame_base_size_usd = size_policy::endgame_base_size_usd_from_env();
     let endgame_symbols = symbol_ownership::filter_symbols_for_strategy(
         STRATEGY_ID_ENDGAME_SWEEP_V1,
         endgame_cfg.enabled_symbols().as_slice(),

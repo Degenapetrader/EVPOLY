@@ -733,7 +733,7 @@ fn setting_specs() -> Vec<BotSettingSpec> {
             group: "strategy",
             strategy: Some("endgame"),
             value_type: BotSettingType::Number,
-            default_raw: "10",
+            default_raw: "50",
             min: Some(1.0),
             max: Some(1_000_000.0),
             enum_values: &[],

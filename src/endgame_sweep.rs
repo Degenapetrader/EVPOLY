@@ -237,7 +237,7 @@ pub fn build_intent_plan_for_tick(
             .unwrap_or_default();
         idx
     };
-    let base_size_usd = size_policy::base_size_usd_from_env("EVPOLY_ENDGAME_BASE_SIZE_USD");
+    let base_size_usd = size_policy::endgame_base_size_usd_from_env();
     let per_tick_notional_default = size_policy::endgame_tick_multiplier(tick_index).unwrap_or(0.0)
         * size_policy::strategy_symbol_size_usd(base_size_usd, asset_symbol);
     if per_tick_notional_default <= 0.0 {

@@ -1154,7 +1154,7 @@ fn mm_sport_size_shares_from_pending(row: &PendingOrderRecord) -> Option<f64> {
     (shares.is_finite() && shares > 0.0).then_some(shares)
 }
 
-const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 50_000.0;
+const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 20_000.0;
 const MM_SPORT_LOW_DEPTH_QUOTE_SIZE_MULT: f64 = 1.2;
 const MM_SPORT_FORCE_EXIT_WINDOW_MS: i64 = 30 * 60 * 1_000;
 const MM_SPORT_EXIT_FALLBACK_REFRESH_MS: i64 = 60_000;

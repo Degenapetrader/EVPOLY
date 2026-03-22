@@ -50,6 +50,7 @@ pub struct EntryScopeKey {
     pub period_timestamp: u64,
     pub timeframe: String,
     pub entry_mode: String,
+    pub asset_scope: Option<String>,
 }
 
 impl EntryScopeKey {
@@ -59,11 +60,25 @@ impl EntryScopeKey {
         timeframe: impl AsRef<str>,
         entry_mode: impl AsRef<str>,
     ) -> Self {
+        Self::new_with_asset_scope(strategy_id, period_timestamp, timeframe, entry_mode, None)
+    }
+
+    pub fn new_with_asset_scope(
+        strategy_id: impl AsRef<str>,
+        period_timestamp: u64,
+        timeframe: impl AsRef<str>,
+        entry_mode: impl AsRef<str>,
+        asset_scope: Option<&str>,
+    ) -> Self {
         Self {
             strategy_id: strategy_id.as_ref().trim().to_ascii_lowercase(),
             period_timestamp,
             timeframe: timeframe.as_ref().trim().to_ascii_lowercase(),
             entry_mode: entry_mode.as_ref().trim().to_ascii_lowercase(),
+            asset_scope: asset_scope
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_ascii_uppercase()),
         }
     }
 }
@@ -545,6 +560,17 @@ mod tests {
         EntryScopeKey::new("premarket_v1", 1_771_430_400, "1h", "ladder")
     }
 
+    fn ladder_key_with_token(token_id: &str, rung_id: &str) -> EntryLogicalKey {
+        EntryLogicalKey::new(
+            "premarket_v1",
+            "15m",
+            1_771_430_700,
+            token_id,
+            "BUY",
+            Some(rung_id),
+        )
+    }
+
     #[test]
     fn enqueue_dedupe_burst_forwards_once() {
         let mut dedupe = EnqueueDedupe::new(1_000);
@@ -733,6 +759,46 @@ mod tests {
         let scope = EntryScopeKey::new("premarket_v1", 1_771_430_700, "15m", "ladder");
         assert!(worker.begin(&key_r0, &scope, 10_010).execute);
         assert!(worker.begin(&key_r1, &scope, 10_011).execute);
+    }
+
+    #[test]
+    fn premarket_asset_scopes_allow_parallel_inflight_for_same_rung() {
+        let cfg = EntryIdempotencyConfig {
+            enqueue_dedupe_cooldown_ms: 1_500,
+            recent_done_ttl_ms: 10_000,
+            recent_done_ttl_mm_rewards_ms: 10_000,
+            failure_cooldown_ms: 8_000,
+            retryable_failure_cooldown_ms: 3_000,
+            parameter_invalid_cooldown_ms: 20_000,
+            market_not_ready_cooldown_ms: 2_000,
+            market_not_ready_jitter_ms: 0,
+            retry_window_ms: 60_000,
+            max_failures_per_window: 5,
+            allowance_backoff_ms: 60_000,
+            warning_cooldown_ms: 8_000,
+        };
+        let mut worker = WorkerIdempotency::new(cfg);
+        let btc_key = ladder_key_with_token("btc-token", "r0");
+        let eth_key = ladder_key_with_token("eth-token", "r0");
+        let btc_scope = EntryScopeKey::new_with_asset_scope(
+            "premarket_v1",
+            1_771_430_700,
+            "15m",
+            "ladder",
+            Some("BTC"),
+        );
+        let eth_scope = EntryScopeKey::new_with_asset_scope(
+            "premarket_v1",
+            1_771_430_700,
+            "15m",
+            "ladder",
+            Some("ETH"),
+        );
+
+        assert!(worker.begin(&btc_key, &btc_scope, 10_010).execute);
+        assert!(worker.begin(&eth_key, &eth_scope, 10_011).execute);
+        assert_eq!(worker.in_flight_count_for_scope(&btc_scope), 1);
+        assert_eq!(worker.in_flight_count_for_scope(&eth_scope), 1);
     }
 
     #[test]

@@ -11305,7 +11305,7 @@ LIMIT 1
         let from_ts_ms = chrono::Utc::now()
             .timestamp_millis()
             .saturating_sub(safe_hours.saturating_mul(3_600_000));
-        let rows = self.with_conn(|conn| {
+        let rows = self.with_conn_read(|conn| {
             let mut stmt = conn.prepare(
                 r#"
 SELECT
@@ -12595,7 +12595,7 @@ ORDER BY updated_at_ms DESC
     }
 
     pub fn list_latest_entry_fills(&self, limit: usize) -> Result<Vec<LatestEntryFillRecord>> {
-        self.with_conn(|conn| {
+        self.with_conn_read(|conn| {
             let mut stmt = conn.prepare(
                 r#"
 SELECT
@@ -12767,7 +12767,7 @@ LIMIT ?3
         &self,
         limit: usize,
     ) -> Result<Vec<LatestEntryFillRecord>> {
-        self.with_conn(|conn| {
+        self.with_conn_read(|conn| {
             let mut stmt = conn.prepare(
                 r#"
 WITH latest_order_meta AS (
@@ -12945,7 +12945,7 @@ LIMIT ?3
         &self,
         limit: usize,
     ) -> Result<Vec<LatestEntryFillRecord>> {
-        self.with_conn(|conn| {
+        self.with_conn_read(|conn| {
             let mut stmt = conn.prepare(
                 r#"
 WITH latest_event_meta AS (

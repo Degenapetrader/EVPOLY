@@ -1439,6 +1439,21 @@ impl Trader {
         }
     }
 
+    fn effective_market_order_constraints(
+        strategy_id: &str,
+        entry_mode: EntryExecutionMode,
+        constraints: Option<MarketOrderConstraints>,
+    ) -> Option<MarketOrderConstraints> {
+        constraints.map(|mut constraints| {
+            if strategy_id == crate::strategy::STRATEGY_ID_ENDGAME_SWEEP_V1
+                && entry_mode == EntryExecutionMode::Endgame
+            {
+                constraints.min_size_shares = 0.0;
+            }
+            constraints
+        })
+    }
+
     pub async fn prime_market_constraints_snapshot(
         &self,
         condition_id: &str,
@@ -5881,6 +5896,8 @@ impl Trader {
                     .await?,
             )
         };
+        let constraints =
+            Self::effective_market_order_constraints(strategy_id.as_str(), entry_mode, constraints);
         let mut submit_price = opportunity.bid_price;
         let mut post_only_best_bid: Option<f64> = None;
         let mut post_only_best_ask: Option<f64> = None;
@@ -15454,6 +15471,41 @@ mod tests {
         assert!(adjusted);
         assert_eq!(units, 10.0);
         assert_eq!(notional, 5.0);
+    }
+
+    #[test]
+    fn endgame_constraints_ignore_reward_share_floor() {
+        let adjusted = Trader::effective_market_order_constraints(
+            crate::strategy::STRATEGY_ID_ENDGAME_SWEEP_V1,
+            EntryExecutionMode::Endgame,
+            Some(MarketOrderConstraints {
+                min_notional_usd: 5.0,
+                min_size_shares: 50.0,
+                tick_size: 0.01,
+            }),
+        )
+        .expect("constraints");
+
+        assert_eq!(adjusted.min_notional_usd, 5.0);
+        assert_eq!(adjusted.min_size_shares, 0.0);
+        assert_eq!(adjusted.tick_size, 0.01);
+    }
+
+    #[test]
+    fn mm_rewards_constraints_keep_reward_share_floor() {
+        let adjusted = Trader::effective_market_order_constraints(
+            crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+            EntryExecutionMode::MmRewards,
+            Some(MarketOrderConstraints {
+                min_notional_usd: 5.0,
+                min_size_shares: 50.0,
+                tick_size: 0.01,
+            }),
+        )
+        .expect("constraints");
+
+        assert_eq!(adjusted.min_notional_usd, 5.0);
+        assert_eq!(adjusted.min_size_shares, 50.0);
     }
 
     #[test]

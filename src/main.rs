@@ -28482,12 +28482,25 @@ fn logical_entry_key_from_request(request: &ArbiterExecutionRequest) -> EntryLog
     )
 }
 
+fn premarket_asset_scope_from_request(request: &ArbiterExecutionRequest) -> Option<String> {
+    if request.intent.strategy_id != STRATEGY_ID_PREMARKET_V1
+        || !matches!(request.entry_mode, EntryExecutionMode::Ladder)
+    {
+        return None;
+    }
+
+    asset_symbol_from_request_id(request.request_id.as_str())
+        .or_else(|| Some(token_family_for_token_type(&request.opportunity.token_type).to_string()))
+}
+
 fn logical_entry_scope_from_request(request: &ArbiterExecutionRequest) -> EntryScopeKey {
-    EntryScopeKey::new(
+    let asset_scope = premarket_asset_scope_from_request(request);
+    EntryScopeKey::new_with_asset_scope(
         request.intent.strategy_id.as_str(),
         request.opportunity.period_timestamp,
         request_timeframe_label(request),
         request.entry_mode.as_str(),
+        asset_scope.as_deref(),
     )
 }
 

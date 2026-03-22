@@ -73,64 +73,6 @@ export interface UiMarket {
   sides: UiMarketSide[];
 }
 
-export interface UiManualRun {
-  run_id: string;
-  kind: string;
-  kind_label: string;
-  status: string;
-  status_label: string;
-  condition_id: string;
-  market_slug: string;
-  market_title: string;
-  market_subtitle: string;
-  side: string;
-  side_label: string;
-  mode: string;
-  mode_label: string;
-  target_shares: number;
-  filled_shares: number;
-  remaining_shares: number;
-  requested_size_usd: number | null;
-  progress_ratio: number;
-  progress_summary: string;
-  started_at_ms: number;
-  started_at: string;
-  updated_at_ms: number;
-  updated_at: string;
-  error_message?: string | null;
-}
-
-export interface UiManualPosition {
-  condition_id: string;
-  market_slug: string;
-  market_title: string;
-  market_subtitle: string;
-  side: string;
-  side_label: string;
-  size: number;
-  entry_price: number | null;
-  current_price: number | null;
-  realized_pnl: number | null;
-  unrealized_pnl: number | null;
-  redeemable: boolean;
-  mergeable: boolean;
-}
-
-export interface UiManualHealth {
-  status: string;
-  mode: string;
-  message: string;
-  ready: boolean;
-}
-
-export interface UiManualBalanceSummary {
-  available_cash_usd: number | null;
-  available_allowance_usd: number | null;
-  positions_value_usd: number | null;
-  estimated_total_equity_usd: number | null;
-  message: string;
-}
-
 export interface TradeStats {
   total_pnl: number;
   win_rate: number;
@@ -291,34 +233,6 @@ export const botApiRequest = <T = unknown>(
   body?: Record<string, unknown>
 ): Promise<T> =>
   invoke("bot_api_request", {
-    method,
-    path,
-    query: query ?? null,
-    body: body ?? null,
-  });
-
-export const startManualService = (
-  simulation: boolean,
-  port?: number
-): Promise<void> =>
-  invoke("start_manual_service", { simulation, port });
-
-export const stopManualService = (): Promise<void> =>
-  invoke("stop_manual_service");
-
-export const getManualServiceStatus = (): Promise<string> =>
-  invoke("get_manual_service_status");
-
-export const getManualLogLines = (count: number): Promise<LogLine[]> =>
-  invoke("get_manual_log_lines", { count });
-
-export const manualApiRequest = <T = unknown>(
-  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
-  path: string,
-  query?: Record<string, unknown>,
-  body?: Record<string, unknown>
-): Promise<T> =>
-  invoke("manual_api_request", {
     method,
     path,
     query: query ?? null,

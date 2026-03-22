@@ -12,7 +12,36 @@ $lockPath = Join-Path $repoRoot "src-tauri\sidecar-core.lock"
 $binariesDir = Join-Path $repoRoot "src-tauri\binaries"
 $targetDir = Join-Path $repoRoot "src-tauri\target\core-sidecars"
 $coreContractDir = Join-Path $repoRoot "src-tauri\core-contract"
+$corePatchDir = Join-Path $repoRoot "src-tauri\core-patches"
 $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+
+function Get-CorePatchHash {
+  if (-not (Test-Path $corePatchDir)) {
+    return "none"
+  }
+
+  $patches = Get-ChildItem -Path $corePatchDir -File -Filter *.patch | Sort-Object Name
+  if (-not $patches) {
+    return "none"
+  }
+
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    foreach ($patch in $patches) {
+      $nameBytes = [System.Text.Encoding]::UTF8.GetBytes($patch.Name)
+      [void]$sha.TransformBlock($nameBytes, 0, $nameBytes.Length, $nameBytes, 0)
+      $contentBytes = [System.IO.File]::ReadAllBytes($patch.FullName)
+      [void]$sha.TransformBlock($contentBytes, 0, $contentBytes.Length, $contentBytes, 0)
+    }
+    [void]$sha.TransformFinalBlock([byte[]]::new(0), 0, 0)
+    return ([System.BitConverter]::ToString($sha.Hash)).Replace("-", "").ToLowerInvariant()
+  }
+  finally {
+    $sha.Dispose()
+  }
+}
+
+$patchHash = Get-CorePatchHash
 
 if ((Test-Path $cargoBin) -and -not (($env:Path -split ';') -contains $cargoBin)) {
   $env:Path = "$cargoBin;$env:Path"
@@ -71,17 +100,16 @@ if (-not $targetTriple) {
 }
 
 $botOutput = Join-Path $binariesDir ("evpoly-bot-" + $targetTriple + ".exe")
-$manualOutput = Join-Path $binariesDir ("evpoly-manual-bot-" + $targetTriple + ".exe")
 $stampPath = Join-Path $targetDir ("sidecar-build-stamp-" + $targetTriple + ".lock")
 
-if ((-not $Force) -and (Test-Path $botOutput) -and (Test-Path $manualOutput) -and (Test-Path $stampPath)) {
+if ((-not $Force) -and (Test-Path $botOutput) -and (Test-Path $stampPath)) {
   $stamp = @{}
   foreach ($line in Get-Content $stampPath) {
     if ($line -match '^\s*([^=\s]+)\s*=\s*(.+?)\s*$') {
       $stamp[$matches[1]] = $matches[2]
     }
   }
-  if ($stamp["CORE_REF"] -eq $CoreRef -and $stamp["TARGET_TRIPLE"] -eq $targetTriple) {
+  if ($stamp["CORE_REF"] -eq $CoreRef -and $stamp["TARGET_TRIPLE"] -eq $targetTriple -and $stamp["PATCHES_SHA256"] -eq $patchHash) {
     Write-Host ("[build-sidecar-windows] sidecars already prepared core_ref={0} target={1}" -f $CoreRef, $targetTriple)
     exit 0
   }
@@ -119,13 +147,24 @@ try {
     }
   }
 
+  if (Test-Path $corePatchDir) {
+    $patches = Get-ChildItem -Path $corePatchDir -File -Filter *.patch | Sort-Object Name
+    foreach ($patch in $patches) {
+      Write-Host ("[build-sidecar-windows] applying core patch {0}" -f $patch.Name)
+      git -C $workDir apply --whitespace=nowarn $patch.FullName
+      if ($LASTEXITCODE -ne 0) {
+        throw ("git apply failed for {0}" -f $patch.Name)
+      }
+    }
+  }
+
   $manifest = Join-Path $workDir "Cargo.toml"
   Write-Host ("[build-sidecar-windows] building sidecar binaries ref={0} target={1}" -f $CoreRef, $targetTriple)
-  cargo build --release --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot --bin manual_bot
+  cargo build --release --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot
   if ($LASTEXITCODE -ne 0) {
     Write-Warning ("[build-sidecar-windows] release build failed exit_code={0}; retrying debug fallback" -f $LASTEXITCODE)
     $env:CARGO_BUILD_JOBS = "1"
-    cargo build --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot --bin manual_bot
+    cargo build --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot
     if ($LASTEXITCODE -ne 0) {
       throw "cargo build failed"
     }
@@ -138,7 +177,6 @@ try {
 
   $profileDir = Join-Path (Join-Path $targetDir $targetTriple) $buildProfile
   Copy-Item (Join-Path $profileDir "polymarket-arbitrage-bot.exe") $botOutput -Force
-  Copy-Item (Join-Path $profileDir "manual_bot.exe") $manualOutput -Force
   # Desktop owns its runtime env template in this branch. We sync the core bot
   # code from the pinned ref, but keep desktop defaults versioned locally.
 
@@ -148,6 +186,7 @@ try {
     "TARGET_TRIPLE=$targetTriple",
     "SOURCE_MODE=$sourceMode",
     "BUILD_PROFILE=$buildProfile",
+    "PATCHES_SHA256=$patchHash",
     "PREPARED_AT_UTC=$([DateTime]::UtcNow.ToString('o'))"
   ) | Set-Content -Path $stampPath -Encoding UTF8
 

@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   getLogLines,
-  getManualLogLines,
   openLogsFolder,
   type LogLine,
 } from "../lib/tauri-commands";
 
-type LogsDrawerMode = "bot" | "manual";
+type LogsDrawerMode = "bot";
 
 export function LogsDrawer({
   open,
@@ -25,10 +24,7 @@ export function LogsDrawer({
     if (!open) return;
     setLoading(true);
     try {
-      const next =
-        mode === "manual"
-          ? await getManualLogLines(120)
-          : await getLogLines(120);
+      const next = await getLogLines(120);
       setLines(next);
       setError(null);
     } catch (err) {
@@ -91,9 +87,7 @@ export function LogsDrawer({
         <div className="logs-drawer__header">
           <div>
             <div className="logs-drawer__eyebrow">Hidden by default</div>
-            <div className="logs-drawer__title">
-              {mode === "manual" ? "Manual Service Logs" : "Bot Logs"}
-            </div>
+            <div className="logs-drawer__title">Bot Logs</div>
             <div className="logs-drawer__subtitle">
               Keep the main UI clean. Open logs only when you need the details.
             </div>

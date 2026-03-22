@@ -1,0 +1,52 @@
+diff --git a/src/main.rs b/src/main.rs
+index d29b1f1..230d3eb 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -2686,6 +2686,47 @@ async fn handle_admin_api_connection(
+                 }
+             }
+         }
++        ("POST", "/admin/orders/cancel-all") => match api.cancel_all_orders().await {
++            Ok(resp) => {
++                let canceled = resp.canceled.len();
++                let not_canceled = resp.not_canceled.len();
++                log_event(
++                    "admin_orders_cancel_all",
++                    json!({
++                        "canceled_orders": canceled,
++                        "not_canceled_orders": not_canceled,
++                    }),
++                );
++                write_http_json_response(
++                    &mut stream,
++                    200,
++                    "OK",
++                    &json!({
++                        "ok": true,
++                        "canceled": resp.canceled,
++                        "not_canceled": resp.not_canceled,
++                        "canceled_orders": canceled,
++                        "not_canceled_orders": not_canceled,
++                    }),
++                )
++                .await
++            }
++            Err(e) => {
++                log_event(
++                    "admin_orders_cancel_all_failed",
++                    json!({
++                        "error": e.to_string()
++                    }),
++                );
++                write_http_json_response(
++                    &mut stream,
++                    500,
++                    "Internal Server Error",
++                    &json!({"ok": false, "error": e.to_string()}),
++                )
++                .await
++            }
++        },
+         ("POST", "/admin/merge/condition") => {
+             let condition_id = query_params
+                 .get("condition_id")

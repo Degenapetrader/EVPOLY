@@ -46,6 +46,7 @@ struct BotInner {
     child: Option<CommandChild>,
     env_path: Option<PathBuf>,
     stop_requested: bool,
+    simulation: bool,
 }
 
 pub struct BotManager {
@@ -63,6 +64,7 @@ impl BotManager {
                 child: None,
                 env_path: None,
                 stop_requested: false,
+                simulation: false,
             })),
             log_buffer: Arc::new(Mutex::new(LogBuffer::new())),
         }
@@ -109,6 +111,7 @@ impl BotManager {
 
         inner.child = Some(child);
         inner.env_path = Some(env_path.clone());
+        inner.simulation = simulation;
         drop(inner);
 
         let log_buf = self.log_buffer.clone();
@@ -175,6 +178,7 @@ impl BotManager {
                             }
                             inner.child = None;
                             inner.stop_requested = false;
+                            inner.simulation = false;
                             if was_stopping || stop_requested || payload.code == Some(0) {
                                 inner.status = BotStatus::Stopped;
                             } else {
@@ -192,6 +196,19 @@ impl BotManager {
     }
 
     pub fn stop(&self) -> Result<(), String> {
+        let cancel_context = {
+            let inner = self.inner.lock().map_err(|e| e.to_string())?;
+            if inner.status == BotStatus::Running && !inner.simulation {
+                inner.env_path.clone()
+            } else {
+                None
+            }
+        };
+
+        if let Some(env_path) = cancel_context.as_ref() {
+            self.try_cancel_all_before_stop(env_path);
+        }
+
         let should_force_cleanup = {
             let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
             inner.stop_requested = true;
@@ -377,6 +394,40 @@ impl BotManager {
             }
         }
     }
+
+    fn try_cancel_all_before_stop(&self, env_path: &PathBuf) {
+        let debug_log = self.data_dir.join("evpoly-debug.log.txt");
+        match shutdown_request_context(env_path) {
+            Ok(Some(ctx)) => {
+                append_debug_line(
+                    &debug_log,
+                    "SYSTEM",
+                    "stop requested: attempting admin cancel-all before process shutdown",
+                );
+                match send_shutdown_cancel_all(ctx) {
+                    Ok(summary) => append_debug_line(&debug_log, "SYSTEM", &summary),
+                    Err(err) => append_debug_line(
+                        &debug_log,
+                        "SYSTEM",
+                        format!(
+                            "stop requested: admin cancel-all failed before shutdown: {err}"
+                        )
+                        .as_str(),
+                    ),
+                }
+            }
+            Ok(None) => append_debug_line(
+                &debug_log,
+                "SYSTEM",
+                "stop requested: admin cancel-all skipped before shutdown (admin api unavailable)",
+            ),
+            Err(err) => append_debug_line(
+                &debug_log,
+                "SYSTEM",
+                format!("stop requested: unable to prepare admin cancel-all: {err}").as_str(),
+            ),
+        }
+    }
 }
 
 fn finalize_stop(inner: &mut BotInner) {
@@ -384,7 +435,77 @@ fn finalize_stop(inner: &mut BotInner) {
         config_io::cleanup_env_file(&path);
     }
     inner.child = None;
+    inner.simulation = false;
     inner.status = BotStatus::Stopped;
+}
+
+fn shutdown_request_context(env_path: &PathBuf) -> Result<Option<BotRequestContext>, String> {
+    let env_vars = read_env_file_pairs(env_path)?;
+    let admin_enabled = env_vars
+        .get("EVPOLY_ADMIN_API_ENABLE")
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if !admin_enabled {
+        return Ok(None);
+    }
+
+    let bind = env_vars
+        .get("EVPOLY_ADMIN_API_BIND")
+        .or_else(|| env_vars.get("EVPOLY_ADMIN_BIND"))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "127.0.0.1:8787".to_string());
+    let base_url = if bind.starts_with("http://") || bind.starts_with("https://") {
+        bind
+    } else {
+        format!("http://{bind}")
+    };
+
+    Ok(Some(BotRequestContext {
+        base_url,
+        auth_token: env_vars
+            .get("EVPOLY_ADMIN_API_TOKEN")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+    }))
+}
+
+fn send_shutdown_cancel_all(ctx: BotRequestContext) -> Result<String, String> {
+    let url = format!("{}/admin/orders/cancel-all", ctx.base_url.trim_end_matches('/'));
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("build shutdown client: {e}"))?;
+    let mut request = client.post(&url);
+    if let Some(token) = ctx.auth_token {
+        if !token.trim().is_empty() {
+            request = request.header("x-evpoly-admin-token", token);
+        }
+    }
+
+    let response = request
+        .send()
+        .map_err(|e| format!("shutdown cancel-all request failed: {e}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .map_err(|e| format!("shutdown cancel-all response read failed: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("shutdown cancel-all returned {status}: {body}"));
+    }
+
+    let payload = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| Value::String(body));
+    let canceled = payload
+        .get("canceled_orders")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let not_canceled = payload
+        .get("not_canceled_orders")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Ok(format!(
+        "stop requested: admin cancel-all finished before shutdown (canceled_orders={canceled}, not_canceled_orders={not_canceled})"
+    ))
 }
 
 #[cfg(target_os = "windows")]

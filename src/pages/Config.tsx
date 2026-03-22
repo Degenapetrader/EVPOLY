@@ -554,7 +554,6 @@ export function Config() {
   const symbolSummary = config.symbols.join(", ");
   const railItems = [
     { label: "Dashboard", to: "/dashboard" },
-    { label: "Manual Trade", to: "/manual" },
     { label: "Settings", to: "/config" },
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
   ];

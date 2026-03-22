@@ -10,6 +10,14 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 pub(crate) const DEFAULT_POLYGON_RPC_URL: &str = "https://1rpc.io/matic";
 pub(crate) const DEFAULT_POLYGON_RPC_FALLBACK_URL: &str = "https://polygon-rpc.com";
+pub(crate) const DESKTOP_POLYGON_RPC_URLS: [&str; 6] = [
+    DEFAULT_POLYGON_RPC_URL,
+    DEFAULT_POLYGON_RPC_FALLBACK_URL,
+    "https://polygon.publicnode.com",
+    "https://polygon.drpc.org",
+    "https://tenderly.rpc.polygon.community",
+    "https://polygon.api.onfinality.io/public",
+];
 pub(crate) const DEFAULT_MM_MARKET_MODE: &str = "auto";
 
 const CORE_ENV_TEMPLATE: &str = include_str!("../core-contract/.env.example");

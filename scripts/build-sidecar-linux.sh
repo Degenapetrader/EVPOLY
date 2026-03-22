@@ -44,14 +44,29 @@ fi
 BINARIES_DIR="${REPO_ROOT}/src-tauri/binaries"
 TARGET_DIR="${REPO_ROOT}/src-tauri/target/core-sidecars"
 CORE_CONTRACT_DIR="${REPO_ROOT}/src-tauri/core-contract"
+CORE_PATCH_DIR="${REPO_ROOT}/src-tauri/core-patches"
 STAMP_PATH="${TARGET_DIR}/sidecar-build-stamp-${TARGET_TRIPLE}.lock"
 BOT_OUTPUT="${BINARIES_DIR}/evpoly-bot-${TARGET_TRIPLE}"
-MANUAL_OUTPUT="${BINARIES_DIR}/evpoly-manual-bot-${TARGET_TRIPLE}"
+PATCH_HASH="none"
 
-if [[ "${FORCE}" -eq 0 && -f "${BOT_OUTPUT}" && -f "${MANUAL_OUTPUT}" && -f "${STAMP_PATH}" ]]; then
+if [[ -d "${CORE_PATCH_DIR}" ]]; then
+  if compgen -G "${CORE_PATCH_DIR}"'/*.patch' > /dev/null; then
+    PATCH_HASH="$(
+      {
+        while IFS= read -r patch; do
+          printf '%s\n' "$(basename "${patch}")"
+          cat "${patch}"
+        done < <(find "${CORE_PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | sort)
+      } | sha256sum | awk '{print $1}'
+    )"
+  fi
+fi
+
+if [[ "${FORCE}" -eq 0 && -f "${BOT_OUTPUT}" && -f "${STAMP_PATH}" ]]; then
   stamp_core_ref="$(sed -n 's/^CORE_REF=//p' "${STAMP_PATH}" | head -n 1)"
   stamp_target="$(sed -n 's/^TARGET_TRIPLE=//p' "${STAMP_PATH}" | head -n 1)"
-  if [[ "${stamp_core_ref}" == "${CORE_REF}" && "${stamp_target}" == "${TARGET_TRIPLE}" ]]; then
+  stamp_patch_hash="$(sed -n 's/^PATCHES_SHA256=//p' "${STAMP_PATH}" | head -n 1)"
+  if [[ "${stamp_core_ref}" == "${CORE_REF}" && "${stamp_target}" == "${TARGET_TRIPLE}" && "${stamp_patch_hash}" == "${PATCH_HASH}" ]]; then
     echo "[build-sidecar-linux] sidecars already prepared core_ref=${CORE_REF} target=${TARGET_TRIPLE}"
     exit 0
   fi
@@ -84,21 +99,28 @@ else
   git -C "${WORK_DIR}" checkout --detach "${CORE_REF}"
 fi
 
+if [[ -d "${CORE_PATCH_DIR}" ]]; then
+  while IFS= read -r patch; do
+    echo "[build-sidecar-linux] applying core patch $(basename "${patch}")"
+    git -C "${WORK_DIR}" apply --whitespace=nowarn "${patch}"
+  done < <(find "${CORE_PATCH_DIR}" -maxdepth 1 -type f -name '*.patch' | sort)
+fi
+
 echo "[build-sidecar-linux] building sidecar binaries ref=${CORE_REF} target=${TARGET_TRIPLE}"
-cargo build --release --manifest-path "${WORK_DIR}/Cargo.toml" --target-dir "${TARGET_DIR}" --target "${TARGET_TRIPLE}" --bin polymarket-arbitrage-bot --bin manual_bot
+cargo build --release --manifest-path "${WORK_DIR}/Cargo.toml" --target-dir "${TARGET_DIR}" --target "${TARGET_TRIPLE}" --bin polymarket-arbitrage-bot
 
 mkdir -p "${BINARIES_DIR}" "${TARGET_DIR}" "${CORE_CONTRACT_DIR}"
 cp "${TARGET_DIR}/${TARGET_TRIPLE}/release/polymarket-arbitrage-bot" "${BOT_OUTPUT}"
-cp "${TARGET_DIR}/${TARGET_TRIPLE}/release/manual_bot" "${MANUAL_OUTPUT}"
 # Desktop owns its runtime env template in this branch. We sync the core bot
 # code from the pinned ref, but keep desktop defaults versioned locally.
-chmod +x "${BOT_OUTPUT}" "${MANUAL_OUTPUT}"
+chmod +x "${BOT_OUTPUT}"
 
 cat > "${STAMP_PATH}" <<EOF
 CORE_REF=${CORE_REF}
 CORE_REPO=${CORE_REPO}
 TARGET_TRIPLE=${TARGET_TRIPLE}
 SOURCE_MODE=${SOURCE_MODE}
+PATCHES_SHA256=${PATCH_HASH}
 PREPARED_AT_UTC=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 EOF
 

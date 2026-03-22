@@ -61,3 +61,7 @@
 50. [x] Remove global `user-select: none`.
 51. [x] Remove global hidden-overflow lock on `body/#root`.
 52. [x] Add responsive breakpoints for dashboard core grids.
+
+## Next Follow-Ups
+53. [ ] Expand desktop wallet-balance RPC fallback pool to match the newer core runtime pool instead of only `1rpc.io` + `polygon-rpc.com`.
+54. [ ] Investigate Windows bot crash `code=Some(-1073741819)` / `thread 'tokio-rt-worker' has overflowed its stack` during live batch order posting.

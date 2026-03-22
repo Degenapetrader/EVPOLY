@@ -4,29 +4,10 @@ import {
   type Trade,
   type TradeStats,
   type UiDashboardSummary,
-  type UiManualBalanceSummary,
-  type UiMarket,
   type UiStrategyState,
 } from "./tauri-commands";
-import type { MarketPickerItem } from "../components/MarketPickerShell";
 
 export type StrategyKey = keyof BotConfig["strategies"];
-
-export type RawManualRun = {
-  run_id?: string;
-  status?: string;
-  condition_id?: string;
-  side?: string;
-  target_shares?: number;
-  market_title?: string;
-  market_subtitle?: string;
-  status_label?: string;
-  side_label?: string;
-  progress_summary?: string;
-  remaining_shares?: number;
-  filled_shares?: number;
-  [key: string]: unknown;
-};
 
 export const STRATEGY_META: Record<
   StrategyKey,
@@ -436,69 +417,3 @@ export function buildDashboardViewModel({
   };
 }
 
-export function buildManualOverview({
-  health,
-  balance,
-  positions,
-  openRuns,
-  closeRuns,
-  serviceRunning,
-}: {
-  health: unknown;
-  balance: unknown;
-  positions: unknown;
-  openRuns: RawManualRun[];
-  closeRuns: RawManualRun[];
-  serviceRunning: boolean;
-}) {
-  const balanceRecord = asRecord(balance);
-  const uiSummary = asRecord(balanceRecord?.ui_summary) as UiManualBalanceSummary | null;
-  const healthRecord = asRecord(health);
-  const uiHealth = asRecord(healthRecord?.ui_health);
-  const positionRecord = asRecord(positions);
-  const uiPositions = positionRecord?.ui_positions;
-
-  const balanceValue =
-    uiSummary?.available_cash_usd ??
-    uiSummary?.estimated_total_equity_usd ??
-    readNumber(balance, [
-      "available_cash_usd",
-      "available_balance",
-      "available",
-      "buying_power",
-      "cash",
-      "usdc",
-      "balance",
-    ]);
-
-  const positionCount = Array.isArray(uiPositions)
-    ? uiPositions.length
-    : countItems(positions, ["positions", "items", "rows", "count"]);
-
-  const healthLabel =
-    readString(uiHealth, ["status"]) ||
-    readString(health, ["status", "state"]) ||
-    (serviceRunning ? "Connected" : "Stopped");
-
-  const healthDetail =
-    readString(uiHealth, ["message"]) ||
-    readString(health, ["message", "detail", "mode"]) ||
-    (serviceRunning ? "Ready for manual requests." : "Start the manual service to continue.");
-
-  return {
-    balanceValue,
-    positionCount,
-    healthLabel,
-    healthDetail,
-    totalRuns: openRuns.length + closeRuns.length,
-  };
-}
-
-export function buildMarketPickerItems(markets: UiMarket[]): MarketPickerItem[] {
-  return markets.map((market) => ({
-    id: market.condition_id,
-    title: market.title,
-    subtitle: market.subtitle,
-    badge: market.tradable ? sentenceCase(market.status, "Active") : "Not tradable",
-  }));
-}

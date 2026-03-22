@@ -245,7 +245,6 @@ export function Dashboard() {
 
   const railItems = [
     { label: "Dashboard", to: "/dashboard" },
-    { label: "Manual Trade", to: "/manual" },
     { label: "Settings", to: "/config" },
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
   ];

@@ -41,8 +41,7 @@
       "icons/icon.ico"
     ],
     "externalBin": [
-      "binaries/evpoly-bot",
-      "binaries/evpoly-manual-bot"
+      "binaries/evpoly-bot"
     ],
     "windows": {
       "webviewInstallMode": {

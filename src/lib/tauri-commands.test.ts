@@ -116,12 +116,14 @@ describe("tauri command payload contracts", () => {
   });
 
   it("sends compatible payload keys for export_config", async () => {
-    await exportConfig("profile-1", "secret");
+    await exportConfig("profile-1", "secret", "desktop-pass");
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith("export_config", {
       profileId: "profile-1",
       profile_id: "profile-1",
       password: "secret",
+      currentPassword: "desktop-pass",
+      current_password: "desktop-pass",
     });
   });
 });

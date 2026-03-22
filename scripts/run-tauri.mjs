@@ -31,6 +31,11 @@ const tauriCli = path.join(
   process.platform === "win32" ? "tauri.cmd" : "tauri",
 );
 const args = process.argv.slice(2);
+
+if (args.includes("build")) {
+  env.ALLOW_DEBUG_SIDECAR_FALLBACK ??= "0";
+}
+
 const result =
   process.platform === "win32"
     ? spawnSync(

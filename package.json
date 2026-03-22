@@ -18,13 +18,11 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-shell": "^2.3.5",
     "@tauri-apps/plugin-updater": "^2.10.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
-    "react-router-dom": "^6.30.3",
-    "recharts": "^3.8.0"
+    "react-router-dom": "^6.30.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.25.0",

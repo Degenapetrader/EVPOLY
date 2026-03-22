@@ -3,9 +3,10 @@
 use ethers_signers::{LocalWallet, Signer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::time::Duration;
 
-const DEFAULT_ONBOARD_API_BASE: &str =
-    "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com";
+const DEFAULT_ONBOARD_API_BASE: &str = "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com";
+const ONBOARD_TIMEOUT_SECS: u64 = 10;
 
 fn wallet_address_hex(wallet: &LocalWallet) -> String {
     format!("{:#x}", wallet.address())
@@ -72,7 +73,7 @@ pub async fn run_onboarding(
     if key.is_empty() {
         return Err("private key is required for onboarding".to_string());
     }
-    if !matches!(signature_type, 0 | 1 | 2) {
+    if !matches!(signature_type, 0..=2) {
         return Err("signature_type must be 0, 1, or 2".to_string());
     }
 
@@ -104,7 +105,10 @@ pub async fn run_onboarding(
         signature_wallet.clone()
     };
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(ONBOARD_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("build onboard client: {e}"))?;
     let start_url = onboard_url("start");
     let finish_url = onboard_url("finish");
 

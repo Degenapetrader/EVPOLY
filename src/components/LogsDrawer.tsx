@@ -1,31 +1,36 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getLogLines,
   openLogsFolder,
   type LogLine,
 } from "../lib/tauri-commands";
 
-type LogsDrawerMode = "bot";
-
 export function LogsDrawer({
   open,
-  mode,
   onClose,
 }: {
   open: boolean;
-  mode: LogsDrawerMode;
   onClose: () => void;
 }) {
   const [lines, setLines] = useState<LogLine[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const cursorRef = useRef<number | null>(null);
+  const inFlightRef = useRef(false);
 
-  const loadLines = useCallback(async () => {
-    if (!open) return;
+  const loadLines = useCallback(async (options?: { reset?: boolean }) => {
+    if (!open || inFlightRef.current) return;
+    inFlightRef.current = true;
     setLoading(true);
     try {
-      const next = await getLogLines(120);
-      setLines(next);
+      const next = await getLogLines(120, options?.reset ? null : cursorRef.current);
+      cursorRef.current = next.next_cursor;
+      setLines((current) => {
+        if (options?.reset || next.reset) {
+          return next.lines;
+        }
+        return [...current, ...next.lines].slice(-240);
+      });
       setError(null);
     } catch (err) {
       setError(
@@ -36,9 +41,10 @@ export function LogsDrawer({
           : "Failed to load logs"
       );
     } finally {
+      inFlightRef.current = false;
       setLoading(false);
     }
-  }, [mode, open]);
+  }, [open]);
 
   const handleOpenFolder = async () => {
     try {
@@ -57,8 +63,10 @@ export function LogsDrawer({
 
   useEffect(() => {
     if (!open) return;
-    void loadLines();
-    const timer = setInterval(() => void loadLines(), 4000);
+    cursorRef.current = null;
+    setLines([]);
+    void loadLines({ reset: true });
+    const timer = setInterval(() => void loadLines(), 2000);
     return () => clearInterval(timer);
   }, [open, loadLines]);
 
@@ -92,8 +100,12 @@ export function LogsDrawer({
               Keep the main UI clean. Open logs only when you need the details.
             </div>
           </div>
-          <div className="logs-drawer__actions">
-            <button type="button" className="ui-button" onClick={() => void loadLines()}>
+            <div className="logs-drawer__actions">
+            <button
+              type="button"
+              className="ui-button"
+              onClick={() => void loadLines({ reset: true })}
+            >
               Refresh
             </button>
             <button type="button" className="ui-button" onClick={handleOpenFolder}>

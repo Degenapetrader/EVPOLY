@@ -1,0 +1,95 @@
+diff --git a/src/bot_admin.rs b/src/bot_admin.rs
+index 4e71227..4abb269 100644
+--- a/src/bot_admin.rs
++++ b/src/bot_admin.rs
+@@ -1942,6 +1942,16 @@ async fn build_ui_dashboard_summary(ctx: &BotAdminContext) -> UiDashboardSummary
+         .as_ref()
+         .map(|summary| summary.recent_orders_count)
+         .unwrap_or(0);
++    let recent_unknown_ack_count = db_summary
++        .as_ref()
++        .map(|summary| summary.recent_unknown_ack_count)
++        .unwrap_or(0);
++    let degraded_ack_quality = recent_unknown_ack_count > 0
++        || db_summary
++            .as_ref()
++            .and_then(|summary| summary.avg_ack_latency_ms)
++            .map(|value| value >= 250.0)
++            .unwrap_or(false);
+     let recent_result = db_summary.as_ref().and_then(recent_result_text);
+     let (headline, detail) = if let Some(blocker) = blocker_reason.as_ref() {
+         ("Something needs attention".to_string(), blocker.clone())
+@@ -2004,6 +2014,12 @@ async fn build_ui_dashboard_summary(ctx: &BotAdminContext) -> UiDashboardSummary
+         avg_ack_latency_ms: db_summary
+             .as_ref()
+             .and_then(|summary| summary.avg_ack_latency_ms),
++        ack_sample_count: db_summary
++            .as_ref()
++            .map(|summary| summary.ack_sample_count)
++            .unwrap_or(0),
++        recent_unknown_ack_count,
++        degraded_ack_quality,
+         total_pnl: db_summary
+             .as_ref()
+             .map(|summary| summary.total_pnl)
+diff --git a/src/tracking_db.rs b/src/tracking_db.rs
+index 53c903f..0bd1c5a 100644
+--- a/src/tracking_db.rs
++++ b/src/tracking_db.rs
+@@ -684,6 +684,7 @@ pub struct UiDashboardDbSummary {
+     pub losing_trades: u64,
+     pub avg_ack_latency_ms: Option<f64>,
+     pub ack_sample_count: u64,
++    pub recent_unknown_ack_count: u64,
+     pub open_positions_count: u64,
+     pub recent_orders_count: u64,
+     pub last_event_ts_ms: Option<i64>,
+@@ -9708,6 +9709,26 @@ GROUP BY strategy_id
+                     },
+                 )
+                 .unwrap_or((0, None));
++            let recent_unknown_ack_count: u64 = conn
++                .query_row(
++                    format!(
++                        "SELECT COUNT(*) FROM trade_events \
++                         WHERE event_type='ENTRY_ACK' \
++                           AND ts_ms >= ?1 \
++                           AND (?2 = 0 OR ({})) \
++                           AND ( \
++                                 reason IS NULL \
++                                 OR NOT json_valid(reason) \
++                                 OR TRIM(COALESCE(json_extract(reason, '$.order_id'), '')) = '' \
++                               )",
++                        prod_filter
++                    )
++                    .as_str(),
++                    params![recent_window_start_ms, prod_only],
++                    |row| row.get::<_, i64>(0),
++                )
++                .unwrap_or(0)
++                .max(0) as u64;
+             let open_positions_count: u64 = conn
+                 .query_row(
+                     "SELECT COUNT(*) FROM positions_v2 WHERE status='OPEN'",
+@@ -9790,6 +9811,7 @@ GROUP BY strategy_id
+                 losing_trades,
+                 avg_ack_latency_ms,
+                 ack_sample_count,
++                recent_unknown_ack_count,
+                 open_positions_count,
+                 recent_orders_count,
+                 last_event_ts_ms: last_event.as_ref().map(|row| row.0),
+diff --git a/src/ui_contracts.rs b/src/ui_contracts.rs
+index 949da5c..448a58f 100644
+--- a/src/ui_contracts.rs
++++ b/src/ui_contracts.rs
+@@ -96,6 +96,9 @@ pub struct UiDashboardSummary {
+     pub recent_orders_count: u64,
+     pub free_balance: Option<f64>,
+     pub avg_ack_latency_ms: Option<f64>,
++    pub ack_sample_count: u64,
++    pub recent_unknown_ack_count: u64,
++    pub degraded_ack_quality: bool,
+     pub total_pnl: f64,
+     pub total_trades: u64,
+     pub winning_trades: u64,

@@ -16,6 +16,12 @@ export interface LogLine {
   content: string;
 }
 
+export interface LogTailBatch {
+  next_cursor: number;
+  reset: boolean;
+  lines: LogLine[];
+}
+
 export interface UiDashboardSummary {
   bot_state: string;
   mode: "live" | "dry_run" | string;
@@ -34,6 +40,60 @@ export interface UiDashboardSummary {
   total_trades: number;
   winning_trades: number;
   losing_trades: number;
+}
+
+export interface WalletSyncStatus {
+  state: string;
+  managed: boolean;
+  wallet_address: string | null;
+  last_run_at: string | null;
+  last_run_at_ms: number | null;
+  last_result: string | null;
+  error: string | null;
+  interval_sec: number;
+}
+
+export interface HomeOverview {
+  profile_ready: boolean;
+  portfolio_value: number | null;
+  available_balance: number | null;
+  total_equity: number | null;
+  pnl_today_utc: number;
+  bot_state: string;
+  mode: "live" | "dry_run" | string;
+  active_strategy_count: number;
+  wallet_sync: WalletSyncStatus;
+  wallet_sync_status: string;
+  wallet_sync_last_run_at: string | null;
+  wallet_sync_last_run_at_ms: number | null;
+  last_heartbeat_at: string | null;
+  last_heartbeat_at_ms: number | null;
+  available_balance_error: string | null;
+  portfolio_value_error: string | null;
+  ack_warning_count_recent: number;
+  avg_ack_latency_ms: number | null;
+  ack_sample_count: number;
+  warnings: string[];
+}
+
+export interface HomeActivityItem {
+  timestamp: string;
+  severity: "info" | "warning" | "error" | string;
+  source: string;
+  kind: string;
+  message: string;
+  action?: string | null;
+  title?: string | null;
+  outcome?: string | null;
+  detail?: string | null;
+  quantity?: number | null;
+  value_usd?: number | null;
+}
+
+export interface HomeActivityBatch {
+  next_cursor: number;
+  reset: boolean;
+  items: HomeActivityItem[];
 }
 
 export interface UiStrategyState {
@@ -169,11 +229,13 @@ export interface BotConfig {
 export const verifyPassword = (password: string): Promise<boolean> =>
   invoke("verify_password", { password });
 
-export const setPassword = (password: string): Promise<void> =>
-  invoke("set_password", { password });
+export const initializePassword = (password: string): Promise<void> =>
+  invoke("initialize_password", { password });
 
 export const isAuthInitialized = (): Promise<boolean> =>
   invoke("is_auth_initialized");
+
+export const lockSession = (): Promise<void> => invoke("lock_session");
 
 // Profiles
 export const listProfiles = (): Promise<Profile[]> =>
@@ -223,8 +285,14 @@ export const restartBot = (simulation: boolean): Promise<void> =>
 export const getBotStatus = (): Promise<string> =>
   invoke("get_bot_status");
 
-export const getLogLines = (count: number): Promise<LogLine[]> =>
-  invoke("get_log_lines", { count });
+export const getLogLines = (
+  count: number,
+  cursor?: number | null
+): Promise<LogTailBatch> =>
+  invoke("get_log_lines", {
+    count,
+    cursor: cursor ?? null,
+  });
 
 export const botApiRequest = <T = unknown>(
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
@@ -260,19 +328,28 @@ export const getSavedConfig = (
 
 export const exportConfig = (
   profileId: string,
-  password: string
+  password: string,
+  currentPassword: string
 ): Promise<string> =>
   invoke("export_config", {
     profileId,
     profile_id: profileId,
     password,
+    currentPassword,
+    current_password: currentPassword,
   });
 
 export const importConfig = (
   data: string,
-  password: string
+  password: string,
+  currentPassword: string
 ): Promise<string> =>
-  invoke("import_config", { data, password });
+  invoke("import_config", {
+    data,
+    password,
+    currentPassword,
+    current_password: currentPassword,
+  });
 
 // Data
 export const getTradeStats = (): Promise<TradeStats> =>
@@ -286,6 +363,24 @@ export const getOpenPositions = (): Promise<Position[]> =>
 
 export const getWalletBalance = (): Promise<number> =>
   invoke("get_wallet_balance");
+
+export const getHomeOverview = (): Promise<HomeOverview> =>
+  invoke("get_home_overview");
+
+export const getHomeActivity = (
+  limit: number,
+  cursor?: number | null
+): Promise<HomeActivityBatch> =>
+  invoke("get_home_activity", {
+    limit,
+    cursor: cursor ?? null,
+  });
+
+export const getWalletSyncStatus = (): Promise<WalletSyncStatus> =>
+  invoke("get_wallet_sync_status");
+
+export const runWalletSyncNow = (): Promise<WalletSyncStatus> =>
+  invoke("run_wallet_sync_now");
 
 // Onboarding
 export const runOnboarding = (

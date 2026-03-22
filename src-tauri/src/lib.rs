@@ -3,22 +3,26 @@ pub mod bot_manager;
 pub mod config_io;
 pub mod crypto_vault;
 pub mod log_stream;
-pub mod notifications;
 pub mod onboard;
+pub mod portfolio_api;
 pub mod profile_manager;
 pub mod wallet_rpc;
+pub mod wallet_sync;
 
 use crate::auth::AppAuth;
 use crate::bot_manager::BotManager;
 use crate::profile_manager::{Profile, ProfileManager};
+use crate::wallet_sync::{WalletSyncManager, WalletSyncRuntimeConfig};
 
 use chrono::{TimeZone, Utc};
 use std::collections::HashMap;
-use std::io::Write;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use rusqlite::Connection;
 use serde_json::{Map, Value};
@@ -31,8 +35,10 @@ struct AppDataDir(PathBuf);
 type AuthState = Arc<Mutex<AppAuth>>;
 type ProfileState = Arc<Mutex<ProfileManager>>;
 type BotState = Arc<Mutex<BotManager>>;
+type WalletSyncState = Arc<Mutex<WalletSyncManager>>;
 
 const DESKTOP_SYMBOL_ORDER: [&str; 7] = ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"];
+const CORE_STRATEGY_SYMBOLS: [&str; 4] = ["BTC", "ETH", "SOL", "XRP"];
 const DESKTOP_SECRET_KEYS: [&str; 11] = [
     "POLY_PRIVATE_KEY",
     "RELAYER_API_KEY",
@@ -49,6 +55,7 @@ const DESKTOP_SECRET_KEYS: [&str; 11] = [
 const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
 const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
 const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
+const EVENTS_LOG_NAME: &str = "events.jsonl";
 
 #[derive(Clone, serde::Deserialize)]
 struct DesktopStrategies {
@@ -106,6 +113,23 @@ struct DesktopConfig {
     remote_mm_rewards_alpha_token: String,
     remote_evsnipe_discovery_token: String,
     admin_api_token: String,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct ExportBundleV2 {
+    version: u8,
+    profile: PortableProfile,
+    secrets: HashMap<String, String>,
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PortableProfile {
+    name: String,
+    eoa_wallet_address: String,
+    proxy_wallet_address: String,
+    signature_type: u8,
+    strategy_config: Value,
+    sizing_config: Value,
 }
 
 fn iso_from_ms(ms: i64) -> String {
@@ -186,7 +210,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 1.2,
             ),
         },
-        simulation: config_io::env_template_default_bool("APP_SIMULATION", true),
+        simulation: config_io::env_template_default_bool("APP_SIMULATION", false),
         relayer_api_key: String::new(),
         relayer_api_key_address: String::new(),
         remote_signer_token: String::new(),
@@ -215,6 +239,15 @@ fn normalize_symbols(symbols: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn core_strategy_symbols(symbols: &[String]) -> Vec<String> {
+    let normalized = normalize_symbols(symbols);
+    CORE_STRATEGY_SYMBOLS
+        .iter()
+        .filter(|sym| normalized.iter().any(|selected| selected == **sym))
+        .map(|sym| (*sym).to_string())
+        .collect()
+}
+
 fn decrypt_profile_secrets(
     profile: &Profile,
     auth: &AppAuth,
@@ -222,12 +255,12 @@ fn decrypt_profile_secrets(
     if profile.encrypted_secrets.trim().is_empty() {
         return Ok(HashMap::new());
     }
-    let password = auth
-        .session_password()
-        .ok_or("session locked: unlock app again before using secrets")?;
-    let decrypted =
-        crypto_vault::decrypt_data(profile.encrypted_secrets.as_str(), password.as_str())
-            .map_err(|e| e.to_string())?;
+    let decrypted = auth
+        .with_session_password(|password| {
+            crypto_vault::decrypt_data(profile.encrypted_secrets.as_str(), password)
+        })
+        .ok_or("session locked: unlock app again before using secrets")?
+        .map_err(|e| e.to_string())?;
     serde_json::from_slice::<HashMap<String, String>>(&decrypted).map_err(|e| e.to_string())
 }
 
@@ -253,13 +286,17 @@ fn build_runtime_paths_for_profile(
     Ok((env_path, config_path))
 }
 
+fn wallet_sync_config_for_profile(profile: &Profile) -> WalletSyncRuntimeConfig {
+    WalletSyncRuntimeConfig::new(profile.primary_wallet_address())
+}
+
 fn simulation_mode_from_profile(profile: &Profile) -> bool {
     profile
         .sizing_config
         .as_object()
         .and_then(|obj| obj.get("APP_SIMULATION"))
         .and_then(Value::as_bool)
-        .unwrap_or_else(|| config_io::env_template_default_bool("APP_SIMULATION", true))
+        .unwrap_or_else(|| config_io::env_template_default_bool("APP_SIMULATION", false))
 }
 
 fn persist_profile_simulation_mode(
@@ -308,6 +345,17 @@ fn merge_config_object(existing: &Value, updates: &Value) -> Value {
     Value::Object(merged)
 }
 
+fn portable_profile_from_profile(profile: &Profile) -> PortableProfile {
+    PortableProfile {
+        name: profile.name.clone(),
+        eoa_wallet_address: profile.eoa_wallet_address.clone(),
+        proxy_wallet_address: profile.proxy_wallet_address.clone(),
+        signature_type: profile.signature_type,
+        strategy_config: profile.strategy_config.clone(),
+        sizing_config: profile.sizing_config.clone(),
+    }
+}
+
 fn desktop_config_to_profile_payload(
     config: &DesktopConfig,
 ) -> (Value, Value, HashMap<String, String>, String, String, u8) {
@@ -317,6 +365,7 @@ fn desktop_config_to_profile_payload(
 
     let symbols = normalize_symbols(&config.symbols);
     let symbol_csv = symbols.join(",");
+    let core_symbol_csv = core_strategy_symbols(&symbols).join(",");
     let has_eth = symbols.iter().any(|s| s == "ETH");
     let has_sol = symbols.iter().any(|s| s == "SOL");
     let has_xrp = symbols.iter().any(|s| s == "XRP");
@@ -361,7 +410,11 @@ fn desktop_config_to_profile_payload(
     );
     strategy.insert(
         "EVPOLY_EVCURVE_SYMBOLS".to_string(),
-        Value::String(symbol_csv.clone()),
+        Value::String(core_symbol_csv.clone()),
+    );
+    strategy.insert(
+        "EVPOLY_SESSIONBAND_SYMBOLS".to_string(),
+        Value::String(core_symbol_csv),
     );
     strategy.insert(
         "EVPOLY_EVSNIPE_SYMBOLS".to_string(),
@@ -511,7 +564,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
     let default_solana_enabled =
         config_io::env_template_default_bool("POLY_ENABLE_SOLANA_TRADING", true);
     let default_xrp_enabled = config_io::env_template_default_bool("POLY_ENABLE_XRP_TRADING", true);
-    let default_simulation = config_io::env_template_default_bool("APP_SIMULATION", true);
+    let default_simulation = config_io::env_template_default_bool("APP_SIMULATION", false);
 
     let mut symbols = vec!["BTC".to_string()];
     if bool_from_object(&strategy, "POLY_ENABLE_ETH_TRADING", default_eth_enabled) {
@@ -537,6 +590,17 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
     }
     if let Some(extra) = strategy
         .get("EVPOLY_ENDGAME_SYMBOLS")
+        .and_then(Value::as_str)
+    {
+        for sym in extra.split(',').map(|s| s.trim().to_ascii_uppercase()) {
+            if DESKTOP_SYMBOL_ORDER.iter().any(|v| *v == sym) && !symbols.iter().any(|s| s == &sym)
+            {
+                symbols.push(sym);
+            }
+        }
+    }
+    if let Some(extra) = strategy
+        .get("EVPOLY_EVSNIPE_SYMBOLS")
         .and_then(Value::as_str)
     {
         for sym in extra.split(',').map(|s| s.trim().to_ascii_uppercase()) {
@@ -633,13 +697,7 @@ fn append_desktop_debug_line(data_dir: &Path, source: &str, line: &str) {
     let content = format!("[{ts}] [{source}] {line}\n");
     for file_name in [DESKTOP_DEBUG_LOG_NAME, FULL_DEBUG_LOG_NAME] {
         let path = data_dir.join(file_name);
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(path)
-        {
-            let _ = file.write_all(content.as_bytes());
-        }
+        let _ = log_stream::append_file_log_line(&path, &content);
     }
 }
 
@@ -660,6 +718,676 @@ fn ensure_debug_log_files(data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn count_enabled_strategies(profile: &Profile) -> usize {
+    let strategy = profile
+        .strategy_config
+        .as_object()
+        .cloned()
+        .unwrap_or_else(Map::new);
+    [
+        ("EVPOLY_STRATEGY_PREMARKET_ENABLE", true),
+        ("EVPOLY_STRATEGY_ENDGAME_ENABLE", true),
+        ("EVPOLY_STRATEGY_EVCURVE_ENABLE", true),
+        ("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", false),
+        ("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),
+        ("EVPOLY_STRATEGY_MM_REWARDS_ENABLE", false),
+        ("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false),
+    ]
+    .into_iter()
+    .filter(|(key, default)| bool_from_object(&strategy, key, *default))
+    .count()
+}
+
+fn start_of_current_utc_day_ms() -> i64 {
+    let now = Utc::now();
+    let date = now.date_naive();
+    date.and_hms_opt(0, 0, 0)
+        .map(|dt| dt.and_utc().timestamp_millis())
+        .unwrap_or(0)
+}
+
+fn query_pnl_today_utc(conn: &Connection) -> f64 {
+    conn.query_row(
+        "SELECT COALESCE(SUM(COALESCE(pnl_usd, 0.0)), 0.0) \
+         FROM trade_events \
+         WHERE event_type='EXIT' AND COALESCE(ts_ms, 0) >= ?1",
+        [start_of_current_utc_day_ms()],
+        |row| row.get(0),
+    )
+    .unwrap_or(0.0)
+}
+
+fn query_ack_latency_summary(conn: &Connection) -> (u64, Option<f64>) {
+    conn.query_row(
+        "SELECT \
+            COALESCE(SUM(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN 1 ELSE 0 END), 0), \
+            AVG(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN CAST(ack_ts_ms - submit_ts_ms AS REAL) END) \
+         FROM strategy_feature_snapshots_v1",
+        [],
+        |row| Ok((row.get::<_, i64>(0)?.max(0) as u64, row.get::<_, Option<f64>>(1)?)),
+    )
+    .unwrap_or((0, None))
+}
+
+fn parse_sourced_log_content(content: &str) -> Option<(String, String)> {
+    let rest = content.strip_prefix('[')?;
+    let source_end = rest.find(']')?;
+    let source = rest[..source_end].to_string();
+    let message = rest.get(source_end + 1..)?.trim_start().to_string();
+    Some((source, message))
+}
+
+fn count_unknown_ack_warnings(data_dir: &Path, max_lines: usize) -> usize {
+    let path = data_dir.join(FULL_DEBUG_LOG_NAME);
+    let batch = match log_stream::read_log_tail(&path, None, max_lines.max(1)) {
+        Ok(batch) => batch,
+        Err(_) => return 0,
+    };
+    batch
+        .lines
+        .into_iter()
+        .filter(|line| {
+            let lower = line.content.to_ascii_lowercase();
+            lower.contains("order id unavailable")
+                || lower.contains("status: unknown")
+                || lower.contains("returned empty orderid")
+        })
+        .count()
+}
+
+struct PlainTailBatch {
+    next_cursor: u64,
+    reset: bool,
+    lines: Vec<String>,
+}
+
+fn read_plain_tail_lines(
+    path: &Path,
+    cursor: Option<u64>,
+    limit: usize,
+) -> std::io::Result<PlainTailBatch> {
+    let requested_cursor = cursor.unwrap_or(0);
+    if !path.exists() {
+        return Ok(PlainTailBatch {
+            next_cursor: 0,
+            reset: requested_cursor > 0,
+            lines: Vec::new(),
+        });
+    }
+
+    let metadata = fs::metadata(path)?;
+    let file_len = metadata.len();
+    let reset = requested_cursor > file_len;
+    let start = if reset { 0 } else { requested_cursor };
+
+    let mut file = OpenOptions::new().read(true).open(path)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut buffer = String::new();
+    file.read_to_string(&mut buffer)?;
+    let next_cursor = file.stream_position()?;
+
+    let lines = buffer
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
+    let keep_from = lines.len().saturating_sub(limit.max(1));
+
+    Ok(PlainTailBatch {
+        next_cursor,
+        reset,
+        lines: lines.into_iter().skip(keep_from).collect(),
+    })
+}
+
+fn strategy_display_name(strategy_id: &str) -> &'static str {
+    if strategy_id.starts_with("premarket") {
+        "Premarket"
+    } else if strategy_id.starts_with("endgame") {
+        "Endgame"
+    } else if strategy_id.starts_with("evcurve") {
+        "EVCurve"
+    } else if strategy_id.starts_with("sessionband") {
+        "SessionBand"
+    } else if strategy_id.starts_with("evsnipe") {
+        "EVSnipe"
+    } else if strategy_id.starts_with("mm_rewards") {
+        "MM Rewards"
+    } else if strategy_id.starts_with("mm_sport") {
+        "MM Sport"
+    } else {
+        "Runtime"
+    }
+}
+
+fn timeframe_seconds(timeframe: &str) -> Option<i64> {
+    match timeframe {
+        "5m" => Some(5 * 60),
+        "15m" => Some(15 * 60),
+        "1h" => Some(60 * 60),
+        "4h" => Some(4 * 60 * 60),
+        "1d" => Some(24 * 60 * 60),
+        _ => None,
+    }
+}
+
+fn payload_string(payload: &Map<String, Value>, key: &str) -> Option<String> {
+    payload
+        .get(key)
+        .and_then(Value::as_str)
+        .map(|value| value.to_string())
+}
+
+fn payload_i64(payload: &Map<String, Value>, key: &str) -> Option<i64> {
+    payload.get(key).and_then(Value::as_i64)
+}
+
+fn payload_f64(payload: &Map<String, Value>, key: &str) -> Option<f64> {
+    payload.get(key).and_then(Value::as_f64)
+}
+
+fn payload_u64(payload: &Map<String, Value>, key: &str) -> Option<u64> {
+    payload.get(key).and_then(Value::as_u64)
+}
+
+fn request_id_parts<'a>(payload: &'a Map<String, Value>) -> Vec<&'a str> {
+    payload
+        .get("request_id")
+        .and_then(Value::as_str)
+        .map(|value| value.split(':').collect::<Vec<_>>())
+        .unwrap_or_default()
+}
+
+fn event_symbol(payload: &Map<String, Value>) -> Option<String> {
+    payload_string(payload, "asset_symbol")
+        .or_else(|| payload_string(payload, "symbol"))
+        .or_else(|| {
+            request_id_parts(payload)
+                .get(3)
+                .map(|value| (*value).to_ascii_uppercase())
+        })
+}
+
+fn event_outcome(payload: &Map<String, Value>) -> Option<String> {
+    let base = payload_string(payload, "token_type").and_then(|token_type| {
+        token_type
+            .split_whitespace()
+            .last()
+            .map(|value| value.to_string())
+    });
+    let fallback = payload
+        .get("trade_key")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("request_id").and_then(Value::as_str))
+        .and_then(|value| {
+            if value.contains(":up:") {
+                Some("Up".to_string())
+            } else if value.contains(":down:") {
+                Some("Down".to_string())
+            } else {
+                None
+            }
+        });
+
+    let outcome = base.or(fallback)?;
+    let price = payload_f64(payload, "price").or_else(|| payload_f64(payload, "submit_price"));
+    Some(match price {
+        Some(value) if value.is_finite() => {
+            format!("{outcome} {}c", (value * 100.0).round() as i64)
+        }
+        _ => outcome,
+    })
+}
+
+fn format_market_title(
+    symbol: Option<&str>,
+    timeframe: Option<&str>,
+    period_timestamp: Option<i64>,
+) -> String {
+    let symbol = symbol.unwrap_or("Market");
+    match (timeframe, period_timestamp) {
+        (Some(timeframe), Some(period_timestamp)) => {
+            if let Some(open) = Utc.timestamp_opt(period_timestamp, 0).single() {
+                if timeframe == "1d" {
+                    return format!("{symbol} Up or Down | {}", open.format("%b %-d UTC"));
+                }
+                if let Some(duration_sec) = timeframe_seconds(timeframe) {
+                    if let Some(close) = Utc
+                        .timestamp_opt(period_timestamp + duration_sec, 0)
+                        .single()
+                    {
+                        return format!(
+                            "{symbol} Up or Down | {} to {} UTC",
+                            open.format("%b %-d, %H:%M"),
+                            close.format("%H:%M")
+                        );
+                    }
+                }
+            }
+            format!("{symbol} Up or Down | {timeframe}")
+        }
+        (Some(timeframe), None) => format!("{symbol} Up or Down | {timeframe}"),
+        _ => format!("{symbol} market"),
+    }
+}
+
+fn humanize_reason(reason: &str) -> String {
+    match reason {
+        "exact_proxy_base_unavailable_rest_empty" => {
+            "No exact open price was available yet.".to_string()
+        }
+        "proxy_stale_at_submit" => "Proxy quote was too stale to submit.".to_string(),
+        other => other.replace('_', " "),
+    }
+}
+
+fn classify_home_event(line: &str) -> Option<serde_json::Value> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    let kind = value.get("kind")?.as_str()?;
+    let payload = value.get("payload")?.as_object()?;
+    let timestamp = value
+        .get("ts_ms")
+        .and_then(Value::as_i64)
+        .map(iso_from_ms)
+        .unwrap_or_else(|| Utc::now().to_rfc3339());
+
+    let strategy_name = payload_string(payload, "strategy_id")
+        .map(|value| strategy_display_name(&value).to_string())
+        .unwrap_or_else(|| "Runtime".to_string());
+    let symbol = event_symbol(payload);
+    let timeframe = payload_string(payload, "timeframe");
+    let period_timestamp =
+        payload_i64(payload, "period_timestamp").or_else(|| payload_i64(payload, "market_open_ts"));
+    let title = format_market_title(symbol.as_deref(), timeframe.as_deref(), period_timestamp);
+    let outcome = event_outcome(payload);
+
+    match kind {
+        "entry_execution_timing" => {
+            if payload_string(payload, "status").as_deref() != Some("submit_ok") {
+                return None;
+            }
+            let submit_runtime_ms = payload_u64(payload, "submit_runtime_ms");
+            let detail = match submit_runtime_ms {
+                Some(value) => format!("{strategy_name} | submitted in {value} ms"),
+                None => format!("{strategy_name} | order submitted"),
+            };
+
+            Some(serde_json::json!({
+                "timestamp": timestamp,
+                "severity": "info",
+                "source": strategy_name.to_ascii_lowercase(),
+                "kind": "trade",
+                "message": detail,
+                "action": "Submitted",
+                "title": title,
+                "outcome": outcome,
+                "detail": detail,
+                "quantity": serde_json::Value::Null,
+                "value_usd": payload_f64(payload, "notional_usd"),
+            }))
+        }
+        "entry_no_fill_fak" => Some(serde_json::json!({
+            "timestamp": timestamp,
+            "severity": "warning",
+            "source": strategy_name.to_ascii_lowercase(),
+            "kind": "trade",
+            "message": format!("{strategy_name} order found no matching liquidity"),
+            "action": "No Fill",
+            "title": title,
+            "outcome": outcome,
+            "detail": format!("{strategy_name} | FAK order found no matching liquidity"),
+            "quantity": payload_f64(payload, "units"),
+            "value_usd": payload_f64(payload, "notional_usd"),
+        })),
+        "entry_submit_proxy_stale_blocked" => Some(serde_json::json!({
+            "timestamp": timestamp,
+            "severity": "warning",
+            "source": strategy_name.to_ascii_lowercase(),
+            "kind": "warning",
+            "message": format!("{strategy_name} blocked a submit because the proxy quote was stale"),
+            "action": "Warning",
+            "title": title,
+            "outcome": serde_json::Value::Null,
+            "detail": format!(
+                "{} | quote age {} ms exceeded {} ms",
+                strategy_name,
+                payload_u64(payload, "proxy_age_ms").unwrap_or(0),
+                payload_u64(payload, "max_proxy_age_ms").unwrap_or(0)
+            ),
+            "quantity": serde_json::Value::Null,
+            "value_usd": serde_json::Value::Null,
+        })),
+        "sessionband_base_anchor_exact_skip" => Some(serde_json::json!({
+            "timestamp": timestamp,
+            "severity": "warning",
+            "source": "sessionband",
+            "kind": "warning",
+            "message": "SessionBand skipped an exact-open anchor.",
+            "action": "Warning",
+            "title": title,
+            "outcome": serde_json::Value::Null,
+            "detail": format!(
+                "SessionBand | {}",
+                humanize_reason(
+                    payload_string(payload, "skip_reason")
+                        .as_deref()
+                        .unwrap_or("skip")
+                )
+            ),
+            "quantity": serde_json::Value::Null,
+            "value_usd": serde_json::Value::Null,
+        })),
+        other if other.contains("cancel") => {
+            let canceled_orders = payload_u64(payload, "canceled_orders").unwrap_or(0);
+            if canceled_orders == 0 {
+                return None;
+            }
+            Some(serde_json::json!({
+                "timestamp": timestamp,
+                "severity": "info",
+                "source": strategy_name.to_ascii_lowercase(),
+                "kind": "order",
+                "message": format!("{strategy_name} canceled {canceled_orders} order(s)"),
+                "action": "Canceled",
+                "title": format!("{strategy_name} canceled {canceled_orders} order{}", if canceled_orders == 1 { "" } else { "s" }),
+                "outcome": serde_json::Value::Null,
+                "detail": timeframe
+                    .as_ref()
+                    .map(|value| format!("{strategy_name} | {value}"))
+                    .unwrap_or(strategy_name),
+                "quantity": serde_json::Value::Null,
+                "value_usd": serde_json::Value::Null,
+            }))
+        }
+        _ => None,
+    }
+}
+
+fn classify_home_activity(
+    timestamp: String,
+    source: String,
+    content: String,
+) -> Option<serde_json::Value> {
+    let lower = content.to_ascii_lowercase();
+
+    if lower.contains("bid=")
+        || lower.contains("ask=")
+        || lower.contains("mid=")
+        || lower.contains("spread=")
+        || lower.contains("snapshot")
+        || lower.contains("book update")
+    {
+        return None;
+    }
+
+    let (kind, severity) = if lower.contains("order id unavailable")
+        || lower.contains("status: unknown")
+        || lower.contains("returned empty orderid")
+    {
+        ("ack", "warning")
+    } else if source == "WALLET_SYNC" {
+        (
+            "wallet_sync",
+            if lower.contains("failed") || lower.contains("error") {
+                "error"
+            } else {
+                "info"
+            },
+        )
+    } else if lower.contains("connected")
+        || lower.contains("websocket")
+        || lower.contains("ws ")
+        || lower.contains("subscribed")
+    {
+        ("exchange", "info")
+    } else if lower.contains("submitted")
+        || lower.contains("canceled")
+        || lower.contains("cancelled")
+        || lower.contains("fill")
+        || lower.contains("filled")
+        || lower.contains("order")
+    {
+        (
+            "order",
+            if lower.contains("failed") || lower.contains("error") {
+                "error"
+            } else {
+                "info"
+            },
+        )
+    } else if lower.contains("position")
+        || lower.contains("realized")
+        || lower.contains("pnl")
+        || lower.contains("trade")
+    {
+        (
+            "trade",
+            if lower.contains("loss") || lower.contains("error") {
+                "warning"
+            } else {
+                "info"
+            },
+        )
+    } else if lower.contains("warning") || lower.contains("warn") {
+        ("runtime", "warning")
+    } else if lower.contains("error")
+        || lower.contains("panic")
+        || lower.contains("fatal")
+        || lower.contains("terminated")
+    {
+        ("runtime", "error")
+    } else if lower.contains("session start")
+        || lower.contains("starting")
+        || lower.contains("started")
+        || lower.contains("stop")
+        || lower.contains("restart")
+    {
+        ("runtime", "info")
+    } else {
+        return None;
+    };
+
+    Some(serde_json::json!({
+        "timestamp": timestamp,
+        "severity": severity,
+        "source": source.to_ascii_lowercase(),
+        "kind": kind,
+        "message": content,
+        "action": serde_json::Value::Null,
+        "title": serde_json::Value::Null,
+        "outcome": serde_json::Value::Null,
+        "detail": serde_json::Value::Null,
+        "quantity": serde_json::Value::Null,
+        "value_usd": serde_json::Value::Null,
+    }))
+}
+
+fn build_home_activity_batch(
+    data_dir: &Path,
+    cursor: Option<u64>,
+    limit: usize,
+) -> serde_json::Value {
+    let event_path = data_dir.join(EVENTS_LOG_NAME);
+    if let Ok(batch) = read_plain_tail_lines(&event_path, cursor, limit.max(1) * 12) {
+        let items = batch
+            .lines
+            .into_iter()
+            .filter_map(|line| classify_home_event(&line))
+            .collect::<Vec<_>>();
+
+        if !items.is_empty() || batch.reset || cursor.is_none() {
+            return serde_json::json!({
+                "next_cursor": batch.next_cursor,
+                "reset": batch.reset,
+                "items": items,
+            });
+        }
+    }
+
+    let path = data_dir.join(FULL_DEBUG_LOG_NAME);
+    let batch = match log_stream::read_log_tail(&path, cursor, limit.max(1) * 12) {
+        Ok(batch) => batch,
+        Err(_) => {
+            return serde_json::json!({
+                "next_cursor": cursor.unwrap_or(0),
+                "reset": false,
+                "items": [],
+            });
+        }
+    };
+
+    let items = batch
+        .lines
+        .into_iter()
+        .filter_map(|line| {
+            let (source, content) = parse_sourced_log_content(&line.content)?;
+            classify_home_activity(line.timestamp, source, content)
+        })
+        .rev()
+        .take(limit.max(1))
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "next_cursor": batch.next_cursor,
+        "reset": batch.reset,
+        "items": items,
+    })
+}
+
+async fn build_home_overview_payload(
+    app: AppHandle,
+    bot: State<'_, BotState>,
+    profiles: State<'_, ProfileState>,
+    wallet_sync: State<'_, WalletSyncState>,
+    data_dir: State<'_, AppDataDir>,
+) -> Result<serde_json::Value, String> {
+    let bot_snapshot = {
+        let manager = bot.lock().map_err(|e| e.to_string())?;
+        (
+            match manager.get_status() {
+                bot_manager::BotStatus::Stopped => "stopped".to_string(),
+                bot_manager::BotStatus::Starting => "starting".to_string(),
+                bot_manager::BotStatus::Running => "running".to_string(),
+                bot_manager::BotStatus::Stopping => "stopping".to_string(),
+                bot_manager::BotStatus::Error(err) => format!("error:{err}"),
+            },
+            manager.simulation_mode(),
+            manager.last_activity_at(),
+        )
+    };
+    let wallet_sync_status = wallet_sync.lock().map_err(|e| e.to_string())?.status();
+    let recent_unknown_ack_count = count_unknown_ack_warnings(&data_dir.0, 160) as u64;
+
+    let maybe_profile = {
+        let pm = profiles.lock().map_err(|e| e.to_string())?;
+        pm.get_active_profile_id()
+            .and_then(|id| pm.get_profile(&id))
+    };
+
+    let Some(profile) = maybe_profile else {
+        return Ok(serde_json::json!({
+            "profile_ready": false,
+            "portfolio_value": Value::Null,
+            "available_balance": Value::Null,
+            "total_equity": Value::Null,
+            "pnl_today_utc": 0.0,
+            "bot_state": bot_snapshot.0,
+            "mode": "dry_run",
+            "active_strategy_count": 0,
+            "wallet_sync": wallet_sync_status.clone(),
+            "wallet_sync_status": wallet_sync_status.state,
+            "wallet_sync_last_run_at": wallet_sync_status.last_run_at,
+            "wallet_sync_last_run_at_ms": wallet_sync_status.last_run_at_ms,
+            "last_heartbeat_at": bot_snapshot.2,
+            "last_heartbeat_at_ms": Value::Null,
+            "available_balance_error": Value::Null,
+            "portfolio_value_error": Value::Null,
+            "ack_warning_count_recent": recent_unknown_ack_count,
+            "avg_ack_latency_ms": Value::Null,
+            "ack_sample_count": 0,
+            "warnings": [],
+        }));
+    };
+
+    let wallet_address = profile.primary_wallet_address();
+    let (available_balance_result, portfolio_value_result) = tokio::join!(
+        tokio::time::timeout(Duration::from_secs(15), get_wallet_balance(app.clone())),
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            portfolio_api::fetch_portfolio_value_with_fallback(&wallet_address),
+        )
+    );
+    let available_balance_result = match available_balance_result {
+        Ok(result) => result,
+        Err(_) => Err("available balance refresh timed out".to_string()),
+    };
+    let portfolio_value_result = match portfolio_value_result {
+        Ok(result) => result.map(|row| row.0),
+        Err(_) => Err("portfolio value refresh timed out".to_string()),
+    };
+    let available_balance = available_balance_result.clone().ok();
+    let portfolio_value = portfolio_value_result.clone().ok();
+    let total_equity = match (available_balance, portfolio_value) {
+        (Some(available), Some(portfolio)) => Some(available + portfolio),
+        _ => None,
+    };
+
+    let db_path = resolve_tracking_db_path(&data_dir.0);
+    let (pnl_today_utc, ack_sample_count, avg_ack_latency_ms) = Connection::open(&db_path)
+        .ok()
+        .map(|conn| {
+            let pnl = query_pnl_today_utc(&conn);
+            let (ack_count, ack_avg) = query_ack_latency_summary(&conn);
+            (pnl, ack_count, ack_avg)
+        })
+        .unwrap_or((0.0, 0, None));
+    let mode = match bot_snapshot.1 {
+        Some(true) => "dry_run",
+        Some(false) => "live",
+        None if simulation_mode_from_profile(&profile) => "dry_run",
+        None => "live",
+    };
+    let mut warnings = Vec::new();
+    if let Err(err) = &available_balance_result {
+        warnings.push(format!("Available balance degraded: {err}"));
+    }
+    if let Err(err) = &portfolio_value_result {
+        warnings.push(format!("Portfolio value degraded: {err}"));
+    }
+    if recent_unknown_ack_count > 0 {
+        warnings.push(format!(
+            "Recent order acknowledgements are degraded: {recent_unknown_ack_count} recent orders were accepted without an order ID."
+        ));
+    }
+    if wallet_sync_status.error.is_some() {
+        warnings.push("Wallet sync is degraded.".to_string());
+    }
+
+    Ok(serde_json::json!({
+        "profile_ready": true,
+        "portfolio_value": portfolio_value,
+        "available_balance": available_balance,
+        "total_equity": total_equity,
+        "pnl_today_utc": pnl_today_utc,
+        "bot_state": bot_snapshot.0,
+        "mode": mode,
+        "active_strategy_count": count_enabled_strategies(&profile),
+        "wallet_sync": wallet_sync_status.clone(),
+        "wallet_sync_status": wallet_sync_status.state,
+        "wallet_sync_last_run_at": wallet_sync_status.last_run_at,
+        "wallet_sync_last_run_at_ms": wallet_sync_status.last_run_at_ms,
+        "last_heartbeat_at": bot_snapshot.2,
+        "last_heartbeat_at_ms": Value::Null,
+        "available_balance_error": available_balance_result.err(),
+        "portfolio_value_error": portfolio_value_result.err(),
+        "ack_warning_count_recent": recent_unknown_ack_count,
+        "avg_ack_latency_ms": avg_ack_latency_ms,
+        "ack_sample_count": ack_sample_count,
+        "warnings": warnings,
+    }))
+}
+
 // ── Auth ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -668,10 +1396,10 @@ fn is_auth_initialized(auth: State<'_, AuthState>) -> bool {
 }
 
 #[tauri::command]
-fn set_password(auth: State<'_, AuthState>, password: String) -> Result<(), String> {
+fn initialize_password(auth: State<'_, AuthState>, password: String) -> Result<(), String> {
     auth.lock()
         .map_err(|e| e.to_string())?
-        .set_password(&password)
+        .initialize_password(&password)
         .map_err(|e| e.to_string())
 }
 
@@ -681,6 +1409,12 @@ fn verify_password(auth: State<'_, AuthState>, password: String) -> Result<bool,
         .map_err(|e| e.to_string())?
         .verify_password(&password)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn lock_session(auth: State<'_, AuthState>) -> Result<(), String> {
+    auth.lock().map_err(|e| e.to_string())?.clear_session();
+    Ok(())
 }
 
 // ── Profiles ─────────────────────────────────────────────────────────
@@ -775,21 +1509,47 @@ fn start_bot(
     profiles: State<'_, ProfileState>,
     auth: State<'_, AuthState>,
     data_dir: State<'_, AppDataDir>,
+    wallet_sync: State<'_, WalletSyncState>,
     simulation: bool,
 ) -> Result<(), String> {
-    let (env_path, config_path) = {
+    let (env_path, config_path, wallet_sync_config) = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
         let profile = persist_active_profile_simulation_mode(&pm, simulation)?;
         let auth = auth.lock().map_err(|e| e.to_string())?;
-        build_runtime_paths_for_profile(&profile, &auth, &data_dir.0)?
+        let (env_path, config_path) =
+            build_runtime_paths_for_profile(&profile, &auth, &data_dir.0)?;
+        (
+            env_path,
+            config_path,
+            wallet_sync_config_for_profile(&profile),
+        )
     };
     bot.lock()
         .map_err(|e| e.to_string())?
-        .start(&app, env_path, config_path, simulation)
+        .start(&app, env_path, config_path, simulation)?;
+    if simulation {
+        wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
+    } else {
+        if let Err(err) = wallet_sync
+            .lock()
+            .map_err(|e| e.to_string())?
+            .start(wallet_sync_config)
+        {
+            let _ = bot.lock().map_err(|e| e.to_string())?.stop();
+            return Err(format!(
+                "live bot start aborted because wallet sync failed: {err}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
-fn stop_bot(bot: State<'_, BotState>) -> Result<(), String> {
+fn stop_bot(
+    bot: State<'_, BotState>,
+    wallet_sync: State<'_, WalletSyncState>,
+) -> Result<(), String> {
+    wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
     bot.lock().map_err(|e| e.to_string())?.stop()
 }
 
@@ -800,17 +1560,40 @@ fn restart_bot(
     profiles: State<'_, ProfileState>,
     auth: State<'_, AuthState>,
     data_dir: State<'_, AppDataDir>,
+    wallet_sync: State<'_, WalletSyncState>,
     simulation: bool,
 ) -> Result<(), String> {
-    let (env_path, config_path) = {
+    let (env_path, config_path, wallet_sync_config) = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
         let profile = persist_active_profile_simulation_mode(&pm, simulation)?;
         let auth = auth.lock().map_err(|e| e.to_string())?;
-        build_runtime_paths_for_profile(&profile, &auth, &data_dir.0)?
+        let (env_path, config_path) =
+            build_runtime_paths_for_profile(&profile, &auth, &data_dir.0)?;
+        (
+            env_path,
+            config_path,
+            wallet_sync_config_for_profile(&profile),
+        )
     };
+    wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
     bot.lock()
         .map_err(|e| e.to_string())?
-        .restart(&app, env_path, config_path, simulation)
+        .restart(&app, env_path, config_path, simulation)?;
+    if simulation {
+        wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
+    } else {
+        if let Err(err) = wallet_sync
+            .lock()
+            .map_err(|e| e.to_string())?
+            .start(wallet_sync_config)
+        {
+            let _ = bot.lock().map_err(|e| e.to_string())?.stop();
+            return Err(format!(
+                "live bot restart aborted because wallet sync failed: {err}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -829,19 +1612,18 @@ fn get_bot_status(bot: State<'_, BotState>) -> String {
 }
 
 #[tauri::command]
-fn get_log_lines(bot: State<'_, BotState>, count: usize) -> Vec<serde_json::Value> {
-    let bm = match bot.lock() {
-        Ok(bm) => bm,
-        Err(_) => return vec![],
-    };
-    let log_buf = bm.get_log_buffer();
-    let buf = match log_buf.lock() {
-        Ok(buf) => buf,
-        Err(_) => return vec![],
-    };
-    buf.get_lines(count)
-        .into_iter()
-        .map(|line| {
+fn get_log_lines(
+    data_dir: State<'_, AppDataDir>,
+    cursor: Option<u64>,
+    count: usize,
+) -> Result<serde_json::Value, String> {
+    let path = data_dir.0.join(FULL_DEBUG_LOG_NAME);
+    let batch = log_stream::read_log_tail(&path, cursor, count.max(1))
+        .map_err(|e| format!("read log tail: {e}"))?;
+    Ok(serde_json::json!({
+        "next_cursor": batch.next_cursor,
+        "reset": batch.reset,
+        "lines": batch.lines.into_iter().map(|line| {
             let level = match line.level {
                 log_stream::LogLevel::Info => "INFO",
                 log_stream::LogLevel::Warn => "WARN",
@@ -852,8 +1634,8 @@ fn get_log_lines(bot: State<'_, BotState>, count: usize) -> Vec<serde_json::Valu
                 "level": level,
                 "content": line.content,
             })
-        })
-        .collect()
+        }).collect::<Vec<_>>(),
+    }))
 }
 
 #[tauri::command]
@@ -910,12 +1692,11 @@ fn save_config(
     if merged_secrets.is_empty() {
         profile.encrypted_secrets.clear();
     } else {
-        let password = auth
-            .session_password()
-            .ok_or("session locked: unlock app before saving")?;
         let blob = serde_json::to_vec(&merged_secrets).map_err(|e| e.to_string())?;
-        profile.encrypted_secrets =
-            crypto_vault::encrypt_data(&blob, &password).map_err(|e| e.to_string())?;
+        profile.encrypted_secrets = auth
+            .with_session_password(|password| crypto_vault::encrypt_data(&blob, password))
+            .ok_or("session locked: unlock app before saving")?
+            .map_err(|e| e.to_string())?;
     }
     pm.update_profile(profile.clone())
         .map_err(|e| e.to_string())?;
@@ -937,37 +1718,75 @@ fn get_saved_config(
 
 #[tauri::command]
 fn export_config(
+    auth: State<'_, AuthState>,
     profiles: State<'_, ProfileState>,
     profile_id: String,
     password: String,
+    current_password: String,
 ) -> Result<String, String> {
+    let mut auth = auth.lock().map_err(|e| e.to_string())?;
+    if !auth
+        .verify_password(&current_password)
+        .map_err(|e| e.to_string())?
+    {
+        return Err("current desktop password is incorrect".to_string());
+    }
     let pm = profiles.lock().map_err(|e| e.to_string())?;
     let profile = pm.get_profile(&profile_id).ok_or("profile not found")?;
-    let json = serde_json::to_string(&profile).map_err(|e| e.to_string())?;
+    let bundle = ExportBundleV2 {
+        version: 2,
+        profile: portable_profile_from_profile(&profile),
+        secrets: decrypt_profile_secrets(&profile, &auth)?,
+    };
+    let json = serde_json::to_string(&bundle).map_err(|e| e.to_string())?;
     crypto_vault::encrypt_data(json.as_bytes(), &password).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn import_config(
+    auth: State<'_, AuthState>,
     profiles: State<'_, ProfileState>,
     data: String,
     password: String,
+    current_password: String,
 ) -> Result<String, String> {
+    let mut auth = auth.lock().map_err(|e| e.to_string())?;
+    if !auth
+        .verify_password(&current_password)
+        .map_err(|e| e.to_string())?
+    {
+        return Err("current desktop password is incorrect".to_string());
+    }
     let decrypted = crypto_vault::decrypt_data(&data, &password).map_err(|e| e.to_string())?;
-    let mut imported: Profile = serde_json::from_slice(&decrypted).map_err(|e| e.to_string())?;
-    imported.normalize_wallet_fields();
+    let imported: ExportBundleV2 = serde_json::from_slice(&decrypted).map_err(|e| e.to_string())?;
+    if imported.version != 2 {
+        return Err(format!(
+            "unsupported import bundle version {}",
+            imported.version
+        ));
+    }
     let pm = profiles.lock().map_err(|e| e.to_string())?;
     let mut created = pm
         .create_profile(
-            imported.name,
-            imported.eoa_wallet_address,
-            imported.proxy_wallet_address,
-            imported.signature_type,
-            imported.strategy_config.clone(),
-            imported.sizing_config.clone(),
+            imported.profile.name,
+            imported.profile.eoa_wallet_address,
+            imported.profile.proxy_wallet_address,
+            imported.profile.signature_type,
+            imported.profile.strategy_config.clone(),
+            imported.profile.sizing_config.clone(),
         )
         .map_err(|e| e.to_string())?;
-    created.encrypted_secrets = imported.encrypted_secrets;
+    if imported.secrets.is_empty() {
+        created.encrypted_secrets.clear();
+    } else {
+        let secret_blob = serde_json::to_vec(&imported.secrets).map_err(|e| e.to_string())?;
+        created.encrypted_secrets = auth
+            .with_session_password(|session_password| {
+                crypto_vault::encrypt_data(&secret_blob, session_password)
+            })
+            .ok_or("session locked: unlock app before importing")?
+            .map_err(|e| e.to_string())?;
+    }
     pm.update_profile(created.clone())
         .map_err(|e| e.to_string())?;
     pm.set_active_profile(&created.id)
@@ -1210,11 +2029,59 @@ async fn get_wallet_balance(app: AppHandle) -> Result<f64, String> {
         let p = pm.get_profile(&id).ok_or("profile not found")?;
         p.primary_wallet_address()
     };
-    wallet_rpc::fetch_usdc_balance_with_fallback(
-        &config_io::DESKTOP_POLYGON_RPC_URLS,
-        &wallet,
+    tokio::time::timeout(
+        Duration::from_secs(15),
+        wallet_rpc::fetch_usdc_balance_with_fallback(&config_io::DESKTOP_POLYGON_RPC_URLS, &wallet),
     )
     .await
+    .map_err(|_| "wallet balance refresh timed out".to_string())?
+}
+
+#[tauri::command]
+async fn get_home_overview(
+    app: AppHandle,
+    bot: State<'_, BotState>,
+    profiles: State<'_, ProfileState>,
+    wallet_sync: State<'_, WalletSyncState>,
+    data_dir: State<'_, AppDataDir>,
+) -> Result<serde_json::Value, String> {
+    build_home_overview_payload(app, bot, profiles, wallet_sync, data_dir).await
+}
+
+#[tauri::command]
+fn get_home_activity(
+    data_dir: State<'_, AppDataDir>,
+    cursor: Option<u64>,
+    limit: usize,
+) -> serde_json::Value {
+    build_home_activity_batch(&data_dir.0, cursor, limit)
+}
+
+#[tauri::command]
+fn get_wallet_sync_status(wallet_sync: State<'_, WalletSyncState>) -> serde_json::Value {
+    serde_json::to_value(
+        wallet_sync
+            .lock()
+            .map(|manager| manager.status())
+            .unwrap_or_default(),
+    )
+    .unwrap_or_else(|_| serde_json::json!({}))
+}
+
+#[tauri::command]
+async fn run_wallet_sync_now(
+    profiles: State<'_, ProfileState>,
+    wallet_sync: State<'_, WalletSyncState>,
+) -> Result<serde_json::Value, String> {
+    let profile = {
+        let pm = profiles.lock().map_err(|e| e.to_string())?;
+        active_profile(&pm)?
+    };
+    let manager = wallet_sync.lock().map_err(|e| e.to_string())?.clone();
+    let snapshot = manager
+        .run_now(wallet_sync_config_for_profile(&profile))
+        .await?;
+    serde_json::to_value(snapshot).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1309,21 +2176,24 @@ pub fn run() {
         .expect("cannot determine data directory")
         .join("evpoly");
     std::fs::create_dir_all(&data_dir).expect("cannot create data directory");
+    config_io::cleanup_generated_env_files(&data_dir);
     let _ = ensure_debug_log_files(&data_dir);
     append_desktop_debug_line(&data_dir, "SYSTEM", "desktop app startup");
 
     let auth: AuthState = Arc::new(Mutex::new(AppAuth::new(data_dir.clone())));
     let profiles: ProfileState = Arc::new(Mutex::new(ProfileManager::new(data_dir.clone())));
     let bot: BotState = Arc::new(Mutex::new(BotManager::new(data_dir.clone())));
+    let wallet_sync: WalletSyncState =
+        Arc::new(Mutex::new(WalletSyncManager::new(data_dir.clone())));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppDataDir(data_dir))
         .manage(auth)
         .manage(profiles)
         .manage(bot)
+        .manage(wallet_sync)
         .setup(|app| {
             let status_item =
                 MenuItem::with_id(app, "status", "EVPoly: Stopped", false, None::<&str>)?;
@@ -1359,22 +2229,44 @@ pub fn run() {
                         let ps = app.state::<ProfileState>();
                         let auth = app.state::<AuthState>();
                         let bs = app.state::<BotState>();
-                        let configs = || -> Option<(PathBuf, PathBuf, bool)> {
-                            let pm = ps.lock().ok()?;
-                            let auth = auth.lock().ok()?;
-                            let profile = active_profile(&pm).ok()?;
-                            let simulation = simulation_mode_from_profile(&profile);
-                            let (env_path, config_path) =
-                                build_runtime_paths_for_profile(&profile, &auth, &dd.0).ok()?;
-                            Some((env_path, config_path, simulation))
-                        };
-                        if let Some((env_path, config_path, simulation)) = configs() {
+                        let ws = app.state::<WalletSyncState>();
+                        let configs =
+                            || -> Option<(PathBuf, PathBuf, bool, WalletSyncRuntimeConfig)> {
+                                let pm = ps.lock().ok()?;
+                                let auth = auth.lock().ok()?;
+                                let profile = active_profile(&pm).ok()?;
+                                let simulation = simulation_mode_from_profile(&profile);
+                                let (env_path, config_path) =
+                                    build_runtime_paths_for_profile(&profile, &auth, &dd.0).ok()?;
+                                Some((
+                                    env_path,
+                                    config_path,
+                                    simulation,
+                                    wallet_sync_config_for_profile(&profile),
+                                ))
+                            };
+                        if let Some((env_path, config_path, simulation, wallet_sync_config)) =
+                            configs()
+                        {
                             if let Ok(bm) = bs.lock() {
-                                let _ = bm.start(app, env_path, config_path, simulation);
+                                if bm.start(app, env_path, config_path, simulation).is_ok() {
+                                    if simulation {
+                                        if let Ok(manager) = ws.lock() {
+                                            let _ = manager.stop();
+                                        }
+                                    } else if let Ok(manager) = ws.lock() {
+                                        if manager.start(wallet_sync_config).is_err() {
+                                            let _ = bm.stop();
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                     "stop" => {
+                        if let Ok(manager) = app.state::<WalletSyncState>().lock() {
+                            let _ = manager.stop();
+                        }
                         if let Ok(bm) = app.state::<BotState>().lock() {
                             let _ = bm.stop();
                         }
@@ -1386,8 +2278,14 @@ pub fn run() {
                         }
                     }
                     "quit" => {
+                        if let Ok(manager) = app.state::<WalletSyncState>().lock() {
+                            let _ = manager.stop();
+                        }
                         if let Ok(bm) = app.state::<BotState>().lock() {
                             let _ = bm.stop();
+                        }
+                        if let Ok(mut auth) = app.state::<AuthState>().lock() {
+                            auth.clear_session();
                         }
                         app.exit(0);
                     }
@@ -1433,8 +2331,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             is_auth_initialized,
-            set_password,
+            initialize_password,
             verify_password,
+            lock_session,
             list_profiles,
             create_profile,
             get_profile,
@@ -1456,6 +2355,10 @@ pub fn run() {
             get_recent_trades,
             get_open_positions,
             get_wallet_balance,
+            get_home_overview,
+            get_home_activity,
+            get_wallet_sync_status,
+            run_wallet_sync_now,
             get_data_dir_path,
             open_logs_folder,
             run_onboarding,
@@ -1526,7 +2429,7 @@ mod tests {
         let profile = profile_with_simulation(None);
         assert_eq!(
             simulation_mode_from_profile(&profile),
-            config_io::env_template_default_bool("APP_SIMULATION", true)
+            config_io::env_template_default_bool("APP_SIMULATION", false)
         );
     }
 

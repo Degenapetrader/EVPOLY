@@ -14,6 +14,7 @@ export function UpdateBanner({
           Update available <span className="mono-data text-[var(--text-secondary)]">({version})</span>
         </span>
         <button
+          type="button"
           onClick={onUpdate}
           className="ui-button ui-button--accent text-sm"
         >

@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -107,6 +108,7 @@ pub fn generate_env_file(
     secrets: &HashMap<String, String>,
     data_dir: &Path,
 ) -> Result<PathBuf> {
+    cleanup_generated_env_files(data_dir);
     let mut env_map: HashMap<String, String> = HashMap::new();
 
     for line in CORE_ENV_TEMPLATE.lines() {
@@ -246,7 +248,7 @@ pub fn generate_env_file(
         }
     }
 
-    let env_path = data_dir.join(".env.generated");
+    let env_path = unique_env_path(data_dir);
     std::fs::write(&env_path, &output)?;
     Ok(env_path)
 }
@@ -316,6 +318,30 @@ pub fn cleanup_env_file(path: &Path) {
         }
         let _ = std::fs::remove_file(path);
     }
+}
+
+pub fn cleanup_generated_env_files(data_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(data_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !file_name.starts_with(".env.generated") {
+            continue;
+        }
+        cleanup_env_file(&path);
+    }
+}
+
+fn unique_env_path(data_dir: &Path) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    data_dir.join(format!(".env.generated.{stamp}"))
 }
 
 #[cfg(test)]
@@ -408,11 +434,14 @@ mod tests {
             "EVPOLY_MM_MARKET_MODE": "target"
         });
 
-        let temp_dir =
-            std::env::temp_dir().join(format!("evpoly-config-io-mm-mode-test-{}", std::process::id()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "evpoly-config-io-mm-mode-test-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&temp_dir).expect("create temp dir");
 
-        let env_path = generate_env_file(&profile, &HashMap::new(), &temp_dir).expect("generate env");
+        let env_path =
+            generate_env_file(&profile, &HashMap::new(), &temp_dir).expect("generate env");
         let content = std::fs::read_to_string(&env_path).expect("read env");
 
         assert!(content.contains("EVPOLY_MM_MARKET_MODE=auto"));
@@ -434,7 +463,8 @@ mod tests {
         ));
         std::fs::create_dir_all(&temp_dir).expect("create temp dir");
 
-        let env_path = generate_env_file(&profile, &HashMap::new(), &temp_dir).expect("generate env");
+        let env_path =
+            generate_env_file(&profile, &HashMap::new(), &temp_dir).expect("generate env");
         let content = std::fs::read_to_string(&env_path).expect("read env");
 
         assert!(content.contains("EVPOLY_MM_MARKET_MODE=hybrid"));
@@ -442,5 +472,4 @@ mod tests {
         let _ = std::fs::remove_file(env_path);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
-
 }

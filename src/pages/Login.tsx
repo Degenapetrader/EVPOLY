@@ -5,8 +5,8 @@ import { SectionPanel } from "../components/SectionPanel";
 import { LegalModal, hasAcceptedTerms } from "../components/LegalModal";
 import {
   getActiveProfileId,
+  initializePassword,
   isAuthInitialized,
-  setPassword,
   verifyPassword,
 } from "../lib/tauri-commands";
 import { useAppContext } from "../App";
@@ -123,10 +123,10 @@ export function Login() {
 
       setLoading(true);
       try {
-        await setPassword(password);
+        await initializePassword(password);
         setAuthenticated(true);
-        const active = await getActiveProfileId();
-        navigate(active ? "/dashboard" : "/config");
+        await getActiveProfileId();
+        navigate("/home");
       } catch (err) {
         setError(String(err));
       } finally {
@@ -140,8 +140,8 @@ export function Login() {
       const valid = await verifyPassword(password);
       if (valid) {
         setAuthenticated(true);
-        const active = await getActiveProfileId();
-        navigate(active ? "/dashboard" : "/config");
+        await getActiveProfileId();
+        navigate("/home");
       } else {
         setError("Incorrect password.");
       }

@@ -137,7 +137,19 @@ impl ProfileManager {
 
     fn save(&self, store: &ProfileStore) -> Result<()> {
         let json = serde_json::to_string_pretty(store)?;
-        std::fs::write(&self.store_path, json)?;
+        if let Some(parent) = self.store_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temp_path = self
+            .store_path
+            .with_extension(format!("json.tmp.{}", Uuid::new_v4()));
+        {
+            let mut file = std::fs::File::create(&temp_path)?;
+            use std::io::Write as _;
+            file.write_all(json.as_bytes())?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&temp_path, &self.store_path)?;
         Ok(())
     }
 

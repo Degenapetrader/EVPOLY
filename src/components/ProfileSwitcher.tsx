@@ -19,13 +19,25 @@ export function ProfileSwitcher({
 }) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [open, setOpen] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     listProfiles()
-      .then(setProfiles)
-      .catch(() => {});
+      .then((nextProfiles) => {
+        setProfiles(nextProfiles);
+        setLoadError(null);
+      })
+      .catch((err) =>
+        setLoadError(
+          typeof err === "string"
+            ? err
+            : err instanceof Error
+            ? err.message
+            : "failed to load profiles"
+        )
+      );
   }, [activeProfileId]);
 
   useEffect(() => {
@@ -60,6 +72,7 @@ export function ProfileSwitcher({
   return (
     <div ref={ref} className="relative">
       <button
+        type="button"
         onClick={() => setOpen(!open)}
         className="info-pill"
       >
@@ -91,6 +104,7 @@ export function ProfileSwitcher({
           {profiles.map((p) => (
             <button
               key={p.id}
+              type="button"
               onClick={() => handleSelect(p.id)}
               className={`w-full text-left px-4 py-3 flex flex-col gap-0.5 hover:bg-[var(--bg-tertiary)] transition-colors ${
                 p.id === activeProfileId
@@ -113,8 +127,8 @@ export function ProfileSwitcher({
           )}
         </div>
       )}
-      {switchError ? (
-        <div className="mt-1 text-xs text-[var(--red)]">{switchError}</div>
+      {loadError || switchError ? (
+        <div className="mt-1 text-xs text-[var(--red)]">{loadError ?? switchError}</div>
       ) : null}
     </div>
   );

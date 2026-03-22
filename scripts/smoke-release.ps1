@@ -80,6 +80,16 @@ try {
 }
 finally {
   if (Test-Path $workDir) {
-    Remove-Item -Path $workDir -Recurse -Force
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+      try {
+        Remove-Item -Path $workDir -Recurse -Force
+        break
+      } catch {
+        if ($attempt -eq 5) {
+          throw
+        }
+        Start-Sleep -Milliseconds (250 * $attempt)
+      }
+    }
   }
 }

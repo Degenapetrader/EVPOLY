@@ -162,13 +162,17 @@ try {
   Write-Host ("[build-sidecar-windows] building sidecar binaries ref={0} target={1}" -f $CoreRef, $targetTriple)
   cargo build --release --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot
   if ($LASTEXITCODE -ne 0) {
-    Write-Warning ("[build-sidecar-windows] release build failed exit_code={0}; retrying debug fallback" -f $LASTEXITCODE)
-    $env:CARGO_BUILD_JOBS = "1"
-    cargo build --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot
-    if ($LASTEXITCODE -ne 0) {
-      throw "cargo build failed"
+    if ($env:ALLOW_DEBUG_SIDECAR_FALLBACK -eq "1") {
+      Write-Warning ("[build-sidecar-windows] release build failed exit_code={0}; retrying debug fallback because ALLOW_DEBUG_SIDECAR_FALLBACK=1" -f $LASTEXITCODE)
+      $env:CARGO_BUILD_JOBS = "1"
+      cargo build --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot
+      if ($LASTEXITCODE -ne 0) {
+        throw "cargo build failed"
+      }
+      $buildProfile = "debug"
+    } else {
+      throw ("release sidecar build failed exit_code={0}; debug fallback is disabled" -f $LASTEXITCODE)
     }
-    $buildProfile = "debug"
   }
 
   New-Item -ItemType Directory -Force -Path $binariesDir | Out-Null

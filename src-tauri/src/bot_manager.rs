@@ -1,18 +1,18 @@
 #![allow(dead_code)]
 
 use crate::config_io;
-use crate::log_stream::LogBuffer;
+use crate::log_stream::{append_file_log_line, LogBuffer};
 use chrono::Utc;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
-use std::io::Write;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::AppHandle;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -77,6 +77,8 @@ impl BotManager {
         config_path: PathBuf,
         simulation: bool,
     ) -> Result<(), String> {
+        ensure_bot_runtime_dirs(&self.data_dir)?;
+
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         if inner.status != BotStatus::Stopped && !matches!(inner.status, BotStatus::Error(_)) {
             return Err(format!("bot is busy ({:?})", inner.status));
@@ -260,21 +262,38 @@ impl BotManager {
         self.log_buffer.clone()
     }
 
+    pub fn simulation_mode(&self) -> Option<bool> {
+        self.inner.lock().ok().and_then(|inner| match inner.status {
+            BotStatus::Stopped => None,
+            _ => Some(inner.simulation),
+        })
+    }
+
+    pub fn last_activity_at(&self) -> Option<String> {
+        self.log_buffer
+            .lock()
+            .ok()
+            .and_then(|buffer| buffer.latest_line())
+            .map(|line| line.timestamp)
+    }
+
     pub fn request_context(&self) -> Result<BotRequestContext, String> {
         let inner = self.inner.lock().map_err(|e| e.to_string())?;
         if inner.status != BotStatus::Running {
             return Err("bot is not running".to_string());
         }
-        let env_path = inner
-            .env_path
-            .clone()
-            .ok_or("bot env path missing")?;
+        let env_path = inner.env_path.clone().ok_or("bot env path missing")?;
         drop(inner);
 
         let env_vars = read_env_file_pairs(&env_path)?;
         let admin_enabled = env_vars
             .get("EVPOLY_ADMIN_API_ENABLE")
-            .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
             .unwrap_or(false);
         if !admin_enabled {
             return Err("bot admin api is not enabled".to_string());
@@ -409,10 +428,8 @@ impl BotManager {
                     Err(err) => append_debug_line(
                         &debug_log,
                         "SYSTEM",
-                        format!(
-                            "stop requested: admin cancel-all failed before shutdown: {err}"
-                        )
-                        .as_str(),
+                        format!("stop requested: admin cancel-all failed before shutdown: {err}")
+                            .as_str(),
                     ),
                 }
             }
@@ -439,11 +456,23 @@ fn finalize_stop(inner: &mut BotInner) {
     inner.status = BotStatus::Stopped;
 }
 
+fn ensure_bot_runtime_dirs(data_dir: &PathBuf) -> Result<(), String> {
+    std::fs::create_dir_all(data_dir).map_err(|e| format!("prepare bot data directory: {e}"))?;
+    std::fs::create_dir_all(data_dir.join("history"))
+        .map_err(|e| format!("prepare bot history directory: {e}"))?;
+    Ok(())
+}
+
 fn shutdown_request_context(env_path: &PathBuf) -> Result<Option<BotRequestContext>, String> {
     let env_vars = read_env_file_pairs(env_path)?;
     let admin_enabled = env_vars
         .get("EVPOLY_ADMIN_API_ENABLE")
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false);
     if !admin_enabled {
         return Ok(None);
@@ -471,7 +500,10 @@ fn shutdown_request_context(env_path: &PathBuf) -> Result<Option<BotRequestConte
 }
 
 fn send_shutdown_cancel_all(ctx: BotRequestContext) -> Result<String, String> {
-    let url = format!("{}/admin/orders/cancel-all", ctx.base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/admin/orders/cancel-all",
+        ctx.base_url.trim_end_matches('/')
+    );
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .build()
@@ -494,7 +526,7 @@ fn send_shutdown_cancel_all(ctx: BotRequestContext) -> Result<String, String> {
         return Err(format!("shutdown cancel-all returned {status}: {body}"));
     }
 
-    let payload = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| Value::String(body));
+    let payload = serde_json::from_str::<Value>(&body).unwrap_or(Value::String(body));
     let canceled = payload
         .get("canceled_orders")
         .and_then(Value::as_u64)
@@ -586,7 +618,7 @@ fn read_env_file_pairs(path: &PathBuf) -> Result<HashMap<String, String>, String
     Ok(vars)
 }
 
-fn append_debug_session_start(path: &PathBuf, simulation: bool, args: &[String]) {
+fn append_debug_session_start(path: &std::path::Path, simulation: bool, args: &[String]) {
     let mode = if simulation { "simulation" } else { "live" };
     let line = format!(
         "==================== session start {} mode={} args={} ====================",
@@ -597,7 +629,7 @@ fn append_debug_session_start(path: &PathBuf, simulation: bool, args: &[String])
     append_debug_line(path, "SYSTEM", &line);
 }
 
-fn append_debug_line(path: &PathBuf, source: &str, line: &str) {
+fn append_debug_line(path: &std::path::Path, source: &str, line: &str) {
     let ts = Utc::now().to_rfc3339();
     let content = format!("[{ts}] [{source}] {line}\n");
     write_debug_line(path, &content);
@@ -607,14 +639,8 @@ fn append_debug_line(path: &PathBuf, source: &str, line: &str) {
     }
 }
 
-fn write_debug_line(path: &PathBuf, content: &str) {
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)
-    {
-        let _ = file.write_all(content.as_bytes());
-    }
+fn write_debug_line(path: &std::path::Path, content: &str) {
+    let _ = append_file_log_line(path, content);
 }
 
 pub async fn send_bot_request(
@@ -633,7 +659,10 @@ pub async fn send_bot_request(
     };
     let url = format!("{}{}", ctx.base_url, clean_path);
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|e| format!("build bot request client: {e}"))?;
     let mut request = client.request(method.clone(), &url);
     if let Some(token) = ctx.auth_token {
         if !token.trim().is_empty() {
@@ -722,4 +751,28 @@ fn json_value_to_query_pair(key: &str, value: &Value) -> Option<(String, String)
         return Some((key.to_string(), joined));
     }
     Some((key.to_string(), value.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_bot_runtime_dirs;
+
+    #[test]
+    fn ensure_bot_runtime_dirs_creates_history_subdir() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "evpoly-bot-manager-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+
+        ensure_bot_runtime_dirs(&temp_dir).expect("create bot runtime dirs");
+
+        assert!(temp_dir.exists());
+        assert!(temp_dir.join("history").exists());
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
 }

@@ -1,7 +1,7 @@
 import { createContext, useContext, useState } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Login } from "./pages/Login";
-import { Dashboard } from "./pages/Dashboard";
+import { Home } from "./pages/Home";
 import { Config } from "./pages/Config";
 
 interface AppState {
@@ -39,27 +39,38 @@ function App() {
         setActiveProfileId,
       }}
     >
-      <BrowserRouter>
+      <HashRouter>
         <Routes>
           <Route path="/" element={<Login />} />
           <Route
-            path="/dashboard"
+            path="/home"
             element={
               <ProtectedRoute>
-                <Dashboard />
+                <Home />
               </ProtectedRoute>
             }
           />
           <Route
-            path="/config"
+            path="/home/:strategySlug"
+            element={
+              <ProtectedRoute>
+                <Home />
+              </ProtectedRoute>
+            }
+          />
+          <Route path="/dashboard" element={<Navigate to="/home" replace />} />
+          <Route
+            path="/settings"
             element={
               <ProtectedRoute>
                 <Config />
               </ProtectedRoute>
             }
           />
+          <Route path="/config" element={<Navigate to="/settings" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
-      </BrowserRouter>
+      </HashRouter>
     </AppContext.Provider>
   );
 }

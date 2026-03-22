@@ -5,8 +5,13 @@ export function useBotStatus() {
   const [status, setStatus] = useState<string>("unknown");
   const [isLoading, setIsLoading] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const inFlightRef = useRef(false);
 
   const poll = useCallback(async () => {
+    if (inFlightRef.current) {
+      return;
+    }
+    inFlightRef.current = true;
     try {
       const s = await getBotStatus();
       setStatus(s);
@@ -19,13 +24,14 @@ export function useBotStatus() {
           : "status poll failed";
       setStatus(`error:${message}`);
     } finally {
+      inFlightRef.current = false;
       setIsLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    poll();
-    intervalRef.current = setInterval(poll, 2000);
+    void poll();
+    intervalRef.current = setInterval(() => void poll(), 5000);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };

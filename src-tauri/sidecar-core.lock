@@ -1,3 +1,2 @@
-CORE_SOURCE=core
-SOURCE_MODE=desktop-local
-NOTE=desktop_builds_sidecars_from_local_core_source
+CORE_REF=c6d1222f36a9655e717727adb32e30613426dde1
+CORE_REPO=https://github.com/Degenapetrader/EVPOLY.git

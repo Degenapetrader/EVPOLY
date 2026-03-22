@@ -65,90 +65,12 @@ export interface UiMarket {
   title: string;
   subtitle: string;
   description?: string | null;
-  image_url?: string | null;
-  icon_url?: string | null;
   status: string;
   tradable: boolean;
   close_time?: string | null;
   symbol?: string | null;
   timeframe?: string | null;
   sides: UiMarketSide[];
-}
-
-export interface UiOrderbookLevel {
-  price: number;
-  shares: number;
-  total: number;
-}
-
-export interface UiMarketOrderbook {
-  token_id: string;
-  label: string;
-  outcome: string;
-  last_price: number | null;
-  best_bid: number | null;
-  best_ask: number | null;
-  spread: number | null;
-  bids: UiOrderbookLevel[];
-  asks: UiOrderbookLevel[];
-}
-
-export interface PortfolioPositionRow {
-  id: string;
-  condition_id: string;
-  token_id: string;
-  market_title: string;
-  market_subtitle: string;
-  symbol: string | null;
-  timeframe: string | null;
-  side_label: string;
-  shares: number;
-  avg_price: number;
-  current_price: number | null;
-  traded_usd: number;
-  to_win_usd: number;
-  value_usd: number;
-  pnl_usd: number;
-  action_label: string;
-  image_url?: string | null;
-  icon_url?: string | null;
-}
-
-export interface PortfolioOpenOrderRow {
-  id: string;
-  condition_id: string | null;
-  market_title: string;
-  market_subtitle: string;
-  symbol: string | null;
-  timeframe: string | null;
-  order_count: number;
-  total_size_usd: number;
-  updated_at_ms: number | null;
-  updated_at: string | null;
-  action_label: string;
-  image_url?: string | null;
-  icon_url?: string | null;
-}
-
-export interface PortfolioHistoryRow {
-  id: string;
-  condition_id: string | null;
-  token_id: string | null;
-  market_title: string;
-  market_subtitle: string;
-  symbol: string | null;
-  timeframe: string | null;
-  side_label: string;
-  shares: number;
-  price: number;
-  value_usd: number;
-  pnl_usd: number;
-  outcome: string;
-  timestamp: string;
-  timestamp_ms: number | null;
-  action_label: string;
-  image_url?: string | null;
-  icon_url?: string | null;
 }
 
 export interface UiManualRun {
@@ -224,10 +146,6 @@ export interface Trade {
   id: string;
   timestamp: string;
   market: string;
-  condition_id?: string;
-  strategy_id?: string;
-  token_id?: string;
-  token_type?: string | null;
   side: string;
   size: number;
   price: number;
@@ -237,9 +155,6 @@ export interface Trade {
 
 export interface Position {
   market: string;
-  condition_id?: string;
-  token_id?: string;
-  token_type?: string | null;
   side: string;
   size: number;
   entry_price: number;
@@ -454,15 +369,6 @@ export const getRecentTrades = (limit: number): Promise<Trade[]> =>
 
 export const getOpenPositions = (): Promise<Position[]> =>
   invoke("get_open_positions");
-
-export const getPortfolioPositions = (): Promise<PortfolioPositionRow[]> =>
-  invoke("get_portfolio_positions");
-
-export const getPortfolioOpenOrders = (): Promise<PortfolioOpenOrderRow[]> =>
-  invoke("get_portfolio_open_orders");
-
-export const getPortfolioHistory = (limit = 50): Promise<PortfolioHistoryRow[]> =>
-  invoke("get_portfolio_history", { limit });
 
 export const getWalletBalance = (): Promise<number> =>
   invoke("get_wallet_balance");

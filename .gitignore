@@ -22,9 +22,6 @@ tracking.db
 tracking.db-*
 src-tauri/binaries/evpoly-bot-x86_64-pc-windows-msvc.exe
 src-tauri/binaries/evpoly-manual-bot-x86_64-pc-windows-msvc.exe
-core/target/
-t/
-t-*/
 
 # Editor directories and files
 .vscode/*

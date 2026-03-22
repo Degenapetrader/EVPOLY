@@ -99,57 +99,6 @@ export function summarizeSymbols(symbols: string[]): string {
   return `${symbols.slice(0, 4).join(" / ")} +${symbols.length - 4}`;
 }
 
-export function looksTechnicalMarketLabel(value: string | null | undefined): boolean {
-  if (!value) return true;
-  const trimmed = value.trim();
-  if (!trimmed) return true;
-  return (
-    /0x[a-f0-9]{12,}/i.test(trimmed) ||
-    /^\d{20,}$/.test(trimmed) ||
-    /^[0-9a-f]{24,}$/i.test(trimmed)
-  );
-}
-
-export function fallbackMarketLabel(
-  tokenType?: string | null,
-  strategyId?: string | null
-): string {
-  const outcome =
-    tokenType?.trim().toLowerCase() === "up" || tokenType?.trim().toLowerCase() === "yes"
-      ? "Up market"
-      : tokenType?.trim().toLowerCase() === "down" || tokenType?.trim().toLowerCase() === "no"
-      ? "Down market"
-      : "Prediction market";
-
-  switch ((strategyId ?? "").trim().toLowerCase()) {
-    case "mm_rewards":
-      return `Reward ${outcome.toLowerCase()}`;
-    case "endgame":
-      return `Endgame ${outcome.toLowerCase()}`;
-    case "premarket":
-      return `Premarket ${outcome.toLowerCase()}`;
-    case "evcurve":
-      return `Curve ${outcome.toLowerCase()}`;
-    case "session_band":
-      return `Session ${outcome.toLowerCase()}`;
-    case "evsnipe":
-      return `Snipe ${outcome.toLowerCase()}`;
-    default:
-      return outcome;
-  }
-}
-
-export function humanMarketLabel(
-  market: string | null | undefined,
-  tokenType?: string | null,
-  strategyId?: string | null
-): string {
-  if (!looksTechnicalMarketLabel(market)) {
-    return (market ?? "").trim();
-  }
-  return fallbackMarketLabel(tokenType, strategyId);
-}
-
 export function describePositionPrices(position: Position): string {
   const currentPrice =
     typeof position.current_price === "number"
@@ -174,41 +123,6 @@ export function sentenceCase(value: string | undefined, fallback: string): strin
 export function formatUsd(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return "--";
   return `$${value.toFixed(2)}`;
-}
-
-export function formatCents(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return "--";
-  }
-  return `${(value * 100).toFixed(1).replace(/\.0$/, "")}c`;
-}
-
-export function formatRelativeTime(value: string | number | null | undefined): string {
-  const timestamp =
-    typeof value === "number"
-      ? value
-      : typeof value === "string" && value.trim()
-      ? new Date(value).getTime()
-      : Number.NaN;
-  if (!Number.isFinite(timestamp)) {
-    return "--";
-  }
-  const diffMs = timestamp - Date.now();
-  const absSeconds = Math.round(Math.abs(diffMs) / 1000);
-  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-
-  if (absSeconds < 60) {
-    return rtf.format(Math.round(diffMs / 1000), "second");
-  }
-  const absMinutes = Math.round(absSeconds / 60);
-  if (absMinutes < 60) {
-    return rtf.format(Math.round(diffMs / 60000), "minute");
-  }
-  const absHours = Math.round(absMinutes / 60);
-  if (absHours < 24) {
-    return rtf.format(Math.round(diffMs / 3600000), "hour");
-  }
-  return rtf.format(Math.round(diffMs / 86400000), "day");
 }
 
 export function formatShares(value: unknown): string {
@@ -404,11 +318,7 @@ function looksTechnicalRecentResult(value: string): boolean {
 
 function humanizeTradeResult(trade: Trade | null): string | null {
   if (!trade) return null;
-  return `Recent order: ${sentenceCase(trade.side, "Trade")} ${humanMarketLabel(
-    trade.market,
-    trade.token_type,
-    trade.strategy_id
-  )}`;
+  return `Recent order: ${sentenceCase(trade.side, "Trade")} ${trade.market}`;
 }
 
 export function buildDashboardViewModel({

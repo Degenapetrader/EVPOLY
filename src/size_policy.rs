@@ -3,6 +3,15 @@ use std::sync::OnceLock;
 
 const DEFAULT_BASE_SIZE_USD: f64 = 10.0;
 const DEFAULT_ENDGAME_BASE_SIZE_USD: f64 = 50.0;
+const DEFAULT_SYMBOL_MULTIPLIER_BTC: f64 = 1.0;
+const DEFAULT_SYMBOL_MULTIPLIER_ETH: f64 = 0.8;
+const DEFAULT_SYMBOL_MULTIPLIER_SOL: f64 = 0.5;
+const DEFAULT_SYMBOL_MULTIPLIER_XRP: f64 = 0.5;
+const DEFAULT_SYMBOL_MULTIPLIER_DOGE: f64 = 0.5;
+const DEFAULT_SYMBOL_MULTIPLIER_BNB: f64 = 0.5;
+const DEFAULT_SYMBOL_MULTIPLIER_HYPE: f64 = 0.5;
+const DEFAULT_PREMARKET_TIMEFRAME_MULTIPLIERS: [f64; 5] = [0.75, 1.0, 1.25, 1.25, 1.25];
+const DEFAULT_EVCURVE_TIMEFRAME_MULTIPLIERS: [f64; 4] = [0.75, 1.0, 1.25, 1.25];
 const DEFAULT_ENDGAME_TICK_MULTIPLIERS: [f64; 3] = [0.20, 0.40, 0.40];
 const DEFAULT_SESSIONBAND_TAU2_MULTIPLIER: f64 = 0.30;
 const DEFAULT_SESSIONBAND_TAU1_MULTIPLIER: f64 = 0.70;
@@ -27,27 +36,37 @@ pub fn base_size_usd_from_env_with_default(env_key: &str, default: f64) -> f64 {
 }
 
 pub fn symbol_size_multiplier(symbol: &str) -> f64 {
+    let multipliers = symbol_size_multipliers();
     match normalize_symbol(symbol).as_str() {
-        "BTC" => 1.0,
-        "ETH" => 0.8,
-        "SOL" | "XRP" | "DOGE" | "BNB" | "HYPE" => 0.5,
+        "BTC" => multipliers[0],
+        "ETH" => multipliers[1],
+        "SOL" => multipliers[2],
+        "XRP" => multipliers[3],
+        "DOGE" => multipliers[4],
+        "BNB" => multipliers[5],
+        "HYPE" => multipliers[6],
         _ => 1.0,
     }
 }
 
 pub fn premarket_timeframe_multiplier(timeframe: Timeframe) -> f64 {
+    let multipliers = premarket_timeframe_multipliers();
     match timeframe {
-        Timeframe::M5 => 0.75,
-        Timeframe::M15 => 1.0,
-        Timeframe::H1 | Timeframe::H4 | Timeframe::D1 => 1.25,
+        Timeframe::M5 => multipliers[0],
+        Timeframe::M15 => multipliers[1],
+        Timeframe::H1 => multipliers[2],
+        Timeframe::H4 => multipliers[3],
+        Timeframe::D1 => multipliers[4],
     }
 }
 
 pub fn evcurve_timeframe_multiplier(timeframe: Timeframe) -> f64 {
+    let multipliers = evcurve_timeframe_multipliers();
     match timeframe {
-        Timeframe::M15 => 0.75,
-        Timeframe::H1 => 1.0,
-        Timeframe::H4 | Timeframe::D1 => 1.25,
+        Timeframe::M15 => multipliers[0],
+        Timeframe::H1 => multipliers[1],
+        Timeframe::H4 => multipliers[2],
+        Timeframe::D1 => multipliers[3],
         _ => 1.0,
     }
 }
@@ -86,6 +105,94 @@ fn endgame_tick_multipliers() -> &'static [f64; 3] {
             env_nonnegative_f64(
                 "EVPOLY_ENDGAME_TICK2_MULTIPLIER",
                 DEFAULT_ENDGAME_TICK_MULTIPLIERS[2],
+            ),
+        ]
+    })
+}
+
+fn symbol_size_multipliers() -> &'static [f64; 7] {
+    static MULTIPLIERS: OnceLock<[f64; 7]> = OnceLock::new();
+    MULTIPLIERS.get_or_init(|| {
+        [
+            env_nonnegative_f64(
+                "EVPOLY_SYMBOL_SIZE_MULTIPLIER_BTC",
+                DEFAULT_SYMBOL_MULTIPLIER_BTC,
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_SYMBOL_SIZE_MULTIPLIER_ETH",
+                DEFAULT_SYMBOL_MULTIPLIER_ETH,
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_SYMBOL_SIZE_MULTIPLIER_SOL",
+                DEFAULT_SYMBOL_MULTIPLIER_SOL,
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_SYMBOL_SIZE_MULTIPLIER_XRP",
+                DEFAULT_SYMBOL_MULTIPLIER_XRP,
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_SYMBOL_SIZE_MULTIPLIER_DOGE",
+                DEFAULT_SYMBOL_MULTIPLIER_DOGE,
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_SYMBOL_SIZE_MULTIPLIER_BNB",
+                DEFAULT_SYMBOL_MULTIPLIER_BNB,
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_SYMBOL_SIZE_MULTIPLIER_HYPE",
+                DEFAULT_SYMBOL_MULTIPLIER_HYPE,
+            ),
+        ]
+    })
+}
+
+fn premarket_timeframe_multipliers() -> &'static [f64; 5] {
+    static MULTIPLIERS: OnceLock<[f64; 5]> = OnceLock::new();
+    MULTIPLIERS.get_or_init(|| {
+        [
+            env_nonnegative_f64(
+                "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_5M",
+                DEFAULT_PREMARKET_TIMEFRAME_MULTIPLIERS[0],
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_15M",
+                DEFAULT_PREMARKET_TIMEFRAME_MULTIPLIERS[1],
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_1H",
+                DEFAULT_PREMARKET_TIMEFRAME_MULTIPLIERS[2],
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_4H",
+                DEFAULT_PREMARKET_TIMEFRAME_MULTIPLIERS[3],
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_1D",
+                DEFAULT_PREMARKET_TIMEFRAME_MULTIPLIERS[4],
+            ),
+        ]
+    })
+}
+
+fn evcurve_timeframe_multipliers() -> &'static [f64; 4] {
+    static MULTIPLIERS: OnceLock<[f64; 4]> = OnceLock::new();
+    MULTIPLIERS.get_or_init(|| {
+        [
+            env_nonnegative_f64(
+                "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_15M",
+                DEFAULT_EVCURVE_TIMEFRAME_MULTIPLIERS[0],
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_1H",
+                DEFAULT_EVCURVE_TIMEFRAME_MULTIPLIERS[1],
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_4H",
+                DEFAULT_EVCURVE_TIMEFRAME_MULTIPLIERS[2],
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_1D",
+                DEFAULT_EVCURVE_TIMEFRAME_MULTIPLIERS[3],
             ),
         ]
     })

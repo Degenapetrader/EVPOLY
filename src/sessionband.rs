@@ -45,7 +45,7 @@ impl SessionBandExecutionConfig {
             parse_symbols_env("EVPOLY_SESSIONBAND_SYMBOLS", &["BTC", "ETH", "SOL", "XRP"]);
         let timeframes = parse_timeframes_env(
             "EVPOLY_SESSIONBAND_TIMEFRAMES",
-            &[Timeframe::M15, Timeframe::H1, Timeframe::H4],
+            &[Timeframe::M5, Timeframe::M15, Timeframe::H1, Timeframe::H4],
         );
         let bands = std::env::var("EVPOLY_SESSIONBAND_BANDS")
             .ok()
@@ -328,12 +328,12 @@ mod tests {
     }
 
     #[test]
-    fn default_timeframes_exclude_5m() {
+    fn default_timeframes_include_5m() {
         unsafe { std::env::remove_var("EVPOLY_SESSIONBAND_TIMEFRAMES") };
         let cfg = SessionBandExecutionConfig::from_env();
         assert_eq!(
             cfg.enabled_timeframes(),
-            vec![Timeframe::M15, Timeframe::H1, Timeframe::H4]
+            vec![Timeframe::M5, Timeframe::M15, Timeframe::H1, Timeframe::H4]
         );
     }
 }

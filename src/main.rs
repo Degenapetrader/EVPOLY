@@ -34699,11 +34699,13 @@ mod tests {
 
     #[test]
     fn premarket_side_budget_scales_by_asset_multiplier() {
-        let base = premarket_side_budget_usd(Timeframe::M5);
-        let eth_multiplier = premarket_side_budget_multiplier("ETH");
-        let eth_budget = premarket_side_budget_usd_for_asset(Timeframe::M5, "ETH");
-        assert!((eth_multiplier - 0.8).abs() < 1e-9);
-        assert!((eth_budget - (base * eth_multiplier)).abs() < 1e-9);
+        with_admin_env(&[], || {
+            let base = premarket_side_budget_usd(Timeframe::M5);
+            let eth_multiplier = premarket_side_budget_multiplier("ETH");
+            let eth_budget = premarket_side_budget_usd_for_asset(Timeframe::M5, "ETH");
+            assert!((eth_multiplier - 0.8).abs() < 1e-9);
+            assert!((eth_budget - (base * eth_multiplier)).abs() < 1e-9);
+        });
     }
 
     #[test]

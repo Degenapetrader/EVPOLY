@@ -88,7 +88,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if git rev-parse --verify "${CORE_REF}^{commit}" >/dev/null 2>&1; then
+ensure_local_core_ref() {
+  if git rev-parse --verify "${CORE_REF}^{commit}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if git remote get-url origin >/dev/null 2>&1; then
+    echo "[build-sidecar-linux] fetching pinned core ref from origin"
+    git fetch --depth=1 origin "${CORE_REF}" >/dev/null 2>&1 || true
+  fi
+
+  git rev-parse --verify "${CORE_REF}^{commit}" >/dev/null 2>&1
+}
+
+if ensure_local_core_ref; then
   echo "[build-sidecar-linux] creating local worktree ref=${CORE_REF}"
   git worktree add --detach "${WORK_DIR}" "${CORE_REF}"
   SOURCE_MODE="local-worktree"

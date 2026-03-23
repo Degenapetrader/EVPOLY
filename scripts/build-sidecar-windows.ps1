@@ -126,8 +126,22 @@ function Test-GitCommitExists([string]$Ref) {
   return ($LASTEXITCODE -eq 0)
 }
 
+function Ensure-LocalCoreRef([string]$Ref) {
+  if (Test-GitCommitExists $Ref) {
+    return $true
+  }
+
+  & git remote get-url origin *> $null
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "[build-sidecar-windows] fetching pinned core ref from origin"
+    & git fetch --depth=1 origin $Ref *> $null
+  }
+
+  return (Test-GitCommitExists $Ref)
+}
+
 try {
-  if (Test-GitCommitExists $CoreRef) {
+  if (Ensure-LocalCoreRef $CoreRef) {
     Write-Host ("[build-sidecar-windows] creating local worktree ref={0}" -f $CoreRef)
     git worktree add --detach $workDir $CoreRef
     if ($LASTEXITCODE -ne 0) {

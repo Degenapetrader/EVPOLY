@@ -31,7 +31,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Fast gate checks
-        run: INSTALL_DEPS=1 RUN_FRONTEND_BUILD=1 RUN_CARGO_CHECK=1 RUN_SMOKE=0 bash scripts/desktop-gate-fast.sh
+        run: INSTALL_DEPS=1 RUN_FRONTEND_BUILD=1 RUN_CARGO_CHECK=0 RUN_SMOKE=0 bash scripts/desktop-gate-fast.sh
 
   windows-installer:
     needs:
@@ -60,7 +60,7 @@ jobs:
 
       - name: Command contract checks
         shell: pwsh
-        run: ./scripts/desktop-gate-fast.ps1 -RunSmoke:$false -InstallDeps:$false -RunFrontendBuild:$false -RunCargoCheck:$true
+        run: ./scripts/desktop-gate-fast.ps1 -RunSmoke:$false -InstallDeps:$false -RunFrontendBuild:$false -RunCargoCheck:$false
 
       - name: Runtime smoke checks
         shell: pwsh

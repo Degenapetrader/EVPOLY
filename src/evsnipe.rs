@@ -194,7 +194,7 @@ impl EvsnipeConfig {
                 "EVPOLY_EVSNIPE_SYMBOLS",
                 &["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"],
             ),
-            discovery_refresh_sec: env_u64("EVPOLY_EVSNIPE_DISCOVERY_REFRESH_SEC", 30).max(5),
+            discovery_refresh_sec: env_u64("EVPOLY_EVSNIPE_DISCOVERY_REFRESH_SEC", 300).max(5),
             discovery_limit: env_u32("EVPOLY_EVSNIPE_DISCOVERY_LIMIT", 2_500).max(500),
             max_days_to_expiry: env_u64("EVPOLY_EVSNIPE_MAX_DAYS_TO_EXPIRY", 30)
                 .max(1)

@@ -3041,3 +3041,19 @@ Older entries may reference env keys that were removed in later commits.
     - `EVPOLY_MM_DUST_SELL_MAX_NOTIONAL_USD` default changed from `5` to `20` (still env-overridable).
   - Updated `.env.full.example` default to `EVPOLY_MM_DUST_SELL_MAX_NOTIONAL_USD=20`.
   - Affects: `mm_rewards_v1` dust cleanup sizing cap (`/admin/mm/dust-sell` and scheduled dust sweep paths).
+
+### 2026-03-23
+
+- `evsnipe_v1` sticky watchlist hardening for degraded discovery windows:
+  - Updated `src/main.rs` EVSnipe discovery refresh path:
+    - introduced in-memory sticky watchlist cache keyed by `condition_id` (deduped add-only merge during healthy cycles).
+    - degraded discovery gate now holds last-good watchlist when `hit_specs < 10` (default threshold, env-overridable).
+    - added safety-cap behavior for sticky cache: when a healthy merge would exceed cap, keep last-good snapshot and stop adding; on the next healthy cycle, replace from fresh snapshot when within cap.
+    - active watchlist published to trade loop now comes from sticky cache snapshot, not direct per-cycle full replacement.
+    - added EVSnipe watchlist telemetry fields/events for degraded-hold and cap-hold transitions.
+  - Updated `src/evsnipe.rs` config default:
+    - `EVPOLY_EVSNIPE_DISCOVERY_REFRESH_SEC` default changed from `30` to `300` seconds.
+  - Updated `.env.full.example`:
+    - documented `EVPOLY_EVSNIPE_DEGRADED_HIT_SPECS_MIN` and `EVPOLY_EVSNIPE_WATCHLIST_MAX_SPECS`.
+    - updated `EVPOLY_EVSNIPE_DISCOVERY_REFRESH_SEC` comment to reflect default `300`.
+  - Affects: `evsnipe_v1` hit/close watchlist refresh behavior across configured symbols (`BTC,ETH,SOL,XRP,DOGE,BNB,HYPE`) and all EVSnipe market families.

@@ -626,6 +626,96 @@ fn evsnipe_prune_runtime_state(
     )
 }
 
+type EvsnipeStickyWatchlist = std::collections::HashMap<
+    String,
+    std::collections::HashMap<String, evsnipe::EvsnipeMarketSpec>,
+>;
+
+fn evsnipe_watchlist_total_specs(sticky: &EvsnipeStickyWatchlist) -> usize {
+    sticky.values().map(std::collections::HashMap::len).sum()
+}
+
+fn evsnipe_watchlist_remove_expired(sticky: &mut EvsnipeStickyWatchlist, now_sec: i64) -> usize {
+    let mut removed = 0usize;
+    sticky.retain(|_, by_condition| {
+        by_condition.retain(|_, spec| {
+            let keep = spec
+                .end_ts
+                .map(|end_ts| end_ts <= 0 || end_ts > now_sec)
+                .unwrap_or(true);
+            if !keep {
+                removed = removed.saturating_add(1);
+            }
+            keep
+        });
+        !by_condition.is_empty()
+    });
+    removed
+}
+
+fn evsnipe_watchlist_merge_add_only(
+    sticky: &mut EvsnipeStickyWatchlist,
+    specs: &[evsnipe::EvsnipeMarketSpec],
+) -> (usize, usize) {
+    let mut added = 0usize;
+    let mut updated = 0usize;
+    for spec in specs {
+        let condition_id = spec.condition_id.trim();
+        if condition_id.is_empty() {
+            continue;
+        }
+        let by_condition = sticky.entry(spec.symbol.clone()).or_default();
+        if by_condition
+            .insert(condition_id.to_string(), spec.clone())
+            .is_some()
+        {
+            updated = updated.saturating_add(1);
+        } else {
+            added = added.saturating_add(1);
+        }
+    }
+    (added, updated)
+}
+
+fn evsnipe_watchlist_snapshot(
+    sticky: &EvsnipeStickyWatchlist,
+) -> std::collections::HashMap<String, Vec<evsnipe::EvsnipeMarketSpec>> {
+    let mut out: std::collections::HashMap<String, Vec<evsnipe::EvsnipeMarketSpec>> =
+        std::collections::HashMap::new();
+    for (symbol, by_condition) in sticky {
+        let mut items = by_condition.values().cloned().collect::<Vec<_>>();
+        items.sort_by(|a, b| a.strike_price.total_cmp(&b.strike_price));
+        out.insert(symbol.clone(), items);
+    }
+    out
+}
+
+fn evsnipe_watchlist_hit_close_counts(
+    by_symbol: &std::collections::HashMap<String, Vec<evsnipe::EvsnipeMarketSpec>>,
+) -> (usize, usize) {
+    let mut hit = 0usize;
+    let mut close = 0usize;
+    for spec in by_symbol.values().flat_map(|items| items.iter()) {
+        if spec.is_hit_rule() {
+            hit = hit.saturating_add(1);
+        } else if spec.is_close_rule() {
+            close = close.saturating_add(1);
+        }
+    }
+    (hit, close)
+}
+
+fn evsnipe_watchlist_symbol_breakdown(
+    by_symbol: &std::collections::HashMap<String, Vec<evsnipe::EvsnipeMarketSpec>>,
+) -> String {
+    let mut parts = by_symbol
+        .iter()
+        .map(|(symbol, items)| format!("{}={}", symbol, items.len()))
+        .collect::<Vec<_>>();
+    parts.sort();
+    parts.join(",")
+}
+
 fn env_bool_named(name: &str, default: bool) -> bool {
     std::env::var(name)
         .ok()
@@ -12535,6 +12625,19 @@ async fn main() -> Result<()> {
             > = std::collections::HashMap::new();
             let evsnipe_selected_token_prewarm_cooldown_ms = 60_000_i64;
             let evsnipe_selected_token_prewarm_max_tokens_per_refresh = 16_usize;
+            let evsnipe_watchlist_max_specs = std::env::var("EVPOLY_EVSNIPE_WATCHLIST_MAX_SPECS")
+                .ok()
+                .and_then(|v| v.trim().parse::<usize>().ok())
+                .unwrap_or(800)
+                .max(100);
+            let evsnipe_degraded_hit_specs_min =
+                std::env::var("EVPOLY_EVSNIPE_DEGRADED_HIT_SPECS_MIN")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(10)
+                    .max(1);
+            let mut sticky_watchlist = EvsnipeStickyWatchlist::new();
+            let mut watchlist_cap_hold_active = false;
             loop {
                 interval.tick().await;
                 match evsnipe::refresh_hit_market_specs(
@@ -12688,14 +12791,95 @@ async fn main() -> Result<()> {
                         let by_symbol = evsnipe::by_symbol(filtered_specs.as_slice());
                         let total_specs = filtered_specs.len();
                         let raw_total_specs = specs.len();
-                        let symbol_breakdown = by_symbol
-                            .iter()
-                            .map(|(symbol, items)| format!("{}={}", symbol, items.len()))
-                            .collect::<Vec<_>>()
-                            .join(",");
+                        let symbol_breakdown = evsnipe_watchlist_symbol_breakdown(&by_symbol);
+                        let degraded_watchlist = hit_specs < evsnipe_degraded_hit_specs_min;
+                        let watchlist_refresh_mode;
+                        let mut watchlist_added_specs = 0usize;
+                        let mut watchlist_updated_specs = 0usize;
+                        let mut watchlist_removed_specs = 0usize;
+
+                        if degraded_watchlist {
+                            watchlist_refresh_mode = if watchlist_cap_hold_active {
+                                "degraded_hold_cap"
+                            } else {
+                                "degraded_hold"
+                            };
+                        } else if watchlist_cap_hold_active {
+                            if total_specs <= evsnipe_watchlist_max_specs {
+                                sticky_watchlist.clear();
+                                let (added, updated) = evsnipe_watchlist_merge_add_only(
+                                    &mut sticky_watchlist,
+                                    filtered_specs.as_slice(),
+                                );
+                                watchlist_added_specs = added;
+                                watchlist_updated_specs = updated;
+                                watchlist_cap_hold_active = false;
+                                watchlist_refresh_mode = "replace_after_cap_hold";
+                            } else {
+                                watchlist_refresh_mode = "cap_hold_waiting_healthy_snapshot";
+                            }
+                        } else {
+                            let mut next_sticky_watchlist = sticky_watchlist.clone();
+                            watchlist_removed_specs = evsnipe_watchlist_remove_expired(
+                                &mut next_sticky_watchlist,
+                                now_ms.saturating_div(1_000),
+                            );
+                            let (added, updated) = evsnipe_watchlist_merge_add_only(
+                                &mut next_sticky_watchlist,
+                                filtered_specs.as_slice(),
+                            );
+                            if evsnipe_watchlist_total_specs(&next_sticky_watchlist)
+                                > evsnipe_watchlist_max_specs
+                            {
+                                watchlist_cap_hold_active = true;
+                                watchlist_removed_specs = 0;
+                                watchlist_refresh_mode = "cap_hold_entered";
+                            } else {
+                                sticky_watchlist = next_sticky_watchlist;
+                                watchlist_added_specs = added;
+                                watchlist_updated_specs = updated;
+                                watchlist_refresh_mode = if watchlist_removed_specs > 0 {
+                                    "merged_add_only_pruned"
+                                } else {
+                                    "merged_add_only"
+                                };
+                            }
+                        }
+
+                        let active_by_symbol = evsnipe_watchlist_snapshot(&sticky_watchlist);
+                        let active_total_specs = evsnipe_watchlist_total_specs(&sticky_watchlist);
+                        let (active_hit_specs, active_close_specs) =
+                            evsnipe_watchlist_hit_close_counts(&active_by_symbol);
+                        let active_symbol_breakdown =
+                            evsnipe_watchlist_symbol_breakdown(&active_by_symbol);
                         {
                             let mut guard = watchlist_for_refresh.write().await;
-                            *guard = by_symbol;
+                            *guard = active_by_symbol;
+                        }
+                        if degraded_watchlist {
+                            log_event(
+                                "evsnipe_discovery_degraded_hold",
+                                json!({
+                                    "strategy_id": STRATEGY_ID_EVSNIPE_V1,
+                                    "candidate_hit_specs": hit_specs,
+                                    "candidate_total_specs": total_specs,
+                                    "active_total_specs": active_total_specs,
+                                    "active_hit_specs": active_hit_specs,
+                                    "degraded_hit_specs_min": evsnipe_degraded_hit_specs_min,
+                                    "watchlist_cap_hold_active": watchlist_cap_hold_active
+                                }),
+                            );
+                        }
+                        if watchlist_refresh_mode == "cap_hold_entered" {
+                            log_event(
+                                "evsnipe_watchlist_cap_hold_entered",
+                                json!({
+                                    "strategy_id": STRATEGY_ID_EVSNIPE_V1,
+                                    "candidate_total_specs": total_specs,
+                                    "active_total_specs": active_total_specs,
+                                    "watchlist_max_specs": evsnipe_watchlist_max_specs
+                                }),
+                            );
                         }
                         log_event(
                             "evsnipe_discovery_refreshed",
@@ -12710,6 +12894,18 @@ async fn main() -> Result<()> {
                                 "anchor_symbols": spot_anchor_by_symbol.len(),
                                 "hit_specs": hit_specs,
                                 "close_specs": close_specs,
+                                "watchlist_refresh_mode": watchlist_refresh_mode,
+                                "watchlist_degraded": degraded_watchlist,
+                                "watchlist_degraded_hit_specs_min": evsnipe_degraded_hit_specs_min,
+                                "watchlist_max_specs": evsnipe_watchlist_max_specs,
+                                "watchlist_cap_hold_active": watchlist_cap_hold_active,
+                                "watchlist_added_specs": watchlist_added_specs,
+                                "watchlist_updated_specs": watchlist_updated_specs,
+                                "watchlist_removed_specs": watchlist_removed_specs,
+                                "active_total_specs": active_total_specs,
+                                "active_hit_specs": active_hit_specs,
+                                "active_close_specs": active_close_specs,
+                                "active_symbols": active_symbol_breakdown,
                                 "anchor_updates": anchor_updates,
                                 "prewarm_attempted": evsnipe_prewarm_attempted,
                                 "prewarm_misses": evsnipe_prewarm_misses,

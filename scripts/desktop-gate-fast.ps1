@@ -16,6 +16,14 @@ if ((Test-Path $cargoBin) -and -not (($env:Path -split ';') -contains $cargoBin)
 $shouldInstallDeps = $InstallDeps -or -not (Test-Path "node_modules")
 Write-Host ("[desktop-gate-fast] install_deps={0} frontend_build={1} cargo_check={2} smoke={3}" -f $shouldInstallDeps, $RunFrontendBuild, $RunCargoCheck, $RunSmoke)
 
+function Ensure-Sidecar {
+  $expected = "src-tauri\binaries\evpoly-bot-x86_64-pc-windows-msvc.exe"
+  if (-not (Test-Path $expected)) {
+    Write-Host "[desktop-gate-fast] missing $expected; preparing sidecar"
+    npm run desktop:prepare
+  }
+}
+
 if ($shouldInstallDeps) {
   Write-Host "[desktop-gate-fast] npm ci"
   npm ci
@@ -30,6 +38,7 @@ if ($RunFrontendBuild) {
 }
 
 if ($RunCargoCheck) {
+  Ensure-Sidecar
   Write-Host "[desktop-gate-fast] cargo check"
   cargo check --manifest-path src-tauri/Cargo.toml
 }

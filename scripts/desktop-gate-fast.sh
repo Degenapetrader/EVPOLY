@@ -13,6 +13,14 @@ RUN_SMOKE="${RUN_SMOKE:-0}"
 
 echo "[desktop-gate-fast] install_deps=${INSTALL_DEPS} frontend_build=${RUN_FRONTEND_BUILD} cargo_check=${RUN_CARGO_CHECK} smoke=${RUN_SMOKE}"
 
+ensure_sidecar() {
+  local expected="src-tauri/binaries/evpoly-bot-x86_64-unknown-linux-gnu"
+  if [[ ! -f "${expected}" ]]; then
+    echo "[desktop-gate-fast] missing ${expected}; preparing sidecar"
+    npm run desktop:prepare
+  fi
+}
+
 if [[ "${INSTALL_DEPS}" == "1" || ! -d "node_modules" ]]; then
   echo "[desktop-gate-fast] npm ci"
   npm ci
@@ -27,6 +35,7 @@ if [[ "${RUN_FRONTEND_BUILD}" == "1" ]]; then
 fi
 
 if [[ "${RUN_CARGO_CHECK}" == "1" ]]; then
+  ensure_sidecar
   echo "[desktop-gate-fast] cargo check"
   cargo check --manifest-path src-tauri/Cargo.toml
 fi

@@ -3729,7 +3729,7 @@ impl PolymarketApi {
             if !Self::should_fallback_to_aws_signer(&primary_err) {
                 if Self::is_non_retryable_primary_post_error(&primary_err) {
                     info!(
-                        "Primary order signer rejected FAK/FOK without a match; not retrying via AWS fallback. full_chain={:#}",
+                        "Primary order signer rejected FAK/FOK with no opposite resting liquidity (error_kind=no_match_fak_fok); not retrying via AWS fallback. full_chain={:#}",
                         primary_err
                     );
                 } else {
@@ -3739,7 +3739,7 @@ impl PolymarketApi {
                     );
                 }
                 return Err(primary_err.context(
-                    "Primary order signer failed (AWS fallback disabled for this error class)",
+                    "Order rejected by exchange (error_kind=no_match_fak_fok): FAK/FOK found no matching resting orders; AWS fallback signer skipped for non-infra reject",
                 ));
             }
             warn!(
@@ -3923,7 +3923,7 @@ impl PolymarketApi {
             if !Self::should_fallback_to_aws_signer(&primary_err) {
                 if Self::is_non_retryable_primary_post_error(&primary_err) {
                     info!(
-                        "Primary batch order signer rejected FAK/FOK without a match; not retrying via AWS fallback. full_chain={:#}",
+                        "Primary batch order signer rejected FAK/FOK with no opposite resting liquidity (error_kind=no_match_fak_fok); not retrying via AWS fallback. full_chain={:#}",
                         primary_err
                     );
                 } else {
@@ -3933,7 +3933,7 @@ impl PolymarketApi {
                     );
                 }
                 return Err(primary_err.context(
-                    "Primary batch order signer failed (AWS fallback disabled for this error class)",
+                    "Batch order rejected by exchange (error_kind=no_match_fak_fok): FAK/FOK found no matching resting orders; AWS fallback signer skipped for non-infra reject",
                 ));
             }
             warn!(

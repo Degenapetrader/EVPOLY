@@ -4825,6 +4825,7 @@ async fn main() -> Result<()> {
                             .await
                         {
                             let err_text = e.to_string();
+                            let err_kind = classify_submit_error_kind(err_text.as_str());
                             let class = classify_entry_error(err_text.as_str());
                             let cooldown_until_ms = {
                                 let mut gate = worker_idempotency_for_submit.lock().await;
@@ -4917,11 +4918,12 @@ async fn main() -> Result<()> {
                             }
                             if !matches!(class, ExecutionErrorClass::ParameterInvalid) {
                                 warn!(
-                                    "Arbiter execution failed request_id={} strategy_id={} period={} token={} err={}",
+                                    "Arbiter execution failed request_id={} strategy_id={} period={} token={} err_kind={} err={}",
                                     request.request_id,
                                     request.intent.strategy_id,
                                     request.opportunity.period_timestamp,
                                     request.opportunity.token_id,
+                                    err_kind,
                                     err_text
                                 );
                             }
@@ -4931,7 +4933,7 @@ async fn main() -> Result<()> {
                                 &request,
                                 pool_label_for_submit,
                                 worker_index,
-                                "submit_error",
+                                submit_timing_status_for_error_kind(err_kind),
                                 Some(err_text.as_str()),
                             );
                             return;
@@ -16693,11 +16695,10 @@ async fn main() -> Result<()> {
                                                     }),
                                                 );
                                             }
-                                            let lower = err_text.to_ascii_lowercase();
-                                            let insufficient_balance = lower
-                                                .contains("not enough balance")
-                                                || lower.contains("allowance")
-                                                || lower.contains("insufficient");
+                                            let error_kind =
+                                                classify_submit_error_kind(err_text.as_str());
+                                            let insufficient_balance =
+                                                error_kind == "balance_allowance";
                                             if insufficient_balance {
                                                 let retry_ms = 30_000_i64;
                                                 let defer_until =
@@ -16772,6 +16773,7 @@ async fn main() -> Result<()> {
                                                     "size_shares": desired_exit_shares,
                                                     "force_exit_mode": exit_order_plan.force_exit_mode,
                                                     "aggressive_mode": exit_order_plan.aggressive_mode,
+                                                    "error_kind": error_kind,
                                                     "error": err_text
                                                 }),
                                             );
@@ -26584,11 +26586,11 @@ async fn main() -> Result<()> {
                                             }
                                             Err(e) => {
                                                 let err_text = e.to_string();
+                                                let error_kind =
+                                                    classify_submit_error_kind(err_text.as_str());
                                                 let lower = err_text.to_ascii_lowercase();
-                                                let insufficient_balance = lower
-                                                    .contains("not enough balance")
-                                                    || lower.contains("allowance")
-                                                    || lower.contains("insufficient");
+                                                let insufficient_balance =
+                                                    error_kind == "balance_allowance";
                                                 let crosses_book = lower.contains("crosses book")
                                                     || lower.contains("post-only");
                                                 let fail_backoff_ms = if lower
@@ -26663,6 +26665,7 @@ async fn main() -> Result<()> {
                                                         "condition_id": market.condition_id,
                                                         "token_id": weak_token_id,
                                                         "weak_exit_source": weak_exit_source,
+                                                        "error_kind": error_kind,
                                                         "error": err_text,
                                                         "retry_backoff_ms": fail_backoff_ms
                                                     }),
@@ -27519,11 +27522,12 @@ async fn main() -> Result<()> {
                                                 }
                                                 Err(e) => {
                                                     let err_text = e.to_string();
+                                                    let error_kind = classify_submit_error_kind(
+                                                        err_text.as_str(),
+                                                    );
                                                     let lower = err_text.to_ascii_lowercase();
-                                                    let insufficient_balance = lower
-                                                        .contains("not enough balance")
-                                                        || lower.contains("allowance")
-                                                        || lower.contains("insufficient");
+                                                    let insufficient_balance =
+                                                        error_kind == "balance_allowance";
                                                     let fail_backoff_ms = if lower
                                                         .contains("not enough balance")
                                                         || lower.contains("allowance")
@@ -27603,6 +27607,7 @@ async fn main() -> Result<()> {
                                                             "condition_id": market.condition_id,
                                                             "token_id": weak_token_id,
                                                             "weak_exit_source": weak_exit_source,
+                                                            "error_kind": error_kind,
                                                             "error": err_text,
                                                             "retry_backoff_ms": fail_backoff_ms
                                                         }),
@@ -29691,6 +29696,37 @@ fn maybe_emit_late_guard_drop_alert(request: &ArbiterExecutionRequest) {
     );
 }
 
+fn classify_submit_error_kind(message: &str) -> &'static str {
+    let msg = message.trim();
+    if msg.is_empty() {
+        return "none";
+    }
+    let lower = msg.to_ascii_lowercase();
+    if lower.contains("no orders found to match with fak order")
+        || lower.contains("no orders found to match with fok order")
+    {
+        return "no_match_fak_fok";
+    }
+    match classify_entry_error(msg) {
+        ExecutionErrorClass::BalanceAllowance => "balance_allowance",
+        ExecutionErrorClass::MarketNotReady => "market_not_ready",
+        ExecutionErrorClass::Retryable => "retryable_infra",
+        ExecutionErrorClass::ParameterInvalid => "parameter_invalid",
+        ExecutionErrorClass::Permanent => "permanent_other",
+    }
+}
+
+fn submit_timing_status_for_error_kind(kind: &str) -> &'static str {
+    match kind {
+        "no_match_fak_fok" => "reject_no_match_fak_fok",
+        "balance_allowance" => "reject_balance_allowance",
+        "market_not_ready" => "reject_market_not_ready",
+        "parameter_invalid" => "reject_parameter_invalid",
+        "retryable_infra" => "submit_retryable_error",
+        _ => "submit_error",
+    }
+}
+
 fn log_arbiter_request_timing(
     request: &ArbiterExecutionRequest,
     pool_label: &str,
@@ -29715,6 +29751,8 @@ fn log_arbiter_request_timing(
     let proxy_update_ts_ms = timing.proxy_update_ts_ms;
     let proxy_age_at_decision_ms = timing.proxy_age_at_decision_ms;
     let proxy_max_age_override_ms = timing.proxy_max_age_override_ms;
+    let error_text = error.unwrap_or("");
+    let error_kind = classify_submit_error_kind(error_text);
     let queue_wait_ms = safe_ms_delta(enqueue_ts_ms, dequeue_ts_ms);
     let decision_to_worker_done_ms = safe_ms_delta(decision_ts_ms, worker_done_ts_ms);
     let trace_full = env_bool_named("EVPOLY_TRACE_ENTRY_EXECUTION_TIMING", false);
@@ -29744,7 +29782,8 @@ fn log_arbiter_request_timing(
             "pool": pool_label,
             "worker_index": worker_index,
             "status": status,
-            "error": error.unwrap_or(""),
+            "error": error_text,
+            "error_kind": error_kind,
             "decision_ts_ms": decision_ts_ms,
             "enqueue_ts_ms": enqueue_ts_ms,
             "dequeue_ts_ms": dequeue_ts_ms,
@@ -29767,7 +29806,10 @@ fn log_arbiter_request_timing(
 
 #[cfg(test)]
 mod execution_timing_tests {
-    use super::{safe_ms_delta, timeframe_duration_seconds_from_label};
+    use super::{
+        classify_submit_error_kind, safe_ms_delta, submit_timing_status_for_error_kind,
+        timeframe_duration_seconds_from_label,
+    };
 
     #[test]
     fn safe_ms_delta_returns_positive_diff() {
@@ -29789,6 +29831,28 @@ mod execution_timing_tests {
         assert_eq!(timeframe_duration_seconds_from_label("4h"), Some(14400));
         assert_eq!(timeframe_duration_seconds_from_label("1d"), Some(86400));
         assert_eq!(timeframe_duration_seconds_from_label("unknown"), None);
+    }
+
+    #[test]
+    fn classify_submit_error_kind_detects_no_match_fak() {
+        let message = "Failed to post order: Status: error(400 Bad Request) making POST call to /order with {\"error\":\"no orders found to match with FAK order. FAK orders are partially filled or killed if no match is found.\"}";
+        assert_eq!(classify_submit_error_kind(message), "no_match_fak_fok");
+        assert_eq!(
+            submit_timing_status_for_error_kind("no_match_fak_fok"),
+            "reject_no_match_fak_fok"
+        );
+    }
+
+    #[test]
+    fn classify_submit_error_kind_detects_balance_allowance() {
+        assert_eq!(
+            classify_submit_error_kind("not enough balance / allowance"),
+            "balance_allowance"
+        );
+        assert_eq!(
+            submit_timing_status_for_error_kind("balance_allowance"),
+            "reject_balance_allowance"
+        );
     }
 }
 

@@ -208,7 +208,7 @@ impl EvsnipeConfig {
                 .min(50_000.0),
             pre_trigger_bps: env_f64("EVPOLY_EVSNIPE_PRE_TRIGGER_BPS", 1.0).clamp(0.0, 100.0),
             pre_leg_ratio: env_f64("EVPOLY_EVSNIPE_PRE_LEG_RATIO", 0.30).clamp(0.0, 1.0),
-            // Keep EVSnipe max buy fixed for all market families (hit + close/range).
+            // Keep EVSnipe max buy fixed for hit-market entries.
             max_buy_price: 0.99,
             cross_ask_levels: env_usize("EVPOLY_EVSNIPE_CROSS_ASK_LEVELS", 3)
                 .max(1)
@@ -418,6 +418,9 @@ fn normalize_discovered_specs(
     let mut dedupe = HashSet::new();
     for mut spec in specs {
         spec.symbol = normalize_symbol(spec.symbol.as_str());
+        if !spec.is_hit_rule() {
+            continue;
+        }
         if let Some(end_ts) = spec.end_ts {
             if end_ts <= now_sec || end_ts > max_end_ts {
                 continue;
@@ -954,6 +957,9 @@ async fn refresh_hit_market_specs_local(
         let Some(spec) = extract_market_spec(&market) else {
             continue;
         };
+        if !spec.is_hit_rule() {
+            continue;
+        }
         if let Some(end_ts) = spec.end_ts {
             if end_ts <= now_sec || end_ts > max_end_ts {
                 continue;

@@ -690,19 +690,14 @@ fn evsnipe_watchlist_snapshot(
     out
 }
 
-fn evsnipe_watchlist_hit_close_counts(
+fn evsnipe_watchlist_hit_count(
     by_symbol: &std::collections::HashMap<String, Vec<evsnipe::EvsnipeMarketSpec>>,
-) -> (usize, usize) {
-    let mut hit = 0usize;
-    let mut close = 0usize;
-    for spec in by_symbol.values().flat_map(|items| items.iter()) {
-        if spec.is_hit_rule() {
-            hit = hit.saturating_add(1);
-        } else if spec.is_close_rule() {
-            close = close.saturating_add(1);
-        }
-    }
-    (hit, close)
+) -> usize {
+    by_symbol
+        .values()
+        .flat_map(|items| items.iter())
+        .filter(|spec| spec.is_hit_rule())
+        .count()
 }
 
 fn evsnipe_watchlist_symbol_breakdown(
@@ -12558,15 +12553,8 @@ async fn main() -> Result<()> {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(65_536)
             .clamp(4_096, 262_144);
-        let evsnipe_kline_channel_cap = std::env::var("EVPOLY_EVSNIPE_KLINE_CHANNEL_CAP")
-            .ok()
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(4_096)
-            .clamp(512, 65_536);
         let (evsnipe_tick_tx, mut evsnipe_tick_rx) =
             tokio::sync::mpsc::channel::<evsnipe::BinanceTradeTick>(evsnipe_tick_channel_cap);
-        let (evsnipe_kline_tx, mut evsnipe_kline_rx) =
-            tokio::sync::mpsc::channel::<evsnipe::BinanceKlineCloseTick>(evsnipe_kline_channel_cap);
         let evsnipe_state_prune_interval_ms =
             std::env::var("EVPOLY_EVSNIPE_STATE_PRUNE_INTERVAL_MS")
                 .ok()
@@ -12591,16 +12579,11 @@ async fn main() -> Result<()> {
             .max(2_000);
         let _evsnipe_binance_handles =
             evsnipe::spawn_binance_trade_streams(symbols.as_slice(), evsnipe_tick_tx.clone());
-        let _evsnipe_binance_kline_handles = evsnipe::spawn_binance_kline_close_streams(
-            symbols.as_slice(),
-            evsnipe_kline_tx.clone(),
-        );
         log_event(
             "evsnipe_tick_channel_config",
             json!({
                 "strategy_id": STRATEGY_ID_EVSNIPE_V1,
-                "tick_channel_cap": evsnipe_tick_channel_cap,
-                "kline_channel_cap": evsnipe_kline_channel_cap
+                "tick_channel_cap": evsnipe_tick_channel_cap
             }),
         );
 
@@ -12784,10 +12767,6 @@ async fn main() -> Result<()> {
                             .iter()
                             .filter(|spec| spec.is_hit_rule())
                             .count();
-                        let close_specs = filtered_specs
-                            .iter()
-                            .filter(|spec| spec.is_close_rule())
-                            .count();
                         let by_symbol = evsnipe::by_symbol(filtered_specs.as_slice());
                         let total_specs = filtered_specs.len();
                         let raw_total_specs = specs.len();
@@ -12848,8 +12827,7 @@ async fn main() -> Result<()> {
 
                         let active_by_symbol = evsnipe_watchlist_snapshot(&sticky_watchlist);
                         let active_total_specs = evsnipe_watchlist_total_specs(&sticky_watchlist);
-                        let (active_hit_specs, active_close_specs) =
-                            evsnipe_watchlist_hit_close_counts(&active_by_symbol);
+                        let active_hit_specs = evsnipe_watchlist_hit_count(&active_by_symbol);
                         let active_symbol_breakdown =
                             evsnipe_watchlist_symbol_breakdown(&active_by_symbol);
                         {
@@ -12893,7 +12871,6 @@ async fn main() -> Result<()> {
                                 "anchor_drift_refresh_pct": evsnipe_cfg_for_refresh.anchor_drift_refresh_pct,
                                 "anchor_symbols": spot_anchor_by_symbol.len(),
                                 "hit_specs": hit_specs,
-                                "close_specs": close_specs,
                                 "watchlist_refresh_mode": watchlist_refresh_mode,
                                 "watchlist_degraded": degraded_watchlist,
                                 "watchlist_degraded_hit_specs_min": evsnipe_degraded_hit_specs_min,
@@ -12904,7 +12881,6 @@ async fn main() -> Result<()> {
                                 "watchlist_removed_specs": watchlist_removed_specs,
                                 "active_total_specs": active_total_specs,
                                 "active_hit_specs": active_hit_specs,
-                                "active_close_specs": active_close_specs,
                                 "active_symbols": active_symbol_breakdown,
                                 "anchor_updates": anchor_updates,
                                 "prewarm_attempted": evsnipe_prewarm_attempted,
@@ -12928,23 +12904,16 @@ async fn main() -> Result<()> {
         });
 
         let evsnipe_cfg_for_trade = evsnipe_cfg.clone();
-        let evsnipe_cfg_for_close = evsnipe_cfg.clone();
         let watchlist_for_trade = watchlist_by_symbol.clone();
-        let watchlist_for_close = watchlist_by_symbol.clone();
         let api_for_evsnipe_trade = api.clone();
-        let api_for_evsnipe_close = api.clone();
         let arbiter_exec_tx_for_evsnipe_trade = arbiter_exec_tx_for_evsnipe.clone();
-        let arbiter_exec_tx_for_evsnipe_close = arbiter_exec_tx_for_evsnipe.clone();
         let enqueue_dedupe_for_evsnipe_trade = enqueue_dedupe_for_evsnipe.clone();
-        let enqueue_dedupe_for_evsnipe_close = enqueue_dedupe_for_evsnipe.clone();
         let evsnipe_task_semaphore =
             Arc::new(tokio::sync::Semaphore::new(evsnipe_cfg.max_inflight_tasks));
         let evsnipe_state_for_loop =
             Arc::new(tokio::sync::Mutex::new(EvsnipeRuntimeState::default()));
         let evsnipe_task_semaphore_for_trade = evsnipe_task_semaphore.clone();
-        let evsnipe_task_semaphore_for_close = evsnipe_task_semaphore.clone();
         let evsnipe_state_for_trade = evsnipe_state_for_loop.clone();
-        let evsnipe_state_for_close = evsnipe_state_for_loop.clone();
         let evsnipe_state_for_prune = evsnipe_state_for_loop.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(
@@ -13400,323 +13369,6 @@ async fn main() -> Result<()> {
             }
         });
 
-        tokio::spawn(async move {
-            while let Some(kline) = evsnipe_kline_rx.recv().await {
-                let now_ms = chrono::Utc::now().timestamp_millis();
-                if kline.recv_ts_ms <= 0
-                    || now_ms.saturating_sub(kline.recv_ts_ms)
-                        > evsnipe_cfg_for_close.binance_stale_ms
-                {
-                    continue;
-                }
-                let symbol = evsnipe::normalize_symbol(kline.symbol.as_str());
-                let candidates = {
-                    let guard = watchlist_for_close.read().await;
-                    guard.get(symbol.as_str()).cloned().unwrap_or_default()
-                };
-                if candidates.is_empty() {
-                    continue;
-                }
-                let close_ts_sec = kline.close_ts_ms.div_euclid(1_000);
-
-                for spec in candidates {
-                    if !spec.is_close_rule() {
-                        continue;
-                    }
-                    let Some(end_ts) = spec.end_ts else {
-                        continue;
-                    };
-                    // Close-at-time markets: evaluate only on candle closes near market end.
-                    if (close_ts_sec - end_ts).abs() > 120 {
-                        continue;
-                    }
-                    if now_ms.saturating_div(1_000) > end_ts.saturating_add(300) {
-                        continue;
-                    }
-                    let Some(yes_outcome) = spec.close_condition_yes(kline.close_price) else {
-                        log_event(
-                            "evsnipe_skip_close_boundary_ambiguous",
-                            json!({
-                                "strategy_id": STRATEGY_ID_EVSNIPE_V1,
-                                "symbol": spec.symbol,
-                                "condition_id": spec.condition_id,
-                                "close_price": kline.close_price,
-                                "rule": spec.rule_label(),
-                                "strike_price": spec.strike_price,
-                                "strike_price_upper": spec.strike_price_upper
-                            }),
-                        );
-                        continue;
-                    };
-                    let target_token_id = if yes_outcome {
-                        spec.yes_token_id.clone()
-                    } else if let Some(no_token_id) = spec.no_token_id.clone() {
-                        no_token_id
-                    } else {
-                        log_event(
-                            "evsnipe_skip_no_no_token",
-                            json!({
-                                "strategy_id": STRATEGY_ID_EVSNIPE_V1,
-                                "symbol": spec.symbol,
-                                "condition_id": spec.condition_id,
-                                "rule": spec.rule_label()
-                            }),
-                        );
-                        continue;
-                    };
-
-                    {
-                        let mut state = evsnipe_state_for_close.lock().await;
-                        evsnipe_record_condition_expiry(
-                            &mut state,
-                            spec.condition_id.as_str(),
-                            spec.end_ts,
-                            now_ms.saturating_div(1_000),
-                            evsnipe_cfg_for_close.max_days_to_expiry,
-                        );
-                        if state.fired_conditions.contains(spec.condition_id.as_str())
-                            || state
-                                .inflight_conditions
-                                .contains(spec.condition_id.as_str())
-                        {
-                            continue;
-                        }
-                        if state.used_strategy_usd + evsnipe_cfg_for_close.size_usd
-                            > evsnipe_cfg_for_close.strategy_cap_usd
-                        {
-                            if now_ms.saturating_sub(state.cap_log_last_ms) >= 5_000 {
-                                state.cap_log_last_ms = now_ms;
-                                log_event(
-                                    "evsnipe_skip_strategy_cap",
-                                    json!({
-                                        "strategy_id": STRATEGY_ID_EVSNIPE_V1,
-                                        "condition_id": spec.condition_id,
-                                        "symbol": spec.symbol,
-                                        "used_strategy_usd": state.used_strategy_usd,
-                                        "size_usd": evsnipe_cfg_for_close.size_usd,
-                                        "strategy_cap_usd": evsnipe_cfg_for_close.strategy_cap_usd
-                                    }),
-                                );
-                            }
-                            continue;
-                        }
-                        state.inflight_conditions.insert(spec.condition_id.clone());
-                        state.used_strategy_usd += evsnipe_cfg_for_close.size_usd;
-                    }
-
-                    let state_for_task = evsnipe_state_for_close.clone();
-                    let api_for_task = api_for_evsnipe_close.clone();
-                    let arbiter_exec_tx_for_task = arbiter_exec_tx_for_evsnipe_close.clone();
-                    let enqueue_dedupe_for_task = enqueue_dedupe_for_evsnipe_close.clone();
-                    let evsnipe_cfg_for_task = evsnipe_cfg_for_close.clone();
-                    let symbol_for_task = symbol.clone();
-                    let spec_for_task = spec.clone();
-                    let token_id_for_task = target_token_id.clone();
-                    let kline_for_task = kline.clone();
-                    let permit = match evsnipe_task_semaphore_for_close.clone().try_acquire_owned()
-                    {
-                        Ok(permit) => permit,
-                        Err(_) => {
-                            let mut state = evsnipe_state_for_close.lock().await;
-                            state.inflight_conditions.remove(spec.condition_id.as_str());
-                            state.used_strategy_usd =
-                                (state.used_strategy_usd - evsnipe_cfg_for_close.size_usd).max(0.0);
-                            if now_ms.saturating_sub(state.busy_log_last_ms) >= 5_000 {
-                                state.busy_log_last_ms = now_ms;
-                                log_event(
-                                    "evsnipe_skip_worker_busy",
-                                    json!({
-                                        "strategy_id": STRATEGY_ID_EVSNIPE_V1,
-                                        "condition_id": spec.condition_id,
-                                        "symbol": spec.symbol,
-                                        "max_inflight_tasks": evsnipe_cfg_for_close.max_inflight_tasks,
-                                        "inflight_conditions": state.inflight_conditions.len()
-                                    }),
-                                );
-                            }
-                            continue;
-                        }
-                    };
-
-                    tokio::spawn(async move {
-                        let _permit = permit;
-                        let mut sent = false;
-                        let mut orderbook = None;
-                        for attempt in 0..=1 {
-                            match api_for_task.get_orderbook(token_id_for_task.as_str()).await {
-                                Ok(book) => {
-                                    orderbook = Some(book);
-                                    break;
-                                }
-                                Err(e) if attempt == 0 => {
-                                    tokio::time::sleep(tokio::time::Duration::from_millis(90))
-                                        .await;
-                                    debug!(
-                                        "EVSnipe close orderbook retry symbol={} condition={} err={}",
-                                        spec_for_task.symbol, spec_for_task.condition_id, e
-                                    );
-                                }
-                                Err(e) => {
-                                    log_event(
-                                        "evsnipe_skip_orderbook_fetch_failed",
-                                        json!({
-                                            "strategy_id": STRATEGY_ID_EVSNIPE_V1,
-                                            "symbol": spec_for_task.symbol,
-                                            "condition_id": spec_for_task.condition_id,
-                                            "token_id": token_id_for_task,
-                                            "error": e.to_string()
-                                        }),
-                                    );
-                                }
-                            }
-                        }
-                        let Some(orderbook) = orderbook else {
-                            let mut state = state_for_task.lock().await;
-                            state
-                                .inflight_conditions
-                                .remove(spec_for_task.condition_id.as_str());
-                            state.used_strategy_usd =
-                                (state.used_strategy_usd - evsnipe_cfg_for_task.size_usd).max(0.0);
-                            return;
-                        };
-
-                        let Some(ask_selection) = evsnipe::select_cross_ask_price(
-                            &orderbook,
-                            evsnipe_cfg_for_task.cross_ask_levels,
-                        ) else {
-                            log_event(
-                                "evsnipe_skip_book_empty",
-                                json!({
-                                    "strategy_id": STRATEGY_ID_EVSNIPE_V1,
-                                    "symbol": spec_for_task.symbol,
-                                    "condition_id": spec_for_task.condition_id,
-                                    "token_id": token_id_for_task
-                                }),
-                            );
-                            let mut state = state_for_task.lock().await;
-                            state
-                                .inflight_conditions
-                                .remove(spec_for_task.condition_id.as_str());
-                            state.used_strategy_usd =
-                                (state.used_strategy_usd - evsnipe_cfg_for_task.size_usd).max(0.0);
-                            return;
-                        };
-                        let submit_limit_price = 0.99_f64;
-
-                        let direction = if yes_outcome {
-                            Direction::Up
-                        } else {
-                            Direction::Down
-                        };
-                        let now_ts = now_ms.saturating_div(1_000);
-                        let period_ts_i64 = spec_for_task.end_ts.unwrap_or(now_ts).max(1);
-                        let period_timestamp = u64::try_from(period_ts_i64).ok().unwrap_or(1);
-                        let time_remaining_seconds = spec_for_task
-                            .end_ts
-                            .map(|end_ts| end_ts.saturating_sub(now_ts).max(0) as u64)
-                            .unwrap_or(3_600);
-                        let side_label = if yes_outcome { "yes" } else { "no" };
-                        let request_id = format!(
-                            "evsnipe:{}:{}:{}:{}:l{}:fak",
-                            symbol_for_task.to_ascii_lowercase(),
-                            spec_for_task.condition_id,
-                            kline_for_task.close_ts_ms.div_euclid(60_000),
-                            side_label,
-                            ask_selection.selected_level
-                        );
-
-                        let strategy_intent = StrategyIntent {
-                            strategy_id: STRATEGY_ID_EVSNIPE_V1.to_string(),
-                            timeframe: Timeframe::D1,
-                            market_open_ts: period_ts_i64,
-                            token_id: token_id_for_task.clone(),
-                            direction,
-                            max_price: submit_limit_price,
-                            target_size_usd: evsnipe_cfg_for_task.size_usd,
-                            score: ((submit_limit_price - ask_selection.best_ask) * 10_000.0)
-                                .max(0.0),
-                        };
-                        let opportunity = polymarket_arbitrage_bot::detector::BuyOpportunity {
-                            condition_id: spec_for_task.condition_id.clone(),
-                            token_id: token_id_for_task.clone(),
-                            token_type: token_type_for_market_symbol(
-                                symbol_for_task.as_str(),
-                                direction,
-                            ),
-                            bid_price: submit_limit_price,
-                            expected_edge_bps: ((submit_limit_price - ask_selection.best_ask)
-                                * 10_000.0)
-                                .max(0.0),
-                            expected_fill_prob: 0.98,
-                            period_timestamp,
-                            time_remaining_seconds,
-                            time_elapsed_seconds: 0,
-                            use_market_order: false,
-                        };
-
-                        let request = ArbiterExecutionRequest {
-                            request_id: request_id.clone(),
-                            intent: strategy_intent,
-                            opportunity,
-                            entry_mode: EntryExecutionMode::Evsnipe,
-                            rung_id: Some(format!("close_l{}", ask_selection.selected_level)),
-                            place_sell_orders: false,
-                            source_timeframe: Some(Timeframe::D1.as_str().to_string()),
-                            timing: ArbiterExecutionTiming::new_decision(
-                                chrono::Utc::now().timestamp_millis(),
-                            ),
-                        };
-
-                        match enqueue_arbiter_request(
-                            &arbiter_exec_tx_for_task,
-                            &enqueue_dedupe_for_task,
-                            request,
-                            "evsnipe",
-                        )
-                        .await
-                        {
-                            Ok(ArbiterEnqueueResult::Sent) | Ok(ArbiterEnqueueResult::Deduped) => {
-                                sent = true;
-                            }
-                            Err(e) => {
-                                warn!(
-                                    "EVSnipe close enqueue failed symbol={} err={}",
-                                    spec_for_task.symbol, e
-                                );
-                            }
-                        }
-
-                        let mut state = state_for_task.lock().await;
-                        state
-                            .inflight_conditions
-                            .remove(spec_for_task.condition_id.as_str());
-                        if sent {
-                            state
-                                .fired_conditions
-                                .insert(spec_for_task.condition_id.clone());
-                            log_event(
-                                "evsnipe_close_trigger_submitted",
-                                json!({
-                                    "strategy_id": STRATEGY_ID_EVSNIPE_V1,
-                                    "symbol": spec_for_task.symbol,
-                                    "condition_id": spec_for_task.condition_id,
-                                    "token_id": token_id_for_task,
-                                    "selected_level": ask_selection.selected_level,
-                                    "selected_ask": ask_selection.selected_ask,
-                                    "best_ask": ask_selection.best_ask,
-                                    "size_usd": evsnipe_cfg_for_task.size_usd,
-                                    "used_strategy_usd": state.used_strategy_usd,
-                                    "strategy_cap_usd": evsnipe_cfg_for_task.strategy_cap_usd
-                                }),
-                            );
-                        } else {
-                            state.used_strategy_usd =
-                                (state.used_strategy_usd - evsnipe_cfg_for_task.size_usd).max(0.0);
-                        }
-                    });
-                }
-            }
-        });
     } else {
         eprintln!("⚡ EVSnipe disabled (set EVPOLY_STRATEGY_EVSNIPE_ENABLE=true)");
     }

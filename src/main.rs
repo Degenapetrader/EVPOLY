@@ -29702,7 +29702,11 @@ fn classify_submit_error_kind(message: &str) -> &'static str {
         return "none";
     }
     let lower = msg.to_ascii_lowercase();
-    if lower.contains("no orders found to match with fak order")
+    if lower.contains("error_kind=no_match_fak_fok")
+        || lower.contains("fak/fok found no matching resting orders")
+        || lower.contains("rejected order without a match")
+        || lower.contains("rejected fak/fok with no opposite resting liquidity")
+        || lower.contains("no orders found to match with fak order")
         || lower.contains("no orders found to match with fok order")
     {
         return "no_match_fak_fok";
@@ -29841,6 +29845,12 @@ mod execution_timing_tests {
             submit_timing_status_for_error_kind("no_match_fak_fok"),
             "reject_no_match_fak_fok"
         );
+    }
+
+    #[test]
+    fn classify_submit_error_kind_detects_no_match_fak_normalized_message() {
+        let message = "Order rejected by exchange (error_kind=no_match_fak_fok): FAK/FOK found no matching resting orders; AWS fallback signer skipped for non-infra reject";
+        assert_eq!(classify_submit_error_kind(message), "no_match_fak_fok");
     }
 
     #[test]

@@ -1013,12 +1013,12 @@ export function StrategyEditorPane({
         <div className="grid gap-4 xl:grid-cols-2">
           <div className="surface-panel">
             <div className="surface-panel__header">
-              <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Pre-hit</h2>
-                <p className="surface-panel__subtitle">
-                  Turn the pre-hit leg on or off, then set its ratio and trigger bps.
-                </p>
-              </div>
+                <div className="surface-panel__copy">
+                  <h2 className="surface-panel__title">Pre-hit</h2>
+                  <p className="surface-panel__subtitle">
+                    Control the early entry leg for hit markets before the strike is crossed.
+                  </p>
+                </div>
             </div>
             <div className="surface-panel__body space-y-4">
               <div>
@@ -1076,12 +1076,12 @@ export function StrategyEditorPane({
 
           <div className="surface-panel">
             <div className="surface-panel__header">
-              <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Strike window</h2>
-                <p className="surface-panel__subtitle">
-                  Keep EVSnipe focused on the expiry and strike range you want.
-                </p>
-              </div>
+                <div className="surface-panel__copy">
+                  <h2 className="surface-panel__title">Strike window</h2>
+                  <p className="surface-panel__subtitle">
+                    Keep the hit-market watchlist focused on the expiry and strike range you want.
+                  </p>
+                </div>
             </div>
             <div className="surface-panel__body grid gap-4">
               <div>

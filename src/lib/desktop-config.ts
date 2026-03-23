@@ -31,8 +31,8 @@ export const STRATEGIES = [
   {
     key: "evsnipe",
     label: "EVSnipe",
-    summary: "Takes quicker entries when the setup is clean enough.",
-    tooltip: "Fast strike-based entries on discovered hit setups.",
+    summary: "Takes quicker entries on hit markets when the setup is clean enough.",
+    tooltip: "Pre-hit and confirm-hit entries on discovered hit setups.",
   },
   {
     key: "mm_rewards",

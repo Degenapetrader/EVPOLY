@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use base64;
 use base64::Engine as _;
 use hex;
-use log::{error, warn};
+use log::{error, info, warn};
 use reqwest::{Client, Proxy};
 use rust_decimal::Decimal;
 use rust_decimal::RoundingStrategy;
@@ -941,7 +941,12 @@ impl PolymarketApi {
                                 )
                                 .await;
                         }
-                        if Self::is_rate_limit_error(&primary_err) {
+                        if Self::is_non_retryable_primary_post_error(&primary_err) {
+                            info!(
+                                "Primary order signer rejected order without a match; skipping AWS fallback. path={} err={}",
+                                path, primary_err
+                            );
+                        } else if Self::is_rate_limit_error(&primary_err) {
                             warn!(
                                 "Primary order signer rate-limited; skipping AWS fallback and letting caller back off. path={} err={}",
                                 path, primary_err
@@ -1705,6 +1710,9 @@ impl PolymarketApi {
         if Self::is_rate_limit_error(error) {
             return false;
         }
+        if Self::is_non_retryable_primary_post_error(error) {
+            return false;
+        }
         Self::is_timeout_error(error)
             || Self::is_network_or_server_error(error)
             || (Self::fallback_on_primary_post_errors()
@@ -1736,6 +1744,12 @@ impl PolymarketApi {
             || msg.contains("failed to post batch orders with primary builder attribution")
             || msg.contains("primary order signer failed")
             || msg.contains("primary batch order signer failed")
+    }
+
+    fn is_non_retryable_primary_post_error(error: &anyhow::Error) -> bool {
+        let msg = error.to_string().to_ascii_lowercase();
+        msg.contains("no orders found to match with fak order")
+            || msg.contains("no orders found to match with fok order")
     }
 
     fn order_signer_rate_limit_retry_attempts() -> u32 {
@@ -3713,10 +3727,17 @@ impl PolymarketApi {
                 anyhow::anyhow!("Primary order signer failed with unknown error")
             });
             if !Self::should_fallback_to_aws_signer(&primary_err) {
-                warn!(
-                    "Primary order signer error did not qualify for fallback. full_chain={:#}",
-                    primary_err
-                );
+                if Self::is_non_retryable_primary_post_error(&primary_err) {
+                    info!(
+                        "Primary order signer rejected FAK/FOK without a match; not retrying via AWS fallback. full_chain={:#}",
+                        primary_err
+                    );
+                } else {
+                    warn!(
+                        "Primary order signer error did not qualify for fallback. full_chain={:#}",
+                        primary_err
+                    );
+                }
                 return Err(primary_err.context(
                     "Primary order signer failed (AWS fallback disabled for this error class)",
                 ));
@@ -3900,10 +3921,17 @@ impl PolymarketApi {
                 anyhow::anyhow!("Primary batch order signer failed with unknown error")
             });
             if !Self::should_fallback_to_aws_signer(&primary_err) {
-                warn!(
-                    "Primary batch order signer error did not qualify for fallback. full_chain={:#}",
-                    primary_err
-                );
+                if Self::is_non_retryable_primary_post_error(&primary_err) {
+                    info!(
+                        "Primary batch order signer rejected FAK/FOK without a match; not retrying via AWS fallback. full_chain={:#}",
+                        primary_err
+                    );
+                } else {
+                    warn!(
+                        "Primary batch order signer error did not qualify for fallback. full_chain={:#}",
+                        primary_err
+                    );
+                }
                 return Err(primary_err.context(
                     "Primary batch order signer failed (AWS fallback disabled for this error class)",
                 ));
@@ -6868,6 +6896,11 @@ impl PolymarketApi {
                             );
                             use_fallback_signer = true;
                             continue;
+                        } else if Self::is_non_retryable_primary_post_error(&primary_err) {
+                            info!(
+                                "Primary market-order signer rejected FAK/FOK without a match; skipping AWS fallback: {}",
+                                e
+                            );
                         }
                     }
                     let error_str = format!("{:?}", e);
@@ -7878,6 +7911,37 @@ mod tests {
         let (best_bid, best_ask) = PolymarketApi::best_bid_ask_from_orderbook(&orderbook);
         assert_eq!(best_bid, Some(rust_decimal::Decimal::new(40, 2)));
         assert_eq!(best_ask, Some(rust_decimal::Decimal::new(55, 2)));
+    }
+
+    #[test]
+    fn should_not_fallback_for_fak_no_match_rejection() {
+        let error = anyhow::anyhow!(
+            "Failed to post order with primary builder attribution: Status: error(400 Bad Request) making POST call to /order with {{\"error\":\"no orders found to match with FAK order. FAK orders are partially filled or killed if no match is found.\"}}"
+        );
+        assert!(PolymarketApi::is_non_retryable_primary_post_error(&error));
+        assert!(!PolymarketApi::should_fallback_to_aws_signer(&error));
+    }
+
+    #[test]
+    fn should_fallback_for_timeout_error() {
+        let error = anyhow::anyhow!("Primary builder signer post timed out after 1000ms");
+        assert!(PolymarketApi::should_fallback_to_aws_signer(&error));
+    }
+
+    #[test]
+    fn should_fallback_for_network_or_server_error() {
+        let error = anyhow::anyhow!(
+            "Failed to post order with primary builder attribution: Status: 502 bad gateway"
+        );
+        assert!(PolymarketApi::should_fallback_to_aws_signer(&error));
+    }
+
+    #[test]
+    fn should_not_fallback_for_rate_limit_error() {
+        let error = anyhow::anyhow!(
+            "Failed to post order with primary builder attribution: Status: 429 too many requests"
+        );
+        assert!(!PolymarketApi::should_fallback_to_aws_signer(&error));
     }
 
     #[test]

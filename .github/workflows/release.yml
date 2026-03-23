@@ -41,6 +41,8 @@ jobs:
     steps:
       - name: Checkout desktop repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -53,7 +55,28 @@ jobs:
 
       - name: Build EVPOLY sidecar (Windows)
         shell: pwsh
-        run: ./scripts/build-sidecar-windows.ps1
+        env:
+          ALLOW_DEBUG_SIDECAR_FALLBACK: "1"
+        run: |
+          $logDir = Join-Path $env:RUNNER_TEMP "evpoly-logs"
+          $logPath = Join-Path $logDir "build-sidecar-windows.log"
+          New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+          try {
+            & ./scripts/build-sidecar-windows.ps1 *>&1 | Tee-Object -FilePath $logPath
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          } catch {
+            $_ | Out-String | Tee-Object -FilePath $logPath -Append | Out-Host
+            throw
+          }
+
+      - name: Upload sidecar build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-sidecar-build-logs
+          path: ${{ runner.temp }}\evpoly-logs
 
       - name: Install desktop dependencies
         run: npm ci

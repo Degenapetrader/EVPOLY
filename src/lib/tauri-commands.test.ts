@@ -11,6 +11,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import {
   createProfile,
   exportConfig,
+  getGeoAccessStatus,
   getSavedConfig,
   runOnboarding,
   saveConfig,
@@ -34,7 +35,7 @@ const SAMPLE_CONFIG: BotConfig = {
   },
   sizing: {
     premarket: 10,
-    endgame: 10,
+    endgame: 50,
     evcurve: 10,
     session_band: 10,
     evsnipe_per_hit: 10,
@@ -49,6 +50,91 @@ const SAMPLE_CONFIG: BotConfig = {
   mm_tuning: {
     rewards_min_share_multiple: 1,
     sport_quote_size_multiplier: 1.2,
+  },
+  size_policy: {
+    symbol_multipliers: {
+      btc: 1,
+      eth: 0.8,
+      sol: 0.5,
+      xrp: 0.5,
+      doge: 0.5,
+      bnb: 0.5,
+      hype: 0.5,
+    },
+    premarket_timeframe_multipliers: {
+      m5: 0.75,
+      m15: 1,
+      h1: 1.25,
+      h4: 1.25,
+      d1: 1.25,
+    },
+    evcurve_timeframe_multipliers: {
+      m15: 0.75,
+      h1: 1,
+      h4: 1.25,
+      d1: 1.25,
+    },
+  },
+  strategy_settings: {
+    premarket: {
+      tp_enabled: true,
+      active_cap_per_asset: 100,
+      cancel_after_open_sec: {
+        m5: 20,
+        m15: 15,
+        h1: 60,
+        h4: 180,
+      },
+    },
+    endgame: {
+      timeframes: ["5m", "15m", "1h", "4h"],
+      per_period_cap_usd: 10000,
+      tick0_multiplier: 0.2,
+      tick1_multiplier: 0.4,
+      tick2_multiplier: 0.4,
+    },
+    evcurve: {
+      timeframes: ["15m", "1h", "4h", "1d"],
+      max_flip_prob: 0.15,
+      min_buy_price: 0.6,
+      d1_enabled: true,
+      d1_cap_usd: 10000,
+    },
+    session_band: {
+      timeframes: ["5m", "15m", "1h", "4h"],
+      flip_threshold_pct: 2,
+      tau2_enabled: true,
+      tau1_enabled: true,
+      tau2_multiplier: 0.3,
+      tau1_multiplier: 0.7,
+    },
+    evsnipe: {
+      pre_hit_enabled: true,
+      pre_leg_ratio: 0.3,
+      saved_pre_leg_ratio: 0.3,
+      pre_trigger_bps: 1,
+      strike_window_pct: 0.1,
+      max_days_to_expiry: 30,
+    },
+    mm_rewards: {
+      market_mode: "auto",
+      single_market_slugs: "",
+      auto_top_n: 80,
+      auto_refresh_sec: 900,
+      auto_rank_budget_usd: 2000,
+      blacklist_keywords: "",
+      reward_min_shares_cap: 0,
+    },
+    mm_sport: {
+      min_reward_rate_per_day: 300,
+      pause_after_fill_sec: 7200,
+      near_expiry_exit_window_sec: 86400,
+      inventory_exit_mode: "normal",
+      max_share_ratio: 0.05,
+      min_top_depth_usd: 100000,
+      quote_expiry_min_sec: 180,
+      quote_expiry_max_sec: 300,
+    },
   },
   simulation: true,
   relayer_api_key: "",
@@ -125,5 +211,11 @@ describe("tauri command payload contracts", () => {
       currentPassword: "desktop-pass",
       current_password: "desktop-pass",
     });
+  });
+
+  it("requests geo access status without payload", async () => {
+    await getGeoAccessStatus();
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("get_geo_access_status");
   });
 });

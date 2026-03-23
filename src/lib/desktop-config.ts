@@ -1,4 +1,4 @@
-import type { BotConfig } from "./tauri-commands";
+import type { BotConfig, StrategySettings } from "./tauri-commands";
 
 export const CORE_SYMBOLS = ["BTC", "ETH", "SOL", "XRP"] as const;
 export const EXTRA_SYMBOLS = ["DOGE", "BNB", "HYPE"] as const;
@@ -8,41 +8,53 @@ export const STRATEGIES = [
     key: "premarket",
     label: "Premarket",
     summary: "Looks for early price moves before the crowd reacts.",
+    tooltip: "Early ladder entries before the crowd reacts.",
   },
   {
     key: "endgame",
     label: "Endgame",
     summary: "Waits for late pricing edges before taking the trade.",
+    tooltip: "Late sweep entries near open or resolution.",
   },
   {
     key: "evcurve",
     label: "EVCurve",
     summary: "Trades curve-based setups when the price path lines up.",
+    tooltip: "Curve-based entries when price and flip probability align.",
   },
   {
     key: "session_band",
     label: "SessionBand",
     summary: "Looks for session swings and reversal bands.",
+    tooltip: "Reversal entries around session bands.",
   },
   {
     key: "evsnipe",
     label: "EVSnipe",
     summary: "Takes quicker entries when the setup is clean enough.",
+    tooltip: "Fast strike-based entries on discovered hit setups.",
   },
   {
     key: "mm_rewards",
     label: "MM Rewards",
     summary: "Refreshes quotes on rewards markets automatically.",
+    tooltip: "Auto-quote reward markets using ranking and filters.",
   },
   {
     key: "mm_sport",
     label: "MM Sport",
     summary: "Quotes sports markets when extra activity is enabled.",
+    tooltip: "Quote sports reward markets with inventory-aware exits.",
   },
 ] as const;
 
 export type StrategyKey = (typeof STRATEGIES)[number]["key"];
 export type StrategyEditorSection = "general" | "risk" | "symbols" | "advanced";
+type StrategyMeta = (typeof STRATEGIES)[number];
+type Timeframe = "5m" | "15m" | "1h" | "4h" | "1d";
+
+const ALL_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h", "1d"] as const;
+const SESSIONBAND_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h"] as const;
 
 export interface DashboardStrategyEditorState {
   selectedStrategy: StrategyKey;
@@ -50,6 +62,93 @@ export interface DashboardStrategyEditorState {
   dirty: boolean;
   hasActiveProfile: boolean;
 }
+
+const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
+  premarket: {
+    tp_enabled: true,
+    active_cap_per_asset: 100,
+    cancel_after_open_sec: {
+      m5: 20,
+      m15: 15,
+      h1: 60,
+      h4: 180,
+    },
+  },
+  endgame: {
+    timeframes: ["5m", "15m", "1h", "4h"],
+    per_period_cap_usd: 10000,
+    tick0_multiplier: 0.2,
+    tick1_multiplier: 0.4,
+    tick2_multiplier: 0.4,
+  },
+  evcurve: {
+    timeframes: ["15m", "1h", "4h", "1d"],
+    max_flip_prob: 0.15,
+    min_buy_price: 0.6,
+    d1_enabled: true,
+    d1_cap_usd: 10000,
+  },
+  session_band: {
+    timeframes: ["5m", "15m", "1h", "4h"],
+    flip_threshold_pct: 2,
+    tau2_enabled: true,
+    tau1_enabled: true,
+    tau2_multiplier: 0.3,
+    tau1_multiplier: 0.7,
+  },
+  evsnipe: {
+    pre_hit_enabled: true,
+    pre_leg_ratio: 0.3,
+    saved_pre_leg_ratio: 0.3,
+    pre_trigger_bps: 1,
+    strike_window_pct: 0.1,
+    max_days_to_expiry: 30,
+  },
+  mm_rewards: {
+    market_mode: "auto",
+    single_market_slugs: "",
+    auto_top_n: 80,
+    auto_refresh_sec: 900,
+    auto_rank_budget_usd: 2000,
+    blacklist_keywords: "",
+    reward_min_shares_cap: 0,
+  },
+  mm_sport: {
+    min_reward_rate_per_day: 300,
+    pause_after_fill_sec: 7200,
+    near_expiry_exit_window_sec: 86400,
+    inventory_exit_mode: "normal",
+    max_share_ratio: 0.05,
+    min_top_depth_usd: 100000,
+    quote_expiry_min_sec: 180,
+    quote_expiry_max_sec: 300,
+  },
+};
+
+const DEFAULT_SIZE_POLICY = {
+  symbol_multipliers: {
+    btc: 1.0,
+    eth: 0.8,
+    sol: 0.5,
+    xrp: 0.5,
+    doge: 0.5,
+    bnb: 0.5,
+    hype: 0.5,
+  },
+  premarket_timeframe_multipliers: {
+    m5: 0.75,
+    m15: 1.0,
+    h1: 1.25,
+    h4: 1.25,
+    d1: 1.25,
+  },
+  evcurve_timeframe_multipliers: {
+    m15: 0.75,
+    h1: 1.0,
+    h4: 1.25,
+    d1: 1.25,
+  },
+} satisfies BotConfig["size_policy"];
 
 export const DEFAULT_CONFIG: BotConfig = {
   private_key: "",
@@ -68,7 +167,7 @@ export const DEFAULT_CONFIG: BotConfig = {
   },
   sizing: {
     premarket: 10,
-    endgame: 10,
+    endgame: 50,
     evcurve: 10,
     session_band: 10,
     evsnipe_per_hit: 10,
@@ -84,6 +183,8 @@ export const DEFAULT_CONFIG: BotConfig = {
     rewards_min_share_multiple: 1.0,
     sport_quote_size_multiplier: 1.2,
   },
+  size_policy: DEFAULT_SIZE_POLICY,
+  strategy_settings: DEFAULT_STRATEGY_SETTINGS,
   simulation: false,
   relayer_api_key: "",
   relayer_api_key_address: "",
@@ -115,6 +216,91 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
     mm_tuning: {
       ...DEFAULT_CONFIG.mm_tuning,
       ...saved?.mm_tuning,
+    },
+    size_policy: {
+      ...DEFAULT_CONFIG.size_policy,
+      ...saved?.size_policy,
+      symbol_multipliers: {
+        ...DEFAULT_CONFIG.size_policy.symbol_multipliers,
+        ...saved?.size_policy?.symbol_multipliers,
+      },
+      premarket_timeframe_multipliers: {
+        ...DEFAULT_CONFIG.size_policy.premarket_timeframe_multipliers,
+        ...saved?.size_policy?.premarket_timeframe_multipliers,
+      },
+      evcurve_timeframe_multipliers: {
+        ...DEFAULT_CONFIG.size_policy.evcurve_timeframe_multipliers,
+        ...saved?.size_policy?.evcurve_timeframe_multipliers,
+      },
+    },
+    strategy_settings: {
+      ...DEFAULT_CONFIG.strategy_settings,
+      ...saved?.strategy_settings,
+      premarket: {
+        ...DEFAULT_CONFIG.strategy_settings.premarket,
+        ...saved?.strategy_settings?.premarket,
+        cancel_after_open_sec: {
+          ...DEFAULT_CONFIG.strategy_settings.premarket.cancel_after_open_sec,
+          ...saved?.strategy_settings?.premarket?.cancel_after_open_sec,
+        },
+      },
+      endgame: {
+        ...DEFAULT_CONFIG.strategy_settings.endgame,
+        ...saved?.strategy_settings?.endgame,
+        timeframes:
+          saved?.strategy_settings?.endgame?.timeframes?.length
+            ? saved.strategy_settings.endgame.timeframes
+            : DEFAULT_CONFIG.strategy_settings.endgame.timeframes,
+      },
+      evcurve: {
+        ...DEFAULT_CONFIG.strategy_settings.evcurve,
+        ...saved?.strategy_settings?.evcurve,
+        timeframes:
+          saved?.strategy_settings?.evcurve?.timeframes?.length
+            ? saved.strategy_settings.evcurve.timeframes
+            : DEFAULT_CONFIG.strategy_settings.evcurve.timeframes,
+      },
+      session_band: {
+        ...DEFAULT_CONFIG.strategy_settings.session_band,
+        ...saved?.strategy_settings?.session_band,
+        timeframes:
+          saved?.strategy_settings?.session_band?.timeframes?.length
+            ? saved.strategy_settings.session_band.timeframes
+            : DEFAULT_CONFIG.strategy_settings.session_band.timeframes,
+      },
+      evsnipe: (() => {
+        const merged = {
+          ...DEFAULT_CONFIG.strategy_settings.evsnipe,
+          ...saved?.strategy_settings?.evsnipe,
+        };
+        const savedRatio =
+          typeof merged.saved_pre_leg_ratio === "number" && merged.saved_pre_leg_ratio > 0
+            ? merged.saved_pre_leg_ratio
+            : typeof merged.pre_leg_ratio === "number" && merged.pre_leg_ratio > 0
+              ? merged.pre_leg_ratio
+              : DEFAULT_CONFIG.strategy_settings.evsnipe.saved_pre_leg_ratio;
+        const preHitEnabled =
+          saved?.strategy_settings?.evsnipe?.pre_hit_enabled ??
+          (saved?.strategy_settings?.evsnipe?.pre_leg_ratio ?? merged.pre_leg_ratio) > 0;
+        return {
+          ...merged,
+          pre_hit_enabled: preHitEnabled,
+          saved_pre_leg_ratio: savedRatio,
+          pre_leg_ratio: preHitEnabled
+            ? merged.pre_leg_ratio > 0
+              ? merged.pre_leg_ratio
+              : savedRatio
+            : savedRatio,
+        };
+      })(),
+      mm_rewards: {
+        ...DEFAULT_CONFIG.strategy_settings.mm_rewards,
+        ...saved?.strategy_settings?.mm_rewards,
+      },
+      mm_sport: {
+        ...DEFAULT_CONFIG.strategy_settings.mm_sport,
+        ...saved?.strategy_settings?.mm_sport,
+      },
     },
     symbols: saved?.symbols?.length ? saved.symbols : DEFAULT_CONFIG.symbols,
   };
@@ -226,15 +412,95 @@ export function updateStrategyCap(
   return config;
 }
 
+export function updateStrategySettingsSection<K extends keyof StrategySettings>(
+  config: BotConfig,
+  section: K,
+  value: StrategySettings[K]
+): BotConfig {
+  return {
+    ...config,
+    strategy_settings: {
+      ...config.strategy_settings,
+      [section]: value,
+    },
+  };
+}
+
+export function updateStrategySymbols(
+  config: BotConfig,
+  strategy: StrategyKey,
+  symbol: string,
+  enabled: boolean
+): BotConfig {
+  if (!strategySupportsSymbols(strategy)) return config;
+  const allowed = symbolSetForStrategy(strategy);
+  if (!allowed.includes(symbol)) return config;
+
+  const next = enabled
+    ? [...new Set([...config.symbols, symbol])]
+    : config.symbols.filter((item) => item !== symbol || item === "BTC");
+
+  return {
+    ...config,
+    symbols: normalizeSymbols(next),
+  };
+}
+
+export function setEVSnipePreHitEnabled(config: BotConfig, enabled: boolean): BotConfig {
+  const current = config.strategy_settings.evsnipe;
+  const rememberedRatio =
+    current.pre_leg_ratio > 0 ? current.pre_leg_ratio : current.saved_pre_leg_ratio;
+  return updateStrategySettingsSection(config, "evsnipe", {
+    ...current,
+    pre_hit_enabled: enabled,
+    saved_pre_leg_ratio: rememberedRatio > 0 ? rememberedRatio : 0.3,
+    pre_leg_ratio: enabled ? rememberedRatio || 0.3 : rememberedRatio || 0.3,
+  });
+}
+
+export function setEVSnipePreLegRatio(config: BotConfig, value: number): BotConfig {
+  const next = value > 0 ? value : config.strategy_settings.evsnipe.saved_pre_leg_ratio || 0.3;
+  return updateStrategySettingsSection(config, "evsnipe", {
+    ...config.strategy_settings.evsnipe,
+    pre_leg_ratio: next,
+    saved_pre_leg_ratio: next,
+    pre_hit_enabled: config.strategy_settings.evsnipe.pre_hit_enabled,
+  });
+}
+
+export function normalizeSymbols(symbols: string[]): string[] {
+  const normalized = symbols.map((symbol) => symbol.trim().toUpperCase());
+  const allowed = normalized.filter((symbol) =>
+    [...CORE_SYMBOLS, ...EXTRA_SYMBOLS].includes(symbol as (typeof CORE_SYMBOLS)[number])
+  );
+  if (!allowed.includes("BTC")) {
+    allowed.unshift("BTC");
+  }
+  return [...CORE_SYMBOLS, ...EXTRA_SYMBOLS].filter((symbol) => allowed.includes(symbol));
+}
+
+export function strategyAllowsExtraSymbols(strategy: StrategyKey): boolean {
+  return strategy === "endgame" || strategy === "evsnipe";
+}
+
 export function strategySupportsSymbols(strategy: StrategyKey): boolean {
   return strategy !== "mm_rewards" && strategy !== "mm_sport";
+}
+
+export function symbolSetForStrategy(strategy: StrategyKey): string[] {
+  return strategyAllowsExtraSymbols(strategy)
+    ? [...CORE_SYMBOLS, ...EXTRA_SYMBOLS]
+    : [...CORE_SYMBOLS];
 }
 
 export function strategySections(strategy: StrategyKey): StrategyEditorSection[] {
   if (strategy === "mm_rewards" || strategy === "mm_sport") {
     return ["general", "advanced"];
   }
-  return ["general", "risk", "symbols"];
+  if (strategy === "evsnipe") {
+    return ["general", "symbols", "advanced"];
+  }
+  return ["general", "risk", "symbols", "advanced"];
 }
 
 export function strategySizeLabel(strategy: StrategyKey): string {
@@ -264,11 +530,68 @@ export function strategyCapValue(config: BotConfig, strategy: StrategyKey): numb
 }
 
 export function strategySummary(strategy: StrategyKey): string {
-  return STRATEGIES.find((item) => item.key === strategy)?.summary ?? "Strategy";
+  return strategyMeta(strategy)?.summary ?? "Strategy";
 }
 
 export function strategyLabel(strategy: StrategyKey): string {
-  return STRATEGIES.find((item) => item.key === strategy)?.label ?? "Strategy";
+  return strategyMeta(strategy)?.label ?? "Strategy";
+}
+
+export function strategyTooltip(strategy: StrategyKey): string {
+  return strategyMeta(strategy)?.tooltip ?? "Strategy behavior";
+}
+
+export function strategyControlSuffix(strategy: StrategyKey): string {
+  switch (strategy) {
+    case "evsnipe":
+      return "/HIT";
+    case "mm_rewards":
+    case "mm_sport":
+      return "x";
+    default:
+      return "USD";
+  }
+}
+
+export function strategyControlTooltip(config: BotConfig, strategy: StrategyKey): string {
+  switch (strategy) {
+    case "premarket":
+      return "Per-entry ladder base for Premarket.";
+    case "endgame":
+      return `Endgame split ${formatEndgameSplitTooltip(config)}.`;
+    case "evcurve":
+      return "Curve-entry base for each EVCurve setup.";
+    case "session_band":
+      return "Per-band entry base for SessionBand.";
+    case "evsnipe":
+      return "Size used for each EVSnipe hit leg.";
+    case "mm_rewards":
+      return "Multiplier applied to the reward minimum shares target.";
+    case "mm_sport":
+      return "Multiplier applied to MM Sport quote size.";
+    default:
+      return "Strategy control";
+  }
+}
+
+export function formatEndgameSplitTooltip(config: BotConfig): string {
+  const settings = config.strategy_settings.endgame;
+  return [settings.tick0_multiplier, settings.tick1_multiplier, settings.tick2_multiplier]
+    .map((value) => `${Math.round(value * 100)}`)
+    .join(" / ");
+}
+
+export function strategyTimeframeOptions(strategy: StrategyKey): readonly Timeframe[] {
+  switch (strategy) {
+    case "session_band":
+      return SESSIONBAND_TIMEFRAMES;
+    case "evcurve":
+      return ["15m", "1h", "4h", "1d"];
+    case "endgame":
+      return ["5m", "15m", "1h", "4h"];
+    default:
+      return ALL_TIMEFRAMES;
+  }
 }
 
 export function adjustStrategySize(
@@ -278,4 +601,8 @@ export function adjustStrategySize(
 ): BotConfig {
   const nextValue = Math.max(0, strategySizeValue(config, strategy) + delta);
   return updateStrategySize(config, strategy, nextValue);
+}
+
+function strategyMeta(strategy: StrategyKey): StrategyMeta | undefined {
+  return STRATEGIES.find((item) => item.key === strategy);
 }

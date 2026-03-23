@@ -5,6 +5,8 @@ import { TopStrip } from "./TopStrip";
 export function AppShell({
   railTitle,
   railSubtitle,
+  railLogoSrc,
+  railLogoAlt,
   railItems,
   railChildren,
   eyebrow,
@@ -17,6 +19,8 @@ export function AppShell({
 }: {
   railTitle?: string;
   railSubtitle?: string;
+  railLogoSrc?: string;
+  railLogoAlt?: string;
   railItems: SideRailItem[];
   railChildren?: ReactNode;
   eyebrow?: string;
@@ -29,7 +33,13 @@ export function AppShell({
 }) {
   return (
     <div className="app-shell">
-      <SideRail title={railTitle} subtitle={railSubtitle} items={railItems}>
+      <SideRail
+        title={railTitle}
+        subtitle={railSubtitle}
+        logoSrc={railLogoSrc}
+        logoAlt={railLogoAlt}
+        items={railItems}
+      >
         {railChildren}
       </SideRail>
       <div className="app-shell__main">

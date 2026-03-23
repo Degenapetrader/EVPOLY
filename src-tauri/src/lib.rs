@@ -2,6 +2,7 @@ pub mod auth;
 pub mod bot_manager;
 pub mod config_io;
 pub mod crypto_vault;
+pub mod geo_access;
 pub mod log_stream;
 pub mod onboard;
 pub mod portfolio_api;
@@ -11,13 +12,12 @@ pub mod wallet_sync;
 
 use crate::auth::AppAuth;
 use crate::bot_manager::BotManager;
+use crate::geo_access::GeoAccessStatus;
 use crate::profile_manager::{Profile, ProfileManager};
 use crate::wallet_sync::{WalletSyncManager, WalletSyncRuntimeConfig};
 
 use chrono::{TimeZone, Utc};
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -31,6 +31,8 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{AppHandle, Manager, State};
 
 struct AppDataDir(PathBuf);
+#[derive(Default)]
+struct MarketMetadataState(Mutex<HashMap<String, MarketMetadata>>);
 
 type AuthState = Arc<Mutex<AppAuth>>;
 type ProfileState = Arc<Mutex<ProfileManager>>;
@@ -55,7 +57,69 @@ const DESKTOP_SECRET_KEYS: [&str; 11] = [
 const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
 const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
 const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
-const EVENTS_LOG_NAME: &str = "events.jsonl";
+
+#[derive(Clone, Default)]
+struct MarketMetadata {
+    title: String,
+    outcomes_by_token: HashMap<String, String>,
+    thumbnail_url: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ClobMarketToken {
+    token_id: String,
+    outcome: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct ClobMarketResponse {
+    question: Option<String>,
+    market_slug: Option<String>,
+    #[serde(default)]
+    tokens: Vec<ClobMarketToken>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GammaOptimizedImage {
+    image_url_optimized: Option<String>,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GammaEventResponse {
+    image: Option<String>,
+    icon: Option<String>,
+    image_optimized: Option<GammaOptimizedImage>,
+    icon_optimized: Option<GammaOptimizedImage>,
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GammaMarketResponse {
+    question: Option<String>,
+    image: Option<String>,
+    icon: Option<String>,
+    image_optimized: Option<GammaOptimizedImage>,
+    icon_optimized: Option<GammaOptimizedImage>,
+    #[serde(default)]
+    events: Vec<GammaEventResponse>,
+}
+
+struct TradeActivityRecord {
+    id: u64,
+    timestamp: String,
+    condition_id: String,
+    token_id: String,
+    side: String,
+    price: f64,
+    quantity: f64,
+    notional_usd: f64,
+    timeframe: Option<String>,
+    period_timestamp: Option<i64>,
+    token_type: Option<String>,
+    asset_symbol: Option<String>,
+}
 
 #[derive(Clone, serde::Deserialize)]
 struct DesktopStrategies {
@@ -93,6 +157,128 @@ struct DesktopMmTuning {
 }
 
 #[derive(Clone, serde::Deserialize)]
+struct DesktopPremarketCancelAfterOpen {
+    m5: f64,
+    m15: f64,
+    h1: f64,
+    h4: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopPremarketSettings {
+    tp_enabled: bool,
+    active_cap_per_asset: f64,
+    cancel_after_open_sec: DesktopPremarketCancelAfterOpen,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopEndgameSettings {
+    timeframes: Vec<String>,
+    per_period_cap_usd: f64,
+    tick0_multiplier: f64,
+    tick1_multiplier: f64,
+    tick2_multiplier: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopEvcurveSettings {
+    timeframes: Vec<String>,
+    max_flip_prob: f64,
+    min_buy_price: f64,
+    d1_enabled: bool,
+    d1_cap_usd: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopSessionBandSettings {
+    timeframes: Vec<String>,
+    flip_threshold_pct: f64,
+    tau2_enabled: bool,
+    tau1_enabled: bool,
+    tau2_multiplier: f64,
+    tau1_multiplier: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopEvsnipeSettings {
+    pre_hit_enabled: bool,
+    pre_leg_ratio: f64,
+    saved_pre_leg_ratio: f64,
+    pre_trigger_bps: f64,
+    strike_window_pct: f64,
+    max_days_to_expiry: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopMmRewardsSettings {
+    market_mode: String,
+    single_market_slugs: String,
+    auto_top_n: f64,
+    auto_refresh_sec: f64,
+    auto_rank_budget_usd: f64,
+    blacklist_keywords: String,
+    reward_min_shares_cap: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopMmSportSettings {
+    min_reward_rate_per_day: f64,
+    pause_after_fill_sec: f64,
+    near_expiry_exit_window_sec: f64,
+    inventory_exit_mode: String,
+    max_share_ratio: f64,
+    min_top_depth_usd: f64,
+    quote_expiry_min_sec: f64,
+    quote_expiry_max_sec: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopSymbolMultipliers {
+    btc: f64,
+    eth: f64,
+    sol: f64,
+    xrp: f64,
+    doge: f64,
+    bnb: f64,
+    hype: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopPremarketTimeframeMultipliers {
+    m5: f64,
+    m15: f64,
+    h1: f64,
+    h4: f64,
+    d1: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopEvcurveTimeframeMultipliers {
+    m15: f64,
+    h1: f64,
+    h4: f64,
+    d1: f64,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopSizePolicy {
+    symbol_multipliers: DesktopSymbolMultipliers,
+    premarket_timeframe_multipliers: DesktopPremarketTimeframeMultipliers,
+    evcurve_timeframe_multipliers: DesktopEvcurveTimeframeMultipliers,
+}
+
+#[derive(Clone, serde::Deserialize)]
+struct DesktopStrategySettings {
+    premarket: DesktopPremarketSettings,
+    endgame: DesktopEndgameSettings,
+    evcurve: DesktopEvcurveSettings,
+    session_band: DesktopSessionBandSettings,
+    evsnipe: DesktopEvsnipeSettings,
+    mm_rewards: DesktopMmRewardsSettings,
+    mm_sport: DesktopMmSportSettings,
+}
+
+#[derive(Clone, serde::Deserialize)]
 struct DesktopConfig {
     private_key: String,
     eoa_wallet: String,
@@ -103,6 +289,8 @@ struct DesktopConfig {
     sizing: DesktopSizing,
     caps: DesktopCaps,
     mm_tuning: DesktopMmTuning,
+    size_policy: DesktopSizePolicy,
+    strategy_settings: DesktopStrategySettings,
     simulation: bool,
     relayer_api_key: String,
     relayer_api_key_address: String,
@@ -155,7 +343,43 @@ fn f64_from_object(obj: &Map<String, Value>, key: &str, default: f64) -> f64 {
     obj.get(key).and_then(Value::as_f64).unwrap_or(default)
 }
 
+fn string_from_object(obj: &Map<String, Value>, key: &str, default: &str) -> String {
+    obj.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn csv_list(value: Option<String>, fallback: &[&str]) -> Vec<String> {
+    value
+        .map(|entry| {
+            entry
+                .split(',')
+                .map(|part| part.trim().to_string())
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|entries| !entries.is_empty())
+        .unwrap_or_else(|| fallback.iter().map(|entry| (*entry).to_string()).collect())
+}
+
+fn csv_from_object(obj: &Map<String, Value>, key: &str, fallback: &[&str]) -> Vec<String> {
+    csv_list(
+        obj.get(key)
+            .and_then(Value::as_str)
+            .map(|value| value.to_string())
+            .or_else(|| config_io::env_template_default_string(key)),
+        fallback,
+    )
+}
+
 fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8) -> DesktopConfig {
+    let sessionband_allowed_tau = csv_list(
+        config_io::env_template_default_string("EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC"),
+        &["2", "1"],
+    );
     DesktopConfig {
         private_key: String::new(),
         eoa_wallet,
@@ -187,11 +411,14 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
             ),
         },
         sizing: DesktopSizing {
-            premarket: 10.0,
-            endgame: 10.0,
-            evcurve: 10.0,
-            session_band: 10.0,
-            evsnipe_per_hit: 10.0,
+            premarket: config_io::env_template_default_f64("EVPOLY_PREMARKET_BASE_SIZE_USD", 10.0),
+            endgame: config_io::env_template_default_f64("EVPOLY_ENDGAME_BASE_SIZE_USD", 50.0),
+            evcurve: config_io::env_template_default_f64("EVPOLY_EVCURVE_BASE_SIZE_USD", 10.0),
+            session_band: config_io::env_template_default_f64(
+                "EVPOLY_SESSIONBAND_BASE_SIZE_USD",
+                10.0,
+            ),
+            evsnipe_per_hit: config_io::env_template_default_f64("EVPOLY_EVSNIPE_SIZE_USD", 10.0),
         },
         caps: DesktopCaps {
             premarket: 100000.0,
@@ -209,6 +436,236 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT",
                 1.2,
             ),
+        },
+        size_policy: DesktopSizePolicy {
+            symbol_multipliers: DesktopSymbolMultipliers {
+                btc: config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_BTC", 1.0),
+                eth: config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_ETH", 0.8),
+                sol: config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_SOL", 0.5),
+                xrp: config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_XRP", 0.5),
+                doge: config_io::env_template_default_f64(
+                    "EVPOLY_SYMBOL_SIZE_MULTIPLIER_DOGE",
+                    0.5,
+                ),
+                bnb: config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_BNB", 0.5),
+                hype: config_io::env_template_default_f64(
+                    "EVPOLY_SYMBOL_SIZE_MULTIPLIER_HYPE",
+                    0.5,
+                ),
+            },
+            premarket_timeframe_multipliers: DesktopPremarketTimeframeMultipliers {
+                m5: config_io::env_template_default_f64(
+                    "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_5M",
+                    0.75,
+                ),
+                m15: config_io::env_template_default_f64(
+                    "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_15M",
+                    1.0,
+                ),
+                h1: config_io::env_template_default_f64(
+                    "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_1H",
+                    1.25,
+                ),
+                h4: config_io::env_template_default_f64(
+                    "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_4H",
+                    1.25,
+                ),
+                d1: config_io::env_template_default_f64(
+                    "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_1D",
+                    1.25,
+                ),
+            },
+            evcurve_timeframe_multipliers: DesktopEvcurveTimeframeMultipliers {
+                m15: config_io::env_template_default_f64(
+                    "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_15M",
+                    0.75,
+                ),
+                h1: config_io::env_template_default_f64(
+                    "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_1H",
+                    1.0,
+                ),
+                h4: config_io::env_template_default_f64(
+                    "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_4H",
+                    1.25,
+                ),
+                d1: config_io::env_template_default_f64(
+                    "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_1D",
+                    1.25,
+                ),
+            },
+        },
+        strategy_settings: DesktopStrategySettings {
+            premarket: DesktopPremarketSettings {
+                tp_enabled: config_io::env_template_default_bool(
+                    "EVPOLY_PREMARKET_TP_ENABLE",
+                    true,
+                ),
+                active_cap_per_asset: config_io::env_template_default_f64(
+                    "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET",
+                    100.0,
+                ),
+                cancel_after_open_sec: DesktopPremarketCancelAfterOpen {
+                    m5: config_io::env_template_default_f64(
+                        "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC",
+                        20.0,
+                    ),
+                    m15: config_io::env_template_default_f64(
+                        "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_15M_SEC",
+                        15.0,
+                    ),
+                    h1: config_io::env_template_default_f64(
+                        "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_1H_SEC",
+                        60.0,
+                    ),
+                    h4: config_io::env_template_default_f64(
+                        "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_4H_SEC",
+                        180.0,
+                    ),
+                },
+            },
+            endgame: DesktopEndgameSettings {
+                timeframes: csv_list(
+                    config_io::env_template_default_string("EVPOLY_ENDGAME_TIMEFRAMES"),
+                    &["5m", "15m", "1h", "4h"],
+                ),
+                per_period_cap_usd: config_io::env_template_default_f64(
+                    "EVPOLY_ENDGAME_PER_PERIOD_CAP_USD",
+                    10000.0,
+                ),
+                tick0_multiplier: config_io::env_template_default_f64(
+                    "EVPOLY_ENDGAME_TICK0_MULTIPLIER",
+                    0.20,
+                ),
+                tick1_multiplier: config_io::env_template_default_f64(
+                    "EVPOLY_ENDGAME_TICK1_MULTIPLIER",
+                    0.40,
+                ),
+                tick2_multiplier: config_io::env_template_default_f64(
+                    "EVPOLY_ENDGAME_TICK2_MULTIPLIER",
+                    0.40,
+                ),
+            },
+            evcurve: DesktopEvcurveSettings {
+                timeframes: csv_list(
+                    config_io::env_template_default_string("EVPOLY_EVCURVE_TIMEFRAMES"),
+                    &["15m", "1h", "4h", "1d"],
+                ),
+                max_flip_prob: config_io::env_template_default_f64(
+                    "EVPOLY_EVCURVE_MAX_FLIP_PROB",
+                    0.15,
+                ),
+                min_buy_price: config_io::env_template_default_f64(
+                    "EVPOLY_EVCURVE_MIN_BUY_PRICE",
+                    0.60,
+                ),
+                d1_enabled: config_io::env_template_default_bool("EVPOLY_EVCURVE_D1_ENABLE", true),
+                d1_cap_usd: config_io::env_template_default_f64(
+                    "EVPOLY_EVCURVE_D1_STRATEGY_CAP_USD",
+                    10000.0,
+                ),
+            },
+            session_band: DesktopSessionBandSettings {
+                timeframes: csv_list(
+                    config_io::env_template_default_string("EVPOLY_SESSIONBAND_TIMEFRAMES"),
+                    &["5m", "15m", "1h", "4h"],
+                ),
+                flip_threshold_pct: config_io::env_template_default_f64(
+                    "EVPOLY_SESSIONBAND_FLIP_THRESHOLD_PCT",
+                    2.0,
+                ),
+                tau2_enabled: sessionband_allowed_tau.iter().any(|value| value == "2"),
+                tau1_enabled: sessionband_allowed_tau.iter().any(|value| value == "1"),
+                tau2_multiplier: config_io::env_template_default_f64(
+                    "EVPOLY_SESSIONBAND_TAU2_MULTIPLIER",
+                    0.30,
+                ),
+                tau1_multiplier: config_io::env_template_default_f64(
+                    "EVPOLY_SESSIONBAND_TAU1_MULTIPLIER",
+                    0.70,
+                ),
+            },
+            evsnipe: DesktopEvsnipeSettings {
+                pre_hit_enabled: true,
+                pre_leg_ratio: config_io::env_template_default_f64(
+                    "EVPOLY_EVSNIPE_PRE_LEG_RATIO",
+                    0.30,
+                ),
+                saved_pre_leg_ratio: config_io::env_template_default_f64(
+                    "EVPOLY_EVSNIPE_PRE_LEG_RATIO",
+                    0.30,
+                ),
+                pre_trigger_bps: config_io::env_template_default_f64(
+                    "EVPOLY_EVSNIPE_PRE_TRIGGER_BPS",
+                    1.0,
+                ),
+                strike_window_pct: config_io::env_template_default_f64(
+                    "EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT",
+                    0.10,
+                ),
+                max_days_to_expiry: config_io::env_template_default_f64(
+                    "EVPOLY_EVSNIPE_MAX_DAYS_TO_EXPIRY",
+                    30.0,
+                ),
+            },
+            mm_rewards: DesktopMmRewardsSettings {
+                market_mode: config_io::env_template_default_string("EVPOLY_MM_MARKET_MODE")
+                    .unwrap_or_else(|| config_io::DEFAULT_MM_MARKET_MODE.to_string()),
+                single_market_slugs: config_io::env_template_default_string(
+                    "EVPOLY_MM_SINGLE_MARKET_SLUGS",
+                )
+                .unwrap_or_default(),
+                auto_top_n: config_io::env_template_default_f64("EVPOLY_MM_AUTO_TOP_N", 80.0),
+                auto_refresh_sec: config_io::env_template_default_f64(
+                    "EVPOLY_MM_AUTO_REFRESH_SEC",
+                    900.0,
+                ),
+                auto_rank_budget_usd: config_io::env_template_default_f64(
+                    "EVPOLY_MM_AUTO_RANK_BUDGET_USD",
+                    2000.0,
+                ),
+                blacklist_keywords: config_io::env_template_default_string(
+                    "EVPOLY_MM_MARKET_BLACKLIST_KEYWORDS",
+                )
+                .unwrap_or_default(),
+                reward_min_shares_cap: config_io::env_template_default_f64(
+                    "EVPOLY_MM_REWARD_MIN_SHARES_CAP",
+                    0.0,
+                ),
+            },
+            mm_sport: DesktopMmSportSettings {
+                min_reward_rate_per_day: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY",
+                    300.0,
+                ),
+                pause_after_fill_sec: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC",
+                    7200.0,
+                ),
+                near_expiry_exit_window_sec: config_io::env_template_default_f64(
+                    "EVPOLY_MM_NEAR_EXPIRY_EXIT_WINDOW_SEC",
+                    86400.0,
+                ),
+                inventory_exit_mode: config_io::env_template_default_string(
+                    "EVPOLY_MM_SPORT_EXIT_MODE",
+                )
+                .unwrap_or_else(|| "normal".to_string()),
+                max_share_ratio: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_MAX_SHARE_RATIO",
+                    0.05,
+                ),
+                min_top_depth_usd: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD",
+                    100000.0,
+                ),
+                quote_expiry_min_sec: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC",
+                    180.0,
+                ),
+                quote_expiry_max_sec: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC",
+                    300.0,
+                ),
+            },
         },
         simulation: config_io::env_template_default_bool("APP_SIMULATION", false),
         relayer_api_key: String::new(),
@@ -428,6 +885,275 @@ fn desktop_config_to_profile_payload(
         "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT".to_string(),
         number_to_json(config.mm_tuning.sport_quote_size_multiplier),
     );
+    strategy.insert(
+        "EVPOLY_PREMARKET_TP_ENABLE".to_string(),
+        bool_to_json(config.strategy_settings.premarket.tp_enabled),
+    );
+    strategy.insert(
+        "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET".to_string(),
+        number_to_json(config.strategy_settings.premarket.active_cap_per_asset),
+    );
+    strategy.insert(
+        "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC".to_string(),
+        number_to_json(config.strategy_settings.premarket.cancel_after_open_sec.m5),
+    );
+    strategy.insert(
+        "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_15M_SEC".to_string(),
+        number_to_json(config.strategy_settings.premarket.cancel_after_open_sec.m15),
+    );
+    strategy.insert(
+        "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_1H_SEC".to_string(),
+        number_to_json(config.strategy_settings.premarket.cancel_after_open_sec.h1),
+    );
+    strategy.insert(
+        "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_4H_SEC".to_string(),
+        number_to_json(config.strategy_settings.premarket.cancel_after_open_sec.h4),
+    );
+    strategy.insert(
+        "EVPOLY_ENDGAME_TIMEFRAMES".to_string(),
+        Value::String(config.strategy_settings.endgame.timeframes.join(",")),
+    );
+    strategy.insert(
+        "EVPOLY_ENDGAME_TICK0_MULTIPLIER".to_string(),
+        number_to_json(config.strategy_settings.endgame.tick0_multiplier),
+    );
+    strategy.insert(
+        "EVPOLY_ENDGAME_TICK1_MULTIPLIER".to_string(),
+        number_to_json(config.strategy_settings.endgame.tick1_multiplier),
+    );
+    strategy.insert(
+        "EVPOLY_ENDGAME_TICK2_MULTIPLIER".to_string(),
+        number_to_json(config.strategy_settings.endgame.tick2_multiplier),
+    );
+    strategy.insert(
+        "EVPOLY_EVCURVE_TIMEFRAMES".to_string(),
+        Value::String(config.strategy_settings.evcurve.timeframes.join(",")),
+    );
+    strategy.insert(
+        "EVPOLY_EVCURVE_MAX_FLIP_PROB".to_string(),
+        number_to_json(config.strategy_settings.evcurve.max_flip_prob),
+    );
+    strategy.insert(
+        "EVPOLY_EVCURVE_MIN_BUY_PRICE".to_string(),
+        number_to_json(config.strategy_settings.evcurve.min_buy_price),
+    );
+    strategy.insert(
+        "EVPOLY_EVCURVE_D1_ENABLE".to_string(),
+        bool_to_json(config.strategy_settings.evcurve.d1_enabled),
+    );
+    strategy.insert(
+        "EVPOLY_SYMBOL_SIZE_MULTIPLIER_BTC".to_string(),
+        number_to_json(config.size_policy.symbol_multipliers.btc),
+    );
+    strategy.insert(
+        "EVPOLY_SYMBOL_SIZE_MULTIPLIER_ETH".to_string(),
+        number_to_json(config.size_policy.symbol_multipliers.eth),
+    );
+    strategy.insert(
+        "EVPOLY_SYMBOL_SIZE_MULTIPLIER_SOL".to_string(),
+        number_to_json(config.size_policy.symbol_multipliers.sol),
+    );
+    strategy.insert(
+        "EVPOLY_SYMBOL_SIZE_MULTIPLIER_XRP".to_string(),
+        number_to_json(config.size_policy.symbol_multipliers.xrp),
+    );
+    strategy.insert(
+        "EVPOLY_SYMBOL_SIZE_MULTIPLIER_DOGE".to_string(),
+        number_to_json(config.size_policy.symbol_multipliers.doge),
+    );
+    strategy.insert(
+        "EVPOLY_SYMBOL_SIZE_MULTIPLIER_BNB".to_string(),
+        number_to_json(config.size_policy.symbol_multipliers.bnb),
+    );
+    strategy.insert(
+        "EVPOLY_SYMBOL_SIZE_MULTIPLIER_HYPE".to_string(),
+        number_to_json(config.size_policy.symbol_multipliers.hype),
+    );
+    strategy.insert(
+        "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_5M".to_string(),
+        number_to_json(config.size_policy.premarket_timeframe_multipliers.m5),
+    );
+    strategy.insert(
+        "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_15M".to_string(),
+        number_to_json(config.size_policy.premarket_timeframe_multipliers.m15),
+    );
+    strategy.insert(
+        "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_1H".to_string(),
+        number_to_json(config.size_policy.premarket_timeframe_multipliers.h1),
+    );
+    strategy.insert(
+        "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_4H".to_string(),
+        number_to_json(config.size_policy.premarket_timeframe_multipliers.h4),
+    );
+    strategy.insert(
+        "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_1D".to_string(),
+        number_to_json(config.size_policy.premarket_timeframe_multipliers.d1),
+    );
+    strategy.insert(
+        "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_15M".to_string(),
+        number_to_json(config.size_policy.evcurve_timeframe_multipliers.m15),
+    );
+    strategy.insert(
+        "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_1H".to_string(),
+        number_to_json(config.size_policy.evcurve_timeframe_multipliers.h1),
+    );
+    strategy.insert(
+        "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_4H".to_string(),
+        number_to_json(config.size_policy.evcurve_timeframe_multipliers.h4),
+    );
+    strategy.insert(
+        "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_1D".to_string(),
+        number_to_json(config.size_policy.evcurve_timeframe_multipliers.d1),
+    );
+    strategy.insert(
+        "EVPOLY_SESSIONBAND_TIMEFRAMES".to_string(),
+        Value::String(config.strategy_settings.session_band.timeframes.join(",")),
+    );
+    strategy.insert(
+        "EVPOLY_SESSIONBAND_FLIP_THRESHOLD_PCT".to_string(),
+        number_to_json(config.strategy_settings.session_band.flip_threshold_pct),
+    );
+    let allowed_tau_csv = [
+        config.strategy_settings.session_band.tau2_enabled.then_some("2"),
+        config.strategy_settings.session_band.tau1_enabled.then_some("1"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(",");
+    strategy.insert(
+        "EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC".to_string(),
+        Value::String(if allowed_tau_csv.is_empty() {
+            "2,1".to_string()
+        } else {
+            allowed_tau_csv
+        }),
+    );
+    strategy.insert(
+        "EVPOLY_SESSIONBAND_TAU2_MULTIPLIER".to_string(),
+        number_to_json(config.strategy_settings.session_band.tau2_multiplier),
+    );
+    strategy.insert(
+        "EVPOLY_SESSIONBAND_TAU1_MULTIPLIER".to_string(),
+        number_to_json(config.strategy_settings.session_band.tau1_multiplier),
+    );
+    strategy.insert(
+        "EVPOLY_EVSNIPE_PRE_TRIGGER_BPS".to_string(),
+        number_to_json(config.strategy_settings.evsnipe.pre_trigger_bps),
+    );
+    strategy.insert(
+        "EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT".to_string(),
+        number_to_json(config.strategy_settings.evsnipe.strike_window_pct),
+    );
+    strategy.insert(
+        "EVPOLY_EVSNIPE_MAX_DAYS_TO_EXPIRY".to_string(),
+        number_to_json(config.strategy_settings.evsnipe.max_days_to_expiry),
+    );
+    strategy.insert(
+        "EVPOLY_EVSNIPE_PRE_LEG_RATIO".to_string(),
+        number_to_json(if config.strategy_settings.evsnipe.pre_hit_enabled {
+            config.strategy_settings.evsnipe.pre_leg_ratio
+        } else {
+            0.0
+        }),
+    );
+    strategy.insert(
+        "APP_DESKTOP_EVSNIPE_PRE_LEG_RATIO_SAVED".to_string(),
+        number_to_json(config.strategy_settings.evsnipe.saved_pre_leg_ratio),
+    );
+    strategy.insert(
+        "EVPOLY_MM_MARKET_MODE".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_rewards
+                .market_mode
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SINGLE_MARKET_SLUGS".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_rewards
+                .single_market_slugs
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_AUTO_TOP_N".to_string(),
+        number_to_json(config.strategy_settings.mm_rewards.auto_top_n),
+    );
+    strategy.insert(
+        "EVPOLY_MM_AUTO_REFRESH_SEC".to_string(),
+        number_to_json(config.strategy_settings.mm_rewards.auto_refresh_sec),
+    );
+    strategy.insert(
+        "EVPOLY_MM_AUTO_RANK_BUDGET_USD".to_string(),
+        number_to_json(config.strategy_settings.mm_rewards.auto_rank_budget_usd),
+    );
+    strategy.insert(
+        "EVPOLY_MM_MARKET_BLACKLIST_KEYWORDS".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_rewards
+                .blacklist_keywords
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_REWARD_MIN_SHARES_CAP".to_string(),
+        number_to_json(config.strategy_settings.mm_rewards.reward_min_shares_cap),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.min_reward_rate_per_day),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.pause_after_fill_sec),
+    );
+    strategy.insert(
+        "EVPOLY_MM_NEAR_EXPIRY_EXIT_WINDOW_SEC".to_string(),
+        number_to_json(
+            config
+                .strategy_settings
+                .mm_sport
+                .near_expiry_exit_window_sec,
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_EXIT_MODE".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_sport
+                .inventory_exit_mode
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_MAX_SHARE_RATIO".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.max_share_ratio),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.min_top_depth_usd),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.quote_expiry_min_sec),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.quote_expiry_max_sec),
+    );
 
     sizing.insert(
         "EVPOLY_PREMARKET_BASE_SIZE_USD".to_string(),
@@ -468,6 +1194,14 @@ fn desktop_config_to_profile_payload(
     sizing.insert(
         "EVPOLY_ARB_STRAT_EVSNIPE_MAX_USD".to_string(),
         number_to_json(config.caps.evsnipe),
+    );
+    sizing.insert(
+        "EVPOLY_ENDGAME_PER_PERIOD_CAP_USD".to_string(),
+        number_to_json(config.strategy_settings.endgame.per_period_cap_usd),
+    );
+    sizing.insert(
+        "EVPOLY_EVCURVE_D1_STRATEGY_CAP_USD".to_string(),
+        number_to_json(config.strategy_settings.evcurve.d1_cap_usd),
     );
     sizing.insert(
         "APP_SIMULATION".to_string(),
@@ -613,6 +1347,24 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
     symbols = normalize_symbols(&symbols);
 
     let secrets = decrypt_profile_secrets(profile, auth)?;
+    let evsnipe_ratio = f64_from_object(
+        &strategy,
+        "EVPOLY_EVSNIPE_PRE_LEG_RATIO",
+        config_io::env_template_default_f64("EVPOLY_EVSNIPE_PRE_LEG_RATIO", 0.30),
+    );
+    let evsnipe_saved_ratio = f64_from_object(
+        &strategy,
+        "APP_DESKTOP_EVSNIPE_PRE_LEG_RATIO_SAVED",
+        config_io::env_template_default_f64("EVPOLY_EVSNIPE_PRE_LEG_RATIO", 0.30),
+    );
+    let evsnipe_display_ratio = if evsnipe_ratio > 0.0 {
+        evsnipe_ratio
+    } else {
+        evsnipe_saved_ratio
+    };
+    let sessionband_allowed_tau = csv_from_object(&strategy, "EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC", &["2", "1"]);
+    let sessionband_tau2_enabled = sessionband_allowed_tau.iter().any(|value| value == "2");
+    let sessionband_tau1_enabled = sessionband_allowed_tau.iter().any(|value| value == "1");
 
     Ok(serde_json::json!({
         "private_key": secrets.get("POLY_PRIVATE_KEY").cloned().unwrap_or_default(),
@@ -631,7 +1383,11 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         },
         "sizing": {
             "premarket": f64_from_object(&sizing, "EVPOLY_PREMARKET_BASE_SIZE_USD", 10.0),
-            "endgame": f64_from_object(&sizing, "EVPOLY_ENDGAME_BASE_SIZE_USD", 10.0),
+            "endgame": f64_from_object(
+                &sizing,
+                "EVPOLY_ENDGAME_BASE_SIZE_USD",
+                config_io::env_template_default_f64("EVPOLY_ENDGAME_BASE_SIZE_USD", 50.0),
+            ),
             "evcurve": f64_from_object(&sizing, "EVPOLY_EVCURVE_BASE_SIZE_USD", 10.0),
             "session_band": f64_from_object(&sizing, "EVPOLY_SESSIONBAND_BASE_SIZE_USD", 10.0),
             "evsnipe_per_hit": f64_from_object(&sizing, "EVPOLY_EVSNIPE_SIZE_USD", 10.0)
@@ -646,6 +1402,91 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "mm_tuning": {
             "rewards_min_share_multiple": f64_from_object(&strategy, "EVPOLY_MM_REWARD_MIN_TARGET_MULT", config_io::env_template_default_f64("EVPOLY_MM_REWARD_MIN_TARGET_MULT", 1.0)),
             "sport_quote_size_multiplier": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2))
+        },
+        "size_policy": {
+            "symbol_multipliers": {
+                "btc": f64_from_object(&strategy, "EVPOLY_SYMBOL_SIZE_MULTIPLIER_BTC", config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_BTC", 1.0)),
+                "eth": f64_from_object(&strategy, "EVPOLY_SYMBOL_SIZE_MULTIPLIER_ETH", config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_ETH", 0.8)),
+                "sol": f64_from_object(&strategy, "EVPOLY_SYMBOL_SIZE_MULTIPLIER_SOL", config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_SOL", 0.5)),
+                "xrp": f64_from_object(&strategy, "EVPOLY_SYMBOL_SIZE_MULTIPLIER_XRP", config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_XRP", 0.5)),
+                "doge": f64_from_object(&strategy, "EVPOLY_SYMBOL_SIZE_MULTIPLIER_DOGE", config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_DOGE", 0.5)),
+                "bnb": f64_from_object(&strategy, "EVPOLY_SYMBOL_SIZE_MULTIPLIER_BNB", config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_BNB", 0.5)),
+                "hype": f64_from_object(&strategy, "EVPOLY_SYMBOL_SIZE_MULTIPLIER_HYPE", config_io::env_template_default_f64("EVPOLY_SYMBOL_SIZE_MULTIPLIER_HYPE", 0.5))
+            },
+            "premarket_timeframe_multipliers": {
+                "m5": f64_from_object(&strategy, "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_5M", config_io::env_template_default_f64("EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_5M", 0.75)),
+                "m15": f64_from_object(&strategy, "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_15M", config_io::env_template_default_f64("EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_15M", 1.0)),
+                "h1": f64_from_object(&strategy, "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_1H", config_io::env_template_default_f64("EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_1H", 1.25)),
+                "h4": f64_from_object(&strategy, "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_4H", config_io::env_template_default_f64("EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_4H", 1.25)),
+                "d1": f64_from_object(&strategy, "EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_1D", config_io::env_template_default_f64("EVPOLY_PREMARKET_TIMEFRAME_MULTIPLIER_1D", 1.25))
+            },
+            "evcurve_timeframe_multipliers": {
+                "m15": f64_from_object(&strategy, "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_15M", config_io::env_template_default_f64("EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_15M", 0.75)),
+                "h1": f64_from_object(&strategy, "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_1H", config_io::env_template_default_f64("EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_1H", 1.0)),
+                "h4": f64_from_object(&strategy, "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_4H", config_io::env_template_default_f64("EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_4H", 1.25)),
+                "d1": f64_from_object(&strategy, "EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_1D", config_io::env_template_default_f64("EVPOLY_EVCURVE_TIMEFRAME_MULTIPLIER_1D", 1.25))
+            }
+        },
+        "strategy_settings": {
+            "premarket": {
+                "tp_enabled": bool_from_object(&strategy, "EVPOLY_PREMARKET_TP_ENABLE", config_io::env_template_default_bool("EVPOLY_PREMARKET_TP_ENABLE", true)),
+                "active_cap_per_asset": f64_from_object(&strategy, "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET", config_io::env_template_default_f64("EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET", 100.0)),
+                "cancel_after_open_sec": {
+                    "m5": f64_from_object(&strategy, "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC", config_io::env_template_default_f64("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC", 20.0)),
+                    "m15": f64_from_object(&strategy, "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_15M_SEC", config_io::env_template_default_f64("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_15M_SEC", 15.0)),
+                    "h1": f64_from_object(&strategy, "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_1H_SEC", config_io::env_template_default_f64("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_1H_SEC", 60.0)),
+                    "h4": f64_from_object(&strategy, "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_4H_SEC", config_io::env_template_default_f64("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_4H_SEC", 180.0))
+                }
+            },
+            "endgame": {
+                "timeframes": csv_from_object(&strategy, "EVPOLY_ENDGAME_TIMEFRAMES", &["5m", "15m", "1h", "4h"]),
+                "per_period_cap_usd": f64_from_object(&sizing, "EVPOLY_ENDGAME_PER_PERIOD_CAP_USD", config_io::env_template_default_f64("EVPOLY_ENDGAME_PER_PERIOD_CAP_USD", 10000.0)),
+                "tick0_multiplier": f64_from_object(&strategy, "EVPOLY_ENDGAME_TICK0_MULTIPLIER", config_io::env_template_default_f64("EVPOLY_ENDGAME_TICK0_MULTIPLIER", 0.20)),
+                "tick1_multiplier": f64_from_object(&strategy, "EVPOLY_ENDGAME_TICK1_MULTIPLIER", config_io::env_template_default_f64("EVPOLY_ENDGAME_TICK1_MULTIPLIER", 0.40)),
+                "tick2_multiplier": f64_from_object(&strategy, "EVPOLY_ENDGAME_TICK2_MULTIPLIER", config_io::env_template_default_f64("EVPOLY_ENDGAME_TICK2_MULTIPLIER", 0.40))
+            },
+            "evcurve": {
+                "timeframes": csv_from_object(&strategy, "EVPOLY_EVCURVE_TIMEFRAMES", &["15m", "1h", "4h", "1d"]),
+                "max_flip_prob": f64_from_object(&strategy, "EVPOLY_EVCURVE_MAX_FLIP_PROB", config_io::env_template_default_f64("EVPOLY_EVCURVE_MAX_FLIP_PROB", 0.15)),
+                "min_buy_price": f64_from_object(&strategy, "EVPOLY_EVCURVE_MIN_BUY_PRICE", config_io::env_template_default_f64("EVPOLY_EVCURVE_MIN_BUY_PRICE", 0.60)),
+                "d1_enabled": bool_from_object(&strategy, "EVPOLY_EVCURVE_D1_ENABLE", config_io::env_template_default_bool("EVPOLY_EVCURVE_D1_ENABLE", true)),
+                "d1_cap_usd": f64_from_object(&sizing, "EVPOLY_EVCURVE_D1_STRATEGY_CAP_USD", config_io::env_template_default_f64("EVPOLY_EVCURVE_D1_STRATEGY_CAP_USD", 10000.0))
+            },
+            "session_band": {
+                "timeframes": csv_from_object(&strategy, "EVPOLY_SESSIONBAND_TIMEFRAMES", &["5m", "15m", "1h", "4h"]),
+                "flip_threshold_pct": f64_from_object(&strategy, "EVPOLY_SESSIONBAND_FLIP_THRESHOLD_PCT", config_io::env_template_default_f64("EVPOLY_SESSIONBAND_FLIP_THRESHOLD_PCT", 2.0)),
+                "tau2_enabled": sessionband_tau2_enabled,
+                "tau1_enabled": sessionband_tau1_enabled,
+                "tau2_multiplier": f64_from_object(&strategy, "EVPOLY_SESSIONBAND_TAU2_MULTIPLIER", config_io::env_template_default_f64("EVPOLY_SESSIONBAND_TAU2_MULTIPLIER", 0.30)),
+                "tau1_multiplier": f64_from_object(&strategy, "EVPOLY_SESSIONBAND_TAU1_MULTIPLIER", config_io::env_template_default_f64("EVPOLY_SESSIONBAND_TAU1_MULTIPLIER", 0.70))
+            },
+            "evsnipe": {
+                "pre_hit_enabled": evsnipe_ratio > 0.0,
+                "pre_leg_ratio": evsnipe_display_ratio,
+                "saved_pre_leg_ratio": evsnipe_saved_ratio,
+                "pre_trigger_bps": f64_from_object(&strategy, "EVPOLY_EVSNIPE_PRE_TRIGGER_BPS", config_io::env_template_default_f64("EVPOLY_EVSNIPE_PRE_TRIGGER_BPS", 1.0)),
+                "strike_window_pct": f64_from_object(&strategy, "EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT", config_io::env_template_default_f64("EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT", 0.10)),
+                "max_days_to_expiry": f64_from_object(&strategy, "EVPOLY_EVSNIPE_MAX_DAYS_TO_EXPIRY", config_io::env_template_default_f64("EVPOLY_EVSNIPE_MAX_DAYS_TO_EXPIRY", 30.0))
+            },
+            "mm_rewards": {
+                "market_mode": string_from_object(&strategy, "EVPOLY_MM_MARKET_MODE", config_io::DEFAULT_MM_MARKET_MODE),
+                "single_market_slugs": string_from_object(&strategy, "EVPOLY_MM_SINGLE_MARKET_SLUGS", ""),
+                "auto_top_n": f64_from_object(&strategy, "EVPOLY_MM_AUTO_TOP_N", config_io::env_template_default_f64("EVPOLY_MM_AUTO_TOP_N", 80.0)),
+                "auto_refresh_sec": f64_from_object(&strategy, "EVPOLY_MM_AUTO_REFRESH_SEC", config_io::env_template_default_f64("EVPOLY_MM_AUTO_REFRESH_SEC", 900.0)),
+                "auto_rank_budget_usd": f64_from_object(&strategy, "EVPOLY_MM_AUTO_RANK_BUDGET_USD", config_io::env_template_default_f64("EVPOLY_MM_AUTO_RANK_BUDGET_USD", 2000.0)),
+                "blacklist_keywords": string_from_object(&strategy, "EVPOLY_MM_MARKET_BLACKLIST_KEYWORDS", ""),
+                "reward_min_shares_cap": f64_from_object(&strategy, "EVPOLY_MM_REWARD_MIN_SHARES_CAP", config_io::env_template_default_f64("EVPOLY_MM_REWARD_MIN_SHARES_CAP", 0.0))
+            },
+            "mm_sport": {
+                "min_reward_rate_per_day": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 300.0)),
+                "pause_after_fill_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 7200.0)),
+                "near_expiry_exit_window_sec": f64_from_object(&strategy, "EVPOLY_MM_NEAR_EXPIRY_EXIT_WINDOW_SEC", config_io::env_template_default_f64("EVPOLY_MM_NEAR_EXPIRY_EXIT_WINDOW_SEC", 86400.0)),
+                "inventory_exit_mode": string_from_object(&strategy, "EVPOLY_MM_SPORT_EXIT_MODE", "normal"),
+                "max_share_ratio": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MAX_SHARE_RATIO", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05)),
+                "min_top_depth_usd": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 100000.0)),
+                "quote_expiry_min_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", 180.0)),
+                "quote_expiry_max_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 300.0))
+            }
         },
         "simulation": bool_from_object(&sizing, "APP_SIMULATION", default_simulation),
         "relayer_api_key": secrets.get("RELAYER_API_KEY").cloned().unwrap_or_default(),
@@ -769,14 +1610,6 @@ fn query_ack_latency_summary(conn: &Connection) -> (u64, Option<f64>) {
     .unwrap_or((0, None))
 }
 
-fn parse_sourced_log_content(content: &str) -> Option<(String, String)> {
-    let rest = content.strip_prefix('[')?;
-    let source_end = rest.find(']')?;
-    let source = rest[..source_end].to_string();
-    let message = rest.get(source_end + 1..)?.trim_start().to_string();
-    Some((source, message))
-}
-
 fn count_unknown_ack_warnings(data_dir: &Path, max_lines: usize) -> usize {
     let path = data_dir.join(FULL_DEBUG_LOG_NAME);
     let batch = match log_stream::read_log_tail(&path, None, max_lines.max(1)) {
@@ -795,72 +1628,6 @@ fn count_unknown_ack_warnings(data_dir: &Path, max_lines: usize) -> usize {
         .count()
 }
 
-struct PlainTailBatch {
-    next_cursor: u64,
-    reset: bool,
-    lines: Vec<String>,
-}
-
-fn read_plain_tail_lines(
-    path: &Path,
-    cursor: Option<u64>,
-    limit: usize,
-) -> std::io::Result<PlainTailBatch> {
-    let requested_cursor = cursor.unwrap_or(0);
-    if !path.exists() {
-        return Ok(PlainTailBatch {
-            next_cursor: 0,
-            reset: requested_cursor > 0,
-            lines: Vec::new(),
-        });
-    }
-
-    let metadata = fs::metadata(path)?;
-    let file_len = metadata.len();
-    let reset = requested_cursor > file_len;
-    let start = if reset { 0 } else { requested_cursor };
-
-    let mut file = OpenOptions::new().read(true).open(path)?;
-    file.seek(SeekFrom::Start(start))?;
-    let mut buffer = String::new();
-    file.read_to_string(&mut buffer)?;
-    let next_cursor = file.stream_position()?;
-
-    let lines = buffer
-        .lines()
-        .map(str::trim_end)
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>();
-    let keep_from = lines.len().saturating_sub(limit.max(1));
-
-    Ok(PlainTailBatch {
-        next_cursor,
-        reset,
-        lines: lines.into_iter().skip(keep_from).collect(),
-    })
-}
-
-fn strategy_display_name(strategy_id: &str) -> &'static str {
-    if strategy_id.starts_with("premarket") {
-        "Premarket"
-    } else if strategy_id.starts_with("endgame") {
-        "Endgame"
-    } else if strategy_id.starts_with("evcurve") {
-        "EVCurve"
-    } else if strategy_id.starts_with("sessionband") {
-        "SessionBand"
-    } else if strategy_id.starts_with("evsnipe") {
-        "EVSnipe"
-    } else if strategy_id.starts_with("mm_rewards") {
-        "MM Rewards"
-    } else if strategy_id.starts_with("mm_sport") {
-        "MM Sport"
-    } else {
-        "Runtime"
-    }
-}
-
 fn timeframe_seconds(timeframe: &str) -> Option<i64> {
     match timeframe {
         "5m" => Some(5 * 60),
@@ -870,74 +1637,6 @@ fn timeframe_seconds(timeframe: &str) -> Option<i64> {
         "1d" => Some(24 * 60 * 60),
         _ => None,
     }
-}
-
-fn payload_string(payload: &Map<String, Value>, key: &str) -> Option<String> {
-    payload
-        .get(key)
-        .and_then(Value::as_str)
-        .map(|value| value.to_string())
-}
-
-fn payload_i64(payload: &Map<String, Value>, key: &str) -> Option<i64> {
-    payload.get(key).and_then(Value::as_i64)
-}
-
-fn payload_f64(payload: &Map<String, Value>, key: &str) -> Option<f64> {
-    payload.get(key).and_then(Value::as_f64)
-}
-
-fn payload_u64(payload: &Map<String, Value>, key: &str) -> Option<u64> {
-    payload.get(key).and_then(Value::as_u64)
-}
-
-fn request_id_parts<'a>(payload: &'a Map<String, Value>) -> Vec<&'a str> {
-    payload
-        .get("request_id")
-        .and_then(Value::as_str)
-        .map(|value| value.split(':').collect::<Vec<_>>())
-        .unwrap_or_default()
-}
-
-fn event_symbol(payload: &Map<String, Value>) -> Option<String> {
-    payload_string(payload, "asset_symbol")
-        .or_else(|| payload_string(payload, "symbol"))
-        .or_else(|| {
-            request_id_parts(payload)
-                .get(3)
-                .map(|value| (*value).to_ascii_uppercase())
-        })
-}
-
-fn event_outcome(payload: &Map<String, Value>) -> Option<String> {
-    let base = payload_string(payload, "token_type").and_then(|token_type| {
-        token_type
-            .split_whitespace()
-            .last()
-            .map(|value| value.to_string())
-    });
-    let fallback = payload
-        .get("trade_key")
-        .and_then(Value::as_str)
-        .or_else(|| payload.get("request_id").and_then(Value::as_str))
-        .and_then(|value| {
-            if value.contains(":up:") {
-                Some("Up".to_string())
-            } else if value.contains(":down:") {
-                Some("Down".to_string())
-            } else {
-                None
-            }
-        });
-
-    let outcome = base.or(fallback)?;
-    let price = payload_f64(payload, "price").or_else(|| payload_f64(payload, "submit_price"));
-    Some(match price {
-        Some(value) if value.is_finite() => {
-            format!("{outcome} {}c", (value * 100.0).round() as i64)
-        }
-        _ => outcome,
-    })
 }
 
 fn format_market_title(
@@ -972,262 +1671,299 @@ fn format_market_title(
     }
 }
 
-fn humanize_reason(reason: &str) -> String {
-    match reason {
-        "exact_proxy_base_unavailable_rest_empty" => {
-            "No exact open price was available yet.".to_string()
-        }
-        "proxy_stale_at_submit" => "Proxy quote was too stale to submit.".to_string(),
-        other => other.replace('_', " "),
-    }
+fn parse_trade_outcome_label(token_type: Option<&str>) -> Option<String> {
+    token_type
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.split_whitespace().last())
+        .map(str::to_string)
 }
 
-fn classify_home_event(line: &str) -> Option<serde_json::Value> {
-    let value: Value = serde_json::from_str(line).ok()?;
-    let kind = value.get("kind")?.as_str()?;
-    let payload = value.get("payload")?.as_object()?;
-    let timestamp = value
-        .get("ts_ms")
-        .and_then(Value::as_i64)
-        .map(iso_from_ms)
-        .unwrap_or_else(|| Utc::now().to_rfc3339());
-
-    let strategy_name = payload_string(payload, "strategy_id")
-        .map(|value| strategy_display_name(&value).to_string())
-        .unwrap_or_else(|| "Runtime".to_string());
-    let symbol = event_symbol(payload);
-    let timeframe = payload_string(payload, "timeframe");
-    let period_timestamp =
-        payload_i64(payload, "period_timestamp").or_else(|| payload_i64(payload, "market_open_ts"));
-    let title = format_market_title(symbol.as_deref(), timeframe.as_deref(), period_timestamp);
-    let outcome = event_outcome(payload);
-
-    match kind {
-        "entry_execution_timing" => {
-            if payload_string(payload, "status").as_deref() != Some("submit_ok") {
-                return None;
-            }
-            let submit_runtime_ms = payload_u64(payload, "submit_runtime_ms");
-            let detail = match submit_runtime_ms {
-                Some(value) => format!("{strategy_name} | submitted in {value} ms"),
-                None => format!("{strategy_name} | order submitted"),
-            };
-
-            Some(serde_json::json!({
-                "timestamp": timestamp,
-                "severity": "info",
-                "source": strategy_name.to_ascii_lowercase(),
-                "kind": "trade",
-                "message": detail,
-                "action": "Submitted",
-                "title": title,
-                "outcome": outcome,
-                "detail": detail,
-                "quantity": serde_json::Value::Null,
-                "value_usd": payload_f64(payload, "notional_usd"),
-            }))
-        }
-        "entry_no_fill_fak" => Some(serde_json::json!({
-            "timestamp": timestamp,
-            "severity": "warning",
-            "source": strategy_name.to_ascii_lowercase(),
-            "kind": "trade",
-            "message": format!("{strategy_name} order found no matching liquidity"),
-            "action": "No Fill",
-            "title": title,
-            "outcome": outcome,
-            "detail": format!("{strategy_name} | FAK order found no matching liquidity"),
-            "quantity": payload_f64(payload, "units"),
-            "value_usd": payload_f64(payload, "notional_usd"),
-        })),
-        "entry_submit_proxy_stale_blocked" => Some(serde_json::json!({
-            "timestamp": timestamp,
-            "severity": "warning",
-            "source": strategy_name.to_ascii_lowercase(),
-            "kind": "warning",
-            "message": format!("{strategy_name} blocked a submit because the proxy quote was stale"),
-            "action": "Warning",
-            "title": title,
-            "outcome": serde_json::Value::Null,
-            "detail": format!(
-                "{} | quote age {} ms exceeded {} ms",
-                strategy_name,
-                payload_u64(payload, "proxy_age_ms").unwrap_or(0),
-                payload_u64(payload, "max_proxy_age_ms").unwrap_or(0)
-            ),
-            "quantity": serde_json::Value::Null,
-            "value_usd": serde_json::Value::Null,
-        })),
-        "sessionband_base_anchor_exact_skip" => Some(serde_json::json!({
-            "timestamp": timestamp,
-            "severity": "warning",
-            "source": "sessionband",
-            "kind": "warning",
-            "message": "SessionBand skipped an exact-open anchor.",
-            "action": "Warning",
-            "title": title,
-            "outcome": serde_json::Value::Null,
-            "detail": format!(
-                "SessionBand | {}",
-                humanize_reason(
-                    payload_string(payload, "skip_reason")
-                        .as_deref()
-                        .unwrap_or("skip")
-                )
-            ),
-            "quantity": serde_json::Value::Null,
-            "value_usd": serde_json::Value::Null,
-        })),
-        other if other.contains("cancel") => {
-            let canceled_orders = payload_u64(payload, "canceled_orders").unwrap_or(0);
-            if canceled_orders == 0 {
-                return None;
-            }
-            Some(serde_json::json!({
-                "timestamp": timestamp,
-                "severity": "info",
-                "source": strategy_name.to_ascii_lowercase(),
-                "kind": "order",
-                "message": format!("{strategy_name} canceled {canceled_orders} order(s)"),
-                "action": "Canceled",
-                "title": format!("{strategy_name} canceled {canceled_orders} order{}", if canceled_orders == 1 { "" } else { "s" }),
-                "outcome": serde_json::Value::Null,
-                "detail": timeframe
-                    .as_ref()
-                    .map(|value| format!("{strategy_name} | {value}"))
-                    .unwrap_or(strategy_name),
-                "quantity": serde_json::Value::Null,
-                "value_usd": serde_json::Value::Null,
-            }))
-        }
-        _ => None,
-    }
-}
-
-fn classify_home_activity(
-    timestamp: String,
-    source: String,
-    content: String,
-) -> Option<serde_json::Value> {
-    let lower = content.to_ascii_lowercase();
-
-    if lower.contains("bid=")
-        || lower.contains("ask=")
-        || lower.contains("mid=")
-        || lower.contains("spread=")
-        || lower.contains("snapshot")
-        || lower.contains("book update")
-    {
-        return None;
-    }
-
-    let (kind, severity) = if lower.contains("order id unavailable")
-        || lower.contains("status: unknown")
-        || lower.contains("returned empty orderid")
-    {
-        ("ack", "warning")
-    } else if source == "WALLET_SYNC" {
-        (
-            "wallet_sync",
-            if lower.contains("failed") || lower.contains("error") {
-                "error"
-            } else {
-                "info"
-            },
-        )
-    } else if lower.contains("connected")
-        || lower.contains("websocket")
-        || lower.contains("ws ")
-        || lower.contains("subscribed")
-    {
-        ("exchange", "info")
-    } else if lower.contains("submitted")
-        || lower.contains("canceled")
-        || lower.contains("cancelled")
-        || lower.contains("fill")
-        || lower.contains("filled")
-        || lower.contains("order")
-    {
-        (
-            "order",
-            if lower.contains("failed") || lower.contains("error") {
-                "error"
-            } else {
-                "info"
-            },
-        )
-    } else if lower.contains("position")
-        || lower.contains("realized")
-        || lower.contains("pnl")
-        || lower.contains("trade")
-    {
-        (
-            "trade",
-            if lower.contains("loss") || lower.contains("error") {
-                "warning"
-            } else {
-                "info"
-            },
-        )
-    } else if lower.contains("warning") || lower.contains("warn") {
-        ("runtime", "warning")
-    } else if lower.contains("error")
-        || lower.contains("panic")
-        || lower.contains("fatal")
-        || lower.contains("terminated")
-    {
-        ("runtime", "error")
-    } else if lower.contains("session start")
-        || lower.contains("starting")
-        || lower.contains("started")
-        || lower.contains("stop")
-        || lower.contains("restart")
-    {
-        ("runtime", "info")
+fn format_trade_outcome(outcome: Option<&str>, price: f64) -> Option<String> {
+    let outcome = outcome
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    if price.is_finite() && price > 0.0 {
+        Some(format!("{outcome} {}c", (price * 100.0).round() as i64))
     } else {
-        return None;
-    };
+        Some(outcome)
+    }
+}
 
-    Some(serde_json::json!({
-        "timestamp": timestamp,
-        "severity": severity,
-        "source": source.to_ascii_lowercase(),
-        "kind": kind,
-        "message": content,
-        "action": serde_json::Value::Null,
-        "title": serde_json::Value::Null,
-        "outcome": serde_json::Value::Null,
-        "detail": serde_json::Value::Null,
-        "quantity": serde_json::Value::Null,
-        "value_usd": serde_json::Value::Null,
-    }))
+fn trade_action_label(side: &str) -> &'static str {
+    if side.eq_ignore_ascii_case("sell") {
+        "Sold"
+    } else {
+        "Bought"
+    }
+}
+
+fn signed_trade_cashflow(side: &str, notional_usd: f64, price: f64, quantity: f64) -> f64 {
+    let base = if notional_usd.is_finite() && notional_usd > 0.0 {
+        notional_usd
+    } else {
+        price * quantity
+    };
+    if side.eq_ignore_ascii_case("sell") {
+        base
+    } else {
+        -base
+    }
+}
+
+fn latest_fill_id(conn: &Connection) -> u64 {
+    conn.query_row("SELECT COALESCE(MAX(id), 0) FROM fills_v2", [], |row| {
+        row.get::<_, i64>(0)
+    })
+    .unwrap_or(0)
+    .max(0) as u64
+}
+
+fn load_trade_activity_rows(
+    conn: &Connection,
+    cursor: Option<u64>,
+    limit: usize,
+    reset: bool,
+) -> Vec<TradeActivityRecord> {
+    let limit = limit.max(1) as i64;
+    if cursor.is_some() && !reset {
+        let sql = r#"
+SELECT
+    f.id,
+    COALESCE(f.ts_ms, f.created_at_ms, 0),
+    COALESCE(f.condition_id, ''),
+    COALESCE(f.token_id, ''),
+    LOWER(TRIM(COALESCE(f.side, 'buy'))),
+    COALESCE(f.price, 0.0),
+    COALESCE(f.units, 0.0),
+    COALESCE(f.notional_usd, COALESCE(f.price, 0.0) * COALESCE(f.units, 0.0)),
+    NULLIF(TRIM(f.timeframe), ''),
+    NULLIF(f.period_timestamp, 0),
+    NULLIF(TRIM(f.token_type), ''),
+    NULLIF(TRIM(te.asset_symbol), '')
+FROM fills_v2 f
+LEFT JOIN trade_events te ON te.event_key = f.event_key
+WHERE f.id > ?1
+ORDER BY f.id ASC
+LIMIT ?2
+"#;
+        let mut stmt = match conn.prepare(sql) {
+            Ok(stmt) => stmt,
+            Err(_) => return vec![],
+        };
+        return stmt
+            .query_map([cursor.unwrap_or(0) as i64, limit], |row| {
+                Ok(TradeActivityRecord {
+                    id: row.get::<_, i64>(0)?.max(0) as u64,
+                    timestamp: iso_from_ms(row.get(1)?),
+                    condition_id: row.get(2)?,
+                    token_id: row.get(3)?,
+                    side: row.get(4)?,
+                    price: row.get(5)?,
+                    quantity: row.get(6)?,
+                    notional_usd: row.get(7)?,
+                    timeframe: row.get(8)?,
+                    period_timestamp: row.get(9)?,
+                    token_type: row.get(10)?,
+                    asset_symbol: row.get(11)?,
+                })
+            })
+            .map(|iter| iter.filter_map(Result::ok).collect())
+            .unwrap_or_default();
+    }
+
+    let sql = r#"
+SELECT
+    f.id,
+    COALESCE(f.ts_ms, f.created_at_ms, 0),
+    COALESCE(f.condition_id, ''),
+    COALESCE(f.token_id, ''),
+    LOWER(TRIM(COALESCE(f.side, 'buy'))),
+    COALESCE(f.price, 0.0),
+    COALESCE(f.units, 0.0),
+    COALESCE(f.notional_usd, COALESCE(f.price, 0.0) * COALESCE(f.units, 0.0)),
+    NULLIF(TRIM(f.timeframe), ''),
+    NULLIF(f.period_timestamp, 0),
+    NULLIF(TRIM(f.token_type), ''),
+    NULLIF(TRIM(te.asset_symbol), '')
+FROM fills_v2 f
+LEFT JOIN trade_events te ON te.event_key = f.event_key
+ORDER BY f.id DESC
+LIMIT ?1
+"#;
+    let mut stmt = match conn.prepare(sql) {
+        Ok(stmt) => stmt,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([limit], |row| {
+        Ok(TradeActivityRecord {
+            id: row.get::<_, i64>(0)?.max(0) as u64,
+            timestamp: iso_from_ms(row.get(1)?),
+            condition_id: row.get(2)?,
+            token_id: row.get(3)?,
+            side: row.get(4)?,
+            price: row.get(5)?,
+            quantity: row.get(6)?,
+            notional_usd: row.get(7)?,
+            timeframe: row.get(8)?,
+            period_timestamp: row.get(9)?,
+            token_type: row.get(10)?,
+            asset_symbol: row.get(11)?,
+        })
+    })
+    .map(|iter| iter.filter_map(Result::ok).collect())
+    .unwrap_or_default()
+}
+
+fn first_non_empty(values: &[Option<String>]) -> Option<String> {
+    values.iter().find_map(|value| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn fetch_clob_market_metadata(
+    client: &reqwest::blocking::Client,
+    condition_id: &str,
+) -> Option<(Option<String>, HashMap<String, String>)> {
+    let url = format!("https://clob.polymarket.com/markets/{condition_id}");
+    let response = client.get(&url).send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let payload: ClobMarketResponse = response.json().ok()?;
+    let title = payload
+        .question
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            payload
+                .market_slug
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        });
+
+    let outcomes_by_token = payload
+        .tokens
+        .into_iter()
+        .filter_map(|token| {
+            let outcome = token.outcome?;
+            let outcome = outcome.trim();
+            if token.token_id.trim().is_empty() || outcome.is_empty() {
+                None
+            } else {
+                Some((token.token_id, outcome.to_string()))
+            }
+        })
+        .collect::<HashMap<_, _>>();
+
+    Some((title, outcomes_by_token))
+}
+
+fn fetch_gamma_market_metadata(
+    client: &reqwest::blocking::Client,
+    condition_id: &str,
+) -> Option<GammaMarketResponse> {
+    let url = format!("https://gamma-api.polymarket.com/markets?condition_ids={condition_id}");
+    let response = client.get(&url).send().ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+
+    let payload: Vec<GammaMarketResponse> = response.json().ok()?;
+    payload.into_iter().next()
+}
+
+fn gamma_market_thumbnail(payload: &GammaMarketResponse) -> Option<String> {
+    let event = payload.events.first();
+    first_non_empty(&[
+        payload
+            .image_optimized
+            .as_ref()
+            .and_then(|entry| entry.image_url_optimized.clone()),
+        event
+            .and_then(|entry| entry.image_optimized.as_ref())
+            .and_then(|entry| entry.image_url_optimized.clone()),
+        payload.image.clone(),
+        event.and_then(|entry| entry.image.clone()),
+        payload
+            .icon_optimized
+            .as_ref()
+            .and_then(|entry| entry.image_url_optimized.clone()),
+        event
+            .and_then(|entry| entry.icon_optimized.as_ref())
+            .and_then(|entry| entry.image_url_optimized.clone()),
+        payload.icon.clone(),
+        event.and_then(|entry| entry.icon.clone()),
+    ])
+}
+
+fn fetch_market_metadata(condition_id: &str) -> Option<MarketMetadata> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .ok()?;
+
+    let clob = fetch_clob_market_metadata(&client, condition_id);
+    let gamma = fetch_gamma_market_metadata(&client, condition_id);
+
+    let title = clob
+        .as_ref()
+        .and_then(|(value, _)| value.clone())
+        .or_else(|| gamma.as_ref().and_then(|payload| payload.question.clone()))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())?;
+
+    let outcomes_by_token = clob
+        .map(|(_, outcomes_by_token)| outcomes_by_token)
+        .unwrap_or_default();
+
+    Some(MarketMetadata {
+        title,
+        outcomes_by_token,
+        thumbnail_url: gamma.as_ref().and_then(gamma_market_thumbnail),
+    })
+}
+
+fn resolve_market_metadata(
+    condition_id: &str,
+    cache: &MarketMetadataState,
+) -> Option<MarketMetadata> {
+    if condition_id.trim().is_empty() {
+        return None;
+    }
+
+    if let Ok(guard) = cache.0.lock() {
+        if let Some(entry) = guard.get(condition_id).cloned() {
+            return Some(entry);
+        }
+    }
+
+    let fetched = fetch_market_metadata(condition_id)?;
+    if let Ok(mut guard) = cache.0.lock() {
+        guard.insert(condition_id.to_string(), fetched.clone());
+    }
+    Some(fetched)
 }
 
 fn build_home_activity_batch(
     data_dir: &Path,
+    cache: &MarketMetadataState,
     cursor: Option<u64>,
     limit: usize,
 ) -> serde_json::Value {
-    let event_path = data_dir.join(EVENTS_LOG_NAME);
-    if let Ok(batch) = read_plain_tail_lines(&event_path, cursor, limit.max(1) * 12) {
-        let items = batch
-            .lines
-            .into_iter()
-            .filter_map(|line| classify_home_event(&line))
-            .collect::<Vec<_>>();
-
-        if !items.is_empty() || batch.reset || cursor.is_none() {
-            return serde_json::json!({
-                "next_cursor": batch.next_cursor,
-                "reset": batch.reset,
-                "items": items,
-            });
-        }
-    }
-
-    let path = data_dir.join(FULL_DEBUG_LOG_NAME);
-    let batch = match log_stream::read_log_tail(&path, cursor, limit.max(1) * 12) {
-        Ok(batch) => batch,
+    let db_path = resolve_tracking_db_path(data_dir);
+    let conn = match Connection::open(&db_path) {
+        Ok(conn) => conn,
         Err(_) => {
             return serde_json::json!({
                 "next_cursor": cursor.unwrap_or(0),
@@ -1237,20 +1973,73 @@ fn build_home_activity_batch(
         }
     };
 
-    let items = batch
-        .lines
-        .into_iter()
-        .filter_map(|line| {
-            let (source, content) = parse_sourced_log_content(&line.content)?;
-            classify_home_activity(line.timestamp, source, content)
-        })
-        .rev()
-        .take(limit.max(1))
-        .collect::<Vec<_>>();
+    let latest_id = latest_fill_id(&conn);
+    let reset = cursor.map(|value| latest_id < value).unwrap_or(false);
+    let records = load_trade_activity_rows(&conn, cursor, limit, reset);
+    let mut next_cursor = if reset { 0 } else { cursor.unwrap_or(0) };
+    let mut resolved_markets: HashMap<String, Option<MarketMetadata>> = HashMap::new();
+    let mut items = Vec::with_capacity(records.len());
+
+    for record in records {
+        let market = if record.condition_id.trim().is_empty() {
+            None
+        } else if let Some(entry) = resolved_markets.get(&record.condition_id) {
+            entry.clone()
+        } else {
+            let resolved = resolve_market_metadata(&record.condition_id, cache);
+            resolved_markets.insert(record.condition_id.clone(), resolved.clone());
+            resolved
+        };
+
+        let title = market
+            .as_ref()
+            .map(|entry| entry.title.clone())
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| {
+                format_market_title(
+                    record.asset_symbol.as_deref(),
+                    record.timeframe.as_deref(),
+                    record.period_timestamp,
+                )
+            });
+
+        let fallback_outcome = parse_trade_outcome_label(record.token_type.as_deref());
+        let outcome_label = market
+            .as_ref()
+            .and_then(|entry| entry.outcomes_by_token.get(&record.token_id).cloned())
+            .or(fallback_outcome)
+            .and_then(|outcome| format_trade_outcome(Some(outcome.as_str()), record.price));
+
+        let cashflow_usd = signed_trade_cashflow(
+            &record.side,
+            record.notional_usd,
+            record.price,
+            record.quantity,
+        );
+        let action = trade_action_label(&record.side).to_string();
+
+        items.push(serde_json::json!({
+            "timestamp": record.timestamp,
+            "severity": "info",
+            "source": "trade",
+            "kind": "trade",
+            "message": title.clone(),
+            "action": action,
+            "thumbnail_url": market.as_ref().and_then(|entry| entry.thumbnail_url.clone()),
+            "market_title": title.clone(),
+            "title": title,
+            "outcome": outcome_label,
+            "detail": serde_json::Value::Null,
+            "quantity": record.quantity,
+            "cashflow_usd": cashflow_usd,
+            "value_usd": cashflow_usd,
+        }));
+        next_cursor = next_cursor.max(record.id);
+    }
 
     serde_json::json!({
-        "next_cursor": batch.next_cursor,
-        "reset": batch.reset,
+        "next_cursor": next_cursor,
+        "reset": reset,
         "items": items,
     })
 }
@@ -1512,6 +2301,7 @@ fn start_bot(
     wallet_sync: State<'_, WalletSyncState>,
     simulation: bool,
 ) -> Result<(), String> {
+    geo_access::ensure_geo_start_allowed()?;
     let (env_path, config_path, wallet_sync_config) = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
         let profile = persist_active_profile_simulation_mode(&pm, simulation)?;
@@ -1563,6 +2353,7 @@ fn restart_bot(
     wallet_sync: State<'_, WalletSyncState>,
     simulation: bool,
 ) -> Result<(), String> {
+    geo_access::ensure_geo_start_allowed()?;
     let (env_path, config_path, wallet_sync_config) = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
         let profile = persist_active_profile_simulation_mode(&pm, simulation)?;
@@ -2051,10 +2842,11 @@ async fn get_home_overview(
 #[tauri::command]
 fn get_home_activity(
     data_dir: State<'_, AppDataDir>,
+    market_metadata: State<'_, MarketMetadataState>,
     cursor: Option<u64>,
     limit: usize,
 ) -> serde_json::Value {
-    build_home_activity_batch(&data_dir.0, cursor, limit)
+    build_home_activity_batch(&data_dir.0, &market_metadata, cursor, limit)
 }
 
 #[tauri::command]
@@ -2066,6 +2858,11 @@ fn get_wallet_sync_status(wallet_sync: State<'_, WalletSyncState>) -> serde_json
             .unwrap_or_default(),
     )
     .unwrap_or_else(|_| serde_json::json!({}))
+}
+
+#[tauri::command]
+fn get_geo_access_status() -> GeoAccessStatus {
+    geo_access::current_geo_access_status()
 }
 
 #[tauri::command]
@@ -2131,6 +2928,7 @@ async fn run_onboarding(
     signature_type: u8,
     proxy_wallet: String,
 ) -> Result<serde_json::Value, String> {
+    geo_access::ensure_geo_start_allowed()?;
     append_desktop_debug_line(
         &data_dir.0,
         "ONBOARD",
@@ -2194,6 +2992,7 @@ pub fn run() {
         .manage(profiles)
         .manage(bot)
         .manage(wallet_sync)
+        .manage(MarketMetadataState::default())
         .setup(|app| {
             let status_item =
                 MenuItem::with_id(app, "status", "EVPoly: Stopped", false, None::<&str>)?;
@@ -2248,6 +3047,9 @@ pub fn run() {
                         if let Some((env_path, config_path, simulation, wallet_sync_config)) =
                             configs()
                         {
+                            if geo_access::ensure_geo_start_allowed().is_err() {
+                                return;
+                            }
                             if let Ok(bm) = bs.lock() {
                                 if bm.start(app, env_path, config_path, simulation).is_ok() {
                                     if simulation {
@@ -2358,6 +3160,7 @@ pub fn run() {
             get_home_overview,
             get_home_activity,
             get_wallet_sync_status,
+            get_geo_access_status,
             run_wallet_sync_now,
             get_data_dir_path,
             open_logs_folder,

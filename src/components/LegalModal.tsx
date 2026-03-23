@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { open } from "@tauri-apps/plugin-shell";
 import { InfoPill } from "./InfoPill";
+import { OfficialLinks } from "./OfficialLinks";
 
 const STORAGE_KEY = "evpoly_legal_accepted";
 
@@ -65,19 +65,20 @@ export function LegalModal({ onAccept }: { onAccept: () => void }) {
                   <li className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3">
                     You are solely responsible for your trading decisions and their consequences.
                   </li>
+                  <li className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3">
+                    EVPoly may be unavailable in certain restricted jurisdictions due to regulatory,
+                    sanctions, or platform restrictions.
+                  </li>
                 </ul>
               </div>
 
-              <div className="mt-6 flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  onClick={() =>
-                    open("https://github.com/Degenapetrader/EVPOLY/blob/desktop/TERMS_OF_SERVICE.md")
-                  }
-                  className="ui-button"
-                >
-                  View full terms
-                </button>
+              <div className="mt-6 rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4 text-sm text-[var(--text-secondary)]">
+                Review the full Terms of Service and Restricted Jurisdictions policy before
+                continuing.
+              </div>
+
+              <div className="mt-6">
+                <OfficialLinks />
               </div>
 
               <label className="mt-6 flex cursor-pointer items-start gap-3 rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4">

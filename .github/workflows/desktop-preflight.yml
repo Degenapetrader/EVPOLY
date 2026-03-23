@@ -40,7 +40,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Fast gate checks
-        run: INSTALL_DEPS=1 RUN_FRONTEND_BUILD=1 RUN_CARGO_CHECK=0 RUN_SMOKE=0 bash scripts/desktop-gate-fast.sh
+        run: INSTALL_DEPS=1 RUN_FRONTEND_BUILD=1 RUN_CARGO_CHECK=1 RUN_SMOKE=0 bash scripts/desktop-gate-fast.sh
 
   preflight-windows-fast:
     runs-on: windows-latest
@@ -60,7 +60,7 @@ jobs:
 
       - name: Fast gate checks
         shell: pwsh
-        run: ./scripts/desktop-gate-fast.ps1 -InstallDeps -RunSmoke:$false -RunCargoCheck:$false
+        run: ./scripts/desktop-gate-fast.ps1 -InstallDeps -RunSmoke:$false -RunCargoCheck:$true
 
   preflight-linux-full-smoke:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_smoke == true }}

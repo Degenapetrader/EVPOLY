@@ -53,6 +53,15 @@ export interface WalletSyncStatus {
   interval_sec: number;
 }
 
+export interface GeoAccessStatus {
+  status: "allowed" | "blocked" | "unknown" | string;
+  country_code: string | null;
+  country_name: string | null;
+  region_name: string | null;
+  reason: string;
+  checked_at: string;
+}
+
 export interface HomeOverview {
   profile_ready: boolean;
   portfolio_value: number | null;
@@ -83,10 +92,13 @@ export interface HomeActivityItem {
   kind: string;
   message: string;
   action?: string | null;
+  thumbnail_url?: string | null;
+  market_title?: string | null;
   title?: string | null;
   outcome?: string | null;
   detail?: string | null;
   quantity?: number | null;
+  cashflow_usd?: number | null;
   value_usd?: number | null;
 }
 
@@ -180,6 +192,113 @@ export interface OnboardResult {
   [key: string]: unknown;
 }
 
+export interface PremarketSettings {
+  tp_enabled: boolean;
+  active_cap_per_asset: number;
+  cancel_after_open_sec: {
+    m5: number;
+    m15: number;
+    h1: number;
+    h4: number;
+  };
+}
+
+export interface EndgameSettings {
+  timeframes: string[];
+  per_period_cap_usd: number;
+  tick0_multiplier: number;
+  tick1_multiplier: number;
+  tick2_multiplier: number;
+}
+
+export interface EVCurveSettings {
+  timeframes: string[];
+  max_flip_prob: number;
+  min_buy_price: number;
+  d1_enabled: boolean;
+  d1_cap_usd: number;
+}
+
+export interface SessionBandSettings {
+  timeframes: string[];
+  flip_threshold_pct: number;
+  tau2_enabled: boolean;
+  tau1_enabled: boolean;
+  tau2_multiplier: number;
+  tau1_multiplier: number;
+}
+
+export interface EVSnipeSettings {
+  pre_hit_enabled: boolean;
+  pre_leg_ratio: number;
+  saved_pre_leg_ratio: number;
+  pre_trigger_bps: number;
+  strike_window_pct: number;
+  max_days_to_expiry: number;
+}
+
+export interface MMRewardsSettings {
+  market_mode: string;
+  single_market_slugs: string;
+  auto_top_n: number;
+  auto_refresh_sec: number;
+  auto_rank_budget_usd: number;
+  blacklist_keywords: string;
+  reward_min_shares_cap: number;
+}
+
+export interface MMSportSettings {
+  min_reward_rate_per_day: number;
+  pause_after_fill_sec: number;
+  near_expiry_exit_window_sec: number;
+  inventory_exit_mode: string;
+  max_share_ratio: number;
+  min_top_depth_usd: number;
+  quote_expiry_min_sec: number;
+  quote_expiry_max_sec: number;
+}
+
+export interface SharedSymbolMultipliers {
+  btc: number;
+  eth: number;
+  sol: number;
+  xrp: number;
+  doge: number;
+  bnb: number;
+  hype: number;
+}
+
+export interface PremarketTimeframeMultipliers {
+  m5: number;
+  m15: number;
+  h1: number;
+  h4: number;
+  d1: number;
+}
+
+export interface EVCurveTimeframeMultipliers {
+  m15: number;
+  h1: number;
+  h4: number;
+  d1: number;
+}
+
+export interface SizePolicySettings {
+  symbol_multipliers: SharedSymbolMultipliers;
+  premarket_timeframe_multipliers: PremarketTimeframeMultipliers;
+  evcurve_timeframe_multipliers: EVCurveTimeframeMultipliers;
+}
+
+export interface StrategySettings {
+  premarket: PremarketSettings;
+  endgame: EndgameSettings;
+  evcurve: EVCurveSettings;
+  session_band: SessionBandSettings;
+  evsnipe: EVSnipeSettings;
+  mm_rewards: MMRewardsSettings;
+  mm_sport: MMSportSettings;
+}
+
 export interface BotConfig {
   private_key: string;
   eoa_wallet: string;
@@ -213,6 +332,8 @@ export interface BotConfig {
     rewards_min_share_multiple: number;
     sport_quote_size_multiplier: number;
   };
+  size_policy: SizePolicySettings;
+  strategy_settings: StrategySettings;
   simulation: boolean;
   relayer_api_key: string;
   relayer_api_key_address: string;
@@ -381,6 +502,9 @@ export const getWalletSyncStatus = (): Promise<WalletSyncStatus> =>
 
 export const runWalletSyncNow = (): Promise<WalletSyncStatus> =>
   invoke("run_wallet_sync_now");
+
+export const getGeoAccessStatus = (): Promise<GeoAccessStatus> =>
+  invoke("get_geo_access_status");
 
 // Onboarding
 export const runOnboarding = (

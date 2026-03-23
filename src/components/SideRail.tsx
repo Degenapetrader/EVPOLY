@@ -10,19 +10,28 @@ export type SideRailItem = {
 export function SideRail({
   title = "EVPoly",
   subtitle,
+  logoSrc,
+  logoAlt = "EVPlus",
   items,
   children,
 }: {
   title?: string;
   subtitle?: string;
+  logoSrc?: string;
+  logoAlt?: string;
   items: SideRailItem[];
   children?: ReactNode;
 }) {
   return (
     <aside className="app-rail">
       <div className="app-rail__brand">
-        <div className="app-rail__title">{title}</div>
-        {subtitle ? <div className="app-rail__subtitle">{subtitle}</div> : null}
+        <div className="app-rail__brand-row">
+          <div className="app-rail__brand-copy">
+            <div className="app-rail__title">{title}</div>
+            {subtitle ? <div className="app-rail__subtitle">{subtitle}</div> : null}
+          </div>
+          {logoSrc ? <img src={logoSrc} alt={logoAlt} className="app-rail__logo" /> : null}
+        </div>
       </div>
 
       <nav className="app-rail__nav">

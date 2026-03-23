@@ -1,10 +1,13 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
+import { GeoAccessDialog } from "../components/GeoAccessDialog";
 import { InfoPill } from "../components/InfoPill";
 import { SectionPanel } from "../components/SectionPanel";
 import { LegalModal, hasAcceptedTerms } from "../components/LegalModal";
 import {
+  getGeoAccessStatus,
   getActiveProfileId,
+  type GeoAccessStatus,
   initializePassword,
   isAuthInitialized,
   verifyPassword,
@@ -84,12 +87,19 @@ export function Login() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showLegal, setShowLegal] = useState(false);
+  const [geoStatus, setGeoStatus] = useState<GeoAccessStatus | null>(null);
+  const [geoAcknowledged, setGeoAcknowledged] = useState(false);
 
   const resolveInit = async () => {
     setAuthInitError(null);
     try {
-      const init = await isAuthInitialized();
+      const [init, nextGeoStatus] = await Promise.all([
+        isAuthInitialized(),
+        getGeoAccessStatus(),
+      ]);
       setInitialized(init);
+      setGeoStatus(nextGeoStatus);
+      setGeoAcknowledged(false);
       setShowLegal(!hasAcceptedTerms());
     } catch (err) {
       const message =
@@ -100,6 +110,7 @@ export function Login() {
           : "failed to initialize auth state";
       setAuthInitError(message);
       setInitialized(null);
+      setGeoStatus(null);
     }
   };
 
@@ -192,6 +203,20 @@ export function Login() {
             </div>
           </SectionPanel>
         }
+      />
+    );
+  }
+
+  if (geoStatus?.status === "blocked") {
+    return <GeoAccessDialog status={geoStatus} fullScreen />;
+  }
+
+  if (geoStatus?.status === "unknown" && !geoAcknowledged) {
+    return (
+      <GeoAccessDialog
+        status={geoStatus}
+        fullScreen
+        onContinue={() => setGeoAcknowledged(true)}
       />
     );
   }

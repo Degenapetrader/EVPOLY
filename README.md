@@ -2,6 +2,19 @@
 
 Cross-platform desktop app for the EVPoly trading bot. Built with Tauri v2 + React.
 
+## Official Links
+
+- Website: [https://www.evplus.ai/](https://www.evplus.ai/)
+- X: [https://x.com/EVplusAI](https://x.com/EVplusAI)
+- GitHub: [https://github.com/Degenapetrader/EVPOLY](https://github.com/Degenapetrader/EVPOLY)
+
+## Restricted Jurisdictions
+
+EVPoly is unavailable in certain restricted jurisdictions due to regulatory, sanctions, or platform restrictions. Use from restricted jurisdictions, or use of VPNs and proxies to bypass geographic restrictions, is prohibited.
+
+- Terms: [TERMS_OF_SERVICE.md](./TERMS_OF_SERVICE.md)
+- Policy: [RESTRICTED_JURISDICTIONS.md](./RESTRICTED_JURISDICTIONS.md)
+
 ## Prerequisites
 
 - [Rust](https://rustup.rs/) (stable)

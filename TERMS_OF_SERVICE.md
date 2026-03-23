@@ -1,4 +1,4 @@
-# EVPoly — Terms of Service
+# EVPoly - Terms of Service
 
 **Last Updated: March 2026**
 
@@ -8,7 +8,7 @@ By downloading, installing, or using EVPoly ("the Software"), you agree to be bo
 
 ## 1. Nature of the Software
 
-EVPoly is free, open-source, experimental trading software designed for use with Polymarket prediction markets. The Software is provided under the EVPoly Non-Commercial License v1.0 — it is source-available for non-commercial use only. Commercial use requires a separate written license from the copyright holder.
+EVPoly is free, open-source, experimental trading software designed for use with Polymarket prediction markets. The Software is provided under the EVPoly Non-Commercial License v1.0 - it is source-available for non-commercial use only. Commercial use requires a separate written license from the copyright holder.
 
 ## 2. No Warranty
 
@@ -49,33 +49,43 @@ You should consult a qualified financial advisor before making any trading or in
 
 ## 6. User Responsibilities
 
-- **Compliance:** You are solely responsible for ensuring your use of the Software complies with all applicable local, state, national, and international laws and regulations, including those related to cryptocurrency, prediction markets, gambling, and taxation.
+- **Compliance:** You are solely responsible for ensuring your use of the Software complies with all applicable local, state, national, and international laws and regulations, including those related to cryptocurrency, prediction markets, gambling, taxation, sanctions, export controls, and platform restrictions.
 - **Private Keys:** You are solely responsible for the security and safekeeping of your private keys and wallet credentials. The developers have no access to and no ability to recover your keys or funds.
 - **Decisions:** All trading decisions made through the Software are your own. You bear full responsibility for the outcomes.
 
-## 7. Third-Party Services
+## 7. Restricted Jurisdictions and Access Restrictions
+
+EVPoly is unavailable in certain restricted jurisdictions due to regulatory, sanctions, or platform restrictions.
+
+- You may not access or use the Software from a restricted jurisdiction.
+- You may not use a VPN, proxy, relay, or similar service to bypass geographic restrictions.
+- EVPlus may block, suspend, or terminate access where geographic restrictions apply or circumvention is suspected.
+- The current restricted-jurisdictions policy is published in the repository documentation and may be updated from time to time.
+- You remain solely responsible for compliance with all applicable laws, regulations, sanctions, export controls, and platform restrictions.
+
+## 8. Third-Party Services
 
 The Software interacts with third-party services including Polymarket, blockchain networks, and price oracles. The developers have no control over these services and accept no responsibility for their availability, accuracy, or conduct.
 
-## 8. Discontinuation
+## 9. Discontinuation
 
 The developers reserve the right to discontinue, modify, or suspend the Software at any time, for any reason, without notice or liability.
 
-## 9. Open Source License
+## 10. License
 
-The Software is released under the EVPoly Non-Commercial License v1.0. The full license text is available in the LICENSE file included with the source code. These Terms of Service supplement but do not replace the license.
+The Software is released under the EVPoly Non-Commercial License v1.0. These Terms of Service supplement but do not replace the applicable license terms distributed with the source code and repository materials.
 
-## 10. Governing Law
+## 11. Governing Law
 
 This Software is provided as-is without reference to any specific jurisdiction. No governing law is specified. Any disputes shall be resolved between the parties directly.
 
-## 11. Severability
+## 12. Severability
 
 If any provision of these Terms is found to be unenforceable or invalid, that provision shall be limited or eliminated to the minimum extent necessary, and the remaining provisions shall remain in full effect.
 
-## 12. Entire Agreement
+## 13. Entire Agreement
 
-These Terms, together with the LICENSE file, constitute the entire agreement between you and the developers regarding use of the Software.
+These Terms, together with the applicable license terms and repository policy documents, constitute the entire agreement between you and the developers regarding use of the Software.
 
 ---
 

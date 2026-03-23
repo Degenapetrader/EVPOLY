@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { check } from "@tauri-apps/plugin-updater";
 import { AppShell } from "../components/AppShell";
-import { InfoPill } from "../components/InfoPill";
+import { GeoAccessDialog } from "../components/GeoAccessDialog";
 import { LogsDrawer } from "../components/LogsDrawer";
 import { ProfileSwitcher } from "../components/ProfileSwitcher";
 import { SectionPanel } from "../components/SectionPanel";
@@ -16,15 +16,21 @@ import {
   STRATEGIES,
   DEFAULT_CONFIG,
   formatUsd,
+  formatEndgameSplitTooltip,
   mergeConfig,
   parseNonNegative,
+  setEVSnipePreHitEnabled,
+  strategyControlSuffix,
+  strategyControlTooltip,
   strategySizeLabel,
   strategySizeValue,
+  strategyTooltip,
   updateStrategyEnabled,
   updateStrategySize,
   type StrategyKey,
 } from "../lib/desktop-config";
 import {
+  getGeoAccessStatus,
   getActiveProfileId,
   getSavedConfig,
   lockSession,
@@ -33,21 +39,13 @@ import {
   startBot,
   stopBot,
   type BotConfig,
-  type HomeActivityItem,
+  type GeoAccessStatus,
 } from "../lib/tauri-commands";
 
 function getErrorText(err: unknown, fallback: string): string {
   if (typeof err === "string" && err.trim()) return err;
   if (err instanceof Error && err.message.trim()) return err.message;
   return fallback;
-}
-
-function actionTone(
-  severity: HomeActivityItem["severity"]
-): "accent" | "warning" | "danger" | "success" {
-  if (severity === "error") return "danger";
-  if (severity === "warning") return "warning";
-  return "accent";
 }
 
 function formatRelativeTime(value: string): string {
@@ -69,15 +67,27 @@ function formatControlValue(value: number): string {
   }).format(value);
 }
 
+function activityActionClass(action?: string | null): "buy" | "sell" {
+  return action?.toLowerCase() === "sold" ? "sell" : "buy";
+}
+
+function activityOutcomeClass(outcome?: string | null): "positive" | "negative" | "neutral" {
+  const lower = outcome?.toLowerCase() ?? "";
+  if (lower.startsWith("yes") || lower.startsWith("up")) return "positive";
+  if (lower.startsWith("no") || lower.startsWith("down")) return "negative";
+  return "neutral";
+}
+
+function activityValueClass(value?: number | null): "positive" | "negative" | "neutral" {
+  if (typeof value !== "number" || !Number.isFinite(value) || value === 0) return "neutral";
+  return value > 0 ? "positive" : "negative";
+}
+
 function strategyKeyFromRoute(strategySlug?: string): StrategyKey | null {
   if (!strategySlug) return null;
   return (
     STRATEGIES.find((strategy) => strategy.key === strategySlug)?.key ?? null
   );
-}
-
-function strategyTone(enabled: boolean): "accent" | "neutral" {
-  return enabled ? "accent" : "neutral";
 }
 
 export function Home() {
@@ -98,6 +108,8 @@ export function Home() {
   const [pendingUpdate, setPendingUpdate] =
     useState<Awaited<ReturnType<typeof check>> | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<string>(JSON.stringify(DEFAULT_CONFIG));
+  const [geoDialogStatus, setGeoDialogStatus] = useState<GeoAccessStatus | null>(null);
+  const [pendingGeoAction, setPendingGeoAction] = useState<"start" | "restart" | null>(null);
 
   const selectedStrategy = useMemo(
     () => strategyKeyFromRoute(strategySlug),
@@ -155,6 +167,7 @@ export function Home() {
   const dirty = useMemo(() => JSON.stringify(config) !== savedSnapshot, [config, savedSnapshot]);
   const displayError = actionError || overviewError || activityError;
   const canOperate = Boolean(activeProfileId && configLoaded);
+  const botRunning = overview?.bot_state === "running";
   const activityItems = useMemo(
     () => [...items].sort((left, right) => right.timestamp.localeCompare(left.timestamp)),
     [items]
@@ -210,7 +223,7 @@ export function Home() {
     }
   };
 
-  const handleStart = async () => {
+  const performStart = async () => {
     if (!activeProfileId) {
       setActionError("Open Settings and create a profile before starting the bot.");
       return;
@@ -232,7 +245,7 @@ export function Home() {
     }
   };
 
-  const handleRestart = async () => {
+  const performRestart = async () => {
     if (!activeProfileId) {
       setActionError("Open Settings and create a profile before restarting the bot.");
       return;
@@ -252,6 +265,38 @@ export function Home() {
     } finally {
       setActionLoading(false);
     }
+  };
+
+  const promptGeoIfNeeded = async (action: "start" | "restart") => {
+    try {
+      const status = await getGeoAccessStatus();
+      if (status.status === "allowed") {
+        return false;
+      }
+      setPendingGeoAction(action);
+      setGeoDialogStatus(status);
+      if (status.status === "blocked") {
+        setActionError(status.reason);
+      }
+      return true;
+    } catch (err) {
+      setActionError(getErrorText(err, "failed to verify access restrictions"));
+      return true;
+    }
+  };
+
+  const handleStart = async () => {
+    if (await promptGeoIfNeeded("start")) {
+      return;
+    }
+    await performStart();
+  };
+
+  const handleRestart = async () => {
+    if (await promptGeoIfNeeded("restart")) {
+      return;
+    }
+    await performRestart();
   };
 
   const handleStop = async () => {
@@ -276,37 +321,44 @@ export function Home() {
 
   const renderStrategyList = () => (
     <div className="strategy-rail">
-      <div>
-        <div className="strategy-rail__title">Strategy List</div>
-        <div className="strategy-rail__subtitle">
-          Switch a strategy into the main workspace and edit its live control value here.
-        </div>
+      <div className="strategy-rail__title">Strategy List</div>
+      <div className="strategy-rail__header" aria-hidden="true">
+        <span>Strategy</span>
+        <span>State</span>
+        <span>Control</span>
       </div>
 
       <div className="strategy-rail__list">
         {STRATEGIES.map((strategy) => {
           const enabled = config.strategies[strategy.key];
           const value = strategySizeValue(config, strategy.key);
-          const label = strategySizeLabel(strategy.key);
           const selected = strategy.key === selectedStrategy;
+          const suffix = strategyControlSuffix(strategy.key);
+          const controlTitle = strategyControlTooltip(config, strategy.key);
+          const showPreHitRow = strategy.key === "evsnipe";
+          const preHitEnabled = config.strategy_settings.evsnipe.pre_hit_enabled;
 
           return (
             <div
               key={strategy.key}
-              className={`strategy-rail__row ${
-                selected ? "strategy-rail__row--active" : ""
+              className={`strategy-rail__group ${
+                selected ? "strategy-rail__group--active" : ""
               }`.trim()}
             >
-              <button
-                type="button"
-                onClick={() => navigate(`/home/${strategy.key}`)}
-                className="strategy-rail__link"
+              <div
+                className={`strategy-rail__row ${
+                  selected ? "strategy-rail__row--active" : ""
+                }`.trim()}
               >
-                <div className="strategy-rail__label">{strategy.label}</div>
-                <div className="strategy-rail__summary">{strategy.summary}</div>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => navigate(`/home/${strategy.key}`)}
+                  className="strategy-rail__link"
+                  title={strategyTooltip(strategy.key)}
+                >
+                  <div className="strategy-rail__label">{strategy.label}</div>
+                </button>
 
-              <div className="strategy-rail__controls">
                 <button
                   type="button"
                   onClick={() =>
@@ -322,13 +374,13 @@ export function Home() {
                   {enabled ? "On" : "Off"}
                 </button>
 
-                <div className="strategy-rail__field">
-                  <label className="field-label">{label}</label>
+                <div className="strategy-rail__field" title={controlTitle}>
                   <input
                     type="number"
                     min="0"
                     step="0.1"
                     value={value}
+                    aria-label={`${strategy.label} ${strategySizeLabel(strategy.key)}`}
                     onChange={(event) =>
                       setConfig((current) =>
                         updateStrategySize(
@@ -340,20 +392,73 @@ export function Home() {
                     }
                     disabled={!canOperate}
                     className="field-input field-input--compact"
+                    placeholder={suffix}
+                    title={
+                      strategy.key === "endgame"
+                        ? `Split ${formatEndgameSplitTooltip(config)}`
+                        : controlTitle
+                    }
                   />
+                  <span className="strategy-rail__field-suffix">{suffix}</span>
                 </div>
               </div>
 
-              <div className="strategy-rail__meta">
-                <InfoPill tone={strategyTone(enabled)}>{enabled ? "Enabled" : "Off"}</InfoPill>
-                <span className="text-xs text-[var(--text-muted)]">
-                  {formatControlValue(value)}
-                </span>
-              </div>
+              {showPreHitRow ? (
+                <div className="strategy-rail__subrow">
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/home/${strategy.key}`)}
+                    className="strategy-rail__subrow-label"
+                    title="Fast pre-hit entries before the full hit leg is live."
+                  >
+                    Pre-hit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setConfig((current) => setEVSnipePreHitEnabled(current, !preHitEnabled))
+                    }
+                    disabled={!canOperate}
+                    className={`ui-button ui-button--compact ${
+                      preHitEnabled ? "ui-button--accent" : ""
+                    }`.trim()}
+                  >
+                    {preHitEnabled ? "On" : "Off"}
+                  </button>
+                  <div className="strategy-rail__subrow-hint" title="Turns EVSnipe pre-hit sizing on or off.">
+                    {preHitEnabled ? "ratio active" : "ratio = 0"}
+                  </div>
+                </div>
+              ) : null}
             </div>
           );
         })}
       </div>
+    </div>
+  );
+
+  const renderRailSave = () => (
+    <div className="rail-save">
+      <div className="strategy-rail__title">Profile Save</div>
+      <div className="rail-save__hint">
+        Save overview edits from the rail. Strategy-specific saves move into the editor footer.
+      </div>
+      <button
+        type="button"
+        onClick={() => void handleSave()}
+        disabled={saveLoading || !canOperate}
+        className="ui-button ui-button--accent"
+      >
+        {saveLoading ? "Saving..." : dirty ? "Save changes" : "Saved"}
+      </button>
+      {saveMessage ? <div className="metric-detail">{saveMessage}</div> : null}
+    </div>
+  );
+
+  const renderRailContent = () => (
+    <div className="space-y-4">
+      {renderStrategyList()}
+      {!selectedStrategy ? renderRailSave() : null}
     </div>
   );
 
@@ -415,7 +520,7 @@ export function Home() {
 
       <SectionPanel
         title="Activity Feed"
-        subtitle="Trade-first activity with only the warnings that matter."
+        subtitle="Only completed buys and sells appear here."
         actions={
           <button type="button" onClick={() => setLogsOpen(true)} className="ui-button">
             Open Logs
@@ -425,34 +530,72 @@ export function Home() {
         {activityItems.length === 0 ? (
           <div className="empty-state">
             {overview?.bot_state === "running"
-              ? "The bot is active. Recent trade and order events will appear here when something operator-relevant happens."
-              : "No recent activity. Start the bot or finish setup in Settings first."}
+              ? "No recent trades yet. Filled buys and sells will appear here once the bot gets execution."
+              : "No recent trades yet. Start the bot or finish setup in Settings first."}
           </div>
         ) : (
           <div className="activity-feed">
             {activityItems.map((item, index) => (
-              <div key={`${item.timestamp}-${index}`} className="activity-feed__row">
-                <div className="activity-feed__action">
-                  <InfoPill tone={actionTone(item.severity)}>{item.action ?? item.kind}</InfoPill>
+              <div
+                key={`${item.timestamp}-${index}`}
+                className={`activity-feed__row ${
+                  item.thumbnail_url ? "activity-feed__row--with-thumb" : ""
+                }`.trim()}
+              >
+                <div
+                  className={`activity-feed__action activity-feed__action--${activityActionClass(
+                    item.action
+                  )}`}
+                >
+                  <div className="activity-feed__marker">
+                    {activityActionClass(item.action) === "sell" ? "-" : "+"}
+                  </div>
+                  <div className="activity-feed__action-label">
+                    {item.action ?? "Trade"}
+                  </div>
                 </div>
+
+                {item.thumbnail_url ? (
+                  <div className="activity-feed__thumb">
+                    <img
+                      src={item.thumbnail_url}
+                      alt=""
+                      className="activity-feed__thumb-image"
+                      loading="lazy"
+                    />
+                  </div>
+                ) : null}
 
                 <div className="activity-feed__content">
                   <div className="activity-feed__title">
-                    {item.title || item.message}
+                    {item.market_title || item.title || item.message}
                   </div>
 
                   <div className="activity-feed__meta">
-                    {item.outcome ? <span className="activity-feed__chip">{item.outcome}</span> : null}
+                    {item.outcome ? (
+                      <span
+                        className={`activity-feed__chip activity-feed__chip--${activityOutcomeClass(
+                          item.outcome
+                        )}`}
+                      >
+                        {item.outcome}
+                      </span>
+                    ) : null}
                     {item.quantity !== null && item.quantity !== undefined ? (
                       <span>{formatControlValue(item.quantity)} shares</span>
                     ) : null}
-                    {item.detail ? <span>{item.detail}</span> : null}
                   </div>
                 </div>
 
                 <div className="activity-feed__aside">
-                  {item.value_usd !== null && item.value_usd !== undefined ? (
-                    <div className="activity-feed__value">{formatUsd(item.value_usd)}</div>
+                  {item.cashflow_usd !== null && item.cashflow_usd !== undefined ? (
+                    <div
+                      className={`activity-feed__value activity-feed__value--${activityValueClass(
+                        item.cashflow_usd
+                      )}`}
+                    >
+                      {formatUsd(item.cashflow_usd)}
+                    </div>
                   ) : null}
                   <div className="activity-feed__time">{formatRelativeTime(item.timestamp)}</div>
                 </div>
@@ -466,9 +609,11 @@ export function Home() {
 
   return (
     <AppShell
-      railSubtitle="Live Workspace"
+      railSubtitle="BY EVPLUS"
+      railLogoSrc="/logo.png"
+      railLogoAlt="EVPlus"
       railItems={railItems}
-      railChildren={renderStrategyList()}
+      railChildren={renderRailContent()}
       eyebrow="HOME"
       title={selectedStrategy ? "Strategy Settings" : "Overview"}
       description={
@@ -485,17 +630,11 @@ export function Home() {
           </button>
           <button
             type="button"
-            onClick={() => void handleSave()}
-            disabled={saveLoading || !canOperate}
-            className="ui-button"
-          >
-            {saveLoading ? "Saving..." : dirty ? "Save" : "Saved"}
-          </button>
-          <button
-            type="button"
             onClick={handleStart}
-            disabled={actionLoading || !canOperate}
-            className="ui-button ui-button--primary"
+            disabled={actionLoading || !canOperate || botRunning}
+            className={`ui-button ui-button--primary ${
+              botRunning ? "ui-button--running-disabled" : ""
+            }`.trim()}
           >
             Start
           </button>
@@ -529,7 +668,6 @@ export function Home() {
               {overview.warnings.join(" ")}
             </div>
           ) : null}
-          {saveMessage ? <div className="inline-alert inline-alert--warning">{saveMessage}</div> : null}
         </div>
       }
       contentClassName="page-stack"
@@ -540,10 +678,39 @@ export function Home() {
           config={config}
           setConfig={setConfig}
           activeProfileId={activeProfileId}
+          onSave={() => void handleSave()}
+          saveLoading={saveLoading}
+          dirty={dirty}
+          canSave={canOperate}
+          saveMessage={saveMessage}
         />
       ) : (
         renderOverview()
       )}
+
+      {geoDialogStatus ? (
+        <GeoAccessDialog
+          status={geoDialogStatus}
+          onContinue={
+            geoDialogStatus.status === "unknown"
+              ? () => {
+                  const nextAction = pendingGeoAction;
+                  setGeoDialogStatus(null);
+                  setPendingGeoAction(null);
+                  if (nextAction === "start") {
+                    void performStart();
+                  } else if (nextAction === "restart") {
+                    void performRestart();
+                  }
+                }
+              : undefined
+          }
+          onClose={() => {
+            setGeoDialogStatus(null);
+            setPendingGeoAction(null);
+          }}
+        />
+      ) : null}
 
       <LogsDrawer open={logsOpen} onClose={() => setLogsOpen(false)} />
     </AppShell>

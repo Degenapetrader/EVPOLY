@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AppShell } from "../components/AppShell";
+import { GeoAccessDialog } from "../components/GeoAccessDialog";
 import { InfoPill } from "../components/InfoPill";
 import { LogsDrawer } from "../components/LogsDrawer";
+import { OfficialLinks } from "../components/OfficialLinks";
 import { ProfileSwitcher } from "../components/ProfileSwitcher";
 import { SectionPanel } from "../components/SectionPanel";
 import { StatusBadge } from "../components/StatusBadge";
@@ -22,6 +24,7 @@ import {
   exportConfig,
   getActiveProfileId,
   getDataDirPath,
+  getGeoAccessStatus,
   getSavedConfig,
   importConfig,
   listProfiles,
@@ -32,6 +35,7 @@ import {
   saveConfig,
   setActiveProfile,
   type BotConfig,
+  type GeoAccessStatus,
   type OnboardResult,
   type Profile,
 } from "../lib/tauri-commands";
@@ -146,6 +150,7 @@ export function Config() {
   const [createSigType, setCreateSigType] = useState("1");
   const [dataDir, setDataDir] = useState<string>("");
   const [savedSnapshot, setSavedSnapshot] = useState<string>(JSON.stringify(DEFAULT_CONFIG));
+  const [geoDialogStatus, setGeoDialogStatus] = useState<GeoAccessStatus | null>(null);
 
   const refreshProfiles = useCallback(async () => {
     const nextProfiles = await listProfiles();
@@ -273,7 +278,7 @@ export function Config() {
     }
   };
 
-  const handleRunOnboarding = async () => {
+  const performRunOnboarding = async () => {
     setOnboardLoading(true);
     setSaveMessage(null);
     try {
@@ -330,6 +335,24 @@ export function Config() {
     }
   };
 
+  const handleRunOnboarding = async () => {
+    try {
+      const status = await getGeoAccessStatus();
+      if (status.status === "blocked") {
+        setGeoDialogStatus(status);
+        setSaveMessage(status.reason);
+        return;
+      }
+      if (status.status === "unknown") {
+        setGeoDialogStatus(status);
+        return;
+      }
+      await performRunOnboarding();
+    } catch (err) {
+      setSaveMessage(getErrorText(err, "failed to verify access restrictions"));
+    }
+  };
+
   const handleCreateProfile = async () => {
     try {
       const created = await createProfile(
@@ -362,7 +385,9 @@ export function Config() {
 
   return (
     <AppShell
-      railSubtitle="Setup + Diagnostics"
+      railSubtitle="BY EVPLUS"
+      railLogoSrc="/logo.png"
+      railLogoAlt="EVPlus"
       railItems={railItems}
       eyebrow="Settings"
       title="Settings"
@@ -937,7 +962,35 @@ export function Config() {
             </div>
           </div>
         ) : null}
+
+        <SectionPanel
+          title="Official links"
+          subtitle="Use these links for EVPlus updates, repository access, Terms, and the restricted-jurisdictions policy."
+        >
+          <div className="space-y-4">
+            <OfficialLinks />
+            <div className="text-sm leading-6 text-[var(--text-secondary)]">
+              EVPoly may be unavailable in certain restricted jurisdictions due to regulatory,
+              sanctions, or platform restrictions.
+            </div>
+          </div>
+        </SectionPanel>
       </div>
+
+      {geoDialogStatus ? (
+        <GeoAccessDialog
+          status={geoDialogStatus}
+          onContinue={
+            geoDialogStatus.status === "unknown"
+              ? () => {
+                  setGeoDialogStatus(null);
+                  void performRunOnboarding();
+                }
+              : undefined
+          }
+          onClose={() => setGeoDialogStatus(null)}
+        />
+      ) : null}
 
       <LogsDrawer open={logsOpen} onClose={() => setLogsOpen(false)} />
     </AppShell>

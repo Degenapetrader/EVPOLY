@@ -62,6 +62,15 @@ if (-not $env:CARGO_PROFILE_RELEASE_OPT_LEVEL) {
 if (-not $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS) {
   $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"
 }
+if (-not $env:CARGO_NET_RETRY) {
+  $env:CARGO_NET_RETRY = "10"
+}
+if (-not $env:CARGO_HTTP_TIMEOUT) {
+  $env:CARGO_HTTP_TIMEOUT = "600"
+}
+if (-not $env:CARGO_REGISTRIES_CRATES_IO_PROTOCOL) {
+  $env:CARGO_REGISTRIES_CRATES_IO_PROTOCOL = "sparse"
+}
 
 if (Test-Path $lockPath) {
   foreach ($line in Get-Content $lockPath) {
@@ -126,6 +135,37 @@ function Test-GitCommitExists([string]$Ref) {
   return ($LASTEXITCODE -eq 0)
 }
 
+function Invoke-BestEffortNativeCommand {
+  param(
+    [string]$Label,
+    [scriptblock]$Command,
+    [int]$Attempts = 3,
+    [int]$InitialDelaySeconds = 5
+  )
+
+  $delay = $InitialDelaySeconds
+  for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+    try {
+      & $Command
+      if ($LASTEXITCODE -eq 0) {
+        return $true
+      }
+      throw ("command exited {0}" -f $LASTEXITCODE)
+    }
+    catch {
+      if ($attempt -ge $Attempts) {
+        Write-Warning ("[build-sidecar-windows] {0} failed after {1} attempt(s): {2}" -f $Label, $Attempts, $_.Exception.Message)
+        return $false
+      }
+      Write-Warning ("[build-sidecar-windows] {0} attempt {1}/{2} failed: {3}; retrying in {4}s" -f $Label, $attempt, $Attempts, $_.Exception.Message, $delay)
+      Start-Sleep -Seconds $delay
+      $delay = [Math]::Min($delay * 2, 30)
+    }
+  }
+
+  return $false
+}
+
 function Ensure-LocalCoreRef([string]$Ref) {
   if (Test-GitCommitExists $Ref) {
     return $true
@@ -134,7 +174,9 @@ function Ensure-LocalCoreRef([string]$Ref) {
   & git remote get-url origin *> $null
   if ($LASTEXITCODE -eq 0) {
     Write-Host "[build-sidecar-windows] fetching pinned core ref from origin"
-    & git fetch --depth=1 origin $Ref *> $null
+    [void](Invoke-BestEffortNativeCommand -Label "git fetch pinned core ref" -Attempts 2 -InitialDelaySeconds 3 -Command {
+      & git fetch --depth=1 origin $Ref *> $null
+    })
   }
 
   return (Test-GitCommitExists $Ref)
@@ -151,11 +193,22 @@ try {
     $sourceMode = "local-worktree"
   } else {
     Write-Host ("[build-sidecar-windows] cloning {0} ref={1}" -f $CoreRepo, $CoreRef)
-    git clone --filter=blob:none $CoreRepo $workDir
-    if ($LASTEXITCODE -ne 0) {
+    $cloneOk = Invoke-BestEffortNativeCommand -Label "git clone core repo" -Attempts 2 -InitialDelaySeconds 5 -Command {
+      git clone --filter=blob:none $CoreRepo $workDir
+    }
+    if (-not $cloneOk) {
       throw "git clone failed"
     }
-    git -C $workDir checkout --detach $CoreRef
+
+    if (-not (Invoke-BestEffortNativeCommand -Label "git checkout pinned core ref" -Attempts 2 -InitialDelaySeconds 3 -Command {
+      git -C $workDir checkout --detach $CoreRef
+    })) {
+      Write-Warning "[build-sidecar-windows] direct checkout of pinned core ref failed after clone; refreshing main branch and retrying"
+      [void](Invoke-BestEffortNativeCommand -Label "git fetch origin main fallback" -Attempts 2 -InitialDelaySeconds 3 -Command {
+        git -C $workDir fetch --depth=1 origin main
+      })
+      git -C $workDir checkout --detach $CoreRef
+    }
     if ($LASTEXITCODE -ne 0) {
       throw "git checkout failed"
     }
@@ -174,13 +227,17 @@ try {
 
   $manifest = Join-Path $workDir "Cargo.toml"
   Write-Host ("[build-sidecar-windows] building sidecar binaries ref={0} target={1}" -f $CoreRef, $targetTriple)
-  cargo build --release --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot
-  if ($LASTEXITCODE -ne 0) {
+  $releaseBuildOk = Invoke-BestEffortNativeCommand -Label "cargo build release sidecar" -Attempts 3 -InitialDelaySeconds 10 -Command {
+    cargo build --release --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot
+  }
+  if (-not $releaseBuildOk) {
     if ($env:ALLOW_DEBUG_SIDECAR_FALLBACK -eq "1") {
-      Write-Warning ("[build-sidecar-windows] release build failed exit_code={0}; retrying debug fallback because ALLOW_DEBUG_SIDECAR_FALLBACK=1" -f $LASTEXITCODE)
+      Write-Warning "[build-sidecar-windows] release build failed after retries; retrying debug fallback because ALLOW_DEBUG_SIDECAR_FALLBACK=1"
       $env:CARGO_BUILD_JOBS = "1"
-      cargo build --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot
-      if ($LASTEXITCODE -ne 0) {
+      $debugBuildOk = Invoke-BestEffortNativeCommand -Label "cargo build debug sidecar" -Attempts 2 -InitialDelaySeconds 10 -Command {
+        cargo build --manifest-path $manifest --target-dir $targetDir --target $targetTriple --bin polymarket-arbitrage-bot
+      }
+      if (-not $debugBuildOk) {
         throw "cargo build failed"
       }
       $buildProfile = "debug"

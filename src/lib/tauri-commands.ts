@@ -237,8 +237,10 @@ export interface EVSnipeSettings {
   max_days_to_expiry: number;
 }
 
+export type MMRewardsMarketMode = "auto" | "hybrid";
+
 export interface MMRewardsSettings {
-  market_mode: string;
+  market_mode: MMRewardsMarketMode;
   single_market_slugs: string;
   auto_top_n: number;
   auto_refresh_sec: number;
@@ -247,11 +249,15 @@ export interface MMRewardsSettings {
   reward_min_shares_cap: number;
 }
 
+export type MMSportQuoteSizeMode = "multiple" | "depth_ratio";
+export type MMSportInventoryExitMode = "normal" | "aggressive" | "no_exit";
+
 export interface MMSportSettings {
+  quote_size_mode: MMSportQuoteSizeMode;
   min_reward_rate_per_day: number;
   pause_after_fill_sec: number;
   near_expiry_exit_window_sec: number;
-  inventory_exit_mode: string;
+  inventory_exit_mode: MMSportInventoryExitMode;
   max_share_ratio: number;
   min_top_depth_usd: number;
   quote_expiry_min_sec: number;
@@ -364,14 +370,11 @@ export const listProfiles = (): Promise<Profile[]> =>
 
 export const createProfile = (
   name: string,
-  eoaWallet: string,
   proxyWallet: string,
   sigType: number
 ): Promise<Profile> =>
   invoke("create_profile", {
     name,
-    eoaWalletAddress: eoaWallet,
-    eoa_wallet_address: eoaWallet,
     proxyWalletAddress: proxyWallet,
     proxy_wallet_address: proxyWallet,
     signatureType: sigType,
@@ -508,13 +511,11 @@ export const getGeoAccessStatus = (): Promise<GeoAccessStatus> =>
 
 // Onboarding
 export const runOnboarding = (
-  wallet: string,
   privateKey: string,
   sigType: number,
   proxyWallet: string
 ): Promise<OnboardResult> =>
   invoke("run_onboarding", {
-    wallet,
     privateKey,
     private_key: privateKey,
     signatureType: sigType,

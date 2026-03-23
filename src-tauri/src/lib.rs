@@ -222,6 +222,7 @@ struct DesktopMmRewardsSettings {
 
 #[derive(Clone, serde::Deserialize)]
 struct DesktopMmSportSettings {
+    quote_size_mode: String,
     min_reward_rate_per_day: f64,
     pause_after_fill_sec: f64,
     near_expiry_exit_window_sec: f64,
@@ -230,6 +231,28 @@ struct DesktopMmSportSettings {
     min_top_depth_usd: f64,
     quote_expiry_min_sec: f64,
     quote_expiry_max_sec: f64,
+}
+
+fn normalize_mm_rewards_market_mode(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "hybrid" => "hybrid",
+        _ => "auto",
+    }
+}
+
+fn normalize_mm_sport_quote_size_mode(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "depth_ratio" | "depth-ratio" | "ratio" => "depth_ratio",
+        _ => "multiple",
+    }
+}
+
+fn normalize_mm_sport_exit_mode(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "aggressive" => "aggressive",
+        "no_exit" | "no-exit" | "hold" => "no_exit",
+        _ => "normal",
+    }
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -608,8 +631,12 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 ),
             },
             mm_rewards: DesktopMmRewardsSettings {
-                market_mode: config_io::env_template_default_string("EVPOLY_MM_MARKET_MODE")
-                    .unwrap_or_else(|| config_io::DEFAULT_MM_MARKET_MODE.to_string()),
+                market_mode: normalize_mm_rewards_market_mode(
+                    config_io::env_template_default_string("EVPOLY_MM_MARKET_MODE")
+                        .as_deref()
+                        .unwrap_or(config_io::DEFAULT_MM_MARKET_MODE),
+                )
+                .to_string(),
                 single_market_slugs: config_io::env_template_default_string(
                     "EVPOLY_MM_SINGLE_MARKET_SLUGS",
                 )
@@ -633,6 +660,12 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 ),
             },
             mm_sport: DesktopMmSportSettings {
+                quote_size_mode: normalize_mm_sport_quote_size_mode(
+                    config_io::env_template_default_string("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE")
+                        .as_deref()
+                        .unwrap_or("multiple"),
+                )
+                .to_string(),
                 min_reward_rate_per_day: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY",
                     300.0,
@@ -645,10 +678,12 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_MM_NEAR_EXPIRY_EXIT_WINDOW_SEC",
                     86400.0,
                 ),
-                inventory_exit_mode: config_io::env_template_default_string(
-                    "EVPOLY_MM_SPORT_EXIT_MODE",
+                inventory_exit_mode: normalize_mm_sport_exit_mode(
+                    config_io::env_template_default_string("EVPOLY_MM_SPORT_EXIT_MODE")
+                        .as_deref()
+                        .unwrap_or("normal"),
                 )
-                .unwrap_or_else(|| "normal".to_string()),
+                .to_string(),
                 max_share_ratio: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_MAX_SHARE_RATIO",
                     0.05,
@@ -1064,12 +1099,10 @@ fn desktop_config_to_profile_payload(
     strategy.insert(
         "EVPOLY_MM_MARKET_MODE".to_string(),
         Value::String(
-            config
-                .strategy_settings
-                .mm_rewards
-                .market_mode
-                .trim()
-                .to_string(),
+            normalize_mm_rewards_market_mode(
+                config.strategy_settings.mm_rewards.market_mode.as_str(),
+            )
+            .to_string(),
         ),
     );
     strategy.insert(
@@ -1111,6 +1144,15 @@ fn desktop_config_to_profile_payload(
         number_to_json(config.strategy_settings.mm_rewards.reward_min_shares_cap),
     );
     strategy.insert(
+        "EVPOLY_MM_SPORT_QUOTE_SIZE_MODE".to_string(),
+        Value::String(
+            normalize_mm_sport_quote_size_mode(
+                config.strategy_settings.mm_sport.quote_size_mode.as_str(),
+            )
+            .to_string(),
+        ),
+    );
+    strategy.insert(
         "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY".to_string(),
         number_to_json(config.strategy_settings.mm_sport.min_reward_rate_per_day),
     );
@@ -1130,12 +1172,10 @@ fn desktop_config_to_profile_payload(
     strategy.insert(
         "EVPOLY_MM_SPORT_EXIT_MODE".to_string(),
         Value::String(
-            config
-                .strategy_settings
-                .mm_sport
-                .inventory_exit_mode
-                .trim()
-                .to_string(),
+            normalize_mm_sport_exit_mode(
+                config.strategy_settings.mm_sport.inventory_exit_mode.as_str(),
+            )
+            .to_string(),
         ),
     );
     strategy.insert(
@@ -1469,7 +1509,9 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "max_days_to_expiry": f64_from_object(&strategy, "EVPOLY_EVSNIPE_MAX_DAYS_TO_EXPIRY", config_io::env_template_default_f64("EVPOLY_EVSNIPE_MAX_DAYS_TO_EXPIRY", 30.0))
             },
             "mm_rewards": {
-                "market_mode": string_from_object(&strategy, "EVPOLY_MM_MARKET_MODE", config_io::DEFAULT_MM_MARKET_MODE),
+                "market_mode": normalize_mm_rewards_market_mode(
+                    string_from_object(&strategy, "EVPOLY_MM_MARKET_MODE", config_io::DEFAULT_MM_MARKET_MODE).as_str()
+                ),
                 "single_market_slugs": string_from_object(&strategy, "EVPOLY_MM_SINGLE_MARKET_SLUGS", ""),
                 "auto_top_n": f64_from_object(&strategy, "EVPOLY_MM_AUTO_TOP_N", config_io::env_template_default_f64("EVPOLY_MM_AUTO_TOP_N", 80.0)),
                 "auto_refresh_sec": f64_from_object(&strategy, "EVPOLY_MM_AUTO_REFRESH_SEC", config_io::env_template_default_f64("EVPOLY_MM_AUTO_REFRESH_SEC", 900.0)),
@@ -1478,10 +1520,15 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "reward_min_shares_cap": f64_from_object(&strategy, "EVPOLY_MM_REWARD_MIN_SHARES_CAP", config_io::env_template_default_f64("EVPOLY_MM_REWARD_MIN_SHARES_CAP", 0.0))
             },
             "mm_sport": {
+                "quote_size_mode": normalize_mm_sport_quote_size_mode(
+                    string_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_SIZE_MODE", "multiple").as_str()
+                ),
                 "min_reward_rate_per_day": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 300.0)),
                 "pause_after_fill_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 7200.0)),
                 "near_expiry_exit_window_sec": f64_from_object(&strategy, "EVPOLY_MM_NEAR_EXPIRY_EXIT_WINDOW_SEC", config_io::env_template_default_f64("EVPOLY_MM_NEAR_EXPIRY_EXIT_WINDOW_SEC", 86400.0)),
-                "inventory_exit_mode": string_from_object(&strategy, "EVPOLY_MM_SPORT_EXIT_MODE", "normal"),
+                "inventory_exit_mode": normalize_mm_sport_exit_mode(
+                    string_from_object(&strategy, "EVPOLY_MM_SPORT_EXIT_MODE", "normal").as_str()
+                ),
                 "max_share_ratio": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MAX_SHARE_RATIO", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05)),
                 "min_top_depth_usd": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 100000.0)),
                 "quote_expiry_min_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", 180.0)),
@@ -2220,12 +2267,11 @@ fn list_profiles(profiles: State<'_, ProfileState>) -> Vec<Profile> {
 fn create_profile(
     profiles: State<'_, ProfileState>,
     name: String,
-    eoa_wallet_address: String,
     proxy_wallet_address: String,
     signature_type: u8,
 ) -> Result<Profile, String> {
     let default_config = default_desktop_config(
-        eoa_wallet_address.trim().to_string(),
+        String::new(),
         proxy_wallet_address.trim().to_string(),
         signature_type,
     );
@@ -2923,7 +2969,6 @@ fn open_logs_folder(data_dir: State<'_, AppDataDir>) -> Result<(), String> {
 #[tauri::command]
 async fn run_onboarding(
     data_dir: State<'_, AppDataDir>,
-    wallet: String,
     private_key: String,
     signature_type: u8,
     proxy_wallet: String,
@@ -2933,15 +2978,13 @@ async fn run_onboarding(
         &data_dir.0,
         "ONBOARD",
         format!(
-            "run_onboarding start wallet_provided={} signature_type={} proxy_wallet_set={}",
-            !wallet.trim().is_empty(),
-            signature_type,
-            !proxy_wallet.trim().is_empty()
+            "run_onboarding start signature_type={} proxy_wallet_set={}",
+            signature_type, !proxy_wallet.trim().is_empty()
         )
         .as_str(),
     );
 
-    let result = onboard::run_onboarding(&wallet, &private_key, signature_type, &proxy_wallet)
+    let result = onboard::run_onboarding(&private_key, signature_type, &proxy_wallet)
         .await
         .map_err(|e| {
             append_desktop_debug_line(

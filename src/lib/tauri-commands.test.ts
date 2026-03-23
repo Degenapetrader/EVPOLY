@@ -126,6 +126,7 @@ const SAMPLE_CONFIG: BotConfig = {
       reward_min_shares_cap: 0,
     },
     mm_sport: {
+      quote_size_mode: "multiple",
       min_reward_rate_per_day: 300,
       pause_after_fill_sec: 7200,
       near_expiry_exit_window_sec: 86400,
@@ -155,12 +156,10 @@ describe("tauri command payload contracts", () => {
   });
 
   it("sends compatible payload keys for create_profile", async () => {
-    await createProfile("Default", "0xeoa", "0xproxy", 1);
+    await createProfile("Default", "0xproxy", 1);
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith("create_profile", {
       name: "Default",
-      eoaWalletAddress: "0xeoa",
-      eoa_wallet_address: "0xeoa",
       proxyWalletAddress: "0xproxy",
       proxy_wallet_address: "0xproxy",
       signatureType: 1,
@@ -179,10 +178,9 @@ describe("tauri command payload contracts", () => {
   });
 
   it("sends compatible payload keys for run_onboarding", async () => {
-    await runOnboarding("0xeoa", "0xprivate", 1, "0xproxy");
+    await runOnboarding("0xprivate", 1, "0xproxy");
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith("run_onboarding", {
-      wallet: "0xeoa",
       privateKey: "0xprivate",
       private_key: "0xprivate",
       signatureType: 1,

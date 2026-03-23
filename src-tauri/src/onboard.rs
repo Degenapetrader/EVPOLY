@@ -64,7 +64,6 @@ pub struct OnboardResult {
 }
 
 pub async fn run_onboarding(
-    wallet: &str,
     private_key: &str,
     signature_type: u8,
     proxy_wallet: &str,
@@ -81,19 +80,7 @@ pub async fn run_onboarding(
         .parse()
         .map_err(|e| format!("invalid private key: {e}"))?;
     let derived_eoa = wallet_address_hex(&local_wallet);
-
-    let provided_wallet = wallet.trim();
-    let signature_wallet = if provided_wallet.is_empty() {
-        derived_eoa.clone()
-    } else {
-        if !provided_wallet.eq_ignore_ascii_case(&derived_eoa) {
-            return Err(format!(
-                "wallet does not match private key. derived_eoa={} provided_wallet={}",
-                derived_eoa, provided_wallet
-            ));
-        }
-        provided_wallet.to_string()
-    };
+    let signature_wallet = derived_eoa.clone();
 
     let bind_wallet = if matches!(signature_type, 1 | 2) {
         let proxy = proxy_wallet.trim();

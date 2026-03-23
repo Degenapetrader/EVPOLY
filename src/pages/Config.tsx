@@ -145,7 +145,6 @@ export function Config() {
   const [currentDesktopPassword, setCurrentDesktopPassword] = useState("");
   const [importData, setImportData] = useState("");
   const [createName, setCreateName] = useState("New Profile");
-  const [createEoa, setCreateEoa] = useState("");
   const [createProxy, setCreateProxy] = useState("");
   const [createSigType, setCreateSigType] = useState("1");
   const [dataDir, setDataDir] = useState<string>("");
@@ -194,9 +193,7 @@ export function Config() {
   );
 
   const setupReady = Boolean(
-    config.private_key.trim() &&
-      (config.sig_type === 0 || config.proxy_wallet.trim()) &&
-      config.eoa_wallet.trim()
+    config.private_key.trim() && (config.sig_type === 0 || config.proxy_wallet.trim())
   );
   const onboardingReady = Boolean(
     setupReady &&
@@ -282,52 +279,62 @@ export function Config() {
     setOnboardLoading(true);
     setSaveMessage(null);
     try {
+      if (!activeProfileId) {
+        throw new Error("Create a profile first in the Profiles tab.");
+      }
       if (!config.private_key.trim()) {
         throw new Error("Private key is required before onboarding.");
       }
       if ((config.sig_type === 1 || config.sig_type === 2) && !config.proxy_wallet.trim()) {
         throw new Error("Proxy wallet address is required for proxy or safe mode.");
       }
-      const result = await runOnboarding(
-        config.eoa_wallet.trim(),
-        config.private_key,
-        config.sig_type,
-        config.proxy_wallet.trim()
-      );
-      setOnboardResult(result);
-      setConfig((current) => ({
-        ...current,
+      const result = await runOnboarding(config.private_key, config.sig_type, config.proxy_wallet.trim());
+      const nextConfig = {
+        ...config,
         eoa_wallet:
-          (typeof result.eoa_wallet === "string" && result.eoa_wallet.trim()) ||
-          current.eoa_wallet,
+          (typeof result.eoa_wallet === "string" && result.eoa_wallet.trim()) || config.eoa_wallet,
         remote_signer_token:
           (typeof result.remote_signer_token === "string" && result.remote_signer_token.trim()) ||
           (typeof result.signer_token === "string" && result.signer_token.trim()) ||
-          current.remote_signer_token,
+          config.remote_signer_token,
         remote_discovery_token:
           (typeof result.discovery_token === "string" && result.discovery_token.trim()) ||
-          current.remote_discovery_token,
+          config.remote_discovery_token,
         remote_premarket_alpha_token:
           (typeof result.premarket_alpha_token === "string" &&
             result.premarket_alpha_token.trim()) ||
-          current.remote_premarket_alpha_token,
+          config.remote_premarket_alpha_token,
         remote_endgame_alpha_token:
           (typeof result.endgame_alpha_token === "string" &&
             result.endgame_alpha_token.trim()) ||
-          current.remote_endgame_alpha_token,
+          config.remote_endgame_alpha_token,
         remote_mm_rewards_alpha_token:
           (typeof result.mm_rewards_alpha_token === "string" &&
             result.mm_rewards_alpha_token.trim()) ||
-          current.remote_mm_rewards_alpha_token,
+          config.remote_mm_rewards_alpha_token,
         remote_evsnipe_discovery_token:
           (typeof result.evsnipe_discovery_token === "string" &&
             result.evsnipe_discovery_token.trim()) ||
-          current.remote_evsnipe_discovery_token,
+          config.remote_evsnipe_discovery_token,
         admin_api_token:
           (typeof result.admin_api_token === "string" && result.admin_api_token.trim()) ||
-          current.admin_api_token,
-      }));
-      setSaveMessage("Onboarding finished. Review the returned values and save the profile.");
+          config.admin_api_token,
+      };
+      setOnboardResult(result);
+      setConfig(nextConfig);
+      setSaveLoading(true);
+      try {
+        await saveConfig(activeProfileId, nextConfig);
+        setSavedSnapshot(JSON.stringify(nextConfig));
+        await refreshProfiles();
+        setSaveMessage("Onboarding finished and saved.");
+      } catch (saveErr) {
+        setSaveMessage(
+          getErrorText(saveErr, "onboarding finished but failed to save the profile")
+        );
+      } finally {
+        setSaveLoading(false);
+      }
     } catch (err) {
       setSaveMessage(getErrorText(err, "failed to run onboarding"));
     } finally {
@@ -355,12 +362,7 @@ export function Config() {
 
   const handleCreateProfile = async () => {
     try {
-      const created = await createProfile(
-        createName.trim() || "New Profile",
-        createEoa.trim(),
-        createProxy.trim(),
-        Number(createSigType)
-      );
+      const created = await createProfile(createName.trim() || "New Profile", createProxy.trim(), Number(createSigType));
       await setActiveProfile(created.id);
       setActiveProfileId(created.id);
       await loadProfileConfig(created.id);
@@ -438,8 +440,8 @@ export function Config() {
               </div>
               <div className="status-strip__copy">
                 {onboardingReady
-                  ? "This profile is ready to trade. Save changes any time you update the wallet or relayer fields."
-                  : "Set the wallet mode, wallet addresses, and required tokens before running onboarding."}
+                  ? "This profile is ready to trade. Save changes any time you update the private key, proxy wallet, or relayer fields."
+                  : "Set the wallet mode, private key, proxy wallet when needed, and required tokens before running onboarding."}
               </div>
             </div>
 
@@ -449,11 +451,6 @@ export function Config() {
                 subtitle="Set the wallet mode, keys, and relayer fields the runtime needs before you run onboarding."
               >
                 <div className="grid gap-4 xl:grid-cols-2">
-                  <Field
-                    label="EOA Wallet Address"
-                    value={config.eoa_wallet}
-                    onChange={(value) => setConfig((current) => ({ ...current, eoa_wallet: value }))}
-                  />
                   <Field
                     label="Proxy Wallet Address"
                     value={config.proxy_wallet}
@@ -594,8 +591,7 @@ export function Config() {
                         <div className="surface-panel__body space-y-2">
                           <div className="metric-label">Latest onboarding result</div>
                           <div className="text-sm leading-6 text-[var(--text-secondary)]">
-                            Returned fields were merged into the profile. Save Setup to persist
-                            them.
+                            Returned fields were merged into the profile and saved automatically.
                           </div>
                           <div className="diagnostics-summary">
                             {[
@@ -655,7 +651,7 @@ export function Config() {
                             {profile.name}
                           </div>
                           <div className="mt-1 text-sm text-[var(--text-secondary)]">
-                            {profile.wallet_address}
+                            {profile.wallet_address || "Wallet not set yet"}
                           </div>
                           <div className="mt-2 flex flex-wrap gap-2">
                             <InfoPill tone={isActive ? "success" : "neutral"}>
@@ -686,12 +682,14 @@ export function Config() {
             >
               <div className="space-y-4">
                 <Field label="Profile name" value={createName} onChange={setCreateName} />
-                <Field label="EOA Wallet Address" value={createEoa} onChange={setCreateEoa} />
                 <Field
                   label="Proxy Wallet Address"
                   value={createProxy}
                   onChange={setCreateProxy}
                 />
+                <div className="text-sm leading-6 text-[var(--text-secondary)]">
+                  EOA address is derived from the private key during onboarding.
+                </div>
 
                 <div>
                   <label className="field-label">Wallet Mode</label>

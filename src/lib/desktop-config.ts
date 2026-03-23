@@ -56,6 +56,27 @@ type Timeframe = "5m" | "15m" | "1h" | "4h" | "1d";
 const ALL_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h", "1d"] as const;
 const SESSIONBAND_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h"] as const;
 
+function normalizeMMRewardsMarketMode(value: string | undefined) {
+  return value?.trim().toLowerCase() === "hybrid" ? "hybrid" : "auto";
+}
+
+function normalizeMMSportQuoteSizeMode(value: string | undefined) {
+  return value?.trim().toLowerCase() === "depth_ratio" ? "depth_ratio" : "multiple";
+}
+
+function normalizeMMSportInventoryExitMode(value: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "aggressive") return "aggressive";
+  if (normalized === "no_exit" || normalized === "no-exit" || normalized === "hold") {
+    return "no_exit";
+  }
+  return "normal";
+}
+
+function mmSportUsesDepthRatio(config: BotConfig) {
+  return config.strategy_settings.mm_sport.quote_size_mode === "depth_ratio";
+}
+
 export interface DashboardStrategyEditorState {
   selectedStrategy: StrategyKey;
   visibleSections: StrategyEditorSection[];
@@ -114,6 +135,7 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     reward_min_shares_cap: 0,
   },
   mm_sport: {
+    quote_size_mode: "multiple",
     min_reward_rate_per_day: 300,
     pause_after_fill_sec: 7200,
     near_expiry_exit_window_sec: 86400,
@@ -296,10 +318,17 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
       mm_rewards: {
         ...DEFAULT_CONFIG.strategy_settings.mm_rewards,
         ...saved?.strategy_settings?.mm_rewards,
+        market_mode: normalizeMMRewardsMarketMode(saved?.strategy_settings?.mm_rewards?.market_mode),
       },
       mm_sport: {
         ...DEFAULT_CONFIG.strategy_settings.mm_sport,
         ...saved?.strategy_settings?.mm_sport,
+        quote_size_mode: normalizeMMSportQuoteSizeMode(
+          saved?.strategy_settings?.mm_sport?.quote_size_mode
+        ),
+        inventory_exit_mode: normalizeMMSportInventoryExitMode(
+          saved?.strategy_settings?.mm_sport?.inventory_exit_mode
+        ),
       },
     },
     symbols: saved?.symbols?.length ? saved.symbols : DEFAULT_CONFIG.symbols,
@@ -377,6 +406,18 @@ export function updateStrategySize(
       mm_tuning: {
         ...config.mm_tuning,
         rewards_min_share_multiple: value,
+      },
+    };
+  }
+  if (mmSportUsesDepthRatio(config)) {
+    return {
+      ...config,
+      strategy_settings: {
+        ...config.strategy_settings,
+        mm_sport: {
+          ...config.strategy_settings.mm_sport,
+          max_share_ratio: value,
+        },
       },
     };
   }
@@ -503,10 +544,12 @@ export function strategySections(strategy: StrategyKey): StrategyEditorSection[]
   return ["general", "risk", "symbols", "advanced"];
 }
 
-export function strategySizeLabel(strategy: StrategyKey): string {
+export function strategySizeLabel(strategy: StrategyKey, config?: BotConfig): string {
   if (strategy === "evsnipe") return "Size per hit (USD)";
   if (strategy === "mm_rewards") return "Min share multiple";
-  if (strategy === "mm_sport") return "Quote size multiplier";
+  if (strategy === "mm_sport") {
+    return config && mmSportUsesDepthRatio(config) ? "Max share ratio" : "Quote size multiplier";
+  }
   return "Base size (USD)";
 }
 
@@ -517,6 +560,7 @@ export function strategySizeValue(config: BotConfig, strategy: StrategyKey): num
   if (strategy === "session_band") return config.sizing.session_band;
   if (strategy === "evsnipe") return config.sizing.evsnipe_per_hit;
   if (strategy === "mm_rewards") return config.mm_tuning.rewards_min_share_multiple;
+  if (mmSportUsesDepthRatio(config)) return config.strategy_settings.mm_sport.max_share_ratio;
   return config.mm_tuning.sport_quote_size_multiplier;
 }
 
@@ -541,13 +585,14 @@ export function strategyTooltip(strategy: StrategyKey): string {
   return strategyMeta(strategy)?.tooltip ?? "Strategy behavior";
 }
 
-export function strategyControlSuffix(strategy: StrategyKey): string {
+export function strategyControlSuffix(strategy: StrategyKey, config?: BotConfig): string {
   switch (strategy) {
     case "evsnipe":
       return "/HIT";
     case "mm_rewards":
-    case "mm_sport":
       return "x";
+    case "mm_sport":
+      return config && mmSportUsesDepthRatio(config) ? "ratio" : "x";
     default:
       return "USD";
   }
@@ -568,7 +613,9 @@ export function strategyControlTooltip(config: BotConfig, strategy: StrategyKey)
     case "mm_rewards":
       return "Multiplier applied to the reward minimum shares target.";
     case "mm_sport":
-      return "Multiplier applied to MM Sport quote size.";
+      return mmSportUsesDepthRatio(config)
+        ? "Depth Ratio mode sizes from visible depth and buying power."
+        : "Multiplier applied to MM Sport quote size.";
     default:
       return "Strategy control";
   }

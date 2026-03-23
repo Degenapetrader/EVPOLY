@@ -93,10 +93,20 @@ export function StrategyEditorPane({
 
   const selectedEnabled = config.strategies[selectedStrategy];
   const selectedSizeValue = strategySizeValue(config, selectedStrategy);
-  const selectedSizeLabel = strategySizeLabel(selectedStrategy);
+  const selectedSizeLabel = strategySizeLabel(selectedStrategy, config);
   const selectedCapValue = strategyCapValue(config, selectedStrategy);
   const allowedSymbols = symbolSetForStrategy(selectedStrategy);
   const activeSymbolCount = allowedSymbols.filter((symbol) => config.symbols.includes(symbol)).length;
+  const mmRewardsModeLabel =
+    config.strategy_settings.mm_rewards.market_mode === "hybrid" ? "Hybrid" : "Auto";
+  const mmSportUsesDepthRatio = config.strategy_settings.mm_sport.quote_size_mode === "depth_ratio";
+  const mmSportQuoteModeLabel = mmSportUsesDepthRatio ? "Depth Ratio" : "Quote Multiple";
+  const mmSportInventoryExitLabel =
+    config.strategy_settings.mm_sport.inventory_exit_mode === "aggressive"
+      ? "Aggressive"
+      : config.strategy_settings.mm_sport.inventory_exit_mode === "no_exit"
+        ? "Feeling Lucky"
+        : "Auto";
 
   const patchPremarket = (patch: Partial<BotConfig["strategy_settings"]["premarket"]>) =>
     setConfig((current) =>
@@ -199,11 +209,7 @@ export function StrategyEditorPane({
       },
     }));
 
-  const renderPrimaryMetricTitle = () => {
-    if (selectedStrategy === "mm_rewards") return "Min Share Multiple";
-    if (selectedStrategy === "mm_sport") return "Quote Size Multiplier";
-    return selectedSizeLabel;
-  };
+  const renderPrimaryMetricTitle = () => selectedSizeLabel;
 
   const renderGeneral = () => (
     <div className="space-y-4">
@@ -264,15 +270,15 @@ export function StrategyEditorPane({
               {strategySupportsSymbols(selectedStrategy)
                 ? `${activeSymbolCount} symbols`
                 : selectedStrategy === "mm_rewards"
-                  ? config.strategy_settings.mm_rewards.market_mode
-                  : "Inventory aware"}
+                  ? mmRewardsModeLabel
+                  : mmSportQuoteModeLabel}
             </div>
             <div className="metric-detail">
               {strategySupportsSymbols(selectedStrategy)
                 ? `${allowedSymbols.join(", ")}`
                 : selectedStrategy === "mm_rewards"
-                  ? "Rewards markets can be auto-ranked or manually targeted."
-                  : "Exit behavior is controlled by the inventory exit mode."}
+                  ? "Rewards markets can stay fully automatic or blend in your own slugs."
+                  : `${mmSportQuoteModeLabel} sizing with ${mmSportInventoryExitLabel} inventory cleanup.`}
             </div>
           </div>
         </div>
@@ -1173,24 +1179,42 @@ export function StrategyEditorPane({
               <div className="surface-panel__body grid gap-4">
                 <div>
                   <label className="field-label">Market mode</label>
-                  <input
-                    type="text"
+                  <select
                     value={mmRewards.market_mode}
                     disabled={!canEdit}
-                    onChange={(event) => patchMMRewards({ market_mode: event.target.value })}
+                    onChange={(event) =>
+                      patchMMRewards({
+                        market_mode: event.target.value as BotConfig["strategy_settings"]["mm_rewards"]["market_mode"],
+                      })
+                    }
                     className="field-input"
-                  />
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="hybrid">Hybrid</option>
+                  </select>
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    {mmRewards.market_mode === "hybrid"
+                      ? "Hybrid keeps auto discovery and adds the slugs you list below."
+                      : "Auto picks markets from the reward scanner for you."}
+                  </p>
                 </div>
-                <div>
-                  <label className="field-label">Single market slugs</label>
-                  <input
-                    type="text"
-                    value={mmRewards.single_market_slugs}
-                    disabled={!canEdit}
-                    onChange={(event) => patchMMRewards({ single_market_slugs: event.target.value })}
-                    className="field-input"
-                  />
-                </div>
+                {mmRewards.market_mode === "hybrid" ? (
+                  <div>
+                    <label className="field-label">Single market slugs</label>
+                    <input
+                      type="text"
+                      value={mmRewards.single_market_slugs}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMRewards({ single_market_slugs: event.target.value })
+                      }
+                      className="field-input"
+                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Add comma-separated slugs or full market URLs to keep in the hybrid pool.
+                    </p>
+                  </div>
+                ) : null}
                 <div className="grid gap-4 md:grid-cols-3">
                   <div>
                     <label className="field-label">Auto top N</label>
@@ -1303,34 +1327,118 @@ export function StrategyEditorPane({
           <div className="surface-panel">
             <div className="surface-panel__header">
               <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Quote Size Multiplier</h2>
+                <h2 className="surface-panel__title">Quote Sizing</h2>
                 <p className="surface-panel__subtitle">
-                  Set how large MM Sport quotes relative to the base reward sizing.
+                  Choose whether MM Sport sizes from reward multiples or visible book depth.
                 </p>
               </div>
             </div>
-            <div className="surface-panel__body">
-              <label className="field-label">Quote size multiplier</label>
-              <input
-                type="number"
-                min="0"
-                step="0.1"
-                value={config.mm_tuning.sport_quote_size_multiplier}
-                disabled={!canEdit}
-                onChange={(event) =>
-                  setConfig((current) => ({
-                    ...current,
-                    mm_tuning: {
-                      ...current.mm_tuning,
-                      sport_quote_size_multiplier: parseNonNegative(
-                        event.target.value,
-                        current.mm_tuning.sport_quote_size_multiplier
-                      ),
-                    },
-                  }))
-                }
-                className="field-input"
-              />
+            <div className="surface-panel__body grid gap-4">
+              <div>
+                <label className="field-label">Quote size mode</label>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    ["multiple", "Quote Multiple"],
+                    ["depth_ratio", "Depth Ratio"],
+                  ].map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      disabled={!canEdit}
+                      onClick={() =>
+                        patchMMSport({
+                          quote_size_mode: value as BotConfig["strategy_settings"]["mm_sport"]["quote_size_mode"],
+                        })
+                      }
+                      className={`mode-choice ${
+                        mmSport.quote_size_mode === value ? "mode-choice--active" : ""
+                      }`.trim()}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                  {mmSportUsesDepthRatio
+                    ? "Depth Ratio sizes quotes from visible book depth and available buying power."
+                    : "Quote Multiple sizes from the reward minimum share target."}
+                </p>
+              </div>
+              {mmSportUsesDepthRatio ? (
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="field-label">Max share ratio</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={mmSport.max_share_ratio}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({
+                          max_share_ratio: parseNonNegative(
+                            event.target.value,
+                            mmSport.max_share_ratio
+                          ),
+                        })
+                      }
+                      className="field-input"
+                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Use a decimal ratio, so 0.05 means 5% of visible top-of-book depth.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="field-label">Min top depth (USD)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={mmSport.min_top_depth_usd}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({
+                          min_top_depth_usd: parseNonNegative(
+                            event.target.value,
+                            mmSport.min_top_depth_usd
+                          ),
+                        })
+                      }
+                      className="field-input"
+                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Depth Ratio mode stays out when the visible top depth is too thin.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <label className="field-label">Quote size multiplier</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={config.mm_tuning.sport_quote_size_multiplier}
+                    disabled={!canEdit}
+                    onChange={(event) =>
+                      setConfig((current) => ({
+                        ...current,
+                        mm_tuning: {
+                          ...current.mm_tuning,
+                          sport_quote_size_multiplier: parseNonNegative(
+                            event.target.value,
+                            current.mm_tuning.sport_quote_size_multiplier
+                          ),
+                        },
+                      }))
+                    }
+                    className="field-input"
+                  />
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    1.2 means MM Sport quotes at 120% of the reward minimum share size.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1467,7 +1575,11 @@ export function StrategyEditorPane({
                         key={value}
                         type="button"
                         disabled={!canEdit}
-                        onClick={() => patchMMSport({ inventory_exit_mode: value })}
+                        onClick={() =>
+                          patchMMSport({
+                            inventory_exit_mode: value as BotConfig["strategy_settings"]["mm_sport"]["inventory_exit_mode"],
+                          })
+                        }
                         className={`mode-choice ${
                           mmSport.inventory_exit_mode === value ? "mode-choice--active" : ""
                         }`.trim()}
@@ -1476,44 +1588,13 @@ export function StrategyEditorPane({
                       </button>
                     ))}
                   </div>
-                </div>
-                <div>
-                  <label className="field-label">Max share ratio</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={mmSport.max_share_ratio}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchMMSport({
-                        max_share_ratio: parseNonNegative(
-                          event.target.value,
-                          mmSport.max_share_ratio
-                        ),
-                      })
-                    }
-                    className="field-input"
-                  />
-                </div>
-                <div>
-                  <label className="field-label">Min top depth (USD)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={mmSport.min_top_depth_usd}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchMMSport({
-                        min_top_depth_usd: parseNonNegative(
-                          event.target.value,
-                          mmSport.min_top_depth_usd
-                        ),
-                      })
-                    }
-                    className="field-input"
-                  />
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    {mmSport.inventory_exit_mode === "aggressive"
+                      ? "Aggressive leans harder on the bid to exit sooner."
+                      : mmSport.inventory_exit_mode === "no_exit"
+                        ? "Feeling Lucky skips forced cleanup exits and lets inventory ride."
+                        : "Auto uses the normal cleanup path when MM Sport needs to exit."}
+                  </p>
                 </div>
               </div>
             </div>

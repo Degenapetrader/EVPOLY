@@ -333,7 +333,7 @@ export function Home() {
           const enabled = config.strategies[strategy.key];
           const value = strategySizeValue(config, strategy.key);
           const selected = strategy.key === selectedStrategy;
-          const suffix = strategyControlSuffix(strategy.key);
+          const suffix = strategyControlSuffix(strategy.key, config);
           const controlTitle = strategyControlTooltip(config, strategy.key);
           const showPreHitRow = strategy.key === "evsnipe";
           const preHitEnabled = config.strategy_settings.evsnipe.pre_hit_enabled;
@@ -380,7 +380,7 @@ export function Home() {
                     min="0"
                     step="0.1"
                     value={value}
-                    aria-label={`${strategy.label} ${strategySizeLabel(strategy.key)}`}
+                    aria-label={`${strategy.label} ${strategySizeLabel(strategy.key, config)}`}
                     onChange={(event) =>
                       setConfig((current) =>
                         updateStrategySize(
@@ -663,11 +663,6 @@ export function Home() {
             onUpdate={handleUpdate}
           />
           {displayError ? <div className="inline-alert">{displayError}</div> : null}
-          {overview?.warnings?.length ? (
-            <div className="inline-alert inline-alert--warning">
-              {overview.warnings.join(" ")}
-            </div>
-          ) : null}
         </div>
       }
       contentClassName="page-stack"

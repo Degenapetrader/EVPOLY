@@ -298,6 +298,36 @@ impl MmSportQuoteSizeMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmSportExitMode {
+    Normal,
+    Aggressive,
+    NoExit,
+}
+
+impl MmSportExitMode {
+    fn from_env(raw: Option<String>) -> Self {
+        match raw
+            .unwrap_or_else(|| "normal".to_string())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "aggressive" => Self::Aggressive,
+            "no_exit" | "no-exit" | "hold" => Self::NoExit,
+            _ => Self::Normal,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Aggressive => "aggressive",
+            Self::NoExit => "no_exit",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MmSportConfig {
     pub enable: bool,
@@ -310,11 +340,13 @@ pub struct MmSportConfig {
     pub rewards_page_budget: u32,
     pub min_reward_rate_per_day: f64,
     pub quote_size_mode: MmSportQuoteSizeMode,
+    pub exit_mode: MmSportExitMode,
     pub quote_size_mult: f64,
     pub pair_baseline_quote_size_mult: f64,
     pub max_share_ratio: f64,
     pub min_top_depth_usd: f64,
     pub pause_after_fill_sec: u64,
+    pub no_exit_side_pause_sec: u64,
     pub bust_window_ms: i64,
     pub bust_shares_1s: f64,
     pub bust_pause_min_sec: u64,
@@ -363,6 +395,7 @@ impl MmSportConfig {
             quote_size_mode: MmSportQuoteSizeMode::from_env(
                 std::env::var("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE").ok(),
             ),
+            exit_mode: MmSportExitMode::from_env(std::env::var("EVPOLY_MM_SPORT_EXIT_MODE").ok()),
             quote_size_mult: env_f64("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2).clamp(0.1, 20.0),
             pair_baseline_quote_size_mult: env_f64(
                 "EVPOLY_MM_SPORT_PAIR_BASELINE_QUOTE_SIZE_MULT",
@@ -372,6 +405,8 @@ impl MmSportConfig {
             max_share_ratio: env_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05).clamp(0.01, 0.99),
             min_top_depth_usd: env_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 100_000.0).max(0.0),
             pause_after_fill_sec: env_u64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 7_200)
+                .clamp(60, 86_400),
+            no_exit_side_pause_sec: env_u64("EVPOLY_MM_SPORT_NO_EXIT_SIDE_PAUSE_SEC", 3_600)
                 .clamp(60, 86_400),
             bust_window_ms: env_u64("EVPOLY_MM_SPORT_BUST_WINDOW_MS", 1_000).clamp(250, 5_000)
                 as i64,
@@ -1263,6 +1298,35 @@ fn env_string(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn mm_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_mm_env<F: FnOnce()>(updates: &[(&str, Option<&str>)], f: F) {
+        let _guard = mm_env_lock().lock().expect("mm env lock poisoned");
+        let mut previous: Vec<(&str, Option<String>)> = Vec::with_capacity(updates.len());
+        for (name, value) in updates {
+            previous.push((*name, std::env::var(name).ok()));
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+        f();
+        for (name, value) in previous {
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 
     #[test]
     fn parse_market_mode_from_env_value() {
@@ -1346,6 +1410,57 @@ mod tests {
         assert_eq!(
             MmToxicReentryCancelScope::from_env(Some("unknown".to_string())),
             MmToxicReentryCancelScope::ThreatenedSide
+        );
+    }
+
+    #[test]
+    fn parse_mm_sport_exit_mode_from_env_value() {
+        assert_eq!(MmSportExitMode::from_env(None), MmSportExitMode::Normal);
+        assert_eq!(
+            MmSportExitMode::from_env(Some("normal".to_string())),
+            MmSportExitMode::Normal
+        );
+        assert_eq!(
+            MmSportExitMode::from_env(Some("aggressive".to_string())),
+            MmSportExitMode::Aggressive
+        );
+        assert_eq!(
+            MmSportExitMode::from_env(Some("no_exit".to_string())),
+            MmSportExitMode::NoExit
+        );
+        assert_eq!(
+            MmSportExitMode::from_env(Some("unknown".to_string())),
+            MmSportExitMode::Normal
+        );
+    }
+
+    #[test]
+    fn mm_sport_config_defaults_to_normal_exit_mode_and_one_hour_side_pause() {
+        with_mm_env(
+            &[
+                ("EVPOLY_MM_SPORT_EXIT_MODE", None),
+                ("EVPOLY_MM_SPORT_NO_EXIT_SIDE_PAUSE_SEC", None),
+            ],
+            || {
+                let cfg = MmSportConfig::from_env();
+                assert_eq!(cfg.exit_mode, MmSportExitMode::Normal);
+                assert_eq!(cfg.no_exit_side_pause_sec, 3_600);
+            },
+        );
+    }
+
+    #[test]
+    fn mm_sport_config_reads_exit_mode_and_side_pause_override() {
+        with_mm_env(
+            &[
+                ("EVPOLY_MM_SPORT_EXIT_MODE", Some("no_exit")),
+                ("EVPOLY_MM_SPORT_NO_EXIT_SIDE_PAUSE_SEC", Some("5400")),
+            ],
+            || {
+                let cfg = MmSportConfig::from_env();
+                assert_eq!(cfg.exit_mode, MmSportExitMode::NoExit);
+                assert_eq!(cfg.no_exit_side_pause_sec, 5_400);
+            },
         );
     }
 }

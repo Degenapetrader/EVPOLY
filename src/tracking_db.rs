@@ -10677,6 +10677,38 @@ ORDER BY name
         })
     }
 
+    pub fn get_runtime_parameter_state_for_strategy(
+        &self,
+        strategy_id: &str,
+        name: &str,
+    ) -> Result<Option<RuntimeParameterStateRecord>> {
+        let strategy_id = normalize_strategy_id(strategy_id);
+        let name = name.trim().to_string();
+        self.with_conn_read(|conn| {
+            conn.query_row(
+                r#"
+SELECT strategy_id, name, value_json, version, updated_at_ms, updated_by
+FROM runtime_parameter_state
+WHERE strategy_id=?1 AND name=?2
+LIMIT 1
+"#,
+                params![strategy_id, name],
+                |row| {
+                    Ok(RuntimeParameterStateRecord {
+                        strategy_id: row.get(0)?,
+                        name: row.get(1)?,
+                        value_json: row.get(2)?,
+                        version: row.get(3)?,
+                        updated_at_ms: row.get(4)?,
+                        updated_by: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+        })
+    }
+
     pub fn upsert_runtime_parameter_state(
         &self,
         name: &str,

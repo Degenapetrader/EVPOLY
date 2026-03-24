@@ -48,10 +48,8 @@ Older entries may reference env keys that were removed in later commits.
 - Single-attempt-per-period option + fixed symbol sizing.
 
 ### `evsnipe_v1`
-- Binance price-rule strategy for:
-  - hit markets (`High >= strike` / `Low <= strike`)
-  - close-at-time markets (`Close above/below/between`).
-- Uses Binance trade stream for hit triggers and Binance `kline_1m` close stream for close/range triggers.
+- Binance price-rule strategy for hit markets (`High >= strike` / `Low <= strike`) only.
+- Uses Binance trade stream for hit triggers.
 - Discovery is remote-first with local fallback.
 - Executes fast FAK cross-spread buy on the winning token side.
 
@@ -74,6 +72,17 @@ Older entries may reference env keys that were removed in later commits.
 - Pauses a market for 120 minutes after fills, then runs inventory unwind before resuming two-sided BUY quoting.
 
 ## Change Log
+
+### 2026-03-24
+
+- `evsnipe_v1` hit trigger now submits immediately from the Binance signal without waiting on a PM orderbook precheck (`src/main.rs`):
+  - removed blocking `get_orderbook + select_cross_ask_price` gating in the hit path.
+  - hit submit telemetry now records `book_precheck_bypassed=true` with neutral ask hints.
+  - effect: EVSnipe hit legs no longer lose time waiting on a PM book fetch/shape check before enqueue.
+
+- `evsnipe_v1` env/docs now explicitly describe hit-only behavior (`.env.full.example`, `docs/evsnipe_v1.md`, `strategy-changelog.md`):
+  - EVSnipe is documented as hit-market-only.
+  - close/range triggers remain disabled in runtime behavior.
 
 ### 2026-03-22
 

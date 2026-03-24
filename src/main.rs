@@ -12905,7 +12905,6 @@ async fn main() -> Result<()> {
 
         let evsnipe_cfg_for_trade = evsnipe_cfg.clone();
         let watchlist_for_trade = watchlist_by_symbol.clone();
-        let api_for_evsnipe_trade = api.clone();
         let arbiter_exec_tx_for_evsnipe_trade = arbiter_exec_tx_for_evsnipe.clone();
         let enqueue_dedupe_for_evsnipe_trade = enqueue_dedupe_for_evsnipe.clone();
         let evsnipe_task_semaphore =
@@ -13091,7 +13090,6 @@ async fn main() -> Result<()> {
                         }
 
                         let state_for_task = evsnipe_state_for_trade.clone();
-                        let api_for_task = api_for_evsnipe_trade.clone();
                         let arbiter_exec_tx_for_task = arbiter_exec_tx_for_evsnipe_trade.clone();
                         let enqueue_dedupe_for_task = enqueue_dedupe_for_evsnipe_trade.clone();
                         let evsnipe_cfg_for_task = evsnipe_cfg_for_trade.clone();
@@ -13143,93 +13141,12 @@ async fn main() -> Result<()> {
                         tokio::spawn(async move {
                             let _permit = permit;
                             let mut sent = false;
-                            let mut orderbook = None;
-                            for attempt in 0..=1 {
-                                match api_for_task
-                                    .get_orderbook(spec_for_task.yes_token_id.as_str())
-                                    .await
-                                {
-                                    Ok(book) => {
-                                        orderbook = Some(book);
-                                        break;
-                                    }
-                                    Err(e) if attempt == 0 => {
-                                        tokio::time::sleep(tokio::time::Duration::from_millis(90))
-                                            .await;
-                                        debug!(
-                                            "EVSnipe orderbook retry symbol={} condition={} leg={} err={}",
-                                            spec_for_task.symbol,
-                                            spec_for_task.condition_id,
-                                            hit_leg_for_task.as_str(),
-                                            e
-                                        );
-                                    }
-                                    Err(e) => {
-                                        log_event(
-                                            "evsnipe_skip_orderbook_fetch_failed",
-                                            json!({
-                                                "strategy_id": STRATEGY_ID_EVSNIPE_V1,
-                                                "symbol": spec_for_task.symbol,
-                                                "condition_id": spec_for_task.condition_id,
-                                                "token_id": spec_for_task.yes_token_id,
-                                                "hit_leg": hit_leg_for_task.as_str(),
-                                                "error": e.to_string()
-                                            }),
-                                        );
-                                    }
-                                }
-                            }
-                            let Some(orderbook) = orderbook else {
-                                let mut state = state_for_task.lock().await;
-                                state.inflight_hit_legs.remove(leg_key_for_task.as_str());
-                                if let Some(total) = state
-                                    .reserved_usd_by_condition
-                                    .get_mut(spec_for_task.condition_id.as_str())
-                                {
-                                    *total = (*total - leg_size_for_task).max(0.0);
-                                    if *total < 1e-9 {
-                                        state
-                                            .reserved_usd_by_condition
-                                            .remove(spec_for_task.condition_id.as_str());
-                                    }
-                                }
-                                state.used_strategy_usd =
-                                    (state.used_strategy_usd - leg_size_for_task).max(0.0);
-                                return;
-                            };
-
-                            let Some(ask_selection) = evsnipe::select_cross_ask_price(
-                                &orderbook,
-                                evsnipe_cfg_for_task.cross_ask_levels,
-                            ) else {
-                                log_event(
-                                    "evsnipe_skip_book_empty",
-                                    json!({
-                                        "strategy_id": STRATEGY_ID_EVSNIPE_V1,
-                                        "symbol": spec_for_task.symbol,
-                                        "condition_id": spec_for_task.condition_id,
-                                        "token_id": spec_for_task.yes_token_id,
-                                        "hit_leg": hit_leg_for_task.as_str()
-                                    }),
-                                );
-                                let mut state = state_for_task.lock().await;
-                                state.inflight_hit_legs.remove(leg_key_for_task.as_str());
-                                if let Some(total) = state
-                                    .reserved_usd_by_condition
-                                    .get_mut(spec_for_task.condition_id.as_str())
-                                {
-                                    *total = (*total - leg_size_for_task).max(0.0);
-                                    if *total < 1e-9 {
-                                        state
-                                            .reserved_usd_by_condition
-                                            .remove(spec_for_task.condition_id.as_str());
-                                    }
-                                }
-                                state.used_strategy_usd =
-                                    (state.used_strategy_usd - leg_size_for_task).max(0.0);
-                                return;
-                            };
+                            // Hit-market EVSnipe should fire directly from the Binance trigger.
+                            // Do not block on a PM orderbook fetch/shape check before enqueue.
                             let submit_limit_price = 0.99_f64;
+                            let best_ask_hint: Option<f64> = None;
+                            let selected_ask_hint: Option<f64> = None;
+                            let selected_level_hint: usize = 0;
 
                             let direction = match spec_for_task.rule {
                                 evsnipe::EvsnipeRule::HitUpHighGte => Direction::Up,
@@ -13249,7 +13166,7 @@ async fn main() -> Result<()> {
                                 spec_for_task.condition_id,
                                 tick_for_task.trade_ts_ms.div_euclid(60_000),
                                 hit_leg_for_task.as_str(),
-                                ask_selection.selected_level
+                                selected_level_hint
                             );
 
                             let strategy_intent = StrategyIntent {
@@ -13260,8 +13177,7 @@ async fn main() -> Result<()> {
                                 direction,
                                 max_price: submit_limit_price,
                                 target_size_usd: leg_size_for_task,
-                                score: ((submit_limit_price - ask_selection.best_ask) * 10_000.0)
-                                    .max(0.0),
+                                score: 0.0,
                             };
                             let opportunity = polymarket_arbitrage_bot::detector::BuyOpportunity {
                                 condition_id: spec_for_task.condition_id.clone(),
@@ -13271,9 +13187,7 @@ async fn main() -> Result<()> {
                                     direction,
                                 ),
                                 bid_price: submit_limit_price,
-                                expected_edge_bps: ((submit_limit_price - ask_selection.best_ask)
-                                    * 10_000.0)
-                                    .max(0.0),
+                                expected_edge_bps: 0.0,
                                 expected_fill_prob: 0.98,
                                 period_timestamp,
                                 time_remaining_seconds,
@@ -13289,7 +13203,7 @@ async fn main() -> Result<()> {
                                 rung_id: Some(format!(
                                     "hit_{}_l{}",
                                     hit_leg_for_task.as_str(),
-                                    ask_selection.selected_level
+                                    selected_level_hint
                                 )),
                                 place_sell_orders: false,
                                 source_timeframe: Some(Timeframe::D1.as_str().to_string()),
@@ -13340,9 +13254,10 @@ async fn main() -> Result<()> {
                                         "condition_id": spec_for_task.condition_id,
                                         "token_id": spec_for_task.yes_token_id,
                                         "hit_leg": hit_leg_for_task.as_str(),
-                                        "selected_level": ask_selection.selected_level,
-                                        "selected_ask": ask_selection.selected_ask,
-                                        "best_ask": ask_selection.best_ask,
+                                        "selected_level": selected_level_hint,
+                                        "selected_ask": selected_ask_hint,
+                                        "best_ask": best_ask_hint,
+                                        "book_precheck_bypassed": true,
                                         "size_usd": leg_size_for_task,
                                         "used_strategy_usd": state.used_strategy_usd,
                                         "strategy_cap_usd": evsnipe_cfg_for_task.strategy_cap_usd

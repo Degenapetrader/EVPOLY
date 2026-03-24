@@ -1,7 +1,7 @@
 # EVSnipe v1 Guide
 
 ## What It Does
-`evsnipe_v1` trades hit-price and close/range crypto markets using Binance live data and fast PM execution.
+`evsnipe_v1` trades hit-price crypto markets using Binance live data and fast PM execution.
 
 ## Default Scope
 - Symbols: `BTC, ETH, SOL, XRP, DOGE, BNB, HYPE`
@@ -25,12 +25,10 @@ Local and remote discovery are aligned to the same EVSnipe filtering model (Poly
 1. Periodic discovery refresh tries remote first, then local fallback when needed.
 2. Refresh anchor spot and apply strike-window filter.
 3. Binance trade stream handles hit triggers.
-4. Binance `kline_1m` close stream handles close-at-time / between rules.
-5. On trigger, map rule -> side/token.
-6. Fetch PM orderbook and pick cross-ask execution price within configured depth.
-7. Submit FAK buy with max-buy guard.
-8. Enforce strategy cap and inflight task limits.
-9. Dedupe/prune prevents duplicate fire for same condition/leg.
+4. On trigger, map rule -> side/token.
+5. Submit FAK buy immediately with the fixed max-buy guard.
+6. Enforce strategy cap and inflight task limits.
+7. Dedupe/prune prevents duplicate fire for same condition/leg.
 
 ## Sizing and Caps
 - `EVPOLY_EVSNIPE_SIZE_USD` default `100`

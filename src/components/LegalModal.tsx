@@ -78,7 +78,7 @@ export function LegalModal({ onAccept }: { onAccept: () => void }) {
               </div>
 
               <div className="mt-6">
-                <OfficialLinks />
+                <OfficialLinks includeReferral={false} />
               </div>
 
               <label className="mt-6 flex cursor-pointer items-start gap-3 rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4">

@@ -1330,7 +1330,7 @@ dependencies = [
 
 [[package]]
 name = "evpoly-desktop"
-version = "0.1.0"
+version = "1.0.15"
 dependencies = [
  "aes-gcm",
  "argon2",

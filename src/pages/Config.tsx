@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { open } from "@tauri-apps/plugin-shell";
 import { AppShell } from "../components/AppShell";
 import { GeoAccessDialog } from "../components/GeoAccessDialog";
 import { InfoPill } from "../components/InfoPill";
@@ -19,6 +20,7 @@ import {
   formatUsd,
   mergeConfig,
 } from "../lib/desktop-config";
+import { OFFICIAL_LINKS } from "../lib/official-links";
 import {
   createProfile,
   exportConfig,
@@ -523,6 +525,29 @@ export function Config() {
                 </div>
 
                 <div className="mt-6 flex flex-wrap gap-3">
+                  <div className="w-full rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4 text-sm leading-6 text-[var(--text-secondary)]">
+                    <div className="text-sm font-semibold text-[var(--text-primary)]">
+                      Support EVPoly with our referral link
+                    </div>
+                    <div className="mt-2">
+                      New to Polymarket? Create your account with EVPoly before onboarding.
+                    </div>
+                    <div className="mt-1 text-[var(--text-muted)]">
+                      Already have a Polymarket account? Skip this step.
+                    </div>
+                    <div className="mt-4 flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => void open(OFFICIAL_LINKS.referral)}
+                        className="ui-button ui-button--accent"
+                      >
+                        Open Polymarket
+                      </button>
+                      <span className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                        Referral link
+                      </span>
+                    </div>
+                  </div>
                   <button
                     type="button"
                     onClick={() => void handleRunOnboarding()}
@@ -689,6 +714,29 @@ export function Config() {
                 />
                 <div className="text-sm leading-6 text-[var(--text-secondary)]">
                   EOA address is derived from the private key during onboarding.
+                </div>
+                <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4 text-sm leading-6 text-[var(--text-secondary)]">
+                  <div className="text-sm font-semibold text-[var(--text-primary)]">
+                    Support EVPoly with our referral link
+                  </div>
+                  <div className="mt-2">
+                    New to Polymarket? Create your account with EVPoly before onboarding.
+                  </div>
+                  <div className="mt-1 text-[var(--text-muted)]">
+                    Already have a Polymarket account? Skip this step.
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void open(OFFICIAL_LINKS.referral)}
+                      className="ui-button"
+                    >
+                      Open Polymarket
+                    </button>
+                    <span className="text-xs uppercase tracking-[0.08em] text-[var(--text-muted)]">
+                      Referral link
+                    </span>
+                  </div>
                 </div>
 
                 <div>
@@ -961,15 +1009,15 @@ export function Config() {
           </div>
         ) : null}
 
-        <SectionPanel
-          title="Official links"
-          subtitle="Use these links for EVPlus updates, repository access, Terms, and the restricted-jurisdictions policy."
-        >
-          <div className="space-y-4">
-            <OfficialLinks />
-            <div className="text-sm leading-6 text-[var(--text-secondary)]">
-              EVPoly may be unavailable in certain restricted jurisdictions due to regulatory,
-              sanctions, or platform restrictions.
+          <SectionPanel
+            title="Official links"
+            subtitle="Use these links for EVPlus updates, Polymarket signup, repository access, Terms, and the restricted-jurisdictions policy."
+          >
+            <div className="space-y-4">
+              <OfficialLinks includeReferral />
+              <div className="text-sm leading-6 text-[var(--text-secondary)]">
+                EVPoly may be unavailable in certain restricted jurisdictions due to regulatory,
+                sanctions, or platform restrictions.
             </div>
           </div>
         </SectionPanel>

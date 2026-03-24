@@ -1,5 +1,6 @@
 export const OFFICIAL_LINKS = {
   website: "https://www.evplus.ai/",
+  referral: "https://polymarket.com/?r=EVPOLY",
   x: "https://x.com/EVplusAI",
   github: "https://github.com/Degenapetrader/EVPOLY",
   terms: "https://github.com/Degenapetrader/EVPOLY/blob/desktop/TERMS_OF_SERVICE.md",

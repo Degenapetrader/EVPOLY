@@ -97,7 +97,7 @@ export function GeoAccessDialog({
               </div>
 
               <div className="mt-6">
-                <OfficialLinks />
+                <OfficialLinks includeReferral={false} />
               </div>
 
               {status.status === "unknown" ? (

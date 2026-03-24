@@ -6,6 +6,14 @@ Work best on VULTR VPS, Recommended 2 vCPU and 4GB RAM, server Amsterdam
 
 $300 free credit: https://www.vultr.com/?ref=9750476
 
+## Polymarket Referral
+
+New to Polymarket? Create your account with EVPoly to support the project:
+
+`https://polymarket.com/?r=EVPOLY`
+
+Use the referral link before creating a new Polymarket account. Existing users likely cannot retroactively apply it through the bot or by importing a private key.
+
 ## License
 This repository is source-available, non-commercial.
 

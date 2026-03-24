@@ -75,6 +75,11 @@ Older entries may reference env keys that were removed in later commits.
 
 ### 2026-03-24
 
+- Premarket/non-MM minimum-size policy cleanup (`src/main.rs`, `src/trader.rs`, `docs/premarket_v1.md`):
+  - `premarket_v1` now uses a flat `$5` minimum per rung/order and no longer applies reward `min_size` as a floor.
+  - submit-time reward-share floor stripping now applies to `premarket_v1`, `endgame_sweep_v1`, `evcurve_v1`, `sessionband_v1`, and `evsnipe_v1`.
+  - reward `min_size` remains active only for `mm_rewards_v1` and `mm_sport_v1`.
+
 - `evsnipe_v1` hit trigger now submits immediately from the Binance signal without waiting on a PM orderbook precheck (`src/main.rs`):
   - removed blocking `get_orderbook + select_cross_ask_price` gating in the hit path.
   - hit submit telemetry now records `book_precheck_bypassed=true` with neutral ask hints.

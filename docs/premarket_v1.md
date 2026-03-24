@@ -34,7 +34,9 @@ Premarket fixed ladder is hardcoded to 6x6:
 - Prices: `0.40, 0.30, 0.24, 0.21, 0.15, 0.12`
 - Weights: `0.23, 0.23, 0.17, 0.14, 0.12, 0.11`
 
-Rungs are floor-adjusted to satisfy market minimum notional/tick constraints.
+Rungs are clamped to a fixed `$5` minimum per order.
+Reward `min_size` is ignored for Premarket ladder sizing and submit-time constraints.
+Tick-size validation still applies, and some tiny orders may still be rejected by the venue.
 
 ## Sizing Policy
 Base key: `EVPOLY_PREMARKET_BASE_SIZE_USD` (blank defaults to `100`).

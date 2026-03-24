@@ -28392,7 +28392,7 @@ async fn main() -> Result<()> {
                     .get_market_constraints(&market.condition_id)
                     .await
                 {
-                    Ok(snapshot) => PremarketOrderFloor::from_snapshot(snapshot),
+                    Ok(_) => PremarketOrderFloor::premarket_flat_five(),
                     Err(e) => {
                         warn!(
                             "Premarket constraint lookup failed tf={} asset={} period={} condition={} fallback_min_notional=5.0 error={}",
@@ -28530,6 +28530,8 @@ async fn main() -> Result<()> {
                                     "rung_price": rung_price,
                                     "rung_size_usd": rung_size_usd,
                                     "weight_pct": rung.size_pct,
+                                    "fixed_min_rung_usd": 5.0,
+                                    "reward_min_size_bypassed": true,
                                     "min_notional_usd": order_floor.min_notional_usd,
                                     "min_size_shares": order_floor.min_size_shares
                                 })),
@@ -28563,6 +28565,8 @@ async fn main() -> Result<()> {
                         "rungs_total": batch_requests.len(),
                         "effective_size_per_side_usd": effective_size_usd,
                         "effective_size_total_usd": effective_size_usd * 2.0,
+                        "fixed_min_rung_usd": 5.0,
+                        "reward_min_size_bypassed": true,
                         "min_notional_usd": order_floor.min_notional_usd,
                         "min_size_shares": order_floor.min_size_shares,
                         "continue_on_error": premarket_batch_continue_on_error()
@@ -30194,6 +30198,10 @@ impl PremarketOrderFloor {
             min_notional_usd: 5.0,
             min_size_shares: 0.0,
         }
+    }
+
+    fn premarket_flat_five() -> Self {
+        Self::fallback_default()
     }
 
     fn required_notional_usd(self, price: f64) -> f64 {
@@ -34514,6 +34522,19 @@ mod tests {
         for rung in sized {
             assert!(rung.size_usd >= floor.required_notional_usd(rung.price));
         }
+    }
+
+    #[test]
+    fn premarket_fixed_rungs_use_flat_five_floor_even_when_first_rung_targets_two_dollars() {
+        let target_size_usd = 2.0 / 0.23;
+        let sized = build_premarket_fixed_rungs(
+            target_size_usd,
+            PremarketOrderFloor::premarket_flat_five(),
+        );
+        assert_eq!(sized.len(), 6);
+        assert!((sized[0].price - 0.40).abs() < 1e-9);
+        assert!((sized[0].size_usd - 5.0).abs() < 1e-9);
+        assert!(sized.iter().all(|rung| rung.size_usd >= 5.0));
     }
 
     #[test]

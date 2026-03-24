@@ -1445,10 +1445,18 @@ impl Trader {
         constraints: Option<MarketOrderConstraints>,
     ) -> Option<MarketOrderConstraints> {
         constraints.map(|mut constraints| {
-            if strategy_id == crate::strategy::STRATEGY_ID_ENDGAME_SWEEP_V1
-                && entry_mode == EntryExecutionMode::Endgame
-            {
+            let uses_reward_share_floor = matches!(
+                strategy_id,
+                crate::strategy::STRATEGY_ID_MM_REWARDS_V1
+                    | crate::strategy::STRATEGY_ID_MM_SPORT_V1
+            );
+            if !uses_reward_share_floor {
                 constraints.min_size_shares = 0.0;
+            }
+            if strategy_id == crate::strategy::STRATEGY_ID_PREMARKET_V1
+                && entry_mode == EntryExecutionMode::Ladder
+            {
+                constraints.min_notional_usd = 5.0;
             }
             constraints
         })
@@ -15492,9 +15500,95 @@ mod tests {
     }
 
     #[test]
+    fn premarket_ladder_constraints_force_flat_five_dollar_floor() {
+        let adjusted = Trader::effective_market_order_constraints(
+            crate::strategy::STRATEGY_ID_PREMARKET_V1,
+            EntryExecutionMode::Ladder,
+            Some(MarketOrderConstraints {
+                min_notional_usd: 12.0,
+                min_size_shares: 50.0,
+                tick_size: 0.01,
+            }),
+        )
+        .expect("constraints");
+
+        assert_eq!(adjusted.min_notional_usd, 5.0);
+        assert_eq!(adjusted.min_size_shares, 0.0);
+        assert_eq!(adjusted.tick_size, 0.01);
+    }
+
+    #[test]
+    fn evcurve_constraints_ignore_reward_share_floor() {
+        let adjusted = Trader::effective_market_order_constraints(
+            crate::strategy::STRATEGY_ID_EVCURVE_V1,
+            EntryExecutionMode::Evcurve,
+            Some(MarketOrderConstraints {
+                min_notional_usd: 5.0,
+                min_size_shares: 50.0,
+                tick_size: 0.01,
+            }),
+        )
+        .expect("constraints");
+
+        assert_eq!(adjusted.min_notional_usd, 5.0);
+        assert_eq!(adjusted.min_size_shares, 0.0);
+    }
+
+    #[test]
+    fn sessionband_constraints_ignore_reward_share_floor() {
+        let adjusted = Trader::effective_market_order_constraints(
+            crate::strategy::STRATEGY_ID_SESSIONBAND_V1,
+            EntryExecutionMode::SessionBand,
+            Some(MarketOrderConstraints {
+                min_notional_usd: 5.0,
+                min_size_shares: 50.0,
+                tick_size: 0.01,
+            }),
+        )
+        .expect("constraints");
+
+        assert_eq!(adjusted.min_notional_usd, 5.0);
+        assert_eq!(adjusted.min_size_shares, 0.0);
+    }
+
+    #[test]
+    fn evsnipe_constraints_ignore_reward_share_floor() {
+        let adjusted = Trader::effective_market_order_constraints(
+            crate::strategy::STRATEGY_ID_EVSNIPE_V1,
+            EntryExecutionMode::Evsnipe,
+            Some(MarketOrderConstraints {
+                min_notional_usd: 5.0,
+                min_size_shares: 50.0,
+                tick_size: 0.01,
+            }),
+        )
+        .expect("constraints");
+
+        assert_eq!(adjusted.min_notional_usd, 5.0);
+        assert_eq!(adjusted.min_size_shares, 0.0);
+    }
+
+    #[test]
     fn mm_rewards_constraints_keep_reward_share_floor() {
         let adjusted = Trader::effective_market_order_constraints(
             crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+            EntryExecutionMode::MmRewards,
+            Some(MarketOrderConstraints {
+                min_notional_usd: 5.0,
+                min_size_shares: 50.0,
+                tick_size: 0.01,
+            }),
+        )
+        .expect("constraints");
+
+        assert_eq!(adjusted.min_notional_usd, 5.0);
+        assert_eq!(adjusted.min_size_shares, 50.0);
+    }
+
+    #[test]
+    fn mm_sport_constraints_keep_reward_share_floor() {
+        let adjusted = Trader::effective_market_order_constraints(
+            crate::strategy::STRATEGY_ID_MM_SPORT_V1,
             EntryExecutionMode::MmRewards,
             Some(MarketOrderConstraints {
                 min_notional_usd: 5.0,

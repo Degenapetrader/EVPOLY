@@ -1009,6 +1009,7 @@ export function StrategyEditorPane({
     if (selectedStrategy === "evsnipe") {
       const evsnipe = config.strategy_settings.evsnipe;
       const preHitRatio = evsnipe.pre_hit_enabled ? evsnipe.pre_leg_ratio : evsnipe.saved_pre_leg_ratio;
+      const strikeWindowPercent = Number((evsnipe.strike_window_pct * 100).toFixed(4));
       return (
         <div className="grid gap-4 xl:grid-cols-2">
           <div className="surface-panel">
@@ -1085,23 +1086,25 @@ export function StrategyEditorPane({
             </div>
             <div className="surface-panel__body grid gap-4">
               <div>
-                <label className="field-label">Strike window %</label>
+                <label className="field-label">Strike window (%)</label>
                 <input
                   type="number"
                   min="0"
-                  step="0.01"
-                  value={evsnipe.strike_window_pct}
+                  step="0.1"
+                  value={strikeWindowPercent}
                   disabled={!canEdit}
                   onChange={(event) =>
                     patchEVSnipe({
-                      strike_window_pct: parseNonNegative(
-                        event.target.value,
-                        evsnipe.strike_window_pct
-                      ),
+                      strike_window_pct:
+                        parseNonNegative(event.target.value, strikeWindowPercent) / 100,
                     })
                   }
                   className="field-input"
                 />
+                <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                  Watches hit markets whose strike is within this percent of the current spot
+                  price. Example: 10 means within 10% of spot.
+                </p>
               </div>
               <div>
                 <label className="field-label">Max days to expiry</label>

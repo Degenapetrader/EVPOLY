@@ -72,6 +72,12 @@ Strategies include (minimum):
   - remote alpha for selection only,
   - preflight is local in bot runtime,
   - market discovery path is local.
+- Setup Doctor:
+  - command: `python3 scripts/setup_doctor.py --env-file .env`
+  - checks missing baseline setup fields only
+  - regenerates all onboarding-provided remote tokens for all strategies
+  - reports relayer fields as manual `needs_you` items and does not fake-generate them
+  - is advisory only and should not be treated as a runtime gate
 
 ### 6) Required Work Sequence for Any Task
 1. Run `git status --short`.

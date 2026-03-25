@@ -51,6 +51,7 @@ Defaults are defined by runtime config loaders and reflected in `.env.example` /
 
 ### Ops guides
 - [Manual endpoint guide](docs/manual_endpoint_guide.md)
+- [Setup Doctor](docs/setup_doctor.md)
 - [Strategy combo guide](docs/strategy_combos.md)
 
 ## Quick Start
@@ -123,6 +124,7 @@ python3 scripts/remote_onboard.py \
 ```
 
 Onboarding writes signer/discovery/alpha defaults when available from API runtime.
+It should populate all remote token destinations for all strategies, not only the strategies currently enabled.
 
 Important sizing note:
 - Set strategy base-size vars explicitly:
@@ -138,6 +140,19 @@ Important relayer note:
   - `RELAYER_API_KEY_ADDRESS`
 - Get these from:
   `https://polymarket.com/settings?tab=api-keys`
+
+## Setup Doctor
+Run Setup Doctor when a setup looks incomplete or a remote credential was cleared:
+
+```bash
+python3 scripts/setup_doctor.py --env-file .env
+```
+
+Setup Doctor:
+- checks the baseline runtime credentials a healthy EVPOLY setup should have,
+- reruns remote onboarding to refill any missing generateable remote fields,
+- reports manual-only fields like relayer credentials as `needs_you`,
+- does not block the bot from running.
 
 ## Manual Endpoint Service
 Standalone HTTP API binary:

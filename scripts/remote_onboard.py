@@ -586,11 +586,11 @@ def main() -> int:
             "EVPOLY_REMOTE_*_ALPHA_TOKEN left unchanged."
         )
 
-    if runtime_cfg["order_signer_token"]:
-        _upsert_env_value(
-            env_file, "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN", runtime_cfg["order_signer_token"]
-        )
-        wrote_keys.append("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN")
+    order_signer_primary_token = runtime_cfg["order_signer_token"] or remote_signer_token
+    _upsert_env_value(
+        env_file, "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN", order_signer_primary_token
+    )
+    wrote_keys.append("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN")
 
     admin_token = _read_env_value(env_file, "EVPOLY_ADMIN_API_TOKEN")
     if not admin_token:

@@ -6,6 +6,7 @@ import { GeoAccessDialog } from "../components/GeoAccessDialog";
 import { LogsDrawer } from "../components/LogsDrawer";
 import { ProfileSwitcher } from "../components/ProfileSwitcher";
 import { SectionPanel } from "../components/SectionPanel";
+import { SetupDoctorDialog } from "../components/SetupDoctorDialog";
 import { StatusBadge } from "../components/StatusBadge";
 import { StrategyEditorPane } from "../components/StrategyEditorPane";
 import { UpdateBanner } from "../components/UpdateBanner";
@@ -35,11 +36,13 @@ import {
   getSavedConfig,
   lockSession,
   restartBot,
+  runSetupDoctor,
   saveConfig,
   startBot,
   stopBot,
   type BotConfig,
   type GeoAccessStatus,
+  type SetupDoctorResult,
 } from "../lib/tauri-commands";
 
 function getErrorText(err: unknown, fallback: string): string {
@@ -110,6 +113,9 @@ export function Home() {
   const [savedSnapshot, setSavedSnapshot] = useState<string>(JSON.stringify(DEFAULT_CONFIG));
   const [geoDialogStatus, setGeoDialogStatus] = useState<GeoAccessStatus | null>(null);
   const [pendingGeoAction, setPendingGeoAction] = useState<"start" | "restart" | null>(null);
+  const [doctorLoading, setDoctorLoading] = useState(false);
+  const [doctorResult, setDoctorResult] = useState<SetupDoctorResult | null>(null);
+  const [doctorDialogOpen, setDoctorDialogOpen] = useState(false);
 
   const selectedStrategy = useMemo(
     () => strategyKeyFromRoute(strategySlug),
@@ -313,6 +319,39 @@ export function Home() {
     }
   };
 
+  const handleRunSetupDoctor = async () => {
+    setDoctorLoading(true);
+    try {
+      const result = await runSetupDoctor();
+      setDoctorResult(result);
+      setDoctorDialogOpen(true);
+      setActionError(null);
+      await refreshOverview();
+      await refreshActivity({ reset: true });
+      if (activeProfileId) {
+        await loadProfileConfig(activeProfileId);
+      }
+    } catch (err) {
+      setDoctorResult({
+        status: "failed",
+        items: [],
+        fixed_count: 0,
+        missing_user_count: 0,
+        bot_was_running: botRunning,
+        bot_restarted: false,
+        popup: {
+          title: "Doctor failed",
+          body: getErrorText(err, "Setup Doctor could not complete right now."),
+          cta_label: "Open Setup",
+          cta_target: "setup",
+        },
+      });
+      setDoctorDialogOpen(true);
+    } finally {
+      setDoctorLoading(false);
+    }
+  };
+
   const railItems = [
     { label: "Home", to: "/home" },
     { label: "Settings", to: "/settings" },
@@ -503,7 +542,7 @@ export function Home() {
           </div>
         </SectionPanel>
 
-        <SectionPanel title="Latency" subtitle="Average acknowledgement latency from tracked samples.">
+        <SectionPanel title="Latency" subtitle="Average acknowledgement latency from the last 24 hours.">
           <div className="text-4xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
             {overview?.avg_ack_latency_ms !== null && overview?.avg_ack_latency_ms !== undefined
               ? `${overview.avg_ack_latency_ms.toFixed(1)} ms`
@@ -625,6 +664,14 @@ export function Home() {
         <div className="flex flex-wrap items-center justify-end gap-3">
           <ProfileSwitcher activeProfileId={activeProfileId} onSwitch={(id) => void handleProfileSwitch(id)} />
           <StatusBadge status={overview?.bot_state ?? "unknown"} />
+          <button
+            type="button"
+            onClick={() => void handleRunSetupDoctor()}
+            disabled={doctorLoading}
+            className="ui-button"
+          >
+            {doctorLoading ? "Doctor..." : "Doctor"}
+          </button>
           <button type="button" onClick={() => void handleLock()} className="ui-button">
             Lock
           </button>
@@ -708,6 +755,17 @@ export function Home() {
       ) : null}
 
       <LogsDrawer open={logsOpen} onClose={() => setLogsOpen(false)} />
+
+      {doctorDialogOpen ? (
+        <SetupDoctorDialog
+          result={doctorResult}
+          onClose={() => setDoctorDialogOpen(false)}
+          onOpenSetup={() => {
+            setDoctorDialogOpen(false);
+            navigate("/settings");
+          }}
+        />
+      ) : null}
     </AppShell>
   );
 }

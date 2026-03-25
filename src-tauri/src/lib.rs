@@ -17,6 +17,7 @@ use crate::profile_manager::{Profile, ProfileManager};
 use crate::wallet_sync::{WalletSyncManager, WalletSyncRuntimeConfig};
 
 use chrono::{TimeZone, Utc};
+use ethers_signers::{LocalWallet, Signer};
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -324,6 +325,45 @@ struct DesktopConfig {
     remote_mm_rewards_alpha_token: String,
     remote_evsnipe_discovery_token: String,
     admin_api_token: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct SetupDoctorItem {
+    key: String,
+    label: String,
+    status: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strategy: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct SetupDoctorPopup {
+    title: String,
+    body: String,
+    cta_label: String,
+    cta_target: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct SetupDoctorResult {
+    status: String,
+    items: Vec<SetupDoctorItem>,
+    fixed_count: usize,
+    missing_user_count: usize,
+    bot_was_running: bool,
+    bot_restarted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    popup: Option<SetupDoctorPopup>,
+}
+
+#[derive(Default)]
+struct SetupDoctorAudit {
+    items: Vec<SetupDoctorItem>,
+    blocking_user_labels: Vec<String>,
+    missing_user_labels: Vec<String>,
+    missing_generated_labels: Vec<String>,
+    missing_generated_keys: Vec<String>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -713,6 +753,354 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
         remote_evsnipe_discovery_token: String::new(),
         admin_api_token: String::new(),
     }
+}
+
+fn doctor_item(
+    key: &str,
+    label: &str,
+    status: &str,
+    message: impl Into<String>,
+    strategy: Option<&str>,
+) -> SetupDoctorItem {
+    SetupDoctorItem {
+        key: key.to_string(),
+        label: label.to_string(),
+        status: status.to_string(),
+        message: message.into(),
+        strategy: strategy.map(|value| value.to_string()),
+    }
+}
+
+fn doctor_popup(title: impl Into<String>, body: impl Into<String>) -> SetupDoctorPopup {
+    SetupDoctorPopup {
+        title: title.into(),
+        body: body.into(),
+        cta_label: "Open Setup".to_string(),
+        cta_target: "setup".to_string(),
+    }
+}
+
+fn doctor_result(
+    status: &str,
+    items: Vec<SetupDoctorItem>,
+    popup: Option<SetupDoctorPopup>,
+    bot_was_running: bool,
+    bot_restarted: bool,
+) -> SetupDoctorResult {
+    let fixed_count = items.iter().filter(|item| item.status == "fixed").count();
+    let missing_user_count = items
+        .iter()
+        .filter(|item| item.status == "missing_user")
+        .count();
+    SetupDoctorResult {
+        status: status.to_string(),
+        items,
+        fixed_count,
+        missing_user_count,
+        bot_was_running,
+        bot_restarted,
+        popup,
+    }
+}
+
+fn missing_labels_sentence(labels: &[String]) -> String {
+    match labels {
+        [] => String::new(),
+        [only] => only.clone(),
+        [left, right] => format!("{left} and {right}"),
+        _ => {
+            let mut head = labels[..labels.len() - 1].join(", ");
+            head.push_str(", and ");
+            head.push_str(labels.last().map(String::as_str).unwrap_or_default());
+            head
+        }
+    }
+}
+
+fn wallet_address_from_private_key(private_key: &str) -> Result<String, String> {
+    let wallet: LocalWallet = private_key
+        .trim()
+        .parse()
+        .map_err(|e| format!("invalid private key: {e}"))?;
+    Ok(format!("{:#x}", wallet.address()))
+}
+
+fn has_shared_alpha_source(config: &DesktopConfig) -> bool {
+    [
+        config.remote_premarket_alpha_token.as_str(),
+        config.remote_endgame_alpha_token.as_str(),
+        config.remote_mm_rewards_alpha_token.as_str(),
+        config.remote_discovery_token.as_str(),
+        config.remote_evsnipe_discovery_token.as_str(),
+    ]
+    .iter()
+    .any(|value| !value.trim().is_empty())
+}
+
+fn push_doctor_missing_user(
+    audit: &mut SetupDoctorAudit,
+    key: &str,
+    label: &str,
+    message: impl Into<String>,
+    strategy: Option<&str>,
+    blocking: bool,
+) {
+    audit.items.push(doctor_item(
+        key,
+        label,
+        "missing_user",
+        message.into(),
+        strategy,
+    ));
+    audit.missing_user_labels.push(label.to_string());
+    if blocking {
+        audit.blocking_user_labels.push(label.to_string());
+    }
+}
+
+fn push_doctor_missing_generated(
+    audit: &mut SetupDoctorAudit,
+    key: &str,
+    label: &str,
+    message: impl Into<String>,
+    strategy: Option<&str>,
+) {
+    audit.items.push(doctor_item(
+        key,
+        label,
+        "missing_generated",
+        message.into(),
+        strategy,
+    ));
+    audit.missing_generated_labels.push(label.to_string());
+    audit.missing_generated_keys.push(key.to_string());
+}
+
+fn audit_setup_doctor(config: &DesktopConfig) -> SetupDoctorAudit {
+    let mut audit = SetupDoctorAudit::default();
+    let private_key = config.private_key.trim();
+    let derived_eoa = if private_key.is_empty() {
+        push_doctor_missing_user(
+            &mut audit,
+            "private_key",
+            "Private Key",
+            "Enter the Polymarket signer private key in Settings -> Setup.",
+            None,
+            true,
+        );
+        None
+    } else {
+        match wallet_address_from_private_key(private_key) {
+            Ok(address) => Some(address),
+            Err(_) => {
+                push_doctor_missing_user(
+                    &mut audit,
+                    "private_key",
+                    "Private Key",
+                    "The private key is invalid. Replace it in Settings -> Setup.",
+                    None,
+                    true,
+                );
+                None
+            }
+        }
+    };
+
+    if let Some(derived) = derived_eoa.as_deref() {
+        let current = config.eoa_wallet.trim();
+        if current.is_empty() || !current.eq_ignore_ascii_case(derived) {
+            push_doctor_missing_generated(
+                &mut audit,
+                "eoa_wallet",
+                "EOA Wallet",
+                "The EOA wallet will be regenerated from the private key.",
+                None,
+            );
+        }
+    }
+
+    if matches!(config.sig_type, 1 | 2) && config.proxy_wallet.trim().is_empty() {
+        push_doctor_missing_user(
+            &mut audit,
+            "proxy_wallet",
+            "Proxy Wallet",
+            "Proxy and Safe modes require a proxy wallet address in Settings -> Setup.",
+            None,
+            true,
+        );
+    }
+
+    if matches!(config.sig_type, 1 | 2) && config.relayer_api_key.trim().is_empty() {
+        push_doctor_missing_user(
+            &mut audit,
+            "relayer_api_key",
+            "Relayer API Key",
+            "Get RELAYER_API_KEY from https://polymarket.com/settings?tab=api-keys, then paste it into Settings -> Setup. EVPoly can still use remote signer fallback where supported.",
+            None,
+            false,
+        );
+    }
+
+    if matches!(config.sig_type, 1 | 2) && config.relayer_api_key_address.trim().is_empty() {
+        push_doctor_missing_user(
+            &mut audit,
+            "relayer_api_key_address",
+            "Relayer API Key Address",
+            "Get RELAYER_API_KEY_ADDRESS from https://polymarket.com/settings?tab=api-keys, then paste it into Settings -> Setup. EVPoly can still use remote signer fallback where supported.",
+            None,
+            false,
+        );
+    }
+
+    if config.remote_signer_token.trim().is_empty() {
+        push_doctor_missing_generated(
+            &mut audit,
+            "remote_signer_token",
+            "Signer Token",
+            "The remote signer token is missing and will be regenerated from onboarding.",
+            None,
+        );
+    }
+
+    if config.remote_discovery_token.trim().is_empty() {
+        push_doctor_missing_generated(
+            &mut audit,
+            "remote_discovery_token",
+            "Remote Discovery Token",
+            "The shared remote discovery token is missing and will be regenerated from onboarding.",
+            None,
+        );
+    }
+
+    if config.remote_premarket_alpha_token.trim().is_empty() {
+        push_doctor_missing_generated(
+            &mut audit,
+            "remote_premarket_alpha_token",
+            "Premarket Remote Token",
+            "The Premarket remote alpha token is missing and will be regenerated from onboarding.",
+            Some("Premarket"),
+        );
+    }
+
+    if config.remote_endgame_alpha_token.trim().is_empty() {
+        push_doctor_missing_generated(
+            &mut audit,
+            "remote_endgame_alpha_token",
+            "Endgame Remote Token",
+            "The Endgame remote alpha token is missing and will be regenerated from onboarding.",
+            Some("Endgame"),
+        );
+    }
+
+    if config.remote_mm_rewards_alpha_token.trim().is_empty() {
+        push_doctor_missing_generated(
+            &mut audit,
+            "remote_mm_rewards_alpha_token",
+            "MM Rewards Remote Token",
+            "The MM Rewards remote alpha token is missing and will be regenerated from onboarding.",
+            Some("MM Rewards"),
+        );
+    }
+
+    if config.remote_evsnipe_discovery_token.trim().is_empty() {
+        push_doctor_missing_generated(
+            &mut audit,
+            "remote_evsnipe_discovery_token",
+            "EVSnipe Discovery Token",
+            "The EVSnipe discovery token is missing and will be regenerated from onboarding.",
+            Some("EVSnipe"),
+        );
+    }
+
+    if !has_shared_alpha_source(config) {
+        push_doctor_missing_generated(
+            &mut audit,
+            "shared_alpha_source",
+            "Shared Alpha Token",
+            "The shared remote alpha source is missing, so EVCurve and SessionBand cannot backfill their runtime tokens.",
+            Some("EVCurve / SessionBand"),
+        );
+    }
+
+    if audit.items.is_empty() {
+        audit.items.push(doctor_item(
+            "setup_ready",
+            "Setup",
+            "ok",
+            "All required setup fields are present.",
+            None,
+        ));
+    }
+
+    audit
+}
+
+fn mark_fixed_doctor_items(items: &mut [SetupDoctorItem], fixed_keys: &[String]) {
+    for item in items.iter_mut() {
+        if fixed_keys.iter().any(|key| key == &item.key)
+            && (item.status == "ok" || item.status == "missing_generated")
+        {
+            item.status = "fixed".to_string();
+            item.message = format!("{} regenerated automatically.", item.label);
+        }
+    }
+}
+
+fn mark_failed_generated_doctor_items(items: &mut [SetupDoctorItem], missing_keys: &[String]) {
+    for item in items.iter_mut() {
+        if missing_keys.iter().any(|key| key == &item.key) && item.status == "missing_generated" {
+            item.status = "failed".to_string();
+            item.message = format!(
+                "{} is still missing after Setup Doctor tried onboarding.",
+                item.label
+            );
+        }
+    }
+}
+
+fn doctor_needs_you_popup(audit: &SetupDoctorAudit) -> SetupDoctorPopup {
+    let has_relayer_issue = audit
+        .items
+        .iter()
+        .any(|item| {
+            item.status == "missing_user"
+                && matches!(
+                    item.key.as_str(),
+                    "relayer_api_key" | "relayer_api_key_address"
+                )
+        });
+
+    if !audit.blocking_user_labels.is_empty() {
+        let missing = missing_labels_sentence(&audit.blocking_user_labels);
+        return doctor_popup(
+            format!("Missing {missing}"),
+            format!("Enter {} in Settings -> Setup, then run Setup Doctor again.", missing),
+        );
+    }
+
+    if has_relayer_issue && audit.missing_generated_labels.is_empty() {
+        return doctor_popup(
+            "Add Relayer Credentials",
+            "Get RELAYER_API_KEY and RELAYER_API_KEY_ADDRESS from https://polymarket.com/settings?tab=api-keys, then paste them into Settings -> Setup. EVPoly can still use remote signer fallback where supported.",
+        );
+    }
+
+    if !audit.missing_generated_labels.is_empty() {
+        let missing = missing_labels_sentence(&audit.missing_generated_labels);
+        return doctor_popup(
+            "Finish Setup Doctor",
+            format!(
+                "Setup Doctor still could not regenerate {}. Open Settings -> Setup, rerun onboarding, and review the checklist.",
+                missing
+            ),
+        );
+    }
+
+    let missing = missing_labels_sentence(&audit.missing_user_labels);
+    doctor_popup(
+        "Finish Setup Doctor",
+        format!("Setup Doctor finished, but {} still need manual input.", missing),
+    )
 }
 
 fn normalize_symbols(symbols: &[String]) -> Vec<String> {
@@ -1634,6 +2022,10 @@ fn start_of_current_utc_day_ms() -> i64 {
         .unwrap_or(0)
 }
 
+fn ack_latency_window_start_ms() -> i64 {
+    Utc::now().timestamp_millis() - (24 * 60 * 60 * 1000)
+}
+
 fn query_pnl_today_utc(conn: &Connection) -> f64 {
     conn.query_row(
         "SELECT COALESCE(SUM(COALESCE(pnl_usd, 0.0)), 0.0) \
@@ -1646,12 +2038,14 @@ fn query_pnl_today_utc(conn: &Connection) -> f64 {
 }
 
 fn query_ack_latency_summary(conn: &Connection) -> (u64, Option<f64>) {
+    let cutoff_ms = ack_latency_window_start_ms();
     conn.query_row(
         "SELECT \
             COALESCE(SUM(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN 1 ELSE 0 END), 0), \
             AVG(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN CAST(ack_ts_ms - submit_ts_ms AS REAL) END) \
-         FROM strategy_feature_snapshots_v1",
-        [],
+         FROM strategy_feature_snapshots_v1 \
+         WHERE ack_ts_ms IS NOT NULL AND ack_ts_ms >= ?1",
+        [cutoff_ms],
         |row| Ok((row.get::<_, i64>(0)?.max(0) as u64, row.get::<_, Option<f64>>(1)?)),
     )
     .unwrap_or((0, None))
@@ -2492,18 +2886,11 @@ async fn bot_api_request(
 
 // ── Config ───────────────────────────────────────────────────────────
 
-#[tauri::command]
-fn save_config(
-    auth: State<'_, AuthState>,
-    profiles: State<'_, ProfileState>,
-    data_dir: State<'_, AppDataDir>,
-    profile_id: String,
-    config: DesktopConfig,
+fn apply_desktop_config_to_profile(
+    profile: &mut Profile,
+    config: &DesktopConfig,
+    auth: &AppAuth,
 ) -> Result<(), String> {
-    let pm = profiles.lock().map_err(|e| e.to_string())?;
-    let auth = auth.lock().map_err(|e| e.to_string())?;
-    let mut profile = pm.get_profile(&profile_id).ok_or("profile not found")?;
-
     let (
         strategy_config,
         sizing_config,
@@ -2511,7 +2898,7 @@ fn save_config(
         eoa_wallet_address,
         proxy_wallet_address,
         signature_type,
-    ) = desktop_config_to_profile_payload(&config);
+    ) = desktop_config_to_profile_payload(config);
 
     profile.strategy_config = merge_config_object(&profile.strategy_config, &strategy_config);
     profile.sizing_config = merge_config_object(&profile.sizing_config, &sizing_config);
@@ -2523,7 +2910,7 @@ fn save_config(
     let merged_secrets = if profile.encrypted_secrets.trim().is_empty() {
         HashMap::new()
     } else {
-        decrypt_profile_secrets(&profile, &auth)?
+        decrypt_profile_secrets(profile, auth)?
     };
     let merged_secrets = merge_desktop_secrets(merged_secrets, new_secrets);
     if merged_secrets.is_empty() {
@@ -2535,9 +2922,65 @@ fn save_config(
             .ok_or("session locked: unlock app before saving")?
             .map_err(|e| e.to_string())?;
     }
-    pm.update_profile(profile.clone())
-        .map_err(|e| e.to_string())?;
-    config_io::generate_config_json(&profile, &data_dir.0).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+fn save_profile_and_build_runtime(
+    profiles: &ProfileState,
+    auth: &AuthState,
+    data_dir: &Path,
+    profile: &mut Profile,
+    config: &DesktopConfig,
+) -> Result<(PathBuf, PathBuf), String> {
+    let auth = auth.lock().map_err(|e| e.to_string())?;
+    apply_desktop_config_to_profile(profile, config, &auth)?;
+    let pm = profiles.lock().map_err(|e| e.to_string())?;
+    pm.update_profile(profile.clone()).map_err(|e| e.to_string())?;
+    drop(pm);
+    build_runtime_paths_for_profile(profile, &auth, data_dir)
+}
+
+fn restart_bot_with_runtime_paths(
+    app: &AppHandle,
+    bot: &BotState,
+    wallet_sync: &WalletSyncState,
+    profile: &Profile,
+    env_path: PathBuf,
+    config_path: PathBuf,
+    simulation: bool,
+) -> Result<(), String> {
+    wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
+    bot.lock()
+        .map_err(|e| e.to_string())?
+        .restart(app, env_path, config_path, simulation)?;
+    if simulation {
+        wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
+    } else if let Err(err) = wallet_sync
+        .lock()
+        .map_err(|e| e.to_string())?
+        .start(wallet_sync_config_for_profile(profile))
+    {
+        let _ = bot.lock().map_err(|e| e.to_string())?.stop();
+        return Err(format!(
+            "live bot restart aborted because wallet sync failed: {err}"
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_config(
+    auth: State<'_, AuthState>,
+    profiles: State<'_, ProfileState>,
+    data_dir: State<'_, AppDataDir>,
+    profile_id: String,
+    config: DesktopConfig,
+) -> Result<(), String> {
+    let pm = profiles.lock().map_err(|e| e.to_string())?;
+    let mut profile = pm.get_profile(&profile_id).ok_or("profile not found")?;
+    drop(pm);
+    save_profile_and_build_runtime(&profiles, &auth, &data_dir.0, &mut profile, &config)?;
     Ok(())
 }
 
@@ -2551,6 +2994,320 @@ fn get_saved_config(
     let auth = auth.lock().map_err(|e| e.to_string())?;
     let profile = pm.get_profile(&profile_id).ok_or("profile not found")?;
     profile_to_desktop_config(&profile, &auth)
+}
+
+#[tauri::command]
+async fn run_setup_doctor(
+    app: AppHandle,
+    bot: State<'_, BotState>,
+    profiles: State<'_, ProfileState>,
+    auth: State<'_, AuthState>,
+    data_dir: State<'_, AppDataDir>,
+    wallet_sync: State<'_, WalletSyncState>,
+) -> Result<SetupDoctorResult, String> {
+    let mut profile = {
+        let pm = profiles.lock().map_err(|e| e.to_string())?;
+        match active_profile(&pm) {
+            Ok(profile) => profile,
+            Err(_) => {
+                let items = vec![doctor_item(
+                    "active_profile",
+                    "Active Profile",
+                    "missing_user",
+                    "Create or activate a profile in Settings before running Setup Doctor.",
+                    None,
+                )];
+                return Ok(doctor_result(
+                    "needs_you",
+                    items,
+                    Some(doctor_popup(
+                        "No Active Profile",
+                        "Create or activate a profile in Settings, then run Setup Doctor again.",
+                    )),
+                    false,
+                    false,
+                ));
+            }
+        }
+    };
+    let mut config: DesktopConfig = {
+        let auth = auth.lock().map_err(|e| e.to_string())?;
+        let value = profile_to_desktop_config(&profile, &auth)?;
+        serde_json::from_value(value).map_err(|e| format!("parse desktop config: {e}"))?
+    };
+
+    let (bot_was_running, bot_simulation) = {
+        let manager = bot.lock().map_err(|e| e.to_string())?;
+        (
+            manager.is_running(),
+            manager
+                .simulation_mode()
+                .unwrap_or_else(|| simulation_mode_from_profile(&profile)),
+        )
+    };
+
+    append_desktop_debug_line(
+        &data_dir.0,
+        "DOCTOR",
+        format!(
+            "setup doctor started profile={} bot_running={}",
+            profile.id, bot_was_running
+        )
+        .as_str(),
+    );
+
+    let initial_audit = audit_setup_doctor(&config);
+    if !initial_audit.blocking_user_labels.is_empty() {
+        let popup = doctor_needs_you_popup(&initial_audit);
+        return Ok(doctor_result(
+            "needs_you",
+            initial_audit.items.clone(),
+            Some(popup),
+            bot_was_running,
+            false,
+        ));
+    }
+
+    let mut fixed_keys: Vec<String> = Vec::new();
+    if let Ok(derived_eoa) = wallet_address_from_private_key(config.private_key.as_str()) {
+        let current = config.eoa_wallet.trim();
+        if current.is_empty() || !current.eq_ignore_ascii_case(derived_eoa.as_str()) {
+            config.eoa_wallet = derived_eoa;
+            fixed_keys.push("eoa_wallet".to_string());
+        }
+    }
+
+    let needs_remote_regeneration = initial_audit
+        .missing_generated_keys
+        .iter()
+        .any(|key| key != "eoa_wallet");
+    if needs_remote_regeneration {
+        let geo_status = geo_access::current_geo_access_status();
+        if geo_status.status == "blocked" {
+            return Ok(doctor_result(
+                "needs_you",
+                initial_audit.items,
+                Some(doctor_popup(
+                    "Location Blocked",
+                    geo_status.reason,
+                )),
+                bot_was_running,
+                false,
+            ));
+        }
+        if geo_status.status != "allowed" {
+            return Ok(doctor_result(
+                "needs_you",
+                initial_audit.items,
+                Some(doctor_popup(
+                    "Location Verification Required",
+                    "Doctor could not regenerate remote credentials because location verification is unavailable right now. Open Settings -> Setup and run onboarding after confirming access.",
+                )),
+                bot_was_running,
+                false,
+            ));
+        }
+
+        let onboarding = match onboard::run_onboarding(
+            config.private_key.as_str(),
+            config.sig_type,
+            config.proxy_wallet.as_str(),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(err) => {
+                return Ok(doctor_result(
+                    "failed",
+                    initial_audit.items,
+                    Some(doctor_popup(
+                        "Could Not Regenerate Remote Credentials",
+                        format!(
+                            "Setup Doctor could not regenerate remote credentials: {err}"
+                        ),
+                    )),
+                    bot_was_running,
+                    false,
+                ))
+            }
+        };
+
+        let remote_updates = [
+            (
+                "remote_signer_token",
+                onboarding
+                    .remote_signer_token
+                    .as_ref()
+                    .or(onboarding.signer_token.as_ref()),
+            ),
+            ("remote_discovery_token", onboarding.discovery_token.as_ref()),
+            (
+                "remote_premarket_alpha_token",
+                onboarding.premarket_alpha_token.as_ref(),
+            ),
+            (
+                "remote_endgame_alpha_token",
+                onboarding.endgame_alpha_token.as_ref(),
+            ),
+            (
+                "remote_mm_rewards_alpha_token",
+                onboarding.mm_rewards_alpha_token.as_ref(),
+            ),
+            (
+                "remote_evsnipe_discovery_token",
+                onboarding.evsnipe_discovery_token.as_ref(),
+            ),
+            ("admin_api_token", onboarding.admin_api_token.as_ref()),
+        ];
+        for (key, value) in remote_updates {
+            let value = value.map(|entry| entry.trim()).filter(|entry| !entry.is_empty());
+            match key {
+                "remote_signer_token" => {
+                    if let Some(value) = value {
+                        if config.remote_signer_token.trim() != value {
+                            config.remote_signer_token = value.to_string();
+                            fixed_keys.push(key.to_string());
+                        }
+                    }
+                }
+                "remote_discovery_token" => {
+                    if let Some(value) = value {
+                        if config.remote_discovery_token.trim() != value {
+                            config.remote_discovery_token = value.to_string();
+                            fixed_keys.push(key.to_string());
+                        }
+                    }
+                }
+                "remote_premarket_alpha_token" => {
+                    if let Some(value) = value {
+                        if config.remote_premarket_alpha_token.trim() != value {
+                            config.remote_premarket_alpha_token = value.to_string();
+                            fixed_keys.push(key.to_string());
+                        }
+                    }
+                }
+                "remote_endgame_alpha_token" => {
+                    if let Some(value) = value {
+                        if config.remote_endgame_alpha_token.trim() != value {
+                            config.remote_endgame_alpha_token = value.to_string();
+                            fixed_keys.push(key.to_string());
+                        }
+                    }
+                }
+                "remote_mm_rewards_alpha_token" => {
+                    if let Some(value) = value {
+                        if config.remote_mm_rewards_alpha_token.trim() != value {
+                            config.remote_mm_rewards_alpha_token = value.to_string();
+                            fixed_keys.push(key.to_string());
+                        }
+                    }
+                }
+                "remote_evsnipe_discovery_token" => {
+                    if let Some(value) = value {
+                        if config.remote_evsnipe_discovery_token.trim() != value {
+                            config.remote_evsnipe_discovery_token = value.to_string();
+                            fixed_keys.push(key.to_string());
+                        }
+                    }
+                }
+                "admin_api_token" => {
+                    if let Some(value) = value {
+                        if config.admin_api_token.trim() != value {
+                            config.admin_api_token = value.to_string();
+                            fixed_keys.push(key.to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let final_audit = audit_setup_doctor(&config);
+    let mut items = final_audit.items.clone();
+    mark_fixed_doctor_items(&mut items, &fixed_keys);
+    mark_failed_generated_doctor_items(&mut items, &final_audit.missing_generated_keys);
+
+    if fixed_keys.is_empty()
+        && final_audit.missing_user_labels.is_empty()
+        && final_audit.missing_generated_labels.is_empty()
+    {
+        return Ok(doctor_result("ready", items, None, bot_was_running, false));
+    }
+
+    let mut env_path: Option<PathBuf> = None;
+    let mut config_path: Option<PathBuf> = None;
+    if !fixed_keys.is_empty() {
+        match save_profile_and_build_runtime(&profiles, &auth, &data_dir.0, &mut profile, &config) {
+            Ok((saved_env_path, saved_config_path)) => {
+                env_path = Some(saved_env_path);
+                config_path = Some(saved_config_path);
+            }
+            Err(err) => {
+                return Ok(doctor_result(
+                    "failed",
+                    items,
+                    Some(doctor_popup(
+                        "Could Not Save Updated Setup",
+                        format!("Setup Doctor fixed fields in memory but could not save them: {err}"),
+                    )),
+                    bot_was_running,
+                    false,
+                ));
+            }
+        }
+    }
+
+    let mut bot_restarted = false;
+    if bot_was_running && !fixed_keys.is_empty() {
+        if let Err(err) = restart_bot_with_runtime_paths(
+            &app,
+            &bot,
+            &wallet_sync,
+            &profile,
+            env_path.clone().expect("env path present when fixed"),
+            config_path.clone().expect("config path present when fixed"),
+            bot_simulation,
+        ) {
+            return Ok(doctor_result(
+                "failed",
+                items,
+                Some(doctor_popup(
+                    "Setup Fixed but Restart Failed",
+                    format!(
+                        "Setup Doctor saved the missing fields, but the bot restart failed: {err}"
+                    ),
+                )),
+                bot_was_running,
+                false,
+            ));
+        }
+        bot_restarted = true;
+    }
+
+    append_desktop_debug_line(
+        &data_dir.0,
+        "DOCTOR",
+        format!(
+            "setup doctor completed profile={} fixed={} bot_restarted={}",
+            profile.id,
+            fixed_keys.len(),
+            bot_restarted
+        )
+        .as_str(),
+    );
+
+    if !final_audit.missing_user_labels.is_empty() || !final_audit.missing_generated_labels.is_empty() {
+        return Ok(doctor_result(
+            "needs_you",
+            items,
+            Some(doctor_needs_you_popup(&final_audit)),
+            bot_was_running,
+            bot_restarted,
+        ));
+    }
+
+    Ok(doctor_result("fixed", items, None, bot_was_running, bot_restarted))
 }
 
 #[tauri::command]
@@ -2678,13 +3435,15 @@ fn get_trade_stats(data_dir: State<'_, AppDataDir>) -> serde_json::Value {
     } else {
         0.0
     };
+    let cutoff_ms = ack_latency_window_start_ms();
     let (ack_sample_count, avg_ack_latency_ms): (i64, Option<f64>) = conn
         .query_row(
             "SELECT \
                 COALESCE(SUM(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN 1 ELSE 0 END), 0), \
                 AVG(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN CAST(ack_ts_ms - submit_ts_ms AS REAL) END) \
-             FROM strategy_feature_snapshots_v1",
-            [],
+             FROM strategy_feature_snapshots_v1 \
+             WHERE ack_ts_ms IS NOT NULL AND ack_ts_ms >= ?1",
+            [cutoff_ms],
             |row| Ok((row.get(0)?, row.get::<_, Option<f64>>(1)?)),
         )
         .unwrap_or((0, None));
@@ -3194,6 +3953,7 @@ pub fn run() {
             bot_api_request,
             save_config,
             get_saved_config,
+            run_setup_doctor,
             export_config,
             import_config,
             get_trade_stats,

@@ -8,6 +8,18 @@ Cross-platform desktop app for the EVPoly trading bot. Built with Tauri v2 + Rea
 - X: [https://x.com/EVplusAI](https://x.com/EVplusAI)
 - GitHub: [https://github.com/Degenapetrader/EVPOLY](https://github.com/Degenapetrader/EVPOLY)
 
+## Setup Doctor
+
+Use the `Doctor` button on Home when a profile looks incomplete or a remote token was cleared.
+
+Setup Doctor:
+- checks the baseline setup fields a healthy EVPoly profile should have,
+- regenerates every remote credential onboarding can provide,
+- reports manual-only items like relayer credentials as `needs_you`,
+- never blocks the bot from running.
+
+See [docs/setup_doctor.md](./docs/setup_doctor.md) for user guidance and AI-helper notes.
+
 ## Restricted Jurisdictions
 
 EVPoly is unavailable in certain restricted jurisdictions due to regulatory, sanctions, or platform restrictions. Use from restricted jurisdictions, or use of VPNs and proxies to bypass geographic restrictions, is prohibited.

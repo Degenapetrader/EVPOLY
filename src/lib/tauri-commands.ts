@@ -192,6 +192,39 @@ export interface OnboardResult {
   [key: string]: unknown;
 }
 
+export type SetupDoctorStatus = "ready" | "fixed" | "needs_you" | "failed";
+export type SetupDoctorItemStatus =
+  | "ok"
+  | "fixed"
+  | "missing_user"
+  | "missing_generated"
+  | "failed";
+
+export interface SetupDoctorItem {
+  key: string;
+  label: string;
+  status: SetupDoctorItemStatus | string;
+  message: string;
+  strategy?: string | null;
+}
+
+export interface SetupDoctorPopup {
+  title: string;
+  body: string;
+  cta_label: string;
+  cta_target: string;
+}
+
+export interface SetupDoctorResult {
+  status: SetupDoctorStatus | string;
+  items: SetupDoctorItem[];
+  fixed_count: number;
+  missing_user_count: number;
+  bot_was_running: boolean;
+  bot_restarted: boolean;
+  popup?: SetupDoctorPopup | null;
+}
+
 export interface PremarketSettings {
   tp_enabled: boolean;
   active_cap_per_asset: number;
@@ -523,6 +556,9 @@ export const runOnboarding = (
     proxyWallet,
     proxy_wallet: proxyWallet,
   });
+
+export const runSetupDoctor = (): Promise<SetupDoctorResult> =>
+  invoke("run_setup_doctor");
 
 export const getDataDirPath = (): Promise<string> =>
   invoke("get_data_dir_path");

@@ -190,7 +190,9 @@ disk_guard_check() {
 load_local_ev_overrides() {
   if [[ -f "$ROOT_DIR/.env" ]]; then
     # shellcheck disable=SC1091
+    set -f
     source "$ROOT_DIR/.env" || true
+    set +f
     DISK_GUARD_ENABLE="${EV_DISK_GUARD_ENABLE:-$DISK_GUARD_ENABLE}"
     DISK_GUARD_MIN_FREE_GB="${EV_DISK_GUARD_MIN_FREE_GB:-$DISK_GUARD_MIN_FREE_GB}"
     DISK_AUTO_PRUNE_ENABLE="${EV_DISK_AUTO_PRUNE_ENABLE:-$DISK_AUTO_PRUNE_ENABLE}"
@@ -278,7 +280,7 @@ start_session() {
   if [[ "$FAST_START" == "1" ]]; then
     fast_env_prefix="export EVPOLY_STARTUP_CANCEL_ALL_ORDERS=false EVPOLY_STARTUP_PENDING_RECONCILE_ENABLE=false EVPOLY_MARKET_PREWARM_ENABLE=false; "
   fi
-  cmd="cd '$ROOT_DIR' && set -a && { [ -f .env ] && source .env; true; } && set +a && ${fast_env_prefix}'$(release_bin_path)' --config '$CONFIG_FILE' $mode_flag"
+  cmd="cd '$ROOT_DIR' && set -a && set -f && { [ -f .env ] && source .env; true; } && set +f && set +a && ${fast_env_prefix}'$(release_bin_path)' --config '$CONFIG_FILE' $mode_flag"
   tmux new-session -d -s "$SESSION_NAME" "bash -lc \"$cmd\""
   echo "started session '$SESSION_NAME' ($mode)."
   if wallet_sync_should_manage_for_mode "$mode"; then

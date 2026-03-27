@@ -56,7 +56,7 @@ Defaults are defined by runtime config loaders and reflected in `.env.example` /
 
 ## Quick Start
 1. Install dependencies:
-   `git tmux sqlite3 python3 build-essential pkg-config libssl-dev curl`
+   `git tmux sqlite3 python3 python3-pip python3-venv build-essential pkg-config libssl-dev curl`
 2. Install Rust:
    `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y`
 3. Build:
@@ -108,9 +108,16 @@ Timeout policy currently hardcoded in runtime:
 - Shared timeframe discovery: `2000ms`
 
 ## Remote Onboarding (Signer + Alpha URLs)
-Install helper deps:
+Recommended helper env:
 ```bash
-python3 -m pip install --upgrade requests eth-account
+python3 -m venv .venv
+. .venv/bin/activate
+pip install --upgrade requests eth-account
+```
+
+Debian 12 fallback if you do not want a venv:
+```bash
+python3 -m pip install --break-system-packages --upgrade requests eth-account
 ```
 
 Run onboarding:
@@ -123,8 +130,8 @@ python3 scripts/remote_onboard.py \
   --write-env-file .env
 ```
 
-Onboarding writes signer/discovery/alpha defaults when available from API runtime.
-It should populate all remote token destinations for all strategies, not only the strategies currently enabled.
+Onboarding writes all remote token destinations it can populate from API runtime, including signer, discovery, per-strategy alpha, and admin token defaults.
+It should populate those destinations for all strategies, not only the strategies currently enabled.
 
 Important sizing note:
 - Set strategy base-size vars explicitly:
@@ -138,6 +145,7 @@ Important relayer note:
 - Redeem/merge primary path uses:
   - `RELAYER_API_KEY`
   - `RELAYER_API_KEY_ADDRESS`
+- Onboarding does not generate relayer credentials; you must create them manually in Polymarket.
 - Get these from:
   `https://polymarket.com/settings?tab=api-keys`
 

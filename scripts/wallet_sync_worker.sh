@@ -42,7 +42,9 @@ has_session() {
 run_once() {
   cd "$ROOT_DIR"
   set -a
+  set -f
   [[ -f .env ]] && source .env || true
+  set +f
   set +a
   "$PY_BIN" "$SCRIPT_PATH" --db "$DB_PATH"
 }
@@ -54,7 +56,7 @@ start_worker() {
     return 0
   fi
   local cmd
-  cmd="cd '$ROOT_DIR' && set -a && { [ -f .env ] && source .env; true; } && set +a && '$PY_BIN' '$SCRIPT_PATH' --db '$DB_PATH' --loop --interval-sec '$INTERVAL_SEC' >> '$LOG_FILE' 2>&1"
+  cmd="cd '$ROOT_DIR' && set -a && set -f && { [ -f .env ] && source .env; true; } && set +f && set +a && '$PY_BIN' '$SCRIPT_PATH' --db '$DB_PATH' --loop --interval-sec '$INTERVAL_SEC' >> '$LOG_FILE' 2>&1"
   tmux new-session -d -s "$SESSION_NAME" "bash -lc \"$cmd\""
   echo "started wallet sync worker: session='$SESSION_NAME' interval=${INTERVAL_SEC}s"
 }

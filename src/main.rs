@@ -1446,8 +1446,12 @@ fn mm_sport_condition_quote_expiration(
     max_sec: u64,
 ) -> (i64, i64, u64) {
     let condition_key = condition_id.trim().to_ascii_lowercase();
+    let min_ttl_ms = i64::try_from(min_sec.saturating_mul(1_000))
+        .ok()
+        .unwrap_or(61_000)
+        .max(1_000);
     if let Some((expiration_ms, ttl_sec)) = quote_expiry_by_condition.get(&condition_key).copied() {
-        if expiration_ms > now_ms {
+        if expiration_ms > now_ms && expiration_ms.saturating_sub(now_ms) >= min_ttl_ms {
             let expiration_ts = expiration_ms.saturating_div(1_000).max(1);
             return (expiration_ts, expiration_ms, ttl_sec);
         }
@@ -15216,6 +15220,10 @@ async fn main() -> Result<()> {
                             .get(&market.condition_id)
                             .cloned()
                             .unwrap_or_default();
+                        if market_rows.is_empty() {
+                            quote_expiry_by_condition
+                                .remove(&market.condition_id.trim().to_ascii_lowercase());
+                        }
                         let up_no_exit_side_paused = mm_sport_no_exit_side_pause_active(
                             &no_exit_side_pause_by_token,
                             market.up_token_id.as_str(),
@@ -34994,6 +35002,21 @@ mod tests {
             Some(2_535.6085404),
         );
         assert!(adjusted.is_none());
+    }
+
+    #[test]
+    fn mm_sport_condition_quote_expiration_reuses_only_when_min_window_remains() {
+        let mut expiries = std::collections::HashMap::new();
+        expiries.insert("cond-a".to_string(), (200_000, 200));
+
+        let reused = mm_sport_condition_quote_expiration(&mut expiries, 100_000, "cond-a", 61, 300);
+        assert_eq!(reused, (200, 200_000, 200));
+
+        let refreshed =
+            mm_sport_condition_quote_expiration(&mut expiries, 150_000, "cond-a", 61, 300);
+        assert!(refreshed.1 >= 211_000);
+        assert_ne!(refreshed.1, 200_000);
+        assert!(refreshed.2 >= 61);
     }
 
     #[test]

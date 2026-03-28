@@ -1541,6 +1541,47 @@ fn mm_sport_target_shares_for_ratio(external_top_shares: f64, target_ratio: f64)
     (shares.is_finite() && shares > 0.0).then_some(shares)
 }
 
+fn mm_sport_depth_ratio_clamp_pair_minimums(
+    up_quote_shares: f64,
+    up_min_quote_shares: f64,
+    up_best_bid: f64,
+    down_quote_shares: f64,
+    down_min_quote_shares: f64,
+    down_best_bid: f64,
+    available_usdc: Option<f64>,
+) -> Option<(f64, f64, f64)> {
+    let available_usdc = available_usdc
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(0.0);
+    if available_usdc <= 0.0
+        || !up_quote_shares.is_finite()
+        || !down_quote_shares.is_finite()
+        || !up_min_quote_shares.is_finite()
+        || !down_min_quote_shares.is_finite()
+        || !up_best_bid.is_finite()
+        || !down_best_bid.is_finite()
+        || up_best_bid <= 0.0
+        || down_best_bid <= 0.0
+    {
+        return None;
+    }
+    let adjusted_up_quote_shares = up_quote_shares.max(up_min_quote_shares.max(1.0));
+    let adjusted_down_quote_shares = down_quote_shares.max(down_min_quote_shares.max(1.0));
+    let adjusted_pair_notional_usd =
+        adjusted_up_quote_shares * up_best_bid + adjusted_down_quote_shares * down_best_bid;
+    if !adjusted_pair_notional_usd.is_finite()
+        || adjusted_pair_notional_usd <= 0.0
+        || adjusted_pair_notional_usd > available_usdc + 1e-9
+    {
+        return None;
+    }
+    Some((
+        adjusted_up_quote_shares,
+        adjusted_down_quote_shares,
+        adjusted_pair_notional_usd,
+    ))
+}
+
 fn mm_sport_order_matches_target(
     row: &PendingOrderRecord,
     target_price: f64,
@@ -15993,6 +16034,45 @@ async fn main() -> Result<()> {
                                 / down_best_bid.max(0.000_001))
                             .max(1.0)
                             .max(reward_min_shares);
+                            if mm_sport_cfg_for_loop.quote_size_mode
+                                == mm::MmSportQuoteSizeMode::DepthRatio
+                                && (up_quote_shares + 1e-9 < up_min_quote_shares
+                                    || down_quote_shares + 1e-9 < down_min_quote_shares)
+                            {
+                                let original_up_quote_shares = up_quote_shares;
+                                let original_down_quote_shares = down_quote_shares;
+                                if let Some((
+                                    adjusted_up_quote_shares,
+                                    adjusted_down_quote_shares,
+                                    adjusted_pair_notional_usd,
+                                )) = mm_sport_depth_ratio_clamp_pair_minimums(
+                                    up_quote_shares,
+                                    up_min_quote_shares,
+                                    up_best_bid,
+                                    down_quote_shares,
+                                    down_min_quote_shares,
+                                    down_best_bid,
+                                    depth_ratio_available_usdc_cached,
+                                ) {
+                                    up_quote_shares = adjusted_up_quote_shares;
+                                    down_quote_shares = adjusted_down_quote_shares;
+                                    log_event(
+                                        "mm_sport_depth_ratio_pair_min_size_clamped",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                            "condition_id": market.condition_id,
+                                            "original_up_quote_shares": original_up_quote_shares,
+                                            "original_down_quote_shares": original_down_quote_shares,
+                                            "up_quote_shares": up_quote_shares,
+                                            "down_quote_shares": down_quote_shares,
+                                            "up_min_quote_shares": up_min_quote_shares,
+                                            "down_min_quote_shares": down_min_quote_shares,
+                                            "adjusted_pair_notional_usd": adjusted_pair_notional_usd,
+                                            "available_usdc": depth_ratio_available_usdc_cached
+                                        }),
+                                    );
+                                }
+                            }
                             if up_quote_shares + 1e-9 < up_min_quote_shares
                                 || down_quote_shares + 1e-9 < down_min_quote_shares
                             {
@@ -34882,6 +34962,38 @@ mod tests {
     fn mm_sport_target_share_ratio_detects_limit_breach() {
         let ratio = mm_sport_target_share_ratio(3_000.0, 100_000.0).expect("ratio");
         assert!(ratio > 0.02);
+    }
+
+    #[test]
+    fn mm_sport_depth_ratio_clamp_pair_minimums_restores_sub_min_side_when_affordable() {
+        let adjusted = mm_sport_depth_ratio_clamp_pair_minimums(
+            3_282.7210631728094,
+            1_000.0,
+            0.73,
+            535.469862630188,
+            1_000.0,
+            0.26,
+            Some(4_226.014234),
+        )
+        .expect("adjusted pair");
+        assert!((adjusted.0 - 3_282.7210631728094).abs() < 1e-9);
+        assert!((adjusted.1 - 1_000.0).abs() < 1e-9);
+        assert!(adjusted.2 > 2_650.0);
+        assert!(adjusted.2 < 2_660.0);
+    }
+
+    #[test]
+    fn mm_sport_depth_ratio_clamp_pair_minimums_rejects_unaffordable_adjustment() {
+        let adjusted = mm_sport_depth_ratio_clamp_pair_minimums(
+            7_648.797222797511,
+            1_000.0,
+            0.33,
+            17.432510419426222,
+            1_000.0,
+            0.66,
+            Some(2_535.6085404),
+        );
+        assert!(adjusted.is_none());
     }
 
     #[test]

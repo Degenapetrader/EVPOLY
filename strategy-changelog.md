@@ -73,6 +73,13 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-03-30
+
+- `evsnipe_v1` internal strategy-cap tuning was removed from operator-facing config (`src/evsnipe.rs`, `src/main.rs`, `src/bot_admin.rs`, `.env.full.example`, `docs/evsnipe_v1.md`):
+  - runtime now hardcodes the in-loop EVSnipe cap to a large internal backstop (`1_000_000_000_000`) and ignores any stale `EVPOLY_EVSNIPE_STRATEGY_CAP_USD` env override.
+  - bot-admin/settings and docs/templates no longer expose `EVPOLY_EVSNIPE_STRATEGY_CAP_USD` as a supported knob.
+  - EVSnipe startup/submit telemetry no longer advertises a user-tunable strategy-cap field.
+
 ### 2026-03-24
 
 - Premarket/non-MM minimum-size policy cleanup (`src/main.rs`, `src/trader.rs`, `docs/premarket_v1.md`):

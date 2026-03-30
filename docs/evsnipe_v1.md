@@ -27,12 +27,11 @@ Local and remote discovery are aligned to the same EVSnipe filtering model (Poly
 3. Binance trade stream handles hit triggers.
 4. On trigger, map rule -> side/token.
 5. Submit FAK buy immediately with the fixed max-buy guard.
-6. Enforce strategy cap and inflight task limits.
+6. Enforce inflight task limits.
 7. Dedupe/prune prevents duplicate fire for same condition/leg.
 
 ## Sizing and Caps
 - `EVPOLY_EVSNIPE_SIZE_USD` default `100`
-- `EVPOLY_EVSNIPE_STRATEGY_CAP_USD` default `10000`
 - `EVPOLY_EVSNIPE_PRE_LEG_RATIO` default `0.30`
 
 ## Key Env Knobs
@@ -43,6 +42,5 @@ Local and remote discovery are aligned to the same EVSnipe filtering model (Poly
 - `EVPOLY_EVSNIPE_MAX_DAYS_TO_EXPIRY`
 - `EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT`
 - `EVPOLY_EVSNIPE_SIZE_USD`
-- `EVPOLY_EVSNIPE_STRATEGY_CAP_USD`
 - `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL`
 - `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN`

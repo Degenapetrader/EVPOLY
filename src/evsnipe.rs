@@ -186,6 +186,8 @@ pub struct EvsnipeConfig {
     pub max_inflight_tasks: usize,
 }
 
+const EVSNIPE_INTERNAL_STRATEGY_CAP_USD: f64 = 1_000_000_000_000.0;
+
 impl EvsnipeConfig {
     pub fn from_env() -> Self {
         Self {
@@ -214,7 +216,8 @@ impl EvsnipeConfig {
                 .max(1)
                 .min(8),
             binance_stale_ms: env_i64("EVPOLY_EVSNIPE_BINANCE_STALE_MS", 1_200).max(200),
-            strategy_cap_usd: env_f64("EVPOLY_EVSNIPE_STRATEGY_CAP_USD", 10_000.0).max(1.0),
+            // Keep the EVSnipe in-loop cap effectively disabled and ignore any stale env override.
+            strategy_cap_usd: EVSNIPE_INTERNAL_STRATEGY_CAP_USD,
             max_inflight_tasks: env_usize("EVPOLY_EVSNIPE_MAX_INFLIGHT_TASKS", 16).max(1),
         }
     }
@@ -1706,6 +1709,37 @@ fn env_f64(key: &str, default: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::models::Market;
+    use std::sync::{Mutex, OnceLock};
+
+    fn evsnipe_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_evsnipe_env<F: FnOnce()>(updates: &[(&str, Option<&str>)], f: F) {
+        let _guard = evsnipe_env_lock()
+            .lock()
+            .expect("evsnipe env lock poisoned");
+        let mut previous: Vec<(&str, Option<String>)> = Vec::with_capacity(updates.len());
+        for (name, value) in updates {
+            previous.push((*name, std::env::var(name).ok()));
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+        f();
+        for (name, value) in previous {
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 
     #[test]
     fn select_cross_ask_prefers_requested_deeper_level() {
@@ -1756,6 +1790,20 @@ mod tests {
         assert_eq!(
             parse_strike_from_text("Will Solana dip to $70 in March?"),
             Some(70.0)
+        );
+    }
+
+    #[test]
+    fn evsnipe_strategy_cap_env_is_ignored() {
+        with_evsnipe_env(
+            &[
+                ("EVPOLY_EVSNIPE_STRATEGY_CAP_USD", Some("25")),
+                ("EVPOLY_STRATEGY_EVSNIPE_ENABLE", None),
+            ],
+            || {
+                let cfg = EvsnipeConfig::from_env();
+                assert_eq!(cfg.strategy_cap_usd, EVSNIPE_INTERNAL_STRATEGY_CAP_USD);
+            },
         );
     }
 

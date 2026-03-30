@@ -12580,7 +12580,7 @@ async fn main() -> Result<()> {
         );
         let symbols_csv = symbols.join(",");
         eprintln!(
-            "⚡ EVSnipe enabled (symbols=[{}], refresh={}s, max_days={}, size=${:.2}, pre_bps={:.2}, pre_ratio={:.2}, max_buy={:.4}, cross_levels={}, stale={}ms, strategy_cap=${:.2}, max_inflight={})",
+            "⚡ EVSnipe enabled (symbols=[{}], refresh={}s, max_days={}, size=${:.2}, pre_bps={:.2}, pre_ratio={:.2}, max_buy={:.4}, cross_levels={}, stale={}ms, max_inflight={})",
             symbols_csv,
             evsnipe_cfg.discovery_refresh_sec,
             evsnipe_cfg.max_days_to_expiry,
@@ -12590,7 +12590,6 @@ async fn main() -> Result<()> {
             evsnipe_cfg.max_buy_price,
             evsnipe_cfg.cross_ask_levels,
             evsnipe_cfg.binance_stale_ms,
-            evsnipe_cfg.strategy_cap_usd,
             evsnipe_cfg.max_inflight_tasks
         );
         let evsnipe_tick_channel_cap = std::env::var("EVPOLY_EVSNIPE_TICK_CHANNEL_CAP")
@@ -13119,8 +13118,7 @@ async fn main() -> Result<()> {
                                             "symbol": spec.symbol,
                                             "hit_leg": hit_leg.as_str(),
                                             "used_strategy_usd": state.used_strategy_usd,
-                                            "size_usd": leg_size_usd,
-                                            "strategy_cap_usd": evsnipe_cfg_for_trade.strategy_cap_usd
+                                            "size_usd": leg_size_usd
                                         }),
                                     );
                                 }
@@ -13137,7 +13135,6 @@ async fn main() -> Result<()> {
                         let state_for_task = evsnipe_state_for_trade.clone();
                         let arbiter_exec_tx_for_task = arbiter_exec_tx_for_evsnipe_trade.clone();
                         let enqueue_dedupe_for_task = enqueue_dedupe_for_evsnipe_trade.clone();
-                        let evsnipe_cfg_for_task = evsnipe_cfg_for_trade.clone();
                         let symbol_for_task = symbol.clone();
                         let spec_for_task = spec.clone();
                         let tick_for_task = tick.clone();
@@ -13304,8 +13301,7 @@ async fn main() -> Result<()> {
                                         "best_ask": best_ask_hint,
                                         "book_precheck_bypassed": true,
                                         "size_usd": leg_size_for_task,
-                                        "used_strategy_usd": state.used_strategy_usd,
-                                        "strategy_cap_usd": evsnipe_cfg_for_task.strategy_cap_usd
+                                        "used_strategy_usd": state.used_strategy_usd
                                     }),
                                 );
                             } else {

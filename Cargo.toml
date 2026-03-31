@@ -1,4 +1,5 @@
 [package]
+# socket test: harmless comment to trigger PR security checks
 name = "polymarket-arbitrage-bot"
 version = "0.1.0"
 edition = "2021"

@@ -26,6 +26,13 @@ fn first_nonempty(values: &[Option<&Value>]) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn derive_order_signer_primary_token(
+    runtime: &serde_json::Map<String, Value>,
+    remote_signer_token: &Option<String>,
+) -> Option<String> {
+    first_nonempty(&[runtime.get("order_signer_token")]).or_else(|| remote_signer_token.clone())
+}
+
 async fn post_json(client: &reqwest::Client, url: &str, payload: &Value) -> Result<Value, String> {
     let response = client
         .post(url)
@@ -55,6 +62,7 @@ pub struct OnboardResult {
     pub bound_wallet: Option<String>,
     pub remote_signer_token: Option<String>,
     pub signer_token: Option<String>,
+    pub order_signer_primary_token: Option<String>,
     pub discovery_token: Option<String>,
     pub premarket_alpha_token: Option<String>,
     pub endgame_alpha_token: Option<String>,
@@ -159,12 +167,15 @@ pub async fn run_onboarding(
         runtime.get("remote_alpha_token"),
         runtime.get("remote_discovery_token"),
     ]);
+    let order_signer_primary_token =
+        derive_order_signer_primary_token(&runtime, &remote_signer_token);
 
     let mut result = OnboardResult {
         eoa_wallet: Some(derived_eoa),
         bound_wallet: Some(bind_wallet.clone()),
         remote_signer_token: remote_signer_token.clone(),
         signer_token: remote_signer_token,
+        order_signer_primary_token,
         discovery_token: first_nonempty(&[
             runtime.get("remote_discovery_token"),
             runtime.get("remote_market_discovery_token"),
@@ -197,8 +208,9 @@ pub async fn run_onboarding(
 
 #[cfg(test)]
 mod tests {
-    use super::{onboard_url, wallet_address_hex};
+    use super::{derive_order_signer_primary_token, onboard_url, wallet_address_hex};
     use ethers_signers::LocalWallet;
+    use serde_json::json;
 
     #[test]
     fn wallet_address_hex_uses_full_address() {
@@ -224,6 +236,31 @@ mod tests {
         assert_eq!(
             onboard_url("finish"),
             "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/onboard/finish"
+        );
+    }
+
+    #[test]
+    fn derive_order_signer_primary_token_falls_back_to_remote_signer_token() {
+        let runtime = serde_json::Map::new();
+        let remote_signer_token = Some("remote-token".to_string());
+
+        assert_eq!(
+            derive_order_signer_primary_token(&runtime, &remote_signer_token),
+            Some("remote-token".to_string())
+        );
+    }
+
+    #[test]
+    fn derive_order_signer_primary_token_prefers_runtime_override() {
+        let runtime = json!({ "order_signer_token": "primary-token" })
+            .as_object()
+            .cloned()
+            .expect("object");
+        let remote_signer_token = Some("remote-token".to_string());
+
+        assert_eq!(
+            derive_order_signer_primary_token(&runtime, &remote_signer_token),
+            Some("primary-token".to_string())
         );
     }
 }

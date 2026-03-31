@@ -290,18 +290,27 @@ export function Config() {
       if ((config.sig_type === 1 || config.sig_type === 2) && !config.proxy_wallet.trim()) {
         throw new Error("Proxy wallet address is required for proxy or safe mode.");
       }
-      const result = await runOnboarding(config.private_key, config.sig_type, config.proxy_wallet.trim());
-      const nextConfig = {
-        ...config,
-        eoa_wallet:
-          (typeof result.eoa_wallet === "string" && result.eoa_wallet.trim()) || config.eoa_wallet,
-        remote_signer_token:
+        const result = await runOnboarding(config.private_key, config.sig_type, config.proxy_wallet.trim());
+        const nextRemoteSignerToken =
           (typeof result.remote_signer_token === "string" && result.remote_signer_token.trim()) ||
           (typeof result.signer_token === "string" && result.signer_token.trim()) ||
-          config.remote_signer_token,
-        remote_discovery_token:
-          (typeof result.discovery_token === "string" && result.discovery_token.trim()) ||
-          config.remote_discovery_token,
+          config.remote_signer_token;
+        const nextOrderSignerPrimaryToken =
+          (typeof result.order_signer_primary_token === "string" &&
+            result.order_signer_primary_token.trim()) ||
+          "";
+        const nextConfig = {
+          ...config,
+          eoa_wallet:
+            (typeof result.eoa_wallet === "string" && result.eoa_wallet.trim()) || config.eoa_wallet,
+          remote_signer_token: nextRemoteSignerToken,
+          order_signer_primary_token_internal:
+            nextOrderSignerPrimaryToken && nextOrderSignerPrimaryToken !== nextRemoteSignerToken
+              ? nextOrderSignerPrimaryToken
+              : "",
+          remote_discovery_token:
+            (typeof result.discovery_token === "string" && result.discovery_token.trim()) ||
+            config.remote_discovery_token,
         remote_premarket_alpha_token:
           (typeof result.premarket_alpha_token === "string" &&
             result.premarket_alpha_token.trim()) ||

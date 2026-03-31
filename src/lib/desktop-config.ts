@@ -211,6 +211,7 @@ export const DEFAULT_CONFIG: BotConfig = {
   relayer_api_key: "",
   relayer_api_key_address: "",
   remote_signer_token: "",
+  order_signer_primary_token_internal: "",
   remote_discovery_token: "",
   remote_premarket_alpha_token: "",
   remote_endgame_alpha_token: "",

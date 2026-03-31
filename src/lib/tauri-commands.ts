@@ -183,6 +183,7 @@ export interface OnboardResult {
   bound_wallet?: string;
   remote_signer_token?: string;
   signer_token?: string;
+  order_signer_primary_token?: string;
   discovery_token?: string;
   premarket_alpha_token?: string;
   endgame_alpha_token?: string;
@@ -377,6 +378,7 @@ export interface BotConfig {
   relayer_api_key: string;
   relayer_api_key_address: string;
   remote_signer_token: string;
+  order_signer_primary_token_internal?: string;
   remote_discovery_token: string;
   remote_premarket_alpha_token: string;
   remote_endgame_alpha_token: string;

@@ -319,6 +319,8 @@ struct DesktopConfig {
     relayer_api_key: String,
     relayer_api_key_address: String,
     remote_signer_token: String,
+    #[serde(default)]
+    order_signer_primary_token_internal: String,
     remote_discovery_token: String,
     remote_premarket_alpha_token: String,
     remote_endgame_alpha_token: String,
@@ -746,6 +748,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
         relayer_api_key: String::new(),
         relayer_api_key_address: String::new(),
         remote_signer_token: String::new(),
+        order_signer_primary_token_internal: String::new(),
         remote_discovery_token: String::new(),
         remote_premarket_alpha_token: String::new(),
         remote_endgame_alpha_token: String::new(),
@@ -835,6 +838,16 @@ fn has_shared_alpha_source(config: &DesktopConfig) -> bool {
     ]
     .iter()
     .any(|value| !value.trim().is_empty())
+}
+
+fn distinct_order_signer_primary_token(remote_signer_token: &str, primary_token: &str) -> String {
+    let remote = remote_signer_token.trim();
+    let primary = primary_token.trim();
+    if primary.is_empty() || primary == remote {
+        String::new()
+    } else {
+        primary.to_string()
+    }
 }
 
 fn push_doctor_missing_user(
@@ -957,7 +970,7 @@ fn audit_setup_doctor(config: &DesktopConfig) -> SetupDoctorAudit {
             &mut audit,
             "remote_signer_token",
             "Signer Token",
-            "The remote signer token is missing and will be regenerated from onboarding.",
+            "The remote signer token is missing and will be regenerated from onboarding. EVPoly automatically reuses it for primary order signing unless onboarding provides a separate internal override token.",
             None,
         );
     }
@@ -1059,22 +1072,22 @@ fn mark_failed_generated_doctor_items(items: &mut [SetupDoctorItem], missing_key
 }
 
 fn doctor_needs_you_popup(audit: &SetupDoctorAudit) -> SetupDoctorPopup {
-    let has_relayer_issue = audit
-        .items
-        .iter()
-        .any(|item| {
-            item.status == "missing_user"
-                && matches!(
-                    item.key.as_str(),
-                    "relayer_api_key" | "relayer_api_key_address"
-                )
-        });
+    let has_relayer_issue = audit.items.iter().any(|item| {
+        item.status == "missing_user"
+            && matches!(
+                item.key.as_str(),
+                "relayer_api_key" | "relayer_api_key_address"
+            )
+    });
 
     if !audit.blocking_user_labels.is_empty() {
         let missing = missing_labels_sentence(&audit.blocking_user_labels);
         return doctor_popup(
             format!("Missing {missing}"),
-            format!("Enter {} in Settings -> Setup, then run Setup Doctor again.", missing),
+            format!(
+                "Enter {} in Settings -> Setup, then run Setup Doctor again.",
+                missing
+            ),
         );
     }
 
@@ -1099,7 +1112,10 @@ fn doctor_needs_you_popup(audit: &SetupDoctorAudit) -> SetupDoctorPopup {
     let missing = missing_labels_sentence(&audit.missing_user_labels);
     doctor_popup(
         "Finish Setup Doctor",
-        format!("Setup Doctor finished, but {} still need manual input.", missing),
+        format!(
+            "Setup Doctor finished, but {} still need manual input.",
+            missing
+        ),
     )
 }
 
@@ -1437,8 +1453,16 @@ fn desktop_config_to_profile_payload(
         number_to_json(config.strategy_settings.session_band.flip_threshold_pct),
     );
     let allowed_tau_csv = [
-        config.strategy_settings.session_band.tau2_enabled.then_some("2"),
-        config.strategy_settings.session_band.tau1_enabled.then_some("1"),
+        config
+            .strategy_settings
+            .session_band
+            .tau2_enabled
+            .then_some("2"),
+        config
+            .strategy_settings
+            .session_band
+            .tau1_enabled
+            .then_some("1"),
     ]
     .into_iter()
     .flatten()
@@ -1561,7 +1585,11 @@ fn desktop_config_to_profile_payload(
         "EVPOLY_MM_SPORT_EXIT_MODE".to_string(),
         Value::String(
             normalize_mm_sport_exit_mode(
-                config.strategy_settings.mm_sport.inventory_exit_mode.as_str(),
+                config
+                    .strategy_settings
+                    .mm_sport
+                    .inventory_exit_mode
+                    .as_str(),
             )
             .to_string(),
         ),
@@ -1659,9 +1687,17 @@ fn desktop_config_to_profile_payload(
             "EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN".to_string(),
             config.remote_signer_token.trim().to_string(),
         );
+        let order_signer_primary_token = distinct_order_signer_primary_token(
+            config.remote_signer_token.as_str(),
+            config.order_signer_primary_token_internal.as_str(),
+        );
         secrets.insert(
             "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN".to_string(),
-            config.remote_signer_token.trim().to_string(),
+            if order_signer_primary_token.is_empty() {
+                config.remote_signer_token.trim().to_string()
+            } else {
+                order_signer_primary_token
+            },
         );
     }
     if !config.remote_discovery_token.trim().is_empty() {
@@ -1790,9 +1826,23 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
     } else {
         evsnipe_saved_ratio
     };
-    let sessionband_allowed_tau = csv_from_object(&strategy, "EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC", &["2", "1"]);
+    let sessionband_allowed_tau =
+        csv_from_object(&strategy, "EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC", &["2", "1"]);
     let sessionband_tau2_enabled = sessionband_allowed_tau.iter().any(|value| value == "2");
     let sessionband_tau1_enabled = sessionband_allowed_tau.iter().any(|value| value == "1");
+
+    let remote_signer_token = secrets
+        .get("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN")
+        .cloned()
+        .or_else(|| secrets.get("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN").cloned())
+        .unwrap_or_default();
+    let order_signer_primary_token_internal = distinct_order_signer_primary_token(
+        remote_signer_token.as_str(),
+        secrets
+            .get("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN")
+            .map(String::as_str)
+            .unwrap_or_default(),
+    );
 
     Ok(serde_json::json!({
         "private_key": secrets.get("POLY_PRIVATE_KEY").cloned().unwrap_or_default(),
@@ -1926,10 +1976,8 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "simulation": bool_from_object(&sizing, "APP_SIMULATION", default_simulation),
         "relayer_api_key": secrets.get("RELAYER_API_KEY").cloned().unwrap_or_default(),
         "relayer_api_key_address": secrets.get("RELAYER_API_KEY_ADDRESS").cloned().unwrap_or_default(),
-        "remote_signer_token": secrets.get("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN")
-            .cloned()
-            .or_else(|| secrets.get("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN").cloned())
-            .unwrap_or_default(),
+        "remote_signer_token": remote_signer_token,
+        "order_signer_primary_token_internal": order_signer_primary_token_internal,
         "remote_discovery_token": secrets.get("EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN").cloned().unwrap_or_default(),
         "remote_premarket_alpha_token": secrets.get("EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN").cloned().unwrap_or_default(),
         "remote_endgame_alpha_token": secrets.get("EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN").cloned().unwrap_or_default(),
@@ -2936,7 +2984,8 @@ fn save_profile_and_build_runtime(
     let auth = auth.lock().map_err(|e| e.to_string())?;
     apply_desktop_config_to_profile(profile, config, &auth)?;
     let pm = profiles.lock().map_err(|e| e.to_string())?;
-    pm.update_profile(profile.clone()).map_err(|e| e.to_string())?;
+    pm.update_profile(profile.clone())
+        .map_err(|e| e.to_string())?;
     drop(pm);
     build_runtime_paths_for_profile(profile, &auth, data_dir)
 }
@@ -3035,6 +3084,7 @@ async fn run_setup_doctor(
         let value = profile_to_desktop_config(&profile, &auth)?;
         serde_json::from_value(value).map_err(|e| format!("parse desktop config: {e}"))?
     };
+    let mut config_changed = false;
 
     let (bot_was_running, bot_simulation) = {
         let manager = bot.lock().map_err(|e| e.to_string())?;
@@ -3087,10 +3137,7 @@ async fn run_setup_doctor(
             return Ok(doctor_result(
                 "needs_you",
                 initial_audit.items,
-                Some(doctor_popup(
-                    "Location Blocked",
-                    geo_status.reason,
-                )),
+                Some(doctor_popup("Location Blocked", geo_status.reason)),
                 bot_was_running,
                 false,
             ));
@@ -3122,9 +3169,7 @@ async fn run_setup_doctor(
                     initial_audit.items,
                     Some(doctor_popup(
                         "Could Not Regenerate Remote Credentials",
-                        format!(
-                            "Setup Doctor could not regenerate remote credentials: {err}"
-                        ),
+                        format!("Setup Doctor could not regenerate remote credentials: {err}"),
                     )),
                     bot_was_running,
                     false,
@@ -3132,41 +3177,64 @@ async fn run_setup_doctor(
             }
         };
 
+        let onboard_remote_signer_token = onboarding
+            .remote_signer_token
+            .as_ref()
+            .or(onboarding.signer_token.as_ref())
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty());
+        let onboard_order_signer_primary_token = onboarding
+            .order_signer_primary_token
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty());
+        let next_order_signer_primary_token_internal = distinct_order_signer_primary_token(
+            onboard_remote_signer_token.unwrap_or_default(),
+            onboard_order_signer_primary_token.unwrap_or_default(),
+        );
+
         let remote_updates = [
+            ("remote_signer_token", onboard_remote_signer_token),
             (
-                "remote_signer_token",
-                onboarding
-                    .remote_signer_token
-                    .as_ref()
-                    .or(onboarding.signer_token.as_ref()),
+                "remote_discovery_token",
+                onboarding.discovery_token.as_deref(),
             ),
-            ("remote_discovery_token", onboarding.discovery_token.as_ref()),
             (
                 "remote_premarket_alpha_token",
-                onboarding.premarket_alpha_token.as_ref(),
+                onboarding.premarket_alpha_token.as_deref(),
             ),
             (
                 "remote_endgame_alpha_token",
-                onboarding.endgame_alpha_token.as_ref(),
+                onboarding.endgame_alpha_token.as_deref(),
             ),
             (
                 "remote_mm_rewards_alpha_token",
-                onboarding.mm_rewards_alpha_token.as_ref(),
+                onboarding.mm_rewards_alpha_token.as_deref(),
             ),
             (
                 "remote_evsnipe_discovery_token",
-                onboarding.evsnipe_discovery_token.as_ref(),
+                onboarding.evsnipe_discovery_token.as_deref(),
             ),
-            ("admin_api_token", onboarding.admin_api_token.as_ref()),
+            ("admin_api_token", onboarding.admin_api_token.as_deref()),
         ];
         for (key, value) in remote_updates {
-            let value = value.map(|entry| entry.trim()).filter(|entry| !entry.is_empty());
+            let value = value
+                .map(|entry| entry.trim())
+                .filter(|entry| !entry.is_empty());
             match key {
                 "remote_signer_token" => {
                     if let Some(value) = value {
                         if config.remote_signer_token.trim() != value {
                             config.remote_signer_token = value.to_string();
+                            config_changed = true;
                             fixed_keys.push(key.to_string());
+                        }
+                        if config.order_signer_primary_token_internal
+                            != next_order_signer_primary_token_internal
+                        {
+                            config.order_signer_primary_token_internal =
+                                next_order_signer_primary_token_internal.clone();
+                            config_changed = true;
                         }
                     }
                 }
@@ -3174,6 +3242,7 @@ async fn run_setup_doctor(
                     if let Some(value) = value {
                         if config.remote_discovery_token.trim() != value {
                             config.remote_discovery_token = value.to_string();
+                            config_changed = true;
                             fixed_keys.push(key.to_string());
                         }
                     }
@@ -3182,6 +3251,7 @@ async fn run_setup_doctor(
                     if let Some(value) = value {
                         if config.remote_premarket_alpha_token.trim() != value {
                             config.remote_premarket_alpha_token = value.to_string();
+                            config_changed = true;
                             fixed_keys.push(key.to_string());
                         }
                     }
@@ -3190,6 +3260,7 @@ async fn run_setup_doctor(
                     if let Some(value) = value {
                         if config.remote_endgame_alpha_token.trim() != value {
                             config.remote_endgame_alpha_token = value.to_string();
+                            config_changed = true;
                             fixed_keys.push(key.to_string());
                         }
                     }
@@ -3198,6 +3269,7 @@ async fn run_setup_doctor(
                     if let Some(value) = value {
                         if config.remote_mm_rewards_alpha_token.trim() != value {
                             config.remote_mm_rewards_alpha_token = value.to_string();
+                            config_changed = true;
                             fixed_keys.push(key.to_string());
                         }
                     }
@@ -3206,6 +3278,7 @@ async fn run_setup_doctor(
                     if let Some(value) = value {
                         if config.remote_evsnipe_discovery_token.trim() != value {
                             config.remote_evsnipe_discovery_token = value.to_string();
+                            config_changed = true;
                             fixed_keys.push(key.to_string());
                         }
                     }
@@ -3214,6 +3287,7 @@ async fn run_setup_doctor(
                     if let Some(value) = value {
                         if config.admin_api_token.trim() != value {
                             config.admin_api_token = value.to_string();
+                            config_changed = true;
                             fixed_keys.push(key.to_string());
                         }
                     }
@@ -3228,7 +3302,8 @@ async fn run_setup_doctor(
     mark_fixed_doctor_items(&mut items, &fixed_keys);
     mark_failed_generated_doctor_items(&mut items, &final_audit.missing_generated_keys);
 
-    if fixed_keys.is_empty()
+    if !config_changed
+        && fixed_keys.is_empty()
         && final_audit.missing_user_labels.is_empty()
         && final_audit.missing_generated_labels.is_empty()
     {
@@ -3237,7 +3312,7 @@ async fn run_setup_doctor(
 
     let mut env_path: Option<PathBuf> = None;
     let mut config_path: Option<PathBuf> = None;
-    if !fixed_keys.is_empty() {
+    if config_changed {
         match save_profile_and_build_runtime(&profiles, &auth, &data_dir.0, &mut profile, &config) {
             Ok((saved_env_path, saved_config_path)) => {
                 env_path = Some(saved_env_path);
@@ -3249,7 +3324,9 @@ async fn run_setup_doctor(
                     items,
                     Some(doctor_popup(
                         "Could Not Save Updated Setup",
-                        format!("Setup Doctor fixed fields in memory but could not save them: {err}"),
+                        format!(
+                            "Setup Doctor fixed fields in memory but could not save them: {err}"
+                        ),
                     )),
                     bot_was_running,
                     false,
@@ -3259,7 +3336,7 @@ async fn run_setup_doctor(
     }
 
     let mut bot_restarted = false;
-    if bot_was_running && !fixed_keys.is_empty() {
+    if bot_was_running && config_changed {
         if let Err(err) = restart_bot_with_runtime_paths(
             &app,
             &bot,
@@ -3289,15 +3366,18 @@ async fn run_setup_doctor(
         &data_dir.0,
         "DOCTOR",
         format!(
-            "setup doctor completed profile={} fixed={} bot_restarted={}",
+            "setup doctor completed profile={} fixed={} config_changed={} bot_restarted={}",
             profile.id,
             fixed_keys.len(),
+            config_changed,
             bot_restarted
         )
         .as_str(),
     );
 
-    if !final_audit.missing_user_labels.is_empty() || !final_audit.missing_generated_labels.is_empty() {
+    if !final_audit.missing_user_labels.is_empty()
+        || !final_audit.missing_generated_labels.is_empty()
+    {
         return Ok(doctor_result(
             "needs_you",
             items,
@@ -3307,7 +3387,13 @@ async fn run_setup_doctor(
         ));
     }
 
-    Ok(doctor_result("fixed", items, None, bot_was_running, bot_restarted))
+    Ok(doctor_result(
+        "fixed",
+        items,
+        None,
+        bot_was_running,
+        bot_restarted,
+    ))
 }
 
 #[tauri::command]
@@ -3738,7 +3824,8 @@ async fn run_onboarding(
         "ONBOARD",
         format!(
             "run_onboarding start signature_type={} proxy_wallet_set={}",
-            signature_type, !proxy_wallet.trim().is_empty()
+            signature_type,
+            !proxy_wallet.trim().is_empty()
         )
         .as_str(),
     );
@@ -3975,7 +4062,10 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_config_object, merge_desktop_secrets, simulation_mode_from_profile};
+    use super::{
+        default_desktop_config, desktop_config_to_profile_payload, merge_config_object,
+        merge_desktop_secrets, simulation_mode_from_profile,
+    };
     use crate::{config_io, profile_manager::Profile};
     use std::collections::HashMap;
 
@@ -4022,6 +4112,49 @@ mod tests {
         assert_eq!(merged.get("CUSTOM_KEEP"), Some(&"keep-me".to_string()));
         assert!(!merged.contains_key("POLY_PRIVATE_KEY"));
         assert!(!merged.contains_key("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN"));
+    }
+
+    #[test]
+    fn desktop_profile_payload_falls_back_primary_token_to_remote_signer() {
+        let mut config = default_desktop_config(
+            "0x1111111111111111111111111111111111111111".to_string(),
+            "0x2222222222222222222222222222222222222222".to_string(),
+            1,
+        );
+        config.remote_signer_token = "remote-token".to_string();
+
+        let (_, _, secrets, _, _, _) = desktop_config_to_profile_payload(&config);
+
+        assert_eq!(
+            secrets.get("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN"),
+            Some(&"remote-token".to_string())
+        );
+        assert_eq!(
+            secrets.get("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN"),
+            Some(&"remote-token".to_string())
+        );
+    }
+
+    #[test]
+    fn desktop_profile_payload_preserves_distinct_internal_primary_token() {
+        let mut config = default_desktop_config(
+            "0x1111111111111111111111111111111111111111".to_string(),
+            "0x2222222222222222222222222222222222222222".to_string(),
+            1,
+        );
+        config.remote_signer_token = "remote-token".to_string();
+        config.order_signer_primary_token_internal = "primary-token".to_string();
+
+        let (_, _, secrets, _, _, _) = desktop_config_to_profile_payload(&config);
+
+        assert_eq!(
+            secrets.get("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN"),
+            Some(&"remote-token".to_string())
+        );
+        assert_eq!(
+            secrets.get("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN"),
+            Some(&"primary-token".to_string())
+        );
     }
 
     #[test]

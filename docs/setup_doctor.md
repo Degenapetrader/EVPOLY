@@ -7,7 +7,6 @@ EVPoly Setup Doctor checks the baseline setup fields a healthy profile should ha
 - private key
 - proxy wallet for proxy/safe modes
 - remote signer token
-- primary order-signer token
 - remote market discovery token
 - Premarket alpha token
 - Endgame alpha token
@@ -23,12 +22,13 @@ Setup Doctor reruns onboarding to refill every remote credential the onboarding 
 
 That includes:
 - signer token
-- primary order signer token
 - shared discovery token
 - Premarket alpha token
 - Endgame alpha token
 - MM Rewards alpha token
 - EVSnipe discovery token
+
+EVPoly automatically reuses the remote signer token for primary order signing unless onboarding provides a separate internal override token.
 - any shared-alpha runtime backfill used for EVCurve and SessionBand
 
 ## What it cannot auto-fix
@@ -61,6 +61,7 @@ Doctor semantics:
 - `failed`: Doctor itself hit an execution error
 
 Important:
+- Users normally only need the remote signer token. The primary order-signer token is handled internally and should not be entered manually in the normal flow.
 - Doctor is advisory only and should not be treated as a launch gate.
 - Relayer credentials are reported, not generated.
 - Onboarding is expected to populate all remote token destinations for all strategies, not only enabled ones.

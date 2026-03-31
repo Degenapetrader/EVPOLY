@@ -138,6 +138,10 @@ def _resolve_runtime_config(finish_res: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _resolve_order_signer_primary_token(runtime_cfg: Dict[str, Any], remote_signer_token: str) -> str:
+    return _nonempty(runtime_cfg.get("order_signer_token")) or _nonempty(remote_signer_token)
+
+
 def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Dict[str, Any]:
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=20)
@@ -586,11 +590,12 @@ def main() -> int:
             "EVPOLY_REMOTE_*_ALPHA_TOKEN left unchanged."
         )
 
-    order_signer_primary_token = runtime_cfg["order_signer_token"] or remote_signer_token
+    order_signer_primary_token = _resolve_order_signer_primary_token(
+        runtime_cfg, remote_signer_token
+    )
     _upsert_env_value(
         env_file, "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN", order_signer_primary_token
     )
-    wrote_keys.append("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN")
 
     admin_token = _read_env_value(env_file, "EVPOLY_ADMIN_API_TOKEN")
     if not admin_token:

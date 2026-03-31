@@ -7,7 +7,6 @@ EVPOLY Setup Doctor checks the baseline setup fields a healthy profile should ha
 - `POLY_PRIVATE_KEY`
 - `POLY_PROXY_WALLET_ADDRESS` for proxy/safe modes
 - `EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN`
-- `EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN`
 - `EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN`
 - `EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN`
 - `EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN`
@@ -21,6 +20,8 @@ EVPOLY Setup Doctor checks the baseline setup fields a healthy profile should ha
 ## What it can auto-fix
 
 Setup Doctor reruns remote onboarding to refill every remote credential the onboarding API currently returns. That includes signer, discovery, and strategy remote tokens for all strategies.
+
+EVPOLY automatically reuses the remote signer token for primary order signing unless onboarding provides a separate internal override token.
 
 ## What it cannot auto-fix
 
@@ -46,6 +47,7 @@ Doctor result meanings:
 - `failed`: doctor itself hit an execution error
 
 Important:
+- users normally only need the remote signer token; the primary order-signer token is internal and auto-derived unless onboarding returns a separate internal value
 - relayer credentials are reported, not generated
 - doctor is advisory only and should not be treated as a runtime gate
 - onboarding should populate all remote token destinations for all strategies

@@ -22,12 +22,7 @@ BASELINE_GENERATED = [
     (
         "EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN",
         "Signer Token",
-        "Remote signer token used for builder signing.",
-    ),
-    (
-        "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN",
-        "Primary Order Signer Token",
-        "Primary order-signer token used for direct order signing.",
+        "Remote signer token used for submit and order signing. Setup Doctor also keeps the internal primary signer token aligned from it.",
     ),
     (
         "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN",
@@ -126,6 +121,19 @@ def _run_remote_onboard(env_path: Path, private_key: str, signature_type: int, p
         detail = stderr or stdout or f"exit code {completed.returncode}"
         raise RuntimeError(f"remote onboarding failed: {detail}")
     return stdout
+
+
+def _ensure_internal_primary_signer_token(env_path: Path) -> bool:
+    remote_signer_token = _env_value(env_path, "EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN")
+    primary_token = _env_value(env_path, "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN")
+    if remote_signer_token and not primary_token:
+        ro._upsert_env_value(
+            str(env_path),
+            "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN",
+            remote_signer_token,
+        )
+        return True
+    return False
 
 
 def _collect_audit(env_path: Path) -> Dict[str, Any]:
@@ -282,6 +290,7 @@ def run_doctor(env_path: Path) -> Dict[str, Any]:
     env_path = env_path.expanduser().resolve()
     repo_root = Path(__file__).resolve().parents[1]
     ro._ensure_env_file(str(env_path), repo_root)
+    _ensure_internal_primary_signer_token(env_path)
 
     initial = _collect_audit(env_path)
     fixed_keys: List[str] = []
@@ -293,6 +302,7 @@ def run_doctor(env_path: Path) -> Dict[str, Any]:
             initial["signature_type"],
             initial["proxy_wallet"],
         )
+        _ensure_internal_primary_signer_token(env_path)
 
     final = _collect_audit(env_path)
     for key, _, _ in BASELINE_GENERATED:

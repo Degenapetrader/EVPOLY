@@ -131,6 +131,7 @@ python3 scripts/remote_onboard.py \
 ```
 
 Onboarding writes all remote token destinations it can populate from API runtime, including signer, discovery, per-strategy alpha, and admin token defaults.
+Users normally only need the remote signer token. EVPOLY automatically reuses it for primary order signing unless onboarding returns a separate internal override token.
 It should populate those destinations for all strategies, not only the strategies currently enabled.
 
 Important sizing note:

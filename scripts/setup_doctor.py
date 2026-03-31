@@ -136,6 +136,12 @@ def _ensure_internal_primary_signer_token(env_path: Path) -> bool:
     return False
 
 
+def _needs_internal_signer_refresh(env_path: Path) -> bool:
+    remote_signer_token = _env_value(env_path, "EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN")
+    primary_token = _env_value(env_path, "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN")
+    return bool(remote_signer_token and primary_token and remote_signer_token != primary_token)
+
+
 def _collect_audit(env_path: Path) -> Dict[str, Any]:
     items: List[Dict[str, Any]] = []
     blocking_missing_labels: List[str] = []
@@ -294,8 +300,9 @@ def run_doctor(env_path: Path) -> Dict[str, Any]:
 
     initial = _collect_audit(env_path)
     fixed_keys: List[str] = []
+    signer_refresh_requested = _needs_internal_signer_refresh(env_path)
 
-    if initial["generated_missing_keys"] and not initial["blocking_missing_labels"]:
+    if (initial["generated_missing_keys"] or signer_refresh_requested) and not initial["blocking_missing_labels"]:
         _run_remote_onboard(
             env_path,
             initial["private_key"],
@@ -327,11 +334,11 @@ def run_doctor(env_path: Path) -> Dict[str, Any]:
     if final["manual_missing_labels"] or final["generated_missing_keys"]:
         status = "needs_you"
         popup = _popup_for_needs_you(final, relayer_only)
-    elif fixed_keys:
+    elif fixed_keys or signer_refresh_requested:
         status = "fixed"
         popup = {
             "title": "Setup Doctor Fixed Missing Setup",
-            "body": "Setup Doctor regenerated the missing baseline remote credentials.",
+            "body": "Setup Doctor refreshed the baseline remote signer setup and regenerated any missing remote credentials.",
         }
     else:
         status = "ready"

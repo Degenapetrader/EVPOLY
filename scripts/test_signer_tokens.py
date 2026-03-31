@@ -46,6 +46,22 @@ class SetupDoctorTests(unittest.TestCase):
             )
             self.assertFalse(setup_doctor._ensure_internal_primary_signer_token(env_path))
 
+    def test_doctor_requests_refresh_when_internal_primary_token_drifts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN=remote-token",
+                        "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN=stale-token",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(setup_doctor._needs_internal_signer_refresh(env_path))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -50,6 +50,11 @@ Env overrides:
   EV_DISK_AUTO_PRUNE_ENABLE (1/0)
   EV_DISK_AUTO_PRUNE_CROSS_REPOS (1/0)
   EV_DISK_AUTO_PRUNE_DEPLOY_TARGET (1/0)
+  Low-disk auto-prune also removes:
+    - target/release artifacts except the live bot binary
+    - Cargo registry cache ($HOME/.cargo/registry)
+    - pip cache ($HOME/.cache/pip)
+    - old Cursor server versions under $HOME/.cursor-server/bin/linux-x64
   EV_RETENTION_SCRIPT
   EV_WALLET_SYNC_AUTOSTART (1/0)
   EV_WALLET_SYNC_WORKER_SCRIPT
@@ -120,6 +125,22 @@ disk_free_kb() {
   df -Pk "$ROOT_DIR" | awk 'NR==2 {print $4}'
 }
 
+disk_required_kb() {
+  local min_gb="${DISK_GUARD_MIN_FREE_GB:-0}"
+  if [[ "$min_gb" =~ ^[0-9]+$ ]]; then
+    echo $(( min_gb * 1024 * 1024 ))
+  else
+    echo 0
+  fi
+}
+
+disk_free_meets_guard() {
+  local free_kb required_kb
+  free_kb="$(disk_free_kb)"
+  required_kb="$(disk_required_kb)"
+  [[ "$free_kb" =~ ^[0-9]+$ ]] && (( free_kb >= required_kb ))
+}
+
 prune_path_if_exists() {
   local path="${1:-}"
   if [[ -z "$path" ]]; then
@@ -129,6 +150,61 @@ prune_path_if_exists() {
     echo "[disk-prune] removing: $path"
     rm -rf -- "$path"
   fi
+}
+
+prune_release_artifacts_keep_bin() {
+  local repo_root="${1:-}"
+  local bin_name="${2:-$BIN_NAME}"
+  local release_dir="${repo_root%/}/target/release"
+  if [[ -z "$repo_root" || ! -d "$release_dir" ]]; then
+    return 0
+  fi
+
+  mapfile -t paths < <(
+    find "$release_dir" -mindepth 1 -maxdepth 1 \
+      ! -name "$bin_name" \
+      ! -name "${bin_name}.d" \
+      -print
+  )
+  if (( ${#paths[@]} == 0 )); then
+    return 0
+  fi
+
+  echo "[disk-prune] pruning release artifacts under: $release_dir"
+  rm -rf -- "${paths[@]}"
+}
+
+prune_cursor_server_old_versions() {
+  local base_dir="${HOME}/.cursor-server/bin/linux-x64"
+  if [[ ! -d "$base_dir" ]]; then
+    return 0
+  fi
+
+  local newest_dir=""
+  newest_dir="$(find "$base_dir" -maxdepth 1 -mindepth 1 -type d -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR==1 {print $2}')"
+
+  mapfile -t preserve_dirs < <(
+    {
+      [[ -n "$newest_dir" ]] && printf '%s\n' "$newest_dir"
+      pgrep -af "${base_dir}/" 2>/dev/null | sed -n "s#.*\\(${base_dir}/[^ /]*\\).*#\\1#p"
+    } | awk 'NF && !seen[$0]++'
+  )
+
+  local dir keep
+  while IFS= read -r dir; do
+    [[ -n "$dir" ]] || continue
+    keep=0
+    for preserved in "${preserve_dirs[@]}"; do
+      if [[ "$dir" == "$preserved" ]]; then
+        keep=1
+        break
+      fi
+    done
+    if (( keep == 0 )); then
+      echo "[disk-prune] removing old Cursor server: $dir"
+      rm -rf -- "$dir"
+    fi
+  done < <(find "$base_dir" -maxdepth 1 -mindepth 1 -type d -print 2>/dev/null)
 }
 
 disk_auto_prune() {
@@ -141,6 +217,9 @@ disk_auto_prune() {
   fi
 
   prune_path_if_exists "$ROOT_DIR/target/debug"
+  if disk_free_meets_guard; then
+    return 0
+  fi
 
   if [[ "${DISK_AUTO_PRUNE_CROSS_REPOS}" != "0" ]]; then
     if [[ "$ROOT_DIR" != "/root/EVPOLY" ]]; then
@@ -150,10 +229,41 @@ disk_auto_prune() {
       prune_path_if_exists "/root/poly-remote/target/debug"
     fi
   fi
+  if disk_free_meets_guard; then
+    return 0
+  fi
+
+  prune_release_artifacts_keep_bin "$ROOT_DIR" "$BIN_NAME"
+  if [[ "${DISK_AUTO_PRUNE_CROSS_REPOS}" != "0" ]]; then
+    if [[ "$ROOT_DIR" != "/root/EVPOLY" ]]; then
+      prune_release_artifacts_keep_bin "/root/EVPOLY" "$BIN_NAME"
+    fi
+    if [[ "$ROOT_DIR" != "/root/poly-remote" ]]; then
+      prune_release_artifacts_keep_bin "/root/poly-remote" "$BIN_NAME"
+    fi
+  fi
+  if disk_free_meets_guard; then
+    return 0
+  fi
 
   if [[ "${DISK_AUTO_PRUNE_DEPLOY_TARGET}" != "0" ]]; then
     prune_path_if_exists "/root/EVPOLY-deploy-target"
   fi
+  if disk_free_meets_guard; then
+    return 0
+  fi
+
+  prune_path_if_exists "${CARGO_HOME:-$HOME/.cargo}/registry"
+  if disk_free_meets_guard; then
+    return 0
+  fi
+
+  prune_path_if_exists "$HOME/.cache/pip"
+  if disk_free_meets_guard; then
+    return 0
+  fi
+
+  prune_cursor_server_old_versions
 }
 
 disk_guard_check() {

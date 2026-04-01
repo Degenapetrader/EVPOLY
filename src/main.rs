@@ -4073,7 +4073,7 @@ async fn main() -> Result<()> {
     );
     let premarket_active_cap_per_asset = env_usize_or(
         "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET",
-        premarket_fixed_ladder_prices().len().saturating_mul(2),
+        premarket_fixed_ladder_max_rungs().saturating_mul(2),
     );
     let premarket_submit_cap_per_token = premarket_submit_cap_per_token();
     let max_submits_per_token_period = std::env::var("EVPOLY_MAX_SUBMITS_PER_TOKEN_PERIOD")
@@ -28489,7 +28489,8 @@ async fn main() -> Result<()> {
                         PremarketOrderFloor::fallback_default()
                     }
                 };
-                let sized_rungs = build_premarket_fixed_rungs(target_size_usd, order_floor);
+                let sized_rungs =
+                    build_premarket_fixed_rungs(intent.timeframe, target_size_usd, order_floor);
                 if sized_rungs.is_empty() {
                     continue;
                 }
@@ -30495,70 +30496,72 @@ fn premarket_submit_cap_per_token() -> usize {
     48
 }
 
-fn premarket_fixed_ladder_prices() -> &'static [f64] {
-    const DEFAULT: [f64; 6] = [0.40, 0.30, 0.24, 0.21, 0.15, 0.12];
-    static PRICES: OnceLock<Vec<f64>> = OnceLock::new();
-    PRICES
-        .get_or_init(|| {
-            parse_csv_f64_env_named("EVPOLY_PREMARKET_FIXED_LADDER_PRICES", false)
-                .unwrap_or_else(|| DEFAULT.to_vec())
-        })
-        .as_slice()
+const PREMARKET_LADDER_MODE_NORMAL: &str = "normal";
+const PREMARKET_LADDER_MODE_SAFE: &str = "safe";
+const PREMARKET_LADDER_MODE_AGGRESSIVE: &str = "aggressive";
+
+fn premarket_ladder_mode() -> &'static str {
+    match env_nonempty_named("EVPOLY_PREMARKET_LADDER_MODE")
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some(PREMARKET_LADDER_MODE_SAFE) => PREMARKET_LADDER_MODE_SAFE,
+        Some(PREMARKET_LADDER_MODE_AGGRESSIVE) => PREMARKET_LADDER_MODE_AGGRESSIVE,
+        Some(PREMARKET_LADDER_MODE_NORMAL) | None => PREMARKET_LADDER_MODE_NORMAL,
+        Some(other) => {
+            warn!(
+                "EVPOLY_PREMARKET_LADDER_MODE='{}' is invalid; using '{}'",
+                other, PREMARKET_LADDER_MODE_NORMAL
+            );
+            PREMARKET_LADDER_MODE_NORMAL
+        }
+    }
+}
+
+fn premarket_default_ladder_prices(timeframe: Timeframe) -> &'static [f64] {
+    const DEFAULT_M5: [f64; 6] = [0.31, 0.26, 0.22, 0.16, 0.09, 0.03];
+    const DEFAULT_NON_M5: [f64; 6] = [0.40, 0.30, 0.24, 0.18, 0.12, 0.06];
+    match timeframe {
+        Timeframe::M5 => &DEFAULT_M5,
+        _ => &DEFAULT_NON_M5,
+    }
 }
 
 fn premarket_fixed_ladder_weights() -> &'static [f64] {
     const DEFAULT: [f64; 6] = [0.23, 0.23, 0.17, 0.14, 0.12, 0.11];
-    static WEIGHTS: OnceLock<Vec<f64>> = OnceLock::new();
-    WEIGHTS
-        .get_or_init(|| {
-            parse_csv_f64_env_named("EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS", true)
-                .unwrap_or_else(|| DEFAULT.to_vec())
-        })
-        .as_slice()
+    &DEFAULT
 }
 
-fn parse_csv_f64_env_named(env_key: &str, allow_zero: bool) -> Option<Vec<f64>> {
-    let raw = env_nonempty_named(env_key)?;
-    let mut values = Vec::new();
-    for segment in raw.split(',') {
-        let trimmed = segment.trim();
-        if trimmed.is_empty() {
-            warn!(
-                "{} is invalid (empty CSV segment); using code default",
-                env_key
-            );
-            return None;
-        }
-        let Ok(parsed) = trimmed.parse::<f64>() else {
-            warn!(
-                "{} is invalid (failed to parse '{}' as float); using code default",
-                env_key, trimmed
-            );
-            return None;
-        };
-        let is_valid = parsed.is_finite() && (parsed > 0.0 || (allow_zero && parsed >= 0.0));
-        if !is_valid {
-            warn!(
-                "{} is invalid (value '{}' must be {}); using code default",
-                env_key,
-                trimmed,
-                if allow_zero { ">= 0" } else { "> 0" }
-            );
-            return None;
-        }
-        values.push(parsed);
-    }
-    if values.is_empty() {
-        warn!(
-            "{} is invalid (empty CSV value list); using code default",
-            env_key
-        );
-        return None;
-    }
-    Some(values)
+fn premarket_fixed_ladder_max_rungs() -> usize {
+    premarket_default_ladder_prices(Timeframe::M5)
+        .len()
+        .max(premarket_default_ladder_prices(Timeframe::M15).len())
+        .max(premarket_default_ladder_prices(Timeframe::H1).len())
+        .max(premarket_default_ladder_prices(Timeframe::H4).len())
+}
+
+fn round_up_price_to_cent(value: f64) -> f64 {
+    (((value * 100.0) - 1e-9).ceil() / 100.0).clamp(0.01, 0.99)
+}
+
+fn premarket_fixed_ladder_prices_for_mode(timeframe: Timeframe, mode: &str) -> Vec<f64> {
+    let factor = match mode {
+        PREMARKET_LADDER_MODE_SAFE => 0.90,
+        PREMARKET_LADDER_MODE_AGGRESSIVE => 1.10,
+        _ => 1.0,
+    };
+    premarket_default_ladder_prices(timeframe)
+        .iter()
+        .map(|price| round_up_price_to_cent(price * factor))
+        .collect()
+}
+
+fn premarket_fixed_ladder_prices(timeframe: Timeframe) -> Vec<f64> {
+    premarket_fixed_ladder_prices_for_mode(timeframe, premarket_ladder_mode())
 }
 
 fn build_premarket_fixed_rungs(
+    timeframe: Timeframe,
     target_size_usd: f64,
     floor: PremarketOrderFloor,
 ) -> Vec<PremarketSizedRung> {
@@ -30566,7 +30569,7 @@ fn build_premarket_fixed_rungs(
         return Vec::new();
     }
 
-    let prices = premarket_fixed_ladder_prices();
+    let prices = premarket_fixed_ladder_prices(timeframe);
     let weights = premarket_fixed_ladder_weights();
     let rung_count = prices.len().min(weights.len());
     let mut rungs = Vec::with_capacity(rung_count);
@@ -34583,12 +34586,29 @@ mod tests {
 
     #[test]
     fn premarket_fixed_ladder_shape_matches_plan() {
-        let prices = premarket_fixed_ladder_prices();
+        let prices_m5 =
+            premarket_fixed_ladder_prices_for_mode(Timeframe::M5, PREMARKET_LADDER_MODE_NORMAL);
+        let prices_non_m5 =
+            premarket_fixed_ladder_prices_for_mode(Timeframe::M15, PREMARKET_LADDER_MODE_NORMAL);
         let weights = premarket_fixed_ladder_weights();
-        assert_eq!(prices.len(), 6);
+        assert_eq!(prices_m5.len(), 6);
+        assert_eq!(prices_non_m5.len(), 6);
         assert_eq!(weights.len(), 6);
-        assert_eq!(prices[0], 0.40);
-        assert_eq!(prices[5], 0.12);
+        assert_eq!(prices_m5[0], 0.31);
+        assert_eq!(prices_m5[5], 0.03);
+        assert_eq!(prices_non_m5[0], 0.40);
+        assert_eq!(prices_non_m5[5], 0.06);
+        assert_eq!(
+            premarket_fixed_ladder_prices_for_mode(Timeframe::M5, PREMARKET_LADDER_MODE_SAFE),
+            vec![0.28, 0.24, 0.20, 0.15, 0.09, 0.03]
+        );
+        assert_eq!(
+            premarket_fixed_ladder_prices_for_mode(
+                Timeframe::M15,
+                PREMARKET_LADDER_MODE_AGGRESSIVE
+            ),
+            vec![0.44, 0.33, 0.27, 0.20, 0.14, 0.07]
+        );
         let sum_weights: f64 = weights.iter().sum();
         assert!((sum_weights - 1.0).abs() < 1e-9);
         assert!((weights[0] - 0.23).abs() < 1e-9);
@@ -34601,7 +34621,7 @@ mod tests {
             min_notional_usd: 12.0,
             min_size_shares: 0.0,
         };
-        let sized = build_premarket_fixed_rungs(200.0, floor);
+        let sized = build_premarket_fixed_rungs(Timeframe::M15, 200.0, floor);
         assert_eq!(sized.len(), 6);
         for rung in sized {
             assert!(rung.size_usd >= floor.required_notional_usd(rung.price));
@@ -34612,6 +34632,7 @@ mod tests {
     fn premarket_fixed_rungs_use_flat_five_floor_even_when_first_rung_targets_two_dollars() {
         let target_size_usd = 2.0 / 0.23;
         let sized = build_premarket_fixed_rungs(
+            Timeframe::M15,
             target_size_usd,
             PremarketOrderFloor::premarket_flat_five(),
         );
@@ -34619,6 +34640,30 @@ mod tests {
         assert!((sized[0].price - 0.40).abs() < 1e-9);
         assert!((sized[0].size_usd - 5.0).abs() < 1e-9);
         assert!(sized.iter().all(|rung| rung.size_usd >= 5.0));
+    }
+
+    #[test]
+    fn premarket_ignores_legacy_csv_ladder_envs() {
+        with_admin_env(
+            &[
+                ("EVPOLY_PREMARKET_LADDER_MODE", Some("normal")),
+                (
+                    "EVPOLY_PREMARKET_FIXED_LADDER_PRICES",
+                    Some("0.99,0.99,0.99,0.99,0.99,0.99"),
+                ),
+                ("EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS", Some("1,0,0,0,0,0")),
+            ],
+            || {
+                assert_eq!(
+                    premarket_fixed_ladder_prices(Timeframe::M15),
+                    vec![0.40, 0.30, 0.24, 0.18, 0.12, 0.06]
+                );
+                assert_eq!(
+                    premarket_fixed_ladder_weights(),
+                    &[0.23, 0.23, 0.17, 0.14, 0.12, 0.11]
+                );
+            },
+        );
     }
 
     #[test]

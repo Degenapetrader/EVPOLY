@@ -30502,6 +30502,7 @@ const PREMARKET_LADDER_MODE_AGGRESSIVE: &str = "aggressive";
 const PREMARKET_LADDER_MODE_ENV_KEY_SHARED: &str = "EVPOLY_PREMARKET_LADDER_MODE";
 const PREMARKET_LADDER_MODE_ENV_KEY_5M: &str = "EVPOLY_PREMARKET_LADDER_MODE_5M";
 const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_5M";
+const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_M5";
 
 fn normalize_premarket_ladder_mode(value: Option<String>, env_key: &str) -> &'static str {
     match value.map(|raw| raw.trim().to_ascii_lowercase()).as_deref() {
@@ -30527,6 +30528,7 @@ fn premarket_ladder_mode_for_timeframe(timeframe: Timeframe) -> &'static str {
         ),
         _ => normalize_premarket_ladder_mode(
             env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
+                .or_else(|| env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY))
                 .or_else(|| env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)),
             PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
         ),
@@ -34754,6 +34756,24 @@ mod tests {
                     premarket_fixed_ladder_prices(Timeframe::M5),
                     vec![0.35, 0.29, 0.25, 0.18, 0.10, 0.04]
                 );
+                assert_eq!(
+                    premarket_fixed_ladder_prices(Timeframe::M15),
+                    vec![0.36, 0.27, 0.22, 0.17, 0.11, 0.06]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn premarket_bucket_modes_accept_legacy_non_m5_key() {
+        with_admin_env(
+            &[
+                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_5M, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, Some("safe")),
+            ],
+            || {
                 assert_eq!(
                     premarket_fixed_ladder_prices(Timeframe::M15),
                     vec![0.36, 0.27, 0.22, 0.17, 0.11, 0.06]

@@ -171,20 +171,19 @@ fn premarket_set_for_slot(slot: i64) -> Vec<Timeframe> {
         return Vec::new();
     }
 
-    let mut set = Vec::new();
-    if minute % 5 == 1 {
-        set.push(Timeframe::M5);
+    if minute == 56 {
+        if hour % 4 == 3 {
+            return vec![Timeframe::H4];
+        }
+        return vec![Timeframe::H1];
     }
     if minute % 15 == 11 {
-        set.push(Timeframe::M15);
+        return vec![Timeframe::M15];
     }
-    if minute == 56 {
-        set.push(Timeframe::H1);
-        if hour % 4 == 3 {
-            set.push(Timeframe::H4);
-        }
+    if minute % 5 == 1 {
+        return vec![Timeframe::M5];
     }
-    set
+    Vec::new()
 }
 
 fn next_market_open_ts(timeframe: Timeframe, now_ts: i64) -> i64 {
@@ -226,20 +225,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn premarket_schedule_runs_four_minutes_before_open_and_includes_h4() {
-        // 03:56 UTC slot => minute 56 + hour%4==3 => H1/H4 plus 5m/15m
-        let slot = (3 * 60 + 56) as i64;
+    fn premarket_schedule_prioritizes_higher_timeframes_on_overlap() {
+        // 00:11 UTC overlaps 5m and 15m. Keep only 15m.
+        let slot = 11_i64;
         let set = premarket_set_for_slot(slot);
-        assert!(set.contains(&Timeframe::M5));
-        assert!(set.contains(&Timeframe::M15));
-        assert!(set.contains(&Timeframe::H1));
-        assert!(set.contains(&Timeframe::H4));
+        assert_eq!(set, vec![Timeframe::M15]);
 
-        // 01:56 UTC => no H4
+        // 01:56 UTC overlaps 5m, 15m, and 1h. Keep only 1h.
         let slot = (1 * 60 + 56) as i64;
         let set = premarket_set_for_slot(slot);
-        assert!(set.contains(&Timeframe::H1));
-        assert!(!set.contains(&Timeframe::H4));
+        assert_eq!(set, vec![Timeframe::H1]);
+
+        // 03:56 UTC overlaps all premarket windows. Keep only 4h.
+        let slot = (3 * 60 + 56) as i64;
+        let set = premarket_set_for_slot(slot);
+        assert_eq!(set, vec![Timeframe::H4]);
+
+        // Plain 5m slot still schedules 5m when nothing higher overlaps.
+        let slot = 6_i64;
+        let set = premarket_set_for_slot(slot);
+        assert_eq!(set, vec![Timeframe::M5]);
     }
 
     #[test]

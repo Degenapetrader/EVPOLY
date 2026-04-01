@@ -32767,7 +32767,35 @@ fn h1_symbol_from_market_slug(market_slug: &str) -> Option<&'static str> {
 fn h1_target_slug_for_open_ts_for_symbol(symbol: &str, target_open_ts: u64) -> Option<String> {
     let target_utc = chrono::DateTime::<Utc>::from_timestamp(target_open_ts as i64, 0)?;
     let target_et = target_utc.with_timezone(&New_York);
-    h1_event_slug_from_et(symbol, target_et)
+    h1_event_slug_from_et(symbol, target_et, true)
+}
+
+fn h1_target_slug_legacy_for_open_ts_for_symbol(
+    symbol: &str,
+    target_open_ts: u64,
+) -> Option<String> {
+    let target_utc = chrono::DateTime::<Utc>::from_timestamp(target_open_ts as i64, 0)?;
+    let target_et = target_utc.with_timezone(&New_York);
+    h1_event_slug_from_et(symbol, target_et, false)
+}
+
+fn h1_target_slug_candidates_for_open_ts_for_symbol(
+    symbol: &str,
+    target_open_ts: u64,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    if let Some(slug) = h1_target_slug_for_open_ts_for_symbol(symbol, target_open_ts) {
+        if seen.insert(slug.clone()) {
+            out.push(slug);
+        }
+    }
+    if let Some(slug) = h1_target_slug_legacy_for_open_ts_for_symbol(symbol, target_open_ts) {
+        if seen.insert(slug.clone()) {
+            out.push(slug);
+        }
+    }
+    out
 }
 
 fn h1_market_slug_matches_target_open_ts(market_slug: &str, target_open_ts: u64) -> bool {
@@ -32786,10 +32814,11 @@ fn h1_market_slug_matches_target_open_ts(market_slug: &str, target_open_ts: u64)
     }
 
     if let Some(symbol) = h1_symbol_from_market_slug(slug.as_str()) {
-        if let Some(expected_slug) = h1_target_slug_for_open_ts_for_symbol(symbol, target_open_ts) {
-            if slug.eq(expected_slug.as_str()) {
-                return true;
-            }
+        if h1_target_slug_candidates_for_open_ts_for_symbol(symbol, target_open_ts)
+            .iter()
+            .any(|expected_slug| slug.eq(expected_slug.as_str()))
+        {
+            return true;
         }
     }
 
@@ -32797,9 +32826,9 @@ fn h1_market_slug_matches_target_open_ts(market_slug: &str, target_open_ts: u64)
     ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"]
         .iter()
         .any(|symbol| {
-            h1_target_slug_for_open_ts_for_symbol(symbol, target_open_ts)
-                .map(|expected_slug| slug.eq(expected_slug.as_str()))
-                .unwrap_or(false)
+            h1_target_slug_candidates_for_open_ts_for_symbol(symbol, target_open_ts)
+                .iter()
+                .any(|expected_slug| slug.eq(expected_slug.as_str()))
         })
 }
 
@@ -33474,7 +33503,7 @@ fn h1_event_slug_candidates_with_policy(
 ) -> Vec<H1DiscoveryCandidate> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    if let Some(target_slug) = h1_target_slug_for_open_ts_for_symbol(symbol, target_open_ts) {
+    for target_slug in h1_target_slug_candidates_for_open_ts_for_symbol(symbol, target_open_ts) {
         if seen.insert(target_slug.clone()) {
             out.push(H1DiscoveryCandidate {
                 slug: target_slug,
@@ -33495,7 +33524,7 @@ fn h1_event_slug_candidates_with_policy(
         let fallback_open_ts = u64::try_from(next_et_hour.with_timezone(&Utc).timestamp())
             .ok()
             .unwrap_or(target_open_ts);
-        if let Some(fallback_slug) = h1_event_slug_from_et(symbol, next_et_hour) {
+        for fallback_slug in h1_event_slug_candidates_from_et(symbol, next_et_hour) {
             if seen.insert(fallback_slug.clone()) {
                 out.push(H1DiscoveryCandidate {
                     slug: fallback_slug,
@@ -33518,10 +33547,31 @@ fn h1_bitcoin_event_slug_candidates_with_policy(
     h1_event_slug_candidates_with_policy("BTC", now_utc, target_open_ts, allow_next_hour_fallback)
 }
 
-fn h1_event_slug_from_et(symbol: &str, dt_et: chrono::DateTime<chrono_tz::Tz>) -> Option<String> {
+fn h1_event_slug_candidates_from_et(
+    symbol: &str,
+    dt_et: chrono::DateTime<chrono_tz::Tz>,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for include_year in [true, false] {
+        if let Some(slug) = h1_event_slug_from_et(symbol, dt_et, include_year) {
+            if seen.insert(slug.clone()) {
+                out.push(slug);
+            }
+        }
+    }
+    out
+}
+
+fn h1_event_slug_from_et(
+    symbol: &str,
+    dt_et: chrono::DateTime<chrono_tz::Tz>,
+    include_year: bool,
+) -> Option<String> {
     let asset_prefix = h1_event_slug_asset_prefix(symbol)?;
     let month = dt_et.format("%B").to_string().to_ascii_lowercase();
     let day = dt_et.day();
+    let year = dt_et.year();
     let hour24 = dt_et.hour();
     let (hour12, suffix) = match hour24 {
         0 => (12, "am"),
@@ -33529,10 +33579,17 @@ fn h1_event_slug_from_et(symbol: &str, dt_et: chrono::DateTime<chrono_tz::Tz>) -
         12 => (12, "pm"),
         _ => (hour24 - 12, "pm"),
     };
-    Some(format!(
-        "{}-up-or-down-{}-{}-{}{}-et",
-        asset_prefix, month, day, hour12, suffix
-    ))
+    if include_year {
+        Some(format!(
+            "{}-up-or-down-{}-{}-{}-{}{}-et",
+            asset_prefix, month, day, year, hour12, suffix
+        ))
+    } else {
+        Some(format!(
+            "{}-up-or-down-{}-{}-{}{}-et",
+            asset_prefix, month, day, hour12, suffix
+        ))
+    }
 }
 
 fn select_token_id_for_direction(
@@ -35200,6 +35257,11 @@ mod tests {
             candidates[0].slug,
             h1_target_slug_for_open_ts(target_open_ts).expect("target slug")
         );
+        assert_eq!(
+            candidates[1].slug,
+            h1_target_slug_legacy_for_open_ts_for_symbol("BTC", target_open_ts)
+                .expect("legacy target slug")
+        );
     }
 
     #[test]
@@ -35207,27 +35269,31 @@ mod tests {
         let target_open_ts = 1_771_574_400_u64; // 2026-02-20 08:00:00 UTC (3am ET)
         assert_eq!(
             h1_target_slug_for_open_ts_for_symbol("ETH", target_open_ts).as_deref(),
-            Some("ethereum-up-or-down-february-20-3am-et")
+            Some("ethereum-up-or-down-february-20-2026-3am-et")
         );
         assert_eq!(
             h1_target_slug_for_open_ts_for_symbol("SOL", target_open_ts).as_deref(),
-            Some("solana-up-or-down-february-20-3am-et")
+            Some("solana-up-or-down-february-20-2026-3am-et")
         );
         assert_eq!(
             h1_target_slug_for_open_ts_for_symbol("XRP", target_open_ts).as_deref(),
-            Some("xrp-up-or-down-february-20-3am-et")
+            Some("xrp-up-or-down-february-20-2026-3am-et")
         );
         assert_eq!(
             h1_target_slug_for_open_ts_for_symbol("DOGE", target_open_ts).as_deref(),
-            Some("dogecoin-up-or-down-february-20-3am-et")
+            Some("dogecoin-up-or-down-february-20-2026-3am-et")
         );
         assert_eq!(
             h1_target_slug_for_open_ts_for_symbol("BNB", target_open_ts).as_deref(),
-            Some("bnb-up-or-down-february-20-3am-et")
+            Some("bnb-up-or-down-february-20-2026-3am-et")
         );
         assert_eq!(
             h1_target_slug_for_open_ts_for_symbol("HYPE", target_open_ts).as_deref(),
-            Some("hype-up-or-down-february-20-3am-et")
+            Some("hype-up-or-down-february-20-2026-3am-et")
+        );
+        assert_eq!(
+            h1_target_slug_legacy_for_open_ts_for_symbol("ETH", target_open_ts).as_deref(),
+            Some("ethereum-up-or-down-february-20-3am-et")
         );
     }
 
@@ -35304,8 +35370,14 @@ mod tests {
     fn h1_mismatch_blocks_submit_and_emits_event() {
         let target_open_ts = 1_771_574_400_u64;
         let target_slug = h1_target_slug_for_open_ts(target_open_ts).expect("target slug");
+        let legacy_target_slug =
+            h1_target_slug_legacy_for_open_ts_for_symbol("BTC", target_open_ts)
+                .expect("legacy target slug");
         let eth_target_slug =
             h1_target_slug_for_open_ts_for_symbol("ETH", target_open_ts).expect("eth target slug");
+        let eth_legacy_target_slug =
+            h1_target_slug_legacy_for_open_ts_for_symbol("ETH", target_open_ts)
+                .expect("eth legacy target slug");
         let future_slug =
             h1_target_slug_for_open_ts(target_open_ts + 3600).expect("future target slug");
         let eth_future_slug = h1_target_slug_for_open_ts_for_symbol("ETH", target_open_ts + 3600)
@@ -35321,7 +35393,19 @@ mod tests {
             Timeframe::H1,
             target_open_ts,
             target_open_ts,
+            legacy_target_slug.as_str()
+        ));
+        assert!(!h1_market_period_mismatch_for_trade(
+            Timeframe::H1,
+            target_open_ts,
+            target_open_ts,
             eth_target_slug.as_str()
+        ));
+        assert!(!h1_market_period_mismatch_for_trade(
+            Timeframe::H1,
+            target_open_ts,
+            target_open_ts,
+            eth_legacy_target_slug.as_str()
         ));
         assert!(!h1_market_period_mismatch_for_trade(
             Timeframe::H1,

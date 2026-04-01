@@ -7,6 +7,18 @@ Current operator-facing behavior is summarized in `README.md` and `docs/*.md`.
 This file is append-heavy history plus high-level architecture notes.
 Older entries may reference env keys that were removed in later commits.
 
+## Change Log
+
+### 2026-04-01
+- `premarket_v1`: overlapping deterministic schedule slots now use timeframe priority instead of additive fanout.
+  - Priority order: `4h > 1h > 15m > 5m`
+  - This prevents stacked premarket runs on overlap minutes such as `:11` and `:56`.
+- `1h` discovery: accept both year-bearing and legacy no-year ET event slug formats.
+  - Discovery/mismatch guards now recognize:
+    - `ethereum-up-or-down-february-20-2026-3am-et`
+    - `ethereum-up-or-down-february-20-3am-et`
+  - This prevents false 1h discovery rejects when Polymarket serves either slug style.
+
 ## Common Architecture
 
 - Market discovery: strategy loops resolve active Polymarket markets by `symbol + timeframe + period_open_ts`.

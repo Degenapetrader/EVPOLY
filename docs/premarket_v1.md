@@ -30,9 +30,19 @@ Market discovery:
 - Local discovery fallback is enabled in runtime.
 
 ## Order Ladder
-Premarket fixed ladder is hardcoded to 6x6:
-- Prices: `0.40, 0.30, 0.24, 0.21, 0.15, 0.12`
+Premarket fixed ladder is hardcoded to 6x6 with two timeframe buckets:
+- `5m` prices: `0.31, 0.26, 0.22, 0.16, 0.09, 0.03`
+- `15m / 1h / 4h` prices: `0.40, 0.30, 0.24, 0.18, 0.12, 0.06`
 - Weights: `0.23, 0.23, 0.17, 0.14, 0.12, 0.11`
+
+Mode keys:
+- `EVPOLY_PREMARKET_LADDER_MODE_5M`
+- `EVPOLY_PREMARKET_LADDER_MODE_NON_M5`
+
+Supported values:
+- `normal`: use the default bucket ladder as-is
+- `safe`: move every rung 10% lower, rounded up to the nearest cent
+- `aggressive`: move every rung 10% higher, rounded up to the nearest cent
 
 Rungs are clamped to a fixed `$5` minimum per order.
 Reward `min_size` is ignored for Premarket ladder sizing and submit-time constraints.
@@ -65,6 +75,8 @@ Premarket TP is enabled by default:
 ## Key Env Knobs
 - `EVPOLY_STRATEGY_PREMARKET_ENABLE`
 - `EVPOLY_PREMARKET_BASE_SIZE_USD`
+- `EVPOLY_PREMARKET_LADDER_MODE_5M`
+- `EVPOLY_PREMARKET_LADDER_MODE_NON_M5`
 - `EVPOLY_PREMARKET_TP_ENABLE`
 - `EVPOLY_REMOTE_PREMARKET_ALPHA_URL`
 - `EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN`

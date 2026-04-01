@@ -30499,22 +30499,37 @@ fn premarket_submit_cap_per_token() -> usize {
 const PREMARKET_LADDER_MODE_NORMAL: &str = "normal";
 const PREMARKET_LADDER_MODE_SAFE: &str = "safe";
 const PREMARKET_LADDER_MODE_AGGRESSIVE: &str = "aggressive";
+const PREMARKET_LADDER_MODE_ENV_KEY_SHARED: &str = "EVPOLY_PREMARKET_LADDER_MODE";
+const PREMARKET_LADDER_MODE_ENV_KEY_5M: &str = "EVPOLY_PREMARKET_LADDER_MODE_5M";
+const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_5M";
 
-fn premarket_ladder_mode() -> &'static str {
-    match env_nonempty_named("EVPOLY_PREMARKET_LADDER_MODE")
-        .map(|value| value.trim().to_ascii_lowercase())
-        .as_deref()
-    {
+fn normalize_premarket_ladder_mode(value: Option<String>, env_key: &str) -> &'static str {
+    match value.map(|raw| raw.trim().to_ascii_lowercase()).as_deref() {
         Some(PREMARKET_LADDER_MODE_SAFE) => PREMARKET_LADDER_MODE_SAFE,
         Some(PREMARKET_LADDER_MODE_AGGRESSIVE) => PREMARKET_LADDER_MODE_AGGRESSIVE,
         Some(PREMARKET_LADDER_MODE_NORMAL) | None => PREMARKET_LADDER_MODE_NORMAL,
         Some(other) => {
             warn!(
-                "EVPOLY_PREMARKET_LADDER_MODE='{}' is invalid; using '{}'",
-                other, PREMARKET_LADDER_MODE_NORMAL
+                "{}='{}' is invalid; using '{}'",
+                env_key, other, PREMARKET_LADDER_MODE_NORMAL
             );
             PREMARKET_LADDER_MODE_NORMAL
         }
+    }
+}
+
+fn premarket_ladder_mode_for_timeframe(timeframe: Timeframe) -> &'static str {
+    match timeframe {
+        Timeframe::M5 => normalize_premarket_ladder_mode(
+            env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_5M)
+                .or_else(|| env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)),
+            PREMARKET_LADDER_MODE_ENV_KEY_5M,
+        ),
+        _ => normalize_premarket_ladder_mode(
+            env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
+                .or_else(|| env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)),
+            PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
+        ),
     }
 }
 
@@ -30557,7 +30572,10 @@ fn premarket_fixed_ladder_prices_for_mode(timeframe: Timeframe, mode: &str) -> V
 }
 
 fn premarket_fixed_ladder_prices(timeframe: Timeframe) -> Vec<f64> {
-    premarket_fixed_ladder_prices_for_mode(timeframe, premarket_ladder_mode())
+    premarket_fixed_ladder_prices_for_mode(
+        timeframe,
+        premarket_ladder_mode_for_timeframe(timeframe),
+    )
 }
 
 fn build_premarket_fixed_rungs(
@@ -34646,7 +34664,7 @@ mod tests {
     fn premarket_ignores_legacy_csv_ladder_envs() {
         with_admin_env(
             &[
-                ("EVPOLY_PREMARKET_LADDER_MODE", Some("normal")),
+                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, Some("normal")),
                 (
                     "EVPOLY_PREMARKET_FIXED_LADDER_PRICES",
                     Some("0.99,0.99,0.99,0.99,0.99,0.99"),
@@ -34661,6 +34679,27 @@ mod tests {
                 assert_eq!(
                     premarket_fixed_ladder_weights(),
                     &[0.23, 0.23, 0.17, 0.14, 0.12, 0.11]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn premarket_bucket_modes_use_split_env_keys_with_shared_fallback() {
+        with_admin_env(
+            &[
+                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, Some("safe")),
+                (PREMARKET_LADDER_MODE_ENV_KEY_5M, Some("aggressive")),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, None),
+            ],
+            || {
+                assert_eq!(
+                    premarket_fixed_ladder_prices(Timeframe::M5),
+                    vec![0.35, 0.29, 0.25, 0.18, 0.10, 0.04]
+                );
+                assert_eq!(
+                    premarket_fixed_ladder_prices(Timeframe::M15),
+                    vec![0.36, 0.27, 0.22, 0.17, 0.11, 0.06]
                 );
             },
         );

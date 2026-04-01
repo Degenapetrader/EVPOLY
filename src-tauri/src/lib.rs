@@ -169,8 +169,10 @@ struct DesktopPremarketCancelAfterOpen {
 struct DesktopPremarketSettings {
     tp_enabled: bool,
     active_cap_per_asset: f64,
-    #[serde(default = "default_premarket_ladder_safety_mode")]
-    entry_ladder_safety_mode: String,
+    #[serde(default = "default_premarket_ladder_mode_5m")]
+    entry_ladder_mode_5m: String,
+    #[serde(default = "default_premarket_ladder_mode_non_m5")]
+    entry_ladder_mode_non_m5: String,
     cancel_after_open_sec: DesktopPremarketCancelAfterOpen,
 }
 
@@ -445,16 +447,29 @@ fn csv_from_object(obj: &Map<String, Value>, key: &str, fallback: &[&str]) -> Ve
 const PREMARKET_LADDER_MODE_NORMAL: &str = "normal";
 const PREMARKET_LADDER_MODE_SAFE: &str = "safe";
 const PREMARKET_LADDER_MODE_AGGRESSIVE: &str = "aggressive";
-const PREMARKET_LADDER_MODE_ENV_KEY: &str = "EVPOLY_PREMARKET_LADDER_MODE";
-const PREMARKET_LEGACY_LADDER_KEYS: [&str; 2] = [
+const PREMARKET_LADDER_MODE_ENV_KEY_5M: &str = "EVPOLY_PREMARKET_LADDER_MODE_5M";
+const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_5M";
+const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_M5";
+const PREMARKET_LADDER_MODE_ENV_KEY_SHARED: &str = "EVPOLY_PREMARKET_LADDER_MODE";
+const PREMARKET_LEGACY_LADDER_KEYS: [&str; 4] = [
+    PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
+    PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
     "EVPOLY_PREMARKET_FIXED_LADDER_PRICES",
     "EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS",
 ];
 
-fn default_premarket_ladder_safety_mode() -> String {
+fn default_premarket_ladder_mode(env_key: &str) -> String {
     normalize_premarket_ladder_safety_mode(
-        config_io::env_template_default_string(PREMARKET_LADDER_MODE_ENV_KEY).as_deref(),
+        config_io::env_template_default_string(env_key).as_deref(),
     )
+}
+
+fn default_premarket_ladder_mode_5m() -> String {
+    default_premarket_ladder_mode(PREMARKET_LADDER_MODE_ENV_KEY_5M)
+}
+
+fn default_premarket_ladder_mode_non_m5() -> String {
+    default_premarket_ladder_mode(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
 }
 
 fn normalize_premarket_ladder_safety_mode(value: Option<&str>) -> String {
@@ -507,12 +522,31 @@ fn premarket_ladder_prices_for_mode(mode: &str, defaults: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-fn infer_premarket_ladder_safety_mode(strategy: &Map<String, Value>) -> String {
+fn infer_premarket_ladder_mode(strategy: &Map<String, Value>, env_key: &str) -> String {
     normalize_premarket_ladder_safety_mode(
         strategy
-            .get(PREMARKET_LADDER_MODE_ENV_KEY)
-            .and_then(Value::as_str),
+            .get(env_key)
+            .and_then(Value::as_str)
+            .or_else(|| {
+                (env_key == PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
+                    .then(|| strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY))
+                    .flatten()
+                    .and_then(Value::as_str)
+            })
+            .or_else(|| {
+                strategy
+                    .get(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)
+                    .and_then(Value::as_str)
+            }),
     )
+}
+
+fn infer_premarket_ladder_mode_5m(strategy: &Map<String, Value>) -> String {
+    infer_premarket_ladder_mode(strategy, PREMARKET_LADDER_MODE_ENV_KEY_5M)
+}
+
+fn infer_premarket_ladder_mode_non_m5(strategy: &Map<String, Value>) -> String {
+    infer_premarket_ladder_mode(strategy, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
 }
 
 fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8) -> DesktopConfig {
@@ -644,7 +678,8 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET",
                     100.0,
                 ),
-                entry_ladder_safety_mode: default_premarket_ladder_safety_mode(),
+                entry_ladder_mode_5m: default_premarket_ladder_mode_5m(),
+                entry_ladder_mode_non_m5: default_premarket_ladder_mode_non_m5(),
                 cancel_after_open_sec: DesktopPremarketCancelAfterOpen {
                     m5: config_io::env_template_default_f64(
                         "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC",
@@ -1417,12 +1452,22 @@ fn desktop_config_to_profile_payload(
         number_to_json(config.strategy_settings.premarket.active_cap_per_asset),
     );
     strategy.insert(
-        PREMARKET_LADDER_MODE_ENV_KEY.to_string(),
+        PREMARKET_LADDER_MODE_ENV_KEY_5M.to_string(),
         Value::String(normalize_premarket_ladder_safety_mode(Some(
             config
                 .strategy_settings
                 .premarket
-                .entry_ladder_safety_mode
+                .entry_ladder_mode_5m
+                .as_str(),
+        ))),
+    );
+    strategy.insert(
+        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5.to_string(),
+        Value::String(normalize_premarket_ladder_safety_mode(Some(
+            config
+                .strategy_settings
+                .premarket
+                .entry_ladder_mode_non_m5
                 .as_str(),
         ))),
     );
@@ -2003,7 +2048,8 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
             "premarket": {
                 "tp_enabled": bool_from_object(&strategy, "EVPOLY_PREMARKET_TP_ENABLE", config_io::env_template_default_bool("EVPOLY_PREMARKET_TP_ENABLE", true)),
                 "active_cap_per_asset": f64_from_object(&strategy, "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET", config_io::env_template_default_f64("EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET", 100.0)),
-                "entry_ladder_safety_mode": infer_premarket_ladder_safety_mode(&strategy),
+                "entry_ladder_mode_5m": infer_premarket_ladder_mode_5m(&strategy),
+                "entry_ladder_mode_non_m5": infer_premarket_ladder_mode_non_m5(&strategy),
                 "cancel_after_open_sec": {
                     "m5": f64_from_object(&strategy, "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC", config_io::env_template_default_f64("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC", 20.0)),
                     "m15": f64_from_object(&strategy, "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_15M_SEC", config_io::env_template_default_f64("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_15M_SEC", 15.0)),
@@ -4160,11 +4206,14 @@ pub fn run() {
 mod tests {
     use super::{
         default_desktop_config, desktop_config_to_profile_payload,
-        infer_premarket_ladder_safety_mode, merge_config_object, merge_desktop_secrets,
+        infer_premarket_ladder_mode_5m, infer_premarket_ladder_mode_non_m5, merge_config_object,
+        merge_desktop_secrets,
         premarket_default_ladder_prices_m5, premarket_default_ladder_prices_non_m5,
         premarket_default_ladder_weights, premarket_ladder_prices_for_mode,
         remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
-        PREMARKET_LADDER_MODE_ENV_KEY,
+        PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
+        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
+        PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
     };
     use crate::{config_io, profile_manager::Profile};
     use std::collections::HashMap;
@@ -4264,33 +4313,47 @@ mod tests {
             "0x2222222222222222222222222222222222222222".to_string(),
             1,
         );
-        config.strategy_settings.premarket.entry_ladder_safety_mode = "safe".to_string();
+        config.strategy_settings.premarket.entry_ladder_mode_5m = "safe".to_string();
+        config.strategy_settings.premarket.entry_ladder_mode_non_m5 = "aggressive".to_string();
 
         let (strategy, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
         let strategy = strategy.as_object().expect("strategy object");
 
         assert_eq!(
-            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY),
+            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_5M),
             Some(&serde_json::json!("safe"))
+        );
+        assert_eq!(
+            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5),
+            Some(&serde_json::json!("aggressive"))
         );
     }
 
     #[test]
     fn remove_legacy_premarket_ladder_keys_clears_old_csv_fields() {
         let mut strategy_config = serde_json::json!({
+            PREMARKET_LADDER_MODE_ENV_KEY_SHARED: "safe",
+            PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: "safe",
             "EVPOLY_PREMARKET_FIXED_LADDER_PRICES": "0.99,0.99,0.99,0.99,0.99,0.99",
             "EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS": "1,0,0,0,0,0",
-            PREMARKET_LADDER_MODE_ENV_KEY: "aggressive"
+            PREMARKET_LADDER_MODE_ENV_KEY_5M: "aggressive",
+            PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: "normal"
         });
 
         remove_legacy_premarket_ladder_keys(&mut strategy_config);
 
         let strategy = strategy_config.as_object().expect("strategy object");
+        assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_SHARED));
+        assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY));
         assert!(!strategy.contains_key("EVPOLY_PREMARKET_FIXED_LADDER_PRICES"));
         assert!(!strategy.contains_key("EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS"));
         assert_eq!(
-            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY),
+            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_5M),
             Some(&serde_json::json!("aggressive"))
+        );
+        assert_eq!(
+            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5),
+            Some(&serde_json::json!("normal"))
         );
     }
 
@@ -4334,22 +4397,37 @@ mod tests {
     }
 
     #[test]
-    fn infer_premarket_ladder_safety_mode_reads_mode_env_only() {
+    fn infer_premarket_ladder_modes_read_split_envs_with_shared_fallback() {
         let mut strategy = serde_json::Map::new();
         strategy.insert(
-            PREMARKET_LADDER_MODE_ENV_KEY.to_string(),
+            PREMARKET_LADDER_MODE_ENV_KEY_5M.to_string(),
             serde_json::json!("safe"),
         );
-        assert_eq!(infer_premarket_ladder_safety_mode(&strategy), "safe");
-
         strategy.insert(
-            PREMARKET_LADDER_MODE_ENV_KEY.to_string(),
+            PREMARKET_LADDER_MODE_ENV_KEY_NON_M5.to_string(),
             serde_json::json!("aggressive"),
         );
-        assert_eq!(infer_premarket_ladder_safety_mode(&strategy), "aggressive");
+        assert_eq!(infer_premarket_ladder_mode_5m(&strategy), "safe");
+        assert_eq!(infer_premarket_ladder_mode_non_m5(&strategy), "aggressive");
+
+        let mut legacy_non_m5 = serde_json::Map::new();
+        legacy_non_m5.insert(
+            PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY.to_string(),
+            serde_json::json!("safe"),
+        );
+        assert_eq!(infer_premarket_ladder_mode_non_m5(&legacy_non_m5), "safe");
+
+        let mut shared_only = serde_json::Map::new();
+        shared_only.insert(
+            PREMARKET_LADDER_MODE_ENV_KEY_SHARED.to_string(),
+            serde_json::json!("safe"),
+        );
+        assert_eq!(infer_premarket_ladder_mode_5m(&shared_only), "safe");
+        assert_eq!(infer_premarket_ladder_mode_non_m5(&shared_only), "safe");
 
         let missing = serde_json::Map::new();
-        assert_eq!(infer_premarket_ladder_safety_mode(&missing), "normal");
+        assert_eq!(infer_premarket_ladder_mode_5m(&missing), "normal");
+        assert_eq!(infer_premarket_ladder_mode_non_m5(&missing), "normal");
 
         let safe_m5 =
             premarket_ladder_prices_for_mode("safe", &premarket_default_ladder_prices_m5());

@@ -133,7 +133,8 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
   premarket: {
     tp_enabled: true,
     active_cap_per_asset: 100,
-    entry_ladder_safety_mode: "normal",
+    entry_ladder_mode_5m: "normal",
+    entry_ladder_mode_non_m5: "normal",
     cancel_after_open_sec: {
       m5: 20,
       m15: 15,
@@ -308,8 +309,11 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
       premarket: {
         ...DEFAULT_CONFIG.strategy_settings.premarket,
         ...saved?.strategy_settings?.premarket,
-        entry_ladder_safety_mode: normalizePremarketLadderSafetyMode(
-          saved?.strategy_settings?.premarket?.entry_ladder_safety_mode
+        entry_ladder_mode_5m: normalizePremarketLadderSafetyMode(
+          saved?.strategy_settings?.premarket?.entry_ladder_mode_5m
+        ),
+        entry_ladder_mode_non_m5: normalizePremarketLadderSafetyMode(
+          saved?.strategy_settings?.premarket?.entry_ladder_mode_non_m5
         ),
         cancel_after_open_sec: {
           ...DEFAULT_CONFIG.strategy_settings.premarket.cancel_after_open_sec,

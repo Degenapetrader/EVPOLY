@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 import { SectionPanel } from "./SectionPanel";
 import {
   parseNonNegative,
+  type PremarketLadderBucket,
   premarketLadderPricesForMode,
   strategyCapValue,
   strategyLabel,
@@ -82,6 +83,8 @@ export function StrategyEditorPane({
   saveMessage?: string | null;
 }) {
   const [selectedSection, setSelectedSection] = useState<StrategyEditorSection>("general");
+  const [premarketLadderBucket, setPremarketLadderBucket] =
+    useState<PremarketLadderBucket>("m5");
 
   const visibleSections = useMemo(() => strategySections(selectedStrategy), [selectedStrategy]);
   const canEdit = Boolean(activeProfileId);
@@ -108,13 +111,21 @@ export function StrategyEditorPane({
       : config.strategy_settings.mm_sport.inventory_exit_mode === "no_exit"
         ? "Feeling Lucky"
         : "Auto";
-  const premarketLadderMode = config.strategy_settings.premarket.entry_ladder_safety_mode;
+  const premarketLadderModes = {
+    m5: config.strategy_settings.premarket.entry_ladder_mode_5m,
+    non_m5: config.strategy_settings.premarket.entry_ladder_mode_non_m5,
+  } as const;
   const premarketNormalLadderM5 = premarketLadderPricesForMode("normal", "m5");
-  const premarketSafeLadderM5 = premarketLadderPricesForMode("safe", "m5");
-  const premarketAggressiveLadderM5 = premarketLadderPricesForMode("aggressive", "m5");
   const premarketNormalLadderNonM5 = premarketLadderPricesForMode("normal", "non_m5");
-  const premarketSafeLadderNonM5 = premarketLadderPricesForMode("safe", "non_m5");
-  const premarketAggressiveLadderNonM5 = premarketLadderPricesForMode("aggressive", "non_m5");
+  const activePremarketLadderMode = premarketLadderModes[premarketLadderBucket];
+  const activePremarketDefaultLadder =
+    premarketLadderBucket === "m5" ? premarketNormalLadderM5 : premarketNormalLadderNonM5;
+  const activePremarketModeLadder =
+    premarketLadderBucket === "m5"
+      ? premarketLadderPricesForMode(activePremarketLadderMode, "m5")
+      : premarketLadderPricesForMode(activePremarketLadderMode, "non_m5");
+  const activePremarketBucketLabel =
+    premarketLadderBucket === "m5" ? "5m" : "15m / 1h / 4h";
 
   const patchPremarket = (patch: Partial<BotConfig["strategy_settings"]["premarket"]>) =>
     setConfig((current) =>
@@ -549,122 +560,122 @@ export function StrategyEditorPane({
                 <div className="surface-panel__copy">
                   <h2 className="surface-panel__title">Ladder Mode</h2>
                   <p className="surface-panel__subtitle">
-                    Move Premarket buy levels lower while keeping the same budget split.
+                    Set the entry ladder separately for 5m and slower Premarket buckets.
                   </p>
                 </div>
               </div>
               <div className="surface-panel__body space-y-4">
-                <div className="grid gap-2 md:grid-cols-3">
+                <div className="inline-flex w-full flex-wrap rounded-[1rem] border border-[var(--border)] bg-[rgba(8,12,20,0.82)] p-1">
                   {([
-                    ["normal", "Normal", "Current"],
-                    ["safe", "Safe", "10% lower"],
-                    ["aggressive", "Aggressive", "10% higher"],
-                  ] as const).map(([value, label, detail]) => (
+                    ["m5", "5m", "Fast bucket"],
+                    ["non_m5", "15m / 1h / 4h", "Slower buckets"],
+                  ] as const).map(([bucket, label, detail]) => (
                     <button
-                      key={value}
+                      key={bucket}
                       type="button"
                       disabled={!canEdit}
-                      onClick={() =>
-                        patchPremarket({
-                          entry_ladder_safety_mode: value,
-                        })
-                      }
-                      className={`mode-choice flex items-center justify-center gap-2 ${
-                        premarketLadderMode === value ? "mode-choice--active" : ""
+                      onClick={() => setPremarketLadderBucket(bucket)}
+                      className={`flex min-w-[14rem] flex-1 items-center justify-center gap-2 rounded-[0.85rem] px-4 py-3 text-sm font-semibold transition ${
+                        premarketLadderBucket === bucket
+                          ? "bg-[linear-gradient(180deg,#6bb7ff_0%,#4f9dff_100%)] text-[#07111c]"
+                          : "text-[var(--text-secondary)]"
                       }`.trim()}
                     >
                       <span>{label}</span>
-                      <span className="text-sm font-medium text-[var(--text-secondary)]">
+                      <span
+                        className={`text-xs font-medium ${
+                          premarketLadderBucket === bucket
+                            ? "text-[rgba(7,17,28,0.78)]"
+                            : "text-[var(--text-secondary)]"
+                        }`.trim()}
+                      >
                         {detail}
                       </span>
                     </button>
                   ))}
                 </div>
 
-                <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
-                  <div className="rounded-[1.2rem] border border-[var(--border)] bg-[rgba(10,16,24,0.78)] p-5">
-                    <div className="text-2xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
-                      {premarketLadderMode === "safe"
-                          ? "Safe Mode Lowers Every Ladder Entry By 10%"
-                          : premarketLadderMode === "aggressive"
-                            ? "Aggressive Mode Raises Every Ladder Entry By 10%"
-                            : "Normal Mode Keeps The Default Premarket Ladder"}
+                <div className="rounded-[1.2rem] border border-[var(--border)] bg-[rgba(10,16,24,0.78)] p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
+                        {activePremarketBucketLabel} Ladder
+                      </div>
+                      <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">
+                        Pick how aggressive this timeframe bucket should bid before market open.
+                        Only the buy prices move. The budget split stays fixed at 23%, 23%, 17%,
+                        14%, 12%, and 11%.
+                      </p>
                     </div>
-                    <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                      Only the buy prices change here. The budget split stays the same, so the
-                      mode is simple: Normal keeps the default ladder, Safe moves every rung 10%
-                      lower, and Aggressive moves every rung 10% higher.
-                    </p>
-                    <div className="mt-4 grid gap-3 md:grid-cols-2">
-                      <div className="rounded-[1rem] border border-[var(--border)] bg-[rgba(8,12,20,0.9)] p-4">
-                        <div className="metric-label">What Changes</div>
-                        <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                          The ladder stays deterministic. Only the buy prices move, while the
-                          budget weights stay fixed at 23%, 23%, 17%, 14%, 12%, and 11%.
-                        </div>
-                      </div>
-                      <div className="rounded-[1rem] border border-[var(--border)] bg-[rgba(8,12,20,0.9)] p-4">
-                        <div className="metric-label">When To Use It</div>
-                        <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                          Normal is the baseline. Safe adds more patience before entry. Aggressive
-                          bids slightly higher when you want more fills before market open.
-                        </div>
-                      </div>
+                    <div className="rounded-full border border-[var(--border)] bg-[rgba(8,12,20,0.85)] px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
+                      {activePremarketBucketLabel}
                     </div>
                   </div>
 
-                  <div className="rounded-[1.2rem] border border-[var(--border)] bg-[rgba(10,16,24,0.78)] p-5">
-                    <div className="metric-label">Mode Preview</div>
-                    <div className="mt-4 space-y-4">
-                      {([
-                        [
-                          "5m Ladder",
-                          premarketNormalLadderM5,
-                          premarketSafeLadderM5,
-                          premarketAggressiveLadderM5,
-                        ],
-                        [
-                          "15m / 1h / 4h Ladder",
-                          premarketNormalLadderNonM5,
-                          premarketSafeLadderNonM5,
-                          premarketAggressiveLadderNonM5,
-                        ],
-                      ] as const).map(([title, normalLadder, safeLadder, aggressiveLadder]) => (
-                        <div
-                          key={title}
-                          className="rounded-[1rem] border border-[var(--border)] bg-[rgba(8,12,20,0.9)] p-4"
-                        >
-                          <div className="text-base font-semibold text-[var(--text-primary)]">{title}</div>
-                          <div className="mt-3 space-y-3">
-                            {([
-                              ["Normal", "Current ladder", normalLadder],
-                              ["Safe", "10% lower", safeLadder],
-                              ["Aggressive", "10% higher", aggressiveLadder],
-                            ] as const).map(([label, detail, ladder]) => (
-                              <div
-                                key={`${title}-${label}`}
-                                className="rounded-[0.9rem] border border-[var(--border)] bg-[rgba(10,16,24,0.75)] p-3"
-                              >
-                                <div className="flex items-center justify-between gap-3">
-                                  <div className="text-sm font-semibold text-[var(--text-primary)]">
-                                    {label}
-                                  </div>
-                                  <div className="text-xs font-medium text-[var(--text-secondary)]">
-                                    {detail}
-                                  </div>
-                                </div>
-                                <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                                  Example: {normalLadder[0].toFixed(2)} to {ladder[0].toFixed(2)},{" "}
-                                  {normalLadder[1].toFixed(2)} to {ladder[1].toFixed(2)}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                          <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
-                            Default: {normalLadder.map((price) => price.toFixed(2)).join(", ")}
-                          </p>
+                  <div className="mt-4 grid gap-2 md:grid-cols-3">
+                    {([
+                      ["normal", "Normal", "Current"],
+                      ["safe", "Safe", "10% lower"],
+                      ["aggressive", "Aggressive", "10% higher"],
+                    ] as const).map(([value, label, detail]) => (
+                      <button
+                        key={`${premarketLadderBucket}-${value}`}
+                        type="button"
+                        disabled={!canEdit}
+                        onClick={() =>
+                          patchPremarket(
+                            premarketLadderBucket === "m5"
+                              ? { entry_ladder_mode_5m: value }
+                              : { entry_ladder_mode_non_m5: value }
+                          )
+                        }
+                        className={`mode-choice flex items-center justify-center gap-2 ${
+                          activePremarketLadderMode === value ? "mode-choice--active" : ""
+                        }`.trim()}
+                      >
+                        <span>{label}</span>
+                        <span className="text-sm font-medium text-[var(--text-secondary)]">
+                          {detail}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 rounded-[1rem] border border-[var(--border)] bg-[rgba(8,12,20,0.9)] p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div className="text-base font-semibold text-[var(--text-primary)]">
+                        {activePremarketLadderMode === "safe"
+                          ? "Safe Bids 10% Lower"
+                          : activePremarketLadderMode === "aggressive"
+                            ? "Aggressive Bids 10% Higher"
+                            : "Normal Uses The Default Ladder"}
+                      </div>
+                      <div className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--text-secondary)]">
+                        Mode Preview
+                      </div>
+                    </div>
+                    <div className="mt-4 grid gap-3 lg:grid-cols-3">
+                      <div className="rounded-[0.9rem] border border-[var(--border)] bg-[rgba(10,16,24,0.75)] p-3">
+                        <div className="metric-label">Default Ladder</div>
+                        <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                          {activePremarketDefaultLadder.map((price) => price.toFixed(2)).join(", ")}
                         </div>
-                      ))}
+                      </div>
+                      <div className="rounded-[0.9rem] border border-[var(--border)] bg-[rgba(10,16,24,0.75)] p-3">
+                        <div className="metric-label">Selected Ladder</div>
+                        <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                          {activePremarketModeLadder.map((price) => price.toFixed(2)).join(", ")}
+                        </div>
+                      </div>
+                      <div className="rounded-[0.9rem] border border-[var(--border)] bg-[rgba(10,16,24,0.75)] p-3">
+                        <div className="metric-label">Change Preview</div>
+                        <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                          {activePremarketDefaultLadder[0].toFixed(2)} to{" "}
+                          {activePremarketModeLadder[0].toFixed(2)},{" "}
+                          {activePremarketDefaultLadder[1].toFixed(2)} to{" "}
+                          {activePremarketModeLadder[1].toFixed(2)}
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </div>

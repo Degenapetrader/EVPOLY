@@ -79,7 +79,8 @@ const SAMPLE_CONFIG: BotConfig = {
     premarket: {
       tp_enabled: true,
       active_cap_per_asset: 100,
-      entry_ladder_safety_mode: "normal",
+      entry_ladder_mode_5m: "normal",
+      entry_ladder_mode_non_m5: "normal",
       cancel_after_open_sec: {
         m5: 20,
         m15: 15,

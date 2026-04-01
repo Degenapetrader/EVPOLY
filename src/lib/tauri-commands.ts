@@ -226,7 +226,7 @@ export interface SetupDoctorResult {
   popup?: SetupDoctorPopup | null;
 }
 
-export type PremarketLadderSafetyMode = "normal" | "safe" | "extra_safe" | "custom";
+export type PremarketLadderSafetyMode = "normal" | "safe" | "aggressive";
 
 export interface PremarketSettings {
   tp_enabled: boolean;

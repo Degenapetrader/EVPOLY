@@ -444,119 +444,75 @@ fn csv_from_object(obj: &Map<String, Value>, key: &str, fallback: &[&str]) -> Ve
 
 const PREMARKET_LADDER_MODE_NORMAL: &str = "normal";
 const PREMARKET_LADDER_MODE_SAFE: &str = "safe";
-const PREMARKET_LADDER_MODE_EXTRA_SAFE: &str = "extra_safe";
-const PREMARKET_LADDER_MODE_CUSTOM: &str = "custom";
+const PREMARKET_LADDER_MODE_AGGRESSIVE: &str = "aggressive";
+const PREMARKET_LADDER_MODE_ENV_KEY: &str = "EVPOLY_PREMARKET_LADDER_MODE";
+const PREMARKET_LEGACY_LADDER_KEYS: [&str; 2] = [
+    "EVPOLY_PREMARKET_FIXED_LADDER_PRICES",
+    "EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS",
+];
 
 fn default_premarket_ladder_safety_mode() -> String {
-    PREMARKET_LADDER_MODE_NORMAL.to_string()
+    normalize_premarket_ladder_safety_mode(
+        config_io::env_template_default_string(PREMARKET_LADDER_MODE_ENV_KEY).as_deref(),
+    )
 }
 
-fn parse_csv_f64_list(value: &str) -> Option<Vec<f64>> {
-    let parsed = value
-        .split(',')
-        .map(|part| part.trim())
-        .filter(|part| !part.is_empty())
-        .map(|part| part.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0))
-        .collect::<Option<Vec<_>>>()?;
-    if parsed.is_empty() {
-        None
-    } else {
-        Some(parsed)
+fn normalize_premarket_ladder_safety_mode(value: Option<&str>) -> String {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(raw) if raw.eq_ignore_ascii_case(PREMARKET_LADDER_MODE_SAFE) => {
+            PREMARKET_LADDER_MODE_SAFE.to_string()
+        }
+        Some(raw) if raw.eq_ignore_ascii_case(PREMARKET_LADDER_MODE_AGGRESSIVE) => {
+            PREMARKET_LADDER_MODE_AGGRESSIVE.to_string()
+        }
+        _ => PREMARKET_LADDER_MODE_NORMAL.to_string(),
     }
 }
 
-fn premarket_default_ladder_prices() -> Vec<f64> {
-    config_io::env_template_default_string("EVPOLY_PREMARKET_FIXED_LADDER_PRICES")
-        .as_deref()
-        .and_then(parse_csv_f64_list)
-        .unwrap_or_else(|| vec![0.40, 0.30, 0.24, 0.21, 0.15, 0.12])
+#[cfg(test)]
+fn premarket_default_ladder_prices_m5() -> Vec<f64> {
+    vec![0.31, 0.26, 0.22, 0.16, 0.09, 0.03]
 }
 
+#[cfg(test)]
+fn premarket_default_ladder_prices_non_m5() -> Vec<f64> {
+    vec![0.40, 0.30, 0.24, 0.18, 0.12, 0.06]
+}
+
+#[cfg(test)]
 fn premarket_default_ladder_weights() -> Vec<f64> {
-    config_io::env_template_default_string("EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS")
-        .as_deref()
-        .and_then(parse_csv_f64_list)
-        .unwrap_or_else(|| vec![0.23, 0.23, 0.17, 0.14, 0.12, 0.11])
+    vec![0.23, 0.23, 0.17, 0.14, 0.12, 0.11]
 }
 
+#[cfg(test)]
+fn premarket_mode_factor(mode: &str) -> f64 {
+    match mode {
+        PREMARKET_LADDER_MODE_SAFE => 0.90,
+        PREMARKET_LADDER_MODE_AGGRESSIVE => 1.10,
+        _ => 1.0,
+    }
+}
+
+#[cfg(test)]
 fn round_up_to_cent(value: f64) -> f64 {
     (((value * 100.0) - 1e-9).ceil() / 100.0).clamp(0.01, 0.99)
 }
 
-fn format_csv_f64(values: &[f64]) -> String {
-    values
-        .iter()
-        .map(|value| format!("{value:.2}"))
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn float_slices_match(left: &[f64], right: &[f64]) -> bool {
-    left.len() == right.len()
-        && left
-            .iter()
-            .zip(right.iter())
-            .all(|(lhs, rhs)| (lhs - rhs).abs() < 1e-9)
-}
-
-fn premarket_ladder_prices_for_mode(mode: &str) -> Vec<f64> {
-    let factor = match mode {
-        PREMARKET_LADDER_MODE_SAFE => 0.90,
-        PREMARKET_LADDER_MODE_EXTRA_SAFE => 0.80,
-        _ => 1.0,
-    };
-    premarket_default_ladder_prices()
+#[cfg(test)]
+fn premarket_ladder_prices_for_mode(mode: &str, defaults: &[f64]) -> Vec<f64> {
+    let factor = premarket_mode_factor(mode);
+    defaults
         .into_iter()
-        .map(|price| round_up_to_cent(price * factor))
+        .map(|price| round_up_to_cent(*price * factor))
         .collect()
 }
 
 fn infer_premarket_ladder_safety_mode(strategy: &Map<String, Value>) -> String {
-    let default_prices = premarket_default_ladder_prices();
-    let default_weights = premarket_default_ladder_weights();
-
-    let prices = match strategy
-        .get("EVPOLY_PREMARKET_FIXED_LADDER_PRICES")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(raw) => match parse_csv_f64_list(raw) {
-            Some(parsed) => parsed,
-            None => return PREMARKET_LADDER_MODE_CUSTOM.to_string(),
-        },
-        None => default_prices.clone(),
-    };
-
-    let weights = match strategy
-        .get("EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(raw) => match parse_csv_f64_list(raw) {
-            Some(parsed) => parsed,
-            None => return PREMARKET_LADDER_MODE_CUSTOM.to_string(),
-        },
-        None => default_weights.clone(),
-    };
-
-    if !float_slices_match(&weights, &default_weights) {
-        return PREMARKET_LADDER_MODE_CUSTOM.to_string();
-    }
-    if float_slices_match(&prices, &default_prices) {
-        return PREMARKET_LADDER_MODE_NORMAL.to_string();
-    }
-    if float_slices_match(&prices, &premarket_ladder_prices_for_mode(PREMARKET_LADDER_MODE_SAFE)) {
-        return PREMARKET_LADDER_MODE_SAFE.to_string();
-    }
-    if float_slices_match(
-        &prices,
-        &premarket_ladder_prices_for_mode(PREMARKET_LADDER_MODE_EXTRA_SAFE),
-    ) {
-        return PREMARKET_LADDER_MODE_EXTRA_SAFE.to_string();
-    }
-    PREMARKET_LADDER_MODE_CUSTOM.to_string()
+    normalize_premarket_ladder_safety_mode(
+        strategy
+            .get(PREMARKET_LADDER_MODE_ENV_KEY)
+            .and_then(Value::as_str),
+    )
 }
 
 fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8) -> DesktopConfig {
@@ -1361,6 +1317,14 @@ fn merge_config_object(existing: &Value, updates: &Value) -> Value {
     Value::Object(merged)
 }
 
+fn remove_legacy_premarket_ladder_keys(strategy_config: &mut Value) {
+    if let Some(strategy) = strategy_config.as_object_mut() {
+        for key in PREMARKET_LEGACY_LADDER_KEYS {
+            strategy.remove(key);
+        }
+    }
+}
+
 fn portable_profile_from_profile(profile: &Profile) -> PortableProfile {
     PortableProfile {
         name: profile.name.clone(),
@@ -1452,22 +1416,16 @@ fn desktop_config_to_profile_payload(
         "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET".to_string(),
         number_to_json(config.strategy_settings.premarket.active_cap_per_asset),
     );
-    if config.strategy_settings.premarket.entry_ladder_safety_mode != PREMARKET_LADDER_MODE_CUSTOM {
-        strategy.insert(
-            "EVPOLY_PREMARKET_FIXED_LADDER_PRICES".to_string(),
-            Value::String(format_csv_f64(&premarket_ladder_prices_for_mode(
-                config
-                    .strategy_settings
-                    .premarket
-                    .entry_ladder_safety_mode
-                    .as_str(),
-            ))),
-        );
-        strategy.insert(
-            "EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS".to_string(),
-            Value::String(format_csv_f64(&premarket_default_ladder_weights())),
-        );
-    }
+    strategy.insert(
+        PREMARKET_LADDER_MODE_ENV_KEY.to_string(),
+        Value::String(normalize_premarket_ladder_safety_mode(Some(
+            config
+                .strategy_settings
+                .premarket
+                .entry_ladder_safety_mode
+                .as_str(),
+        ))),
+    );
     strategy.insert(
         "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC".to_string(),
         number_to_json(config.strategy_settings.premarket.cancel_after_open_sec.m5),
@@ -3086,6 +3044,7 @@ fn apply_desktop_config_to_profile(
     ) = desktop_config_to_profile_payload(config);
 
     profile.strategy_config = merge_config_object(&profile.strategy_config, &strategy_config);
+    remove_legacy_premarket_ladder_keys(&mut profile.strategy_config);
     profile.sizing_config = merge_config_object(&profile.sizing_config, &sizing_config);
     profile.eoa_wallet_address = eoa_wallet_address;
     profile.proxy_wallet_address = proxy_wallet_address;
@@ -4200,9 +4159,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_desktop_config, desktop_config_to_profile_payload, infer_premarket_ladder_safety_mode,
-        merge_config_object, merge_desktop_secrets, premarket_default_ladder_weights,
-        premarket_ladder_prices_for_mode, simulation_mode_from_profile,
+        default_desktop_config, desktop_config_to_profile_payload,
+        infer_premarket_ladder_safety_mode, merge_config_object, merge_desktop_secrets,
+        premarket_default_ladder_prices_m5, premarket_default_ladder_prices_non_m5,
+        premarket_default_ladder_weights, premarket_ladder_prices_for_mode,
+        remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
+        PREMARKET_LADDER_MODE_ENV_KEY,
     };
     use crate::{config_io, profile_manager::Profile};
     use std::collections::HashMap;
@@ -4296,7 +4258,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_profile_payload_writes_safe_premarket_ladder_csv() {
+    fn desktop_profile_payload_writes_premarket_ladder_mode() {
         let mut config = default_desktop_config(
             "0x1111111111111111111111111111111111111111".to_string(),
             "0x2222222222222222222222222222222222222222".to_string(),
@@ -4308,29 +4270,28 @@ mod tests {
         let strategy = strategy.as_object().expect("strategy object");
 
         assert_eq!(
-            strategy.get("EVPOLY_PREMARKET_FIXED_LADDER_PRICES"),
-            Some(&serde_json::json!("0.36,0.27,0.22,0.19,0.14,0.11"))
-        );
-        assert_eq!(
-            strategy.get("EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS"),
-            Some(&serde_json::json!("0.23,0.23,0.17,0.14,0.12,0.11"))
+            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY),
+            Some(&serde_json::json!("safe"))
         );
     }
 
     #[test]
-    fn desktop_profile_payload_preserves_custom_ladder_by_omitting_override_keys() {
-        let mut config = default_desktop_config(
-            "0x1111111111111111111111111111111111111111".to_string(),
-            "0x2222222222222222222222222222222222222222".to_string(),
-            1,
-        );
-        config.strategy_settings.premarket.entry_ladder_safety_mode = "custom".to_string();
+    fn remove_legacy_premarket_ladder_keys_clears_old_csv_fields() {
+        let mut strategy_config = serde_json::json!({
+            "EVPOLY_PREMARKET_FIXED_LADDER_PRICES": "0.99,0.99,0.99,0.99,0.99,0.99",
+            "EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS": "1,0,0,0,0,0",
+            PREMARKET_LADDER_MODE_ENV_KEY: "aggressive"
+        });
 
-        let (strategy, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
-        let strategy = strategy.as_object().expect("strategy object");
+        remove_legacy_premarket_ladder_keys(&mut strategy_config);
 
+        let strategy = strategy_config.as_object().expect("strategy object");
         assert!(!strategy.contains_key("EVPOLY_PREMARKET_FIXED_LADDER_PRICES"));
         assert!(!strategy.contains_key("EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS"));
+        assert_eq!(
+            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY),
+            Some(&serde_json::json!("aggressive"))
+        );
     }
 
     #[test]
@@ -4373,29 +4334,34 @@ mod tests {
     }
 
     #[test]
-    fn infer_premarket_ladder_safety_mode_recognizes_presets_and_custom() {
+    fn infer_premarket_ladder_safety_mode_reads_mode_env_only() {
         let mut strategy = serde_json::Map::new();
         strategy.insert(
-            "EVPOLY_PREMARKET_FIXED_LADDER_PRICES".to_string(),
-            serde_json::json!("0.36,0.27,0.22,0.19,0.14,0.11"),
-        );
-        strategy.insert(
-            "EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS".to_string(),
-            serde_json::json!("0.23,0.23,0.17,0.14,0.12,0.11"),
+            PREMARKET_LADDER_MODE_ENV_KEY.to_string(),
+            serde_json::json!("safe"),
         );
         assert_eq!(infer_premarket_ladder_safety_mode(&strategy), "safe");
 
         strategy.insert(
-            "EVPOLY_PREMARKET_FIXED_LADDER_PRICES".to_string(),
-            serde_json::json!("0.41,0.29,0.24,0.21,0.15,0.12"),
+            PREMARKET_LADDER_MODE_ENV_KEY.to_string(),
+            serde_json::json!("aggressive"),
         );
-        assert_eq!(infer_premarket_ladder_safety_mode(&strategy), "custom");
+        assert_eq!(infer_premarket_ladder_safety_mode(&strategy), "aggressive");
 
         let missing = serde_json::Map::new();
         assert_eq!(infer_premarket_ladder_safety_mode(&missing), "normal");
 
-        let extra_safe = premarket_ladder_prices_for_mode("extra_safe");
-        assert_eq!(extra_safe, vec![0.32, 0.24, 0.20, 0.17, 0.12, 0.10]);
-        assert_eq!(premarket_default_ladder_weights(), vec![0.23, 0.23, 0.17, 0.14, 0.12, 0.11]);
+        let safe_m5 =
+            premarket_ladder_prices_for_mode("safe", &premarket_default_ladder_prices_m5());
+        assert_eq!(safe_m5, vec![0.28, 0.24, 0.20, 0.15, 0.09, 0.03]);
+        let aggressive_non_m5 = premarket_ladder_prices_for_mode(
+            "aggressive",
+            &premarket_default_ladder_prices_non_m5(),
+        );
+        assert_eq!(aggressive_non_m5, vec![0.44, 0.33, 0.27, 0.20, 0.14, 0.07]);
+        assert_eq!(
+            premarket_default_ladder_weights(),
+            vec![0.23, 0.23, 0.17, 0.14, 0.12, 0.11]
+        );
     }
 }

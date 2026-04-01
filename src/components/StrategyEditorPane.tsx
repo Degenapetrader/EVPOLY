@@ -109,6 +109,12 @@ export function StrategyEditorPane({
         ? "Feeling Lucky"
         : "Auto";
   const premarketLadderMode = config.strategy_settings.premarket.entry_ladder_safety_mode;
+  const premarketNormalLadderM5 = premarketLadderPricesForMode("normal", "m5");
+  const premarketSafeLadderM5 = premarketLadderPricesForMode("safe", "m5");
+  const premarketAggressiveLadderM5 = premarketLadderPricesForMode("aggressive", "m5");
+  const premarketNormalLadderNonM5 = premarketLadderPricesForMode("normal", "non_m5");
+  const premarketSafeLadderNonM5 = premarketLadderPricesForMode("safe", "non_m5");
+  const premarketAggressiveLadderNonM5 = premarketLadderPricesForMode("aggressive", "non_m5");
 
   const patchPremarket = (patch: Partial<BotConfig["strategy_settings"]["premarket"]>) =>
     setConfig((current) =>
@@ -362,14 +368,14 @@ export function StrategyEditorPane({
       <div className="surface-panel">
         <div className="surface-panel__header">
           <div className="surface-panel__copy">
-            <h2 className="surface-panel__title">Strategy cap</h2>
+            <h2 className="surface-panel__title">Strategy Cap</h2>
             <p className="surface-panel__subtitle">
               Limit how much this strategy can deploy at once.
             </p>
           </div>
         </div>
         <div className="surface-panel__body">
-          <label className="field-label">Max exposure (USD)</label>
+          <label className="field-label">Max Exposure (USD)</label>
           <input
             type="number"
             min="0"
@@ -432,7 +438,7 @@ export function StrategyEditorPane({
     <div className="surface-panel">
       <div className="surface-panel__header">
         <div className="surface-panel__copy">
-          <h2 className="surface-panel__title">Premarket timeframe multipliers</h2>
+          <h2 className="surface-panel__title">Premarket Timeframe Multipliers</h2>
           <p className="surface-panel__subtitle">
             Effective size = base size x symbol multiplier x timeframe multiplier.
           </p>
@@ -469,7 +475,7 @@ export function StrategyEditorPane({
       <div className="surface-panel">
         <div className="surface-panel__header">
           <div className="surface-panel__copy">
-            <h2 className="surface-panel__title">EVCurve timeframe multipliers</h2>
+            <h2 className="surface-panel__title">EVCurve Timeframe Multipliers</h2>
             <p className="surface-panel__subtitle">
               Effective size = base size x symbol multiplier x timeframe multiplier.
             </p>
@@ -502,7 +508,7 @@ export function StrategyEditorPane({
 
       <div className="surface-panel surface-panel--subtle">
         <div className="surface-panel__body">
-          <div className="metric-label">Sizing preview</div>
+            <div className="metric-label">Sizing Preview</div>
           <div className="metric-value">
             BTC 1H ={" "}
             {sizePreview(
@@ -538,52 +544,12 @@ export function StrategyEditorPane({
 
         {selectedStrategy === "premarket" ? (
           <>
-            <div className="surface-panel">
+            <div className="surface-panel xl:col-span-2">
               <div className="surface-panel__header">
                 <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Execution rules</h2>
+                  <h2 className="surface-panel__title">Ladder Mode</h2>
                   <p className="surface-panel__subtitle">
-                    Control take-profit behavior and the per-asset active cap.
-                  </p>
-                </div>
-              </div>
-              <div className="surface-panel__body space-y-4">
-                <div>
-                  <label className="field-label">Take-profit enabled</label>
-                  {renderBooleanChoice(
-                    config.strategy_settings.premarket.tp_enabled,
-                    (next) => patchPremarket({ tp_enabled: next }),
-                    !canEdit
-                  )}
-                </div>
-                <div>
-                  <label className="field-label">Active cap per asset (USD)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={config.strategy_settings.premarket.active_cap_per_asset}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchPremarket({
-                        active_cap_per_asset: parseNonNegative(
-                          event.target.value,
-                          config.strategy_settings.premarket.active_cap_per_asset
-                        ),
-                      })
-                    }
-                    className="field-input"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Entry ladder safety</h2>
-                  <p className="surface-panel__subtitle">
-                    Move Premarket buy levels lower without changing the budget split.
+                    Move Premarket buy levels lower while keeping the same budget split.
                   </p>
                 </div>
               </div>
@@ -592,7 +558,7 @@ export function StrategyEditorPane({
                   {([
                     ["normal", "Normal", "Current"],
                     ["safe", "Safe", "10% lower"],
-                    ["extra_safe", "Extra Safe", "20% lower"],
+                    ["aggressive", "Aggressive", "10% higher"],
                   ] as const).map(([value, label, detail]) => (
                     <button
                       key={value}
@@ -615,21 +581,92 @@ export function StrategyEditorPane({
                   ))}
                 </div>
 
-                <div className="rounded-[1.2rem] border border-[var(--border)] bg-[rgba(10,16,24,0.78)] p-5">
-                  <div className="text-2xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
-                    {premarketLadderMode === "custom"
-                      ? "Custom ladder detected"
-                      : "Simple mode, no manual ladder editing"}
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">
+                  <div className="rounded-[1.2rem] border border-[var(--border)] bg-[rgba(10,16,24,0.78)] p-5">
+                    <div className="text-2xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
+                      {premarketLadderMode === "safe"
+                          ? "Safe Mode Lowers Every Ladder Entry By 10%"
+                          : premarketLadderMode === "aggressive"
+                            ? "Aggressive Mode Raises Every Ladder Entry By 10%"
+                            : "Normal Mode Keeps The Default Premarket Ladder"}
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                      Only the buy prices change here. The budget split stays the same, so the
+                      mode is simple: Normal keeps the default ladder, Safe moves every rung 10%
+                      lower, and Aggressive moves every rung 10% higher.
+                    </p>
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                      <div className="rounded-[1rem] border border-[var(--border)] bg-[rgba(8,12,20,0.9)] p-4">
+                        <div className="metric-label">What Changes</div>
+                        <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                          The ladder stays deterministic. Only the buy prices move, while the
+                          budget weights stay fixed at 23%, 23%, 17%, 14%, 12%, and 11%.
+                        </div>
+                      </div>
+                      <div className="rounded-[1rem] border border-[var(--border)] bg-[rgba(8,12,20,0.9)] p-4">
+                        <div className="metric-label">When To Use It</div>
+                        <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                          Normal is the baseline. Safe adds more patience before entry. Aggressive
+                          bids slightly higher when you want more fills before market open.
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                  <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                    {premarketLadderMode === "custom"
-                      ? "This profile already uses a custom ladder from env. Saving other settings will keep it. Pick Normal, Safe, or Extra Safe if you want to replace it."
-                      : premarketLadderMode === "safe"
-                        ? `Safe lowers each buy level by 10%. Example: ${premarketLadderPricesForMode("normal")[0].toFixed(2)} becomes ${premarketLadderPricesForMode("safe")[0].toFixed(2)}.`
-                        : premarketLadderMode === "extra_safe"
-                          ? `Extra Safe lowers each buy level by 20%. Example: ${premarketLadderPricesForMode("normal")[0].toFixed(2)} becomes ${premarketLadderPricesForMode("extra_safe")[0].toFixed(2)}.`
-                          : "Normal keeps the current ladder. Safe lowers each buy level by 10%. Extra Safe lowers each buy level by 20%."}
-                  </p>
+
+                  <div className="rounded-[1.2rem] border border-[var(--border)] bg-[rgba(10,16,24,0.78)] p-5">
+                    <div className="metric-label">Mode Preview</div>
+                    <div className="mt-4 space-y-4">
+                      {([
+                        [
+                          "5m Ladder",
+                          premarketNormalLadderM5,
+                          premarketSafeLadderM5,
+                          premarketAggressiveLadderM5,
+                        ],
+                        [
+                          "15m / 1h / 4h Ladder",
+                          premarketNormalLadderNonM5,
+                          premarketSafeLadderNonM5,
+                          premarketAggressiveLadderNonM5,
+                        ],
+                      ] as const).map(([title, normalLadder, safeLadder, aggressiveLadder]) => (
+                        <div
+                          key={title}
+                          className="rounded-[1rem] border border-[var(--border)] bg-[rgba(8,12,20,0.9)] p-4"
+                        >
+                          <div className="text-base font-semibold text-[var(--text-primary)]">{title}</div>
+                          <div className="mt-3 space-y-3">
+                            {([
+                              ["Normal", "Current ladder", normalLadder],
+                              ["Safe", "10% lower", safeLadder],
+                              ["Aggressive", "10% higher", aggressiveLadder],
+                            ] as const).map(([label, detail, ladder]) => (
+                              <div
+                                key={`${title}-${label}`}
+                                className="rounded-[0.9rem] border border-[var(--border)] bg-[rgba(10,16,24,0.75)] p-3"
+                              >
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-sm font-semibold text-[var(--text-primary)]">
+                                    {label}
+                                  </div>
+                                  <div className="text-xs font-medium text-[var(--text-secondary)]">
+                                    {detail}
+                                  </div>
+                                </div>
+                                <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                                  Example: {normalLadder[0].toFixed(2)} to {ladder[0].toFixed(2)},{" "}
+                                  {normalLadder[1].toFixed(2)} to {ladder[1].toFixed(2)}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                          <p className="mt-3 text-sm leading-6 text-[var(--text-secondary)]">
+                            Default: {normalLadder.map((price) => price.toFixed(2)).join(", ")}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -640,14 +677,14 @@ export function StrategyEditorPane({
           <div className="surface-panel">
             <div className="surface-panel__header">
               <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Period controls</h2>
+                <h2 className="surface-panel__title">Period Controls</h2>
                 <p className="surface-panel__subtitle">
                   Limit how much Endgame can deploy in each event period.
                 </p>
               </div>
             </div>
             <div className="surface-panel__body">
-              <label className="field-label">Per-period cap (USD)</label>
+              <label className="field-label">Per-Period Cap (USD)</label>
               <input
                 type="number"
                 min="0"
@@ -672,7 +709,7 @@ export function StrategyEditorPane({
           <div className="surface-panel">
             <div className="surface-panel__header">
               <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Entry filters</h2>
+                <h2 className="surface-panel__title">Entry Filters</h2>
                 <p className="surface-panel__subtitle">
                   Tune the flip probability ceiling and the minimum buy price gate.
                 </p>
@@ -680,7 +717,7 @@ export function StrategyEditorPane({
             </div>
             <div className="surface-panel__body grid gap-4 md:grid-cols-2">
               <div>
-                <label className="field-label">Max flip probability</label>
+                <label className="field-label">Max Flip Probability</label>
                 <input
                   type="number"
                   min="0"
@@ -700,7 +737,7 @@ export function StrategyEditorPane({
                 />
               </div>
               <div>
-                <label className="field-label">Min buy price</label>
+                <label className="field-label">Min Buy Price</label>
                 <input
                   type="number"
                   min="0"
@@ -727,14 +764,14 @@ export function StrategyEditorPane({
           <div className="surface-panel">
             <div className="surface-panel__header">
               <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Band threshold</h2>
+                <h2 className="surface-panel__title">Band Threshold</h2>
                 <p className="surface-panel__subtitle">
                   Control how far the lead price must flip before SessionBand acts.
                 </p>
               </div>
             </div>
             <div className="surface-panel__body">
-              <label className="field-label">Flip threshold %</label>
+              <label className="field-label">Flip Threshold %</label>
               <input
                 type="number"
                 min="0"
@@ -767,7 +804,7 @@ export function StrategyEditorPane({
           <div className="surface-panel">
             <div className="surface-panel__header">
               <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Cancel-after-open</h2>
+                <h2 className="surface-panel__title">Cancel After Open</h2>
                 <p className="surface-panel__subtitle">
                   Cancel timers used after the event opens for each timeframe.
                 </p>
@@ -850,7 +887,7 @@ export function StrategyEditorPane({
             <div className="surface-panel">
               <div className="surface-panel__header">
                 <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Tick split</h2>
+                  <h2 className="surface-panel__title">Tick Split</h2>
                   <p className="surface-panel__subtitle">
                     Split the base size across Tick 0, Tick 1, and Tick 2.
                   </p>
@@ -924,7 +961,7 @@ export function StrategyEditorPane({
                   })}
                 </div>
                 <div>
-                  <label className="field-label">1D enabled</label>
+                  <label className="field-label">1D Enabled</label>
                   {renderBooleanChoice(evcurve.d1_enabled, (next) => patchEVCurve({ d1_enabled: next }), !canEdit)}
                 </div>
               </div>
@@ -933,7 +970,7 @@ export function StrategyEditorPane({
             <div className="surface-panel">
               <div className="surface-panel__header">
                 <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Sizing model</h2>
+                  <h2 className="surface-panel__title">Sizing Model</h2>
                   <p className="surface-panel__subtitle">
                     Daily size is derived from the shared symbol multiplier and the EVCurve timeframe multiplier.
                   </p>
@@ -941,7 +978,7 @@ export function StrategyEditorPane({
               </div>
               <div className="surface-panel__body">
                 <div className="metric-label">Formula</div>
-                <div className="metric-value">Base size x symbol multiplier x timeframe multiplier</div>
+                <div className="metric-value">Base Size x Symbol Multiplier x Timeframe Multiplier</div>
                 <div className="metric-detail">
                   The old D1 cap field is no longer shown here because it did not represent per-trade daily size.
                 </div>
@@ -994,7 +1031,7 @@ export function StrategyEditorPane({
             <div className="surface-panel">
               <div className="surface-panel__header">
                 <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Tau windows</h2>
+                  <h2 className="surface-panel__title">Tau Windows</h2>
                   <p className="surface-panel__subtitle">Control which late windows can trigger and how heavily they size.</p>
                 </div>
               </div>
@@ -1075,7 +1112,7 @@ export function StrategyEditorPane({
           <div className="surface-panel">
             <div className="surface-panel__header">
                 <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Pre-hit</h2>
+                  <h2 className="surface-panel__title">Pre-Hit</h2>
                   <p className="surface-panel__subtitle">
                     Control the early entry leg for hit markets before the strike is crossed.
                   </p>
@@ -1083,7 +1120,7 @@ export function StrategyEditorPane({
             </div>
             <div className="surface-panel__body space-y-4">
               <div>
-                <label className="field-label">Pre-hit enabled</label>
+                <label className="field-label">Pre-Hit Enabled</label>
                 {renderBooleanChoice(
                   evsnipe.pre_hit_enabled,
                   (next) =>
@@ -1095,7 +1132,7 @@ export function StrategyEditorPane({
                 )}
               </div>
               <div>
-                <label className="field-label">Pre-hit ratio</label>
+                <label className="field-label">Pre-Hit Ratio</label>
                 <input
                   type="number"
                   min="0"
@@ -1114,7 +1151,7 @@ export function StrategyEditorPane({
                 />
               </div>
               <div>
-                <label className="field-label">Pre-trigger (bps)</label>
+                <label className="field-label">Pre-Trigger (Bps)</label>
                 <input
                   type="number"
                   min="0"
@@ -1138,7 +1175,7 @@ export function StrategyEditorPane({
           <div className="surface-panel">
             <div className="surface-panel__header">
                 <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Strike window</h2>
+                  <h2 className="surface-panel__title">Strike Window</h2>
                   <p className="surface-panel__subtitle">
                     Keep the hit-market watchlist focused on the expiry and strike range you want.
                   </p>
@@ -1146,7 +1183,7 @@ export function StrategyEditorPane({
             </div>
             <div className="surface-panel__body grid gap-4">
               <div>
-                <label className="field-label">Strike window (%)</label>
+                <label className="field-label">Strike Window (%)</label>
                 <input
                   type="number"
                   min="0"
@@ -1167,7 +1204,7 @@ export function StrategyEditorPane({
                 </p>
               </div>
               <div>
-                <label className="field-label">Max days to expiry</label>
+                <label className="field-label">Max Days To Expiry</label>
                 <input
                   type="number"
                   min="0"
@@ -1205,7 +1242,7 @@ export function StrategyEditorPane({
               </div>
             </div>
             <div className="surface-panel__body">
-              <label className="field-label">Min share multiple</label>
+              <label className="field-label">Min Share Multiple</label>
               <input
                 type="number"
                 min="0"
@@ -1233,7 +1270,7 @@ export function StrategyEditorPane({
             <div className="surface-panel">
               <div className="surface-panel__header">
                 <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Market selection</h2>
+                  <h2 className="surface-panel__title">Market Selection</h2>
                   <p className="surface-panel__subtitle">
                     Choose how MM Rewards picks markets and how often it refreshes.
                   </p>
@@ -1241,7 +1278,7 @@ export function StrategyEditorPane({
               </div>
               <div className="surface-panel__body grid gap-4">
                 <div>
-                  <label className="field-label">Market mode</label>
+                  <label className="field-label">Market Mode</label>
                   <select
                     value={mmRewards.market_mode}
                     disabled={!canEdit}
@@ -1263,7 +1300,7 @@ export function StrategyEditorPane({
                 </div>
                 {mmRewards.market_mode === "hybrid" ? (
                   <div>
-                    <label className="field-label">Single market slugs</label>
+                    <label className="field-label">Single Market Slugs</label>
                     <input
                       type="text"
                       value={mmRewards.single_market_slugs}
@@ -1280,7 +1317,7 @@ export function StrategyEditorPane({
                 ) : null}
                 <div className="grid gap-4 md:grid-cols-3">
                   <div>
-                    <label className="field-label">Auto top N</label>
+                    <label className="field-label">Auto Top N</label>
                     <input
                       type="number"
                       min="0"
@@ -1296,7 +1333,7 @@ export function StrategyEditorPane({
                     />
                   </div>
                   <div>
-                    <label className="field-label">Refresh sec</label>
+                    <label className="field-label">Refresh Sec</label>
                     <input
                       type="number"
                       min="0"
@@ -1315,7 +1352,7 @@ export function StrategyEditorPane({
                     />
                   </div>
                   <div>
-                    <label className="field-label">Rank budget (USD)</label>
+                    <label className="field-label">Rank Budget (USD)</label>
                     <input
                       type="number"
                       min="0"
@@ -1348,7 +1385,7 @@ export function StrategyEditorPane({
               </div>
               <div className="surface-panel__body grid gap-4">
                 <div>
-                  <label className="field-label">Blacklist keywords</label>
+                    <label className="field-label">Blacklist Keywords</label>
                   <input
                     type="text"
                     value={mmRewards.blacklist_keywords}
@@ -1358,7 +1395,7 @@ export function StrategyEditorPane({
                   />
                 </div>
                 <div>
-                  <label className="field-label">Reward min shares cap</label>
+                    <label className="field-label">Reward Min Shares Cap</label>
                   <input
                     type="number"
                     min="0"
@@ -1398,7 +1435,7 @@ export function StrategyEditorPane({
             </div>
             <div className="surface-panel__body grid gap-4">
               <div>
-                <label className="field-label">Quote size mode</label>
+                <label className="field-label">Quote Size Mode</label>
                 <div className="flex flex-wrap gap-2">
                   {[
                     ["multiple", "Quote Multiple"],
@@ -1430,7 +1467,7 @@ export function StrategyEditorPane({
               {mmSportUsesDepthRatio ? (
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
-                    <label className="field-label">Max share ratio</label>
+                    <label className="field-label">Max Share Ratio</label>
                     <input
                       type="number"
                       min="0"
@@ -1452,7 +1489,7 @@ export function StrategyEditorPane({
                     </p>
                   </div>
                   <div>
-                    <label className="field-label">Min top depth (USD)</label>
+                    <label className="field-label">Min Top Depth (USD)</label>
                     <input
                       type="number"
                       min="0"
@@ -1476,7 +1513,7 @@ export function StrategyEditorPane({
                 </div>
               ) : (
                 <div>
-                  <label className="field-label">Quote size multiplier</label>
+                  <label className="field-label">Quote Size Multiplier</label>
                   <input
                     type="number"
                     min="0"
@@ -1517,7 +1554,7 @@ export function StrategyEditorPane({
               </div>
               <div className="surface-panel__body grid gap-4">
                 <div>
-                  <label className="field-label">Min reward rate per day</label>
+                  <label className="field-label">Min Reward Rate Per Day</label>
                   <input
                     type="number"
                     min="0"
@@ -1536,7 +1573,7 @@ export function StrategyEditorPane({
                   />
                 </div>
                 <div>
-                  <label className="field-label">Pause after fill (sec)</label>
+                  <label className="field-label">Pause After Fill (Sec)</label>
                   <input
                     type="number"
                     min="0"
@@ -1555,7 +1592,7 @@ export function StrategyEditorPane({
                   />
                 </div>
                 <div>
-                  <label className="field-label">Near-expiry exit window (sec)</label>
+                  <label className="field-label">Near-Expiry Exit Window (Sec)</label>
                   <input
                     type="number"
                     min="0"
@@ -1575,7 +1612,7 @@ export function StrategyEditorPane({
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
-                    <label className="field-label">Quote expiry min (sec)</label>
+                    <label className="field-label">Quote Expiry Min (Sec)</label>
                     <input
                       type="number"
                       min="0"
@@ -1594,7 +1631,7 @@ export function StrategyEditorPane({
                     />
                   </div>
                   <div>
-                    <label className="field-label">Quote expiry max (sec)</label>
+                    <label className="field-label">Quote Expiry Max (Sec)</label>
                     <input
                       type="number"
                       min="0"
@@ -1627,7 +1664,7 @@ export function StrategyEditorPane({
               </div>
               <div className="surface-panel__body grid gap-4">
                 <div>
-                  <label className="field-label">Inventory exit mode</label>
+                  <label className="field-label">Inventory Exit Mode</label>
                   <div className="flex flex-wrap gap-2">
                     {[
                       ["normal", "Auto"],

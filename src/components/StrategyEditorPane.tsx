@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 import { SectionPanel } from "./SectionPanel";
 import {
   parseNonNegative,
+  premarketLadderPricesForMode,
   strategyCapValue,
   strategyLabel,
   strategySections,
@@ -107,6 +108,7 @@ export function StrategyEditorPane({
       : config.strategy_settings.mm_sport.inventory_exit_mode === "no_exit"
         ? "Feeling Lucky"
         : "Auto";
+  const premarketLadderMode = config.strategy_settings.premarket.entry_ladder_safety_mode;
 
   const patchPremarket = (patch: Partial<BotConfig["strategy_settings"]["premarket"]>) =>
     setConfig((current) =>
@@ -535,45 +537,103 @@ export function StrategyEditorPane({
         {renderCapCard()}
 
         {selectedStrategy === "premarket" ? (
-          <div className="surface-panel">
-            <div className="surface-panel__header">
-              <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Execution rules</h2>
-                <p className="surface-panel__subtitle">
-                  Control take-profit behavior and the per-asset active cap.
-                </p>
+          <>
+            <div className="surface-panel">
+              <div className="surface-panel__header">
+                <div className="surface-panel__copy">
+                  <h2 className="surface-panel__title">Execution rules</h2>
+                  <p className="surface-panel__subtitle">
+                    Control take-profit behavior and the per-asset active cap.
+                  </p>
+                </div>
+              </div>
+              <div className="surface-panel__body space-y-4">
+                <div>
+                  <label className="field-label">Take-profit enabled</label>
+                  {renderBooleanChoice(
+                    config.strategy_settings.premarket.tp_enabled,
+                    (next) => patchPremarket({ tp_enabled: next }),
+                    !canEdit
+                  )}
+                </div>
+                <div>
+                  <label className="field-label">Active cap per asset (USD)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={config.strategy_settings.premarket.active_cap_per_asset}
+                    disabled={!canEdit}
+                    onChange={(event) =>
+                      patchPremarket({
+                        active_cap_per_asset: parseNonNegative(
+                          event.target.value,
+                          config.strategy_settings.premarket.active_cap_per_asset
+                        ),
+                      })
+                    }
+                    className="field-input"
+                  />
+                </div>
               </div>
             </div>
-            <div className="surface-panel__body space-y-4">
-              <div>
-                <label className="field-label">Take-profit enabled</label>
-                {renderBooleanChoice(
-                  config.strategy_settings.premarket.tp_enabled,
-                  (next) => patchPremarket({ tp_enabled: next }),
-                  !canEdit
-                )}
+
+            <div className="surface-panel">
+              <div className="surface-panel__header">
+                <div className="surface-panel__copy">
+                  <h2 className="surface-panel__title">Entry ladder safety</h2>
+                  <p className="surface-panel__subtitle">
+                    Move Premarket buy levels lower without changing the budget split.
+                  </p>
+                </div>
               </div>
-              <div>
-                <label className="field-label">Active cap per asset (USD)</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="1"
-                  value={config.strategy_settings.premarket.active_cap_per_asset}
-                  disabled={!canEdit}
-                  onChange={(event) =>
-                    patchPremarket({
-                      active_cap_per_asset: parseNonNegative(
-                        event.target.value,
-                        config.strategy_settings.premarket.active_cap_per_asset
-                      ),
-                    })
-                  }
-                  className="field-input"
-                />
+              <div className="surface-panel__body space-y-4">
+                <div className="grid gap-2 md:grid-cols-3">
+                  {([
+                    ["normal", "Normal", "Current"],
+                    ["safe", "Safe", "10% lower"],
+                    ["extra_safe", "Extra Safe", "20% lower"],
+                  ] as const).map(([value, label, detail]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      disabled={!canEdit}
+                      onClick={() =>
+                        patchPremarket({
+                          entry_ladder_safety_mode: value,
+                        })
+                      }
+                      className={`mode-choice flex items-center justify-center gap-2 ${
+                        premarketLadderMode === value ? "mode-choice--active" : ""
+                      }`.trim()}
+                    >
+                      <span>{label}</span>
+                      <span className="text-sm font-medium text-[var(--text-secondary)]">
+                        {detail}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+
+                <div className="rounded-[1.2rem] border border-[var(--border)] bg-[rgba(10,16,24,0.78)] p-5">
+                  <div className="text-2xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
+                    {premarketLadderMode === "custom"
+                      ? "Custom ladder detected"
+                      : "Simple mode, no manual ladder editing"}
+                  </div>
+                  <p className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                    {premarketLadderMode === "custom"
+                      ? "This profile already uses a custom ladder from env. Saving other settings will keep it. Pick Normal, Safe, or Extra Safe if you want to replace it."
+                      : premarketLadderMode === "safe"
+                        ? `Safe lowers each buy level by 10%. Example: ${premarketLadderPricesForMode("normal")[0].toFixed(2)} becomes ${premarketLadderPricesForMode("safe")[0].toFixed(2)}.`
+                        : premarketLadderMode === "extra_safe"
+                          ? `Extra Safe lowers each buy level by 20%. Example: ${premarketLadderPricesForMode("normal")[0].toFixed(2)} becomes ${premarketLadderPricesForMode("extra_safe")[0].toFixed(2)}.`
+                          : "Normal keeps the current ladder. Safe lowers each buy level by 10%. Extra Safe lowers each buy level by 20%."}
+                  </p>
+                </div>
               </div>
             </div>
-          </div>
+          </>
         ) : null}
 
         {selectedStrategy === "endgame" ? (

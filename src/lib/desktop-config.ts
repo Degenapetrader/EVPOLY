@@ -1,4 +1,8 @@
-import type { BotConfig, StrategySettings } from "./tauri-commands";
+import type {
+  BotConfig,
+  PremarketLadderSafetyMode,
+  StrategySettings,
+} from "./tauri-commands";
 
 export const CORE_SYMBOLS = ["BTC", "ETH", "SOL", "XRP"] as const;
 export const EXTRA_SYMBOLS = ["DOGE", "BNB", "HYPE"] as const;
@@ -77,6 +81,63 @@ function mmSportUsesDepthRatio(config: BotConfig) {
   return config.strategy_settings.mm_sport.quote_size_mode === "depth_ratio";
 }
 
+export const PREMARKET_DEFAULT_LADDER_PRICES = [0.4, 0.3, 0.24, 0.21, 0.15, 0.12] as const;
+export const PREMARKET_DEFAULT_LADDER_WEIGHTS = [0.23, 0.23, 0.17, 0.14, 0.12, 0.11] as const;
+
+const PREMARKET_LADDER_MODE_FACTORS: Record<
+  Exclude<PremarketLadderSafetyMode, "custom">,
+  number
+> = {
+  normal: 1,
+  safe: 0.9,
+  extra_safe: 0.8,
+};
+
+function normalizePremarketLadderSafetyMode(
+  value: string | undefined
+): PremarketLadderSafetyMode {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "safe") return "safe";
+  if (normalized === "extra_safe" || normalized === "extra-safe") return "extra_safe";
+  if (normalized === "custom") return "custom";
+  return "normal";
+}
+
+function roundUpToCent(value: number) {
+  return Math.min(0.99, Math.max(0.01, Math.ceil(value * 100 - 1e-9) / 100));
+}
+
+function arraysMatchWithTolerance(left: readonly number[], right: readonly number[]) {
+  return (
+    left.length === right.length &&
+    left.every((value, index) => Math.abs(value - right[index]) < 1e-9)
+  );
+}
+
+export function premarketLadderPricesForMode(mode: PremarketLadderSafetyMode): number[] {
+  const factor = PREMARKET_LADDER_MODE_FACTORS[mode === "custom" ? "normal" : mode];
+  return PREMARKET_DEFAULT_LADDER_PRICES.map((price) => roundUpToCent(price * factor));
+}
+
+export function premarketLadderWeights(): number[] {
+  return [...PREMARKET_DEFAULT_LADDER_WEIGHTS];
+}
+
+export function inferPremarketLadderSafetyMode(
+  prices?: readonly number[] | null,
+  weights?: readonly number[] | null
+): PremarketLadderSafetyMode {
+  if (!prices?.length && !weights?.length) return "normal";
+  if (!prices?.length || !weights?.length) return "custom";
+  if (!arraysMatchWithTolerance(weights, PREMARKET_DEFAULT_LADDER_WEIGHTS)) return "custom";
+  if (arraysMatchWithTolerance(prices, PREMARKET_DEFAULT_LADDER_PRICES)) return "normal";
+  if (arraysMatchWithTolerance(prices, premarketLadderPricesForMode("safe"))) return "safe";
+  if (arraysMatchWithTolerance(prices, premarketLadderPricesForMode("extra_safe"))) {
+    return "extra_safe";
+  }
+  return "custom";
+}
+
 export interface DashboardStrategyEditorState {
   selectedStrategy: StrategyKey;
   visibleSections: StrategyEditorSection[];
@@ -88,6 +149,7 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
   premarket: {
     tp_enabled: true,
     active_cap_per_asset: 100,
+    entry_ladder_safety_mode: "normal",
     cancel_after_open_sec: {
       m5: 20,
       m15: 15,
@@ -262,6 +324,9 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
       premarket: {
         ...DEFAULT_CONFIG.strategy_settings.premarket,
         ...saved?.strategy_settings?.premarket,
+        entry_ladder_safety_mode: normalizePremarketLadderSafetyMode(
+          saved?.strategy_settings?.premarket?.entry_ladder_safety_mode
+        ),
         cancel_after_open_sec: {
           ...DEFAULT_CONFIG.strategy_settings.premarket.cancel_after_open_sec,
           ...saved?.strategy_settings?.premarket?.cancel_after_open_sec,

@@ -226,9 +226,12 @@ export interface SetupDoctorResult {
   popup?: SetupDoctorPopup | null;
 }
 
+export type PremarketLadderSafetyMode = "normal" | "safe" | "extra_safe" | "custom";
+
 export interface PremarketSettings {
   tp_enabled: boolean;
   active_cap_per_asset: number;
+  entry_ladder_safety_mode: PremarketLadderSafetyMode;
   cancel_after_open_sec: {
     m5: number;
     m15: number;

@@ -93,8 +93,10 @@ function strategyKeyFromRoute(strategySlug?: string): StrategyKey | null {
   );
 }
 
-const WEEKEND_PAUSE_TOOLTIP =
-  "Pause new entries from Saturday 00:00 UTC to Monday 00:00 UTC. Existing orders and positions still run normally.";
+const WEEKEND_POLICY_TOOLTIP_PAUSE =
+  "Stops new weekend entries for Premarket, Endgame, EVCurve, and SessionBand.";
+const WEEKEND_POLICY_TOOLTIP_OFF =
+  "Premarket, Endgame, EVCurve, and SessionBand keep trading on weekends.";
 
 export function Home() {
   const navigate = useNavigate();
@@ -377,10 +379,14 @@ export function Home() {
           className={`ui-button ui-button--compact strategy-rail__title-action ${
             config.weekend_policy === "pause" ? "ui-button--accent" : ""
           }`.trim()}
-          title={WEEKEND_PAUSE_TOOLTIP}
+          title={
+            config.weekend_policy === "pause"
+              ? WEEKEND_POLICY_TOOLTIP_PAUSE
+              : WEEKEND_POLICY_TOOLTIP_OFF
+          }
           aria-pressed={config.weekend_policy === "pause"}
         >
-          {config.weekend_policy === "pause" ? "Weekend Pause" : "Weekend Off"}
+          {config.weekend_policy === "pause" ? "Weekend" : "NO OFF DAY"}
         </button>
       </div>
       <div className="strategy-rail__header" aria-hidden="true">

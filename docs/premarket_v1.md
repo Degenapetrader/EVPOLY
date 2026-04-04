@@ -7,6 +7,7 @@
 - Symbols: `BTC, ETH, SOL, XRP` (from global symbol enables)
 - Timeframes: `5m, 15m, 1h, 4h`
 - Strategy toggle default: `EVPOLY_STRATEGY_PREMARKET_ENABLE=true`
+- Timeframe gate key: `EVPOLY_PREMARKET_TIMEFRAMES=5m,15m,1h,4h`
 
 ## Timing Model
 The scheduler emits intents about 4 minutes before open:
@@ -75,6 +76,7 @@ Premarket TP is enabled by default:
 ## Key Env Knobs
 - `EVPOLY_STRATEGY_PREMARKET_ENABLE`
 - `EVPOLY_PREMARKET_BASE_SIZE_USD`
+- `EVPOLY_PREMARKET_TIMEFRAMES`
 - `EVPOLY_PREMARKET_LADDER_MODE_5M`
 - `EVPOLY_PREMARKET_LADDER_MODE_NON_M5`
 - `EVPOLY_PREMARKET_TP_ENABLE`

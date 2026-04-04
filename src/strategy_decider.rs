@@ -13,6 +13,8 @@ use crate::strategy::{
     Timeframe, STRATEGY_ID_PREMARKET_V1,
 };
 
+const PREMARKET_TIMEFRAMES_ENV_KEY: &str = "EVPOLY_PREMARKET_TIMEFRAMES";
+
 #[derive(Debug, Clone)]
 pub struct StrategyDeciderConfig {
     pub features_v2: FeatureEngineV2Config,
@@ -55,6 +57,47 @@ pub struct PremarketIntent {
     pub decision: StrategyDecision,
 }
 
+fn default_premarket_timeframes() -> Vec<Timeframe> {
+    vec![Timeframe::M5, Timeframe::M15, Timeframe::H1, Timeframe::H4]
+}
+
+pub fn premarket_enabled_timeframes() -> Vec<Timeframe> {
+    let parsed = std::env::var(PREMARKET_TIMEFRAMES_ENV_KEY)
+        .ok()
+        .map(|raw| {
+            let mut out = Vec::new();
+            for item in raw.split(',') {
+                let timeframe = match item.trim().to_ascii_lowercase().as_str() {
+                    "5m" => Some(Timeframe::M5),
+                    "15m" => Some(Timeframe::M15),
+                    "1h" | "60m" => Some(Timeframe::H1),
+                    "4h" | "240m" => Some(Timeframe::H4),
+                    _ => None,
+                };
+                if let Some(timeframe) = timeframe {
+                    if !out.contains(&timeframe) {
+                        out.push(timeframe);
+                    }
+                }
+            }
+            out
+        })
+        .unwrap_or_default();
+
+    if parsed.is_empty() {
+        return default_premarket_timeframes();
+    }
+
+    default_premarket_timeframes()
+        .into_iter()
+        .filter(|timeframe| parsed.contains(timeframe))
+        .collect()
+}
+
+pub fn premarket_timeframe_enabled(timeframe: Timeframe) -> bool {
+    premarket_enabled_timeframes().contains(&timeframe)
+}
+
 pub fn spawn_pre_market_scheduler(
     cfg: StrategyDeciderConfig,
     _signal_state: SharedSignalState,
@@ -65,12 +108,22 @@ pub fn spawn_pre_market_scheduler(
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         let mut premarket_slot_minute: HashMap<Timeframe, i64> = HashMap::new();
         let mut last_processed_slot: Option<i64> = None;
+        let enabled_timeframes = premarket_enabled_timeframes();
+        let enabled_timeframes_csv = enabled_timeframes
+            .iter()
+            .map(|timeframe| timeframe.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
         let premarket_enqueue_guard_ms = env_i64_or("EVPOLY_PREMARKET_ENQUEUE_GUARD_MS", 15_000);
         let premarket_enqueue_guard_sec = ((premarket_enqueue_guard_ms.max(0) + 999) / 1_000) + 1;
 
         crate::log_println!(
             "🧭 Strategy scheduler started (premarket_enabled={})",
             cfg.enable_premarket
+        );
+        crate::log_println!(
+            "Premarket scheduler timeframes=[{}]",
+            enabled_timeframes_csv
         );
 
         loop {
@@ -95,7 +148,7 @@ pub fn spawn_pre_market_scheduler(
 
             if cfg.enable_premarket {
                 for slot in start_slot..=slot_id {
-                    for timeframe in premarket_set_for_slot(slot) {
+                    for timeframe in premarket_set_for_slot(slot, enabled_timeframes.as_slice()) {
                         if premarket_slot_minute.get(&timeframe).copied() == Some(slot) {
                             continue;
                         }
@@ -160,29 +213,39 @@ pub fn spawn_pre_market_scheduler(
     })
 }
 
-fn premarket_set_for_slot(slot: i64) -> Vec<Timeframe> {
+fn premarket_set_for_slot(slot: i64, enabled_timeframes: &[Timeframe]) -> Vec<Timeframe> {
     let minute = slot.rem_euclid(60) as u32;
     let hour = slot.div_euclid(60).rem_euclid(24) as u32;
 
     if simulation_all_timeframes_every_5m_enabled() {
         if minute % 5 == 1 {
-            return vec![Timeframe::M5, Timeframe::M15, Timeframe::H1, Timeframe::H4];
+            return enabled_timeframes.to_vec();
         }
         return Vec::new();
     }
 
-    if minute == 56 {
+    let candidates: &[Timeframe] = if minute == 56 {
         if hour % 4 == 3 {
-            return vec![Timeframe::H4];
+            &[Timeframe::H4, Timeframe::H1, Timeframe::M15, Timeframe::M5]
+        } else {
+            &[Timeframe::H1, Timeframe::M15, Timeframe::M5]
         }
-        return vec![Timeframe::H1];
+    } else if minute % 15 == 11 {
+        &[Timeframe::M15, Timeframe::M5]
+    } else if minute % 5 == 1 {
+        &[Timeframe::M5]
+    } else {
+        &[]
+    };
+
+    if let Some(timeframe) = candidates
+        .iter()
+        .copied()
+        .find(|timeframe| enabled_timeframes.contains(timeframe))
+    {
+        return vec![timeframe];
     }
-    if minute % 15 == 11 {
-        return vec![Timeframe::M15];
-    }
-    if minute % 5 == 1 {
-        return vec![Timeframe::M5];
-    }
+
     Vec::new()
 }
 
@@ -223,28 +286,84 @@ fn simulation_all_timeframes_every_5m_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn with_premarket_timeframes_env(value: Option<&str>, run: impl FnOnce()) {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let previous = std::env::var(PREMARKET_TIMEFRAMES_ENV_KEY).ok();
+
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(PREMARKET_TIMEFRAMES_ENV_KEY, value),
+                None => std::env::remove_var(PREMARKET_TIMEFRAMES_ENV_KEY),
+            }
+        }
+
+        run();
+
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var(PREMARKET_TIMEFRAMES_ENV_KEY, value),
+                None => std::env::remove_var(PREMARKET_TIMEFRAMES_ENV_KEY),
+            }
+        }
+    }
 
     #[test]
     fn premarket_schedule_prioritizes_higher_timeframes_on_overlap() {
-        // 00:11 UTC overlaps 5m and 15m. Keep only 15m.
-        let slot = 11_i64;
-        let set = premarket_set_for_slot(slot);
-        assert_eq!(set, vec![Timeframe::M15]);
+        with_premarket_timeframes_env(None, || {
+            let enabled = premarket_enabled_timeframes();
 
-        // 01:56 UTC overlaps 5m, 15m, and 1h. Keep only 1h.
-        let slot = (1 * 60 + 56) as i64;
-        let set = premarket_set_for_slot(slot);
-        assert_eq!(set, vec![Timeframe::H1]);
+            let slot = 11_i64;
+            let set = premarket_set_for_slot(slot, enabled.as_slice());
+            assert_eq!(set, vec![Timeframe::M15]);
 
-        // 03:56 UTC overlaps all premarket windows. Keep only 4h.
-        let slot = (3 * 60 + 56) as i64;
-        let set = premarket_set_for_slot(slot);
-        assert_eq!(set, vec![Timeframe::H4]);
+            let slot = (1 * 60 + 56) as i64;
+            let set = premarket_set_for_slot(slot, enabled.as_slice());
+            assert_eq!(set, vec![Timeframe::H1]);
 
-        // Plain 5m slot still schedules 5m when nothing higher overlaps.
-        let slot = 6_i64;
-        let set = premarket_set_for_slot(slot);
-        assert_eq!(set, vec![Timeframe::M5]);
+            let slot = (3 * 60 + 56) as i64;
+            let set = premarket_set_for_slot(slot, enabled.as_slice());
+            assert_eq!(set, vec![Timeframe::H4]);
+
+            let slot = 6_i64;
+            let set = premarket_set_for_slot(slot, enabled.as_slice());
+            assert_eq!(set, vec![Timeframe::M5]);
+        });
+    }
+
+    #[test]
+    fn premarket_schedule_falls_back_when_higher_timeframes_are_disabled() {
+        with_premarket_timeframes_env(Some("5m,15m"), || {
+            let enabled = premarket_enabled_timeframes();
+            assert_eq!(enabled, vec![Timeframe::M5, Timeframe::M15]);
+
+            let slot = (1 * 60 + 56) as i64;
+            let set = premarket_set_for_slot(slot, enabled.as_slice());
+            assert_eq!(set, vec![Timeframe::M15]);
+        });
+
+        with_premarket_timeframes_env(Some("5m"), || {
+            let enabled = premarket_enabled_timeframes();
+            assert_eq!(enabled, vec![Timeframe::M5]);
+
+            let slot = (1 * 60 + 56) as i64;
+            let set = premarket_set_for_slot(slot, enabled.as_slice());
+            assert_eq!(set, vec![Timeframe::M5]);
+        });
+    }
+
+    #[test]
+    fn premarket_schedule_skips_when_only_lower_disabled_slot_matches() {
+        with_premarket_timeframes_env(Some("15m,1h,4h"), || {
+            let enabled = premarket_enabled_timeframes();
+            assert_eq!(enabled, vec![Timeframe::M15, Timeframe::H1, Timeframe::H4]);
+
+            let slot = 6_i64;
+            let set = premarket_set_for_slot(slot, enabled.as_slice());
+            assert!(set.is_empty());
+        });
     }
 
     #[test]

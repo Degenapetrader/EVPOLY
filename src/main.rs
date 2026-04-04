@@ -3758,6 +3758,7 @@ async fn main() -> Result<()> {
     let (premarket_tx, mut premarket_rx) = tokio::sync::mpsc::channel::<PremarketIntent>(128);
     let decider_cfg = StrategyDeciderConfig::default();
     let premarket_enabled = decider_cfg.enable_premarket;
+    let premarket_timeframes = strategy_decider::premarket_enabled_timeframes();
     let premarket_assets = premarket_enabled_assets(
         config.trading.enable_eth_trading,
         config.trading.enable_solana_trading,
@@ -28006,11 +28007,27 @@ async fn main() -> Result<()> {
     let premarket_cancel_schedules_for_premarket = premarket_cancel_schedules.clone();
     let premarket_assets_for_premarket = premarket_assets.clone();
     let premarket_alpha_wallet = remote_alpha_proxy_wallet.clone();
+    let premarket_enabled_timeframes_for_premarket = premarket_timeframes.clone();
     tokio::spawn(async move {
         let premarket_enqueue_mode_cfg = PremarketEnqueueMode::from_env();
         let premarket_enqueue_timeout_ms_cfg = premarket_enqueue_timeout_ms();
         let premarket_enqueue_guard_ms_cfg = premarket_enqueue_guard_ms();
         while let Some(intent) = premarket_rx.recv().await {
+            if !premarket_enabled_timeframes_for_premarket.contains(&intent.timeframe) {
+                log_event(
+                    "premarket_skip_timeframe_disabled",
+                    json!({
+                        "strategy_id": STRATEGY_ID_PREMARKET_V1,
+                        "timeframe": intent.timeframe.as_str(),
+                        "decision_id": intent.decision_id,
+                        "enabled_timeframes": premarket_enabled_timeframes_for_premarket
+                            .iter()
+                            .map(|timeframe| timeframe.as_str())
+                            .collect::<Vec<_>>()
+                    }),
+                );
+                continue;
+            }
             let market_open_ts = match u64::try_from(intent.market_open_ts) {
                 Ok(v) if v > 0 => v,
                 _ => {

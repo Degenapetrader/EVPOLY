@@ -73,6 +73,7 @@ use polymarket_arbitrage_bot::tracking_db::{
     StrategyFeatureSnapshotIntentRecord, TrackingDb, TradeEventRecord,
 };
 use polymarket_arbitrage_bot::trader::{EntryExecutionMode, Trader};
+use polymarket_arbitrage_bot::weekend_policy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -173,6 +174,7 @@ struct ArbiterExecutionRequest {
 enum ArbiterEnqueueResult {
     Sent,
     Deduped,
+    SkippedWeekendPause,
 }
 
 enum MmEnqueueResult {
@@ -4762,8 +4764,46 @@ async fn main() -> Result<()> {
                             }
                         };
 
-                        let now_submit_ms = chrono::Utc::now().timestamp_millis();
+                        let now_submit = chrono::Utc::now();
+                        let now_submit_ms = now_submit.timestamp_millis();
                         request.timing.submit_start_ts_ms = Some(now_submit_ms);
+                        if weekend_policy::should_pause_new_entries_at(
+                            request.intent.strategy_id.as_str(),
+                            now_submit,
+                        ) {
+                            log_event(
+                                "strategy_skip_weekend_pause",
+                                json!({
+                                    "request_id": request.request_id,
+                                    "strategy_id": request.intent.strategy_id,
+                                    "timeframe": request_timeframe_label(&request),
+                                    "entry_mode": request.entry_mode.as_str(),
+                                    "period_timestamp": request.opportunity.period_timestamp,
+                                    "token_id": request.opportunity.token_id,
+                                    "source": "submit_guard",
+                                    "worker_pool": pool_label_for_submit,
+                                    "policy": weekend_policy::weekend_policy_from_env().as_str()
+                                }),
+                            );
+                            let mut gate = worker_idempotency_for_submit.lock().await;
+                            gate.finish_failure(
+                                &logical_key_for_submit,
+                                &scope_key_for_submit,
+                                chrono::Utc::now().timestamp_millis(),
+                                ExecutionErrorClass::Permanent,
+                            );
+                            drop(gate);
+                            request.timing.worker_done_ts_ms =
+                                Some(chrono::Utc::now().timestamp_millis());
+                            log_arbiter_request_timing(
+                                &request,
+                                pool_label_for_submit,
+                                worker_index,
+                                "weekend_pause_drop",
+                                Some("weekend_pause_active"),
+                            );
+                            return;
+                        }
                         let late_guard_ms = entry_submit_late_guard_ms();
                         let premarket_late_block = request.intent.strategy_id
                             == STRATEGY_ID_PREMARKET_V1
@@ -7246,6 +7286,32 @@ async fn main() -> Result<()> {
                                     }),
                                 );
                             }
+                            Ok(ArbiterEnqueueResult::SkippedWeekendPause) => {
+                                emitted_ticks.insert(emit_key);
+                                processed_tick_slots.insert((
+                                    symbol_market_key.clone(),
+                                    timeframe,
+                                    market_open_ts,
+                                    plan.tick_index,
+                                ));
+                                log_event(
+                                    "endgame_alpha_tick_executed",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                        "asset_symbol": symbol,
+                                        "market_key": symbol_market_key.as_str(),
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "tick_index": plan.tick_index,
+                                        "request_id": selected_impulse_id.as_str(),
+                                        "status": "weekend_pause",
+                                        "alpha_tick_offsets_ms": alpha_policy.tick_offsets_ms.clone(),
+                                        "alpha_submit_proxy_max_age_ms": alpha_submit_proxy_max_age_ms,
+                                        "alpha_source": alpha_policy.source.as_str(),
+                                        "alpha_reason": alpha_policy.reason.as_deref()
+                                    }),
+                                );
+                            }
                             Err(e) => {
                                 warn!("Endgame enqueue failed: {}", e);
                             }
@@ -8759,8 +8825,12 @@ async fn main() -> Result<()> {
                                             )
                                             .await
                                             {
-                                                Ok(_) => {
+                                                Ok(ArbiterEnqueueResult::Sent)
+                                                | Ok(ArbiterEnqueueResult::Deduped) => {
                                                     sent = true;
+                                                    break;
+                                                }
+                                                Ok(ArbiterEnqueueResult::SkippedWeekendPause) => {
                                                     break;
                                                 }
                                                 Err(e) if retry == 0 => {
@@ -9361,7 +9431,9 @@ async fn main() -> Result<()> {
                                                         )
                                                         .await
                                                         {
-                                                            Ok(_) => break,
+                                                            Ok(ArbiterEnqueueResult::Sent)
+                                                            | Ok(ArbiterEnqueueResult::Deduped)
+                                                            | Ok(ArbiterEnqueueResult::SkippedWeekendPause) => break,
                                                             Err(e) if retry == 0 => {
                                                                 warn!(
                                                                     "EVcurve D1 chase enqueue retry err={}",
@@ -9954,7 +10026,9 @@ async fn main() -> Result<()> {
                                                     )
                                                     .await
                                                     {
-                                                        Ok(_) => break,
+                                                        Ok(ArbiterEnqueueResult::Sent)
+                                                        | Ok(ArbiterEnqueueResult::Deduped)
+                                                        | Ok(ArbiterEnqueueResult::SkippedWeekendPause) => break,
                                                         Err(e) if retry == 0 => {
                                                             warn!(
                                                                 "EVcurve phase3 enqueue retry err={}",
@@ -10927,8 +11001,12 @@ async fn main() -> Result<()> {
                                                         )
                                                         .await
                                                         {
-                                                            Ok(_) => {
+                                                            Ok(ArbiterEnqueueResult::Sent)
+                                                            | Ok(ArbiterEnqueueResult::Deduped) => {
                                                                 sent = true;
+                                                                break;
+                                                            }
+                                                            Ok(ArbiterEnqueueResult::SkippedWeekendPause) => {
                                                                 break;
                                                             }
                                                             Err(e) if retry == 0 => {
@@ -11410,7 +11488,8 @@ async fn main() -> Result<()> {
                                                 )
                                                 .await
                                                 {
-                                                    Ok(_) => {
+                                                    Ok(ArbiterEnqueueResult::Sent)
+                                                    | Ok(ArbiterEnqueueResult::Deduped) => {
                                                         working_price = Some(target_bid);
                                                         last_replace_ms = now_ms;
                                                         replaces_this_sec =
@@ -11420,6 +11499,11 @@ async fn main() -> Result<()> {
                                                         last_replace_target_cents =
                                                             Some(target_bid_cents);
                                                         last_replace_target_ms = now_ms;
+                                                        break;
+                                                    }
+                                                    Ok(
+                                                        ArbiterEnqueueResult::SkippedWeekendPause,
+                                                    ) => {
                                                         break;
                                                     }
                                                     Err(e) if retry == 0 => {
@@ -12542,6 +12626,7 @@ async fn main() -> Result<()> {
                             {
                                 Ok(ArbiterEnqueueResult::Sent)
                                 | Ok(ArbiterEnqueueResult::Deduped) => true,
+                                Ok(ArbiterEnqueueResult::SkippedWeekendPause) => false,
                                 Err(e) => {
                                     warn!(
                                         "SessionBand enqueue failed symbol={} tf={} period={} tau={} err={}",
@@ -13267,6 +13352,7 @@ async fn main() -> Result<()> {
                                 | Ok(ArbiterEnqueueResult::Deduped) => {
                                     sent = true;
                                 }
+                                Ok(ArbiterEnqueueResult::SkippedWeekendPause) => {}
                                 Err(e) => {
                                     warn!(
                                         "EVSnipe enqueue failed symbol={} leg={} err={}",
@@ -28013,6 +28099,21 @@ async fn main() -> Result<()> {
         let premarket_enqueue_timeout_ms_cfg = premarket_enqueue_timeout_ms();
         let premarket_enqueue_guard_ms_cfg = premarket_enqueue_guard_ms();
         while let Some(intent) = premarket_rx.recv().await {
+            if weekend_policy::should_pause_new_entries_now(STRATEGY_ID_PREMARKET_V1) {
+                log_event(
+                    "strategy_skip_weekend_pause",
+                    json!({
+                        "request_id": intent.decision_id,
+                        "strategy_id": STRATEGY_ID_PREMARKET_V1,
+                        "timeframe": intent.timeframe.as_str(),
+                        "entry_mode": EntryExecutionMode::Ladder.as_str(),
+                        "period_timestamp": intent.market_open_ts,
+                        "source": "premarket_intent",
+                        "policy": weekend_policy::weekend_policy_from_env().as_str()
+                    }),
+                );
+                continue;
+            }
             if !premarket_enabled_timeframes_for_premarket.contains(&intent.timeframe) {
                 log_event(
                     "premarket_skip_timeframe_disabled",
@@ -29741,6 +29842,22 @@ async fn enqueue_arbiter_request(
     source: &'static str,
 ) -> Result<ArbiterEnqueueResult> {
     let now_ms = chrono::Utc::now().timestamp_millis();
+    if weekend_policy::should_pause_new_entries_now(request.intent.strategy_id.as_str()) {
+        log_event(
+            "strategy_skip_weekend_pause",
+            json!({
+                "request_id": request.request_id,
+                "strategy_id": request.intent.strategy_id,
+                "timeframe": request_timeframe_label(&request),
+                "entry_mode": request.entry_mode.as_str(),
+                "period_timestamp": request.opportunity.period_timestamp,
+                "token_id": request.opportunity.token_id,
+                "source": source,
+                "policy": weekend_policy::weekend_policy_from_env().as_str()
+            }),
+        );
+        return Ok(ArbiterEnqueueResult::SkippedWeekendPause);
+    }
     let logical_key = logical_entry_key_from_request(&request);
     let rung_id = request_rung_id(&request);
     let shard_idx = enqueue_dedupe_shard_index(&logical_key, dedupe_shards.len());

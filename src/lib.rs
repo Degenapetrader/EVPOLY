@@ -36,6 +36,7 @@ pub mod symbol_ownership;
 pub mod tracking_db;
 pub mod trader;
 pub mod ui_contracts;
+pub mod weekend_policy;
 
 // Re-export commonly used types
 pub use api::PolymarketApi;

@@ -23,6 +23,7 @@ const SAMPLE_CONFIG: BotConfig = {
   eoa_wallet: "0xeoa",
   proxy_wallet: "0xproxy",
   sig_type: 1,
+  weekend_policy: "off",
   symbols: ["BTC"],
   strategies: {
     premarket: true,

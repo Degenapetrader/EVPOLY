@@ -556,6 +556,18 @@ select {
     letter-spacing: -0.03em;
   }
 
+  .strategy-rail__title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+  }
+
+  .strategy-rail__title-action {
+    min-width: 0;
+    white-space: nowrap;
+  }
+
   .strategy-rail__header {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto minmax(4.9rem, 5.3rem);

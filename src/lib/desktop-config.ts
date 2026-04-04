@@ -2,6 +2,7 @@ import type {
   BotConfig,
   PremarketLadderSafetyMode,
   StrategySettings,
+  WeekendPolicy,
 } from "./tauri-commands";
 
 export const CORE_SYMBOLS = ["BTC", "ETH", "SOL", "XRP"] as const;
@@ -101,6 +102,10 @@ function normalizePremarketLadderSafetyMode(
   if (normalized === "safe") return "safe";
   if (normalized === "aggressive") return "aggressive";
   return "normal";
+}
+
+function normalizeWeekendPolicy(value: string | undefined): WeekendPolicy {
+  return value?.trim().toLowerCase() === "pause" ? "pause" : "off";
 }
 
 function roundUpToCent(value: number) {
@@ -226,6 +231,7 @@ export const DEFAULT_CONFIG: BotConfig = {
   eoa_wallet: "",
   proxy_wallet: "",
   sig_type: 1,
+  weekend_policy: "off",
   symbols: ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"],
   strategies: {
     premarket: true,
@@ -273,6 +279,7 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
   return {
     ...DEFAULT_CONFIG,
     ...saved,
+    weekend_policy: normalizeWeekendPolicy(saved?.weekend_policy),
     strategies: {
       ...DEFAULT_CONFIG.strategies,
       ...saved?.strategies,

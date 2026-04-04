@@ -314,6 +314,8 @@ struct DesktopConfig {
     eoa_wallet: String,
     proxy_wallet: String,
     sig_type: u8,
+    #[serde(default = "default_weekend_policy")]
+    weekend_policy: String,
     symbols: Vec<String>,
     strategies: DesktopStrategies,
     sizing: DesktopSizing,
@@ -453,12 +455,24 @@ const PREMARKET_LADDER_MODE_ENV_KEY_5M: &str = "EVPOLY_PREMARKET_LADDER_MODE_5M"
 const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_5M";
 const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_M5";
 const PREMARKET_LADDER_MODE_ENV_KEY_SHARED: &str = "EVPOLY_PREMARKET_LADDER_MODE";
+const WEEKEND_POLICY_ENV_KEY: &str = "EVPOLY_WEEKEND_POLICY";
 const PREMARKET_LEGACY_LADDER_KEYS: [&str; 4] = [
     PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
     PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
     "EVPOLY_PREMARKET_FIXED_LADDER_PRICES",
     "EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS",
 ];
+
+fn normalize_weekend_policy(value: Option<&str>) -> String {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(raw) if raw.eq_ignore_ascii_case("pause") => "pause".to_string(),
+        _ => "off".to_string(),
+    }
+}
+
+fn default_weekend_policy() -> String {
+    normalize_weekend_policy(config_io::env_template_default_string(WEEKEND_POLICY_ENV_KEY).as_deref())
+}
 
 fn default_premarket_ladder_mode(env_key: &str) -> String {
     normalize_premarket_ladder_safety_mode(
@@ -568,6 +582,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
         eoa_wallet,
         proxy_wallet,
         sig_type,
+        weekend_policy: default_weekend_policy(),
         symbols: DESKTOP_SYMBOL_ORDER
             .iter()
             .map(|symbol| (*symbol).to_string())
@@ -1423,6 +1438,10 @@ fn desktop_config_to_profile_payload(
         "EVPOLY_STRATEGY_MM_SPORT_ENABLE".to_string(),
         bool_to_json(config.strategies.mm_sport),
     );
+    strategy.insert(
+        WEEKEND_POLICY_ENV_KEY.to_string(),
+        Value::String(normalize_weekend_policy(Some(config.weekend_policy.as_str()))),
+    );
     strategy.insert("POLY_ENABLE_ETH_TRADING".to_string(), bool_to_json(has_eth));
     strategy.insert(
         "POLY_ENABLE_SOLANA_TRADING".to_string(),
@@ -2002,6 +2021,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "eoa_wallet": profile.eoa_wallet_address.clone(),
         "proxy_wallet": profile.proxy_wallet_address.clone(),
         "sig_type": profile.signature_type,
+        "weekend_policy": normalize_weekend_policy(strategy.get(WEEKEND_POLICY_ENV_KEY).and_then(Value::as_str)),
         "symbols": symbols,
         "strategies": {
             "premarket": bool_from_object(&strategy, "EVPOLY_STRATEGY_PREMARKET_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_PREMARKET_ENABLE", true)),
@@ -4227,8 +4247,8 @@ mod tests {
         premarket_default_ladder_weights, premarket_ladder_prices_for_mode,
         remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
         PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
-        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
-        PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
+        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
+        WEEKEND_POLICY_ENV_KEY,
     };
     use crate::{config_io, profile_manager::Profile};
     use std::collections::HashMap;
@@ -4346,6 +4366,24 @@ mod tests {
         assert_eq!(
             strategy.get("EVPOLY_PREMARKET_TIMEFRAMES"),
             Some(&serde_json::json!("15m,1h"))
+        );
+    }
+
+    #[test]
+    fn desktop_profile_payload_writes_weekend_policy() {
+        let mut config = default_desktop_config(
+            "0x1111111111111111111111111111111111111111".to_string(),
+            "0x2222222222222222222222222222222222222222".to_string(),
+            1,
+        );
+        config.weekend_policy = "pause".to_string();
+
+        let (strategy, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        let strategy = strategy.as_object().expect("strategy object");
+
+        assert_eq!(
+            strategy.get(WEEKEND_POLICY_ENV_KEY),
+            Some(&serde_json::json!("pause"))
         );
     }
 

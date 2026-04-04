@@ -93,6 +93,9 @@ function strategyKeyFromRoute(strategySlug?: string): StrategyKey | null {
   );
 }
 
+const WEEKEND_PAUSE_TOOLTIP =
+  "Pause new entries from Saturday 00:00 UTC to Monday 00:00 UTC. Existing orders and positions still run normally.";
+
 export function Home() {
   const navigate = useNavigate();
   const { strategySlug } = useParams();
@@ -360,7 +363,26 @@ export function Home() {
 
   const renderStrategyList = () => (
     <div className="strategy-rail">
-      <div className="strategy-rail__title">Strategy List</div>
+      <div className="strategy-rail__title-row">
+        <div className="strategy-rail__title">Strategy List</div>
+        <button
+          type="button"
+          onClick={() =>
+            setConfig((current) => ({
+              ...current,
+              weekend_policy: current.weekend_policy === "pause" ? "off" : "pause",
+            }))
+          }
+          disabled={!canOperate}
+          className={`ui-button ui-button--compact strategy-rail__title-action ${
+            config.weekend_policy === "pause" ? "ui-button--accent" : ""
+          }`.trim()}
+          title={WEEKEND_PAUSE_TOOLTIP}
+          aria-pressed={config.weekend_policy === "pause"}
+        >
+          {config.weekend_policy === "pause" ? "Weekend Pause" : "Weekend Off"}
+        </button>
+      </div>
       <div className="strategy-rail__header" aria-hidden="true">
         <span>Strategy</span>
         <span>State</span>

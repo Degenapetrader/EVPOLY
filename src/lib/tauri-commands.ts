@@ -227,6 +227,7 @@ export interface SetupDoctorResult {
 }
 
 export type PremarketLadderSafetyMode = "normal" | "safe" | "aggressive";
+export type WeekendPolicy = "off" | "pause";
 
 export interface PremarketSettings {
   tp_enabled: boolean;
@@ -349,6 +350,7 @@ export interface BotConfig {
   eoa_wallet: string;
   proxy_wallet: string;
   sig_type: number;
+  weekend_policy: WeekendPolicy;
   symbols: string[];
   strategies: {
     premarket: boolean;

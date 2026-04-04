@@ -10,6 +10,7 @@ import {
   strategySizeLabel,
   strategySizeValue,
   strategySummary,
+  strategyTimeframeOptions,
   strategySupportsSymbols,
   symbolSetForStrategy,
   updateStrategyCap,
@@ -53,8 +54,15 @@ function timeframeLabel(value: string) {
   return value.toUpperCase();
 }
 
-function toggleString(list: string[], value: string) {
-  return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
+function toggleTimeframeSelection(
+  list: string[],
+  value: string,
+  options: readonly string[]
+) {
+  if (list.includes(value)) {
+    return list.length > 1 ? list.filter((item) => item !== value) : list;
+  }
+  return options.filter((item) => list.includes(item) || item === value);
 }
 
 function sizePreview(baseSize: number, symbolMultiplier: number, timeframeMultiplier = 1) {
@@ -409,6 +417,43 @@ export function StrategyEditorPane({
     );
   };
 
+  const renderTimeframeChoiceCard = (
+    title: string,
+    subtitle: string,
+    options: readonly string[],
+    selected: string[],
+    onChange: (next: string[]) => void
+  ) => (
+    <div className="surface-panel xl:col-span-2">
+      <div className="surface-panel__header">
+        <div className="surface-panel__copy">
+          <h2 className="surface-panel__title">{title}</h2>
+          <p className="surface-panel__subtitle">{subtitle}</p>
+        </div>
+      </div>
+      <div className="surface-panel__body">
+        <div className="flex flex-wrap gap-2">
+          {options.map((timeframe) => {
+            const active = selected.includes(timeframe);
+            return (
+              <button
+                key={timeframe}
+                type="button"
+                disabled={!canEdit}
+                onClick={() =>
+                  onChange(toggleTimeframeSelection(selected, timeframe, options))
+                }
+                className={`mode-choice ${active ? "mode-choice--active" : ""}`.trim()}
+              >
+                {timeframeLabel(timeframe)}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
   const renderSymbolMultiplierCard = (title = "Symbol multipliers") => (
     <div className="surface-panel">
       <div className="surface-panel__header">
@@ -555,6 +600,13 @@ export function StrategyEditorPane({
 
         {selectedStrategy === "premarket" ? (
           <>
+            {renderTimeframeChoiceCard(
+              "Timeframes",
+              "Choose which Premarket windows are allowed to open new entries.",
+              strategyTimeframeOptions("premarket"),
+              config.strategy_settings.premarket.timeframes,
+              (next) => patchPremarket({ timeframes: next })
+            )}
             <div className="surface-panel xl:col-span-2">
               <div className="surface-panel__header">
                 <div className="surface-panel__copy">
@@ -685,122 +737,149 @@ export function StrategyEditorPane({
         ) : null}
 
         {selectedStrategy === "endgame" ? (
-          <div className="surface-panel">
-            <div className="surface-panel__header">
-              <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Period Controls</h2>
-                <p className="surface-panel__subtitle">
-                  Limit how much Endgame can deploy in each event period.
-                </p>
+          <>
+            {renderTimeframeChoiceCard(
+              "Timeframes",
+              "Choose which Endgame windows can sweep.",
+              strategyTimeframeOptions("endgame"),
+              config.strategy_settings.endgame.timeframes,
+              (next) => patchEndgame({ timeframes: next })
+            )}
+            <div className="surface-panel">
+              <div className="surface-panel__header">
+                <div className="surface-panel__copy">
+                  <h2 className="surface-panel__title">Period Controls</h2>
+                  <p className="surface-panel__subtitle">
+                    Limit how much Endgame can deploy in each event period.
+                  </p>
+                </div>
+              </div>
+              <div className="surface-panel__body">
+                <label className="field-label">Per-Period Cap (USD)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={config.strategy_settings.endgame.per_period_cap_usd}
+                  disabled={!canEdit}
+                  onChange={(event) =>
+                    patchEndgame({
+                      per_period_cap_usd: parseNonNegative(
+                        event.target.value,
+                        config.strategy_settings.endgame.per_period_cap_usd
+                      ),
+                    })
+                  }
+                  className="field-input"
+                />
               </div>
             </div>
-            <div className="surface-panel__body">
-              <label className="field-label">Per-Period Cap (USD)</label>
-              <input
-                type="number"
-                min="0"
-                step="1"
-                value={config.strategy_settings.endgame.per_period_cap_usd}
-                disabled={!canEdit}
-                onChange={(event) =>
-                  patchEndgame({
-                    per_period_cap_usd: parseNonNegative(
-                      event.target.value,
-                      config.strategy_settings.endgame.per_period_cap_usd
-                    ),
-                  })
-                }
-                className="field-input"
-              />
-            </div>
-          </div>
+          </>
         ) : null}
 
         {selectedStrategy === "evcurve" ? (
-          <div className="surface-panel">
-            <div className="surface-panel__header">
-              <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Entry Filters</h2>
-                <p className="surface-panel__subtitle">
-                  Tune the flip probability ceiling and the minimum buy price gate.
-                </p>
+          <>
+            {renderTimeframeChoiceCard(
+              "Timeframes",
+              "Enable or disable the EVCurve legs you want active.",
+              strategyTimeframeOptions("evcurve"),
+              config.strategy_settings.evcurve.timeframes,
+              (next) => patchEVCurve({ timeframes: next })
+            )}
+            <div className="surface-panel">
+              <div className="surface-panel__header">
+                <div className="surface-panel__copy">
+                  <h2 className="surface-panel__title">Entry Filters</h2>
+                  <p className="surface-panel__subtitle">
+                    Tune the flip probability ceiling and the minimum buy price gate.
+                  </p>
+                </div>
+              </div>
+              <div className="surface-panel__body grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="field-label">Max Flip Probability</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={config.strategy_settings.evcurve.max_flip_prob}
+                    disabled={!canEdit}
+                    onChange={(event) =>
+                      patchEVCurve({
+                        max_flip_prob: parseNonNegative(
+                          event.target.value,
+                          config.strategy_settings.evcurve.max_flip_prob
+                        ),
+                      })
+                    }
+                    className="field-input"
+                  />
+                </div>
+                <div>
+                  <label className="field-label">Min Buy Price</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={config.strategy_settings.evcurve.min_buy_price}
+                    disabled={!canEdit}
+                    onChange={(event) =>
+                      patchEVCurve({
+                        min_buy_price: parseNonNegative(
+                          event.target.value,
+                          config.strategy_settings.evcurve.min_buy_price
+                        ),
+                      })
+                    }
+                    className="field-input"
+                  />
+                </div>
               </div>
             </div>
-            <div className="surface-panel__body grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="field-label">Max Flip Probability</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={config.strategy_settings.evcurve.max_flip_prob}
-                  disabled={!canEdit}
-                  onChange={(event) =>
-                    patchEVCurve({
-                      max_flip_prob: parseNonNegative(
-                        event.target.value,
-                        config.strategy_settings.evcurve.max_flip_prob
-                      ),
-                    })
-                  }
-                  className="field-input"
-                />
-              </div>
-              <div>
-                <label className="field-label">Min Buy Price</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={config.strategy_settings.evcurve.min_buy_price}
-                  disabled={!canEdit}
-                  onChange={(event) =>
-                    patchEVCurve({
-                      min_buy_price: parseNonNegative(
-                        event.target.value,
-                        config.strategy_settings.evcurve.min_buy_price
-                      ),
-                    })
-                  }
-                  className="field-input"
-                />
-              </div>
-            </div>
-          </div>
+          </>
         ) : null}
 
         {selectedStrategy === "session_band" ? (
-          <div className="surface-panel">
-            <div className="surface-panel__header">
-              <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Band Threshold</h2>
-                <p className="surface-panel__subtitle">
-                  Control how far the lead price must flip before SessionBand acts.
-                </p>
+          <>
+            {renderTimeframeChoiceCard(
+              "Timeframes",
+              "Choose which SessionBand windows can trade.",
+              strategyTimeframeOptions("session_band"),
+              config.strategy_settings.session_band.timeframes,
+              (next) => patchSessionBand({ timeframes: next })
+            )}
+            <div className="surface-panel">
+              <div className="surface-panel__header">
+                <div className="surface-panel__copy">
+                  <h2 className="surface-panel__title">Band Threshold</h2>
+                  <p className="surface-panel__subtitle">
+                    Control how far the lead price must flip before SessionBand acts.
+                  </p>
+                </div>
+              </div>
+              <div className="surface-panel__body">
+                <label className="field-label">Flip Threshold %</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.1"
+                  value={config.strategy_settings.session_band.flip_threshold_pct}
+                  disabled={!canEdit}
+                  onChange={(event) =>
+                    patchSessionBand({
+                      flip_threshold_pct: parseNonNegative(
+                        event.target.value,
+                        config.strategy_settings.session_band.flip_threshold_pct
+                      ),
+                    })
+                  }
+                  className="field-input"
+                />
               </div>
             </div>
-            <div className="surface-panel__body">
-              <label className="field-label">Flip Threshold %</label>
-              <input
-                type="number"
-                min="0"
-                step="0.1"
-                value={config.strategy_settings.session_band.flip_threshold_pct}
-                disabled={!canEdit}
-                onChange={(event) =>
-                  patchSessionBand({
-                    flip_threshold_pct: parseNonNegative(
-                      event.target.value,
-                      config.strategy_settings.session_band.flip_threshold_pct
-                    ),
-                  })
-                }
-                className="field-input"
-              />
-            </div>
-          </div>
+          </>
         ) : null}
       </div>
     );
@@ -865,74 +944,43 @@ export function StrategyEditorPane({
       return (
         <div className="space-y-4">
           {renderSymbolMultiplierCard()}
-          <div className="grid gap-4 xl:grid-cols-2">
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Timeframes</h2>
-                  <p className="surface-panel__subtitle">Choose the Endgame windows that can sweep.</p>
-                </div>
-              </div>
-              <div className="surface-panel__body">
-                <div className="flex flex-wrap gap-2">
-                  {["5m", "15m", "1h", "4h"].map((timeframe) => {
-                    const active = endgame.timeframes.includes(timeframe);
-                    return (
-                      <button
-                        key={timeframe}
-                        type="button"
-                        disabled={!canEdit}
-                        onClick={() =>
-                          patchEndgame({ timeframes: toggleString(endgame.timeframes, timeframe) })
-                        }
-                        className={`mode-choice ${active ? "mode-choice--active" : ""}`.trim()}
-                      >
-                        {timeframeLabel(timeframe)}
-                      </button>
-                    );
-                  })}
-                </div>
+          <div className="surface-panel">
+            <div className="surface-panel__header">
+              <div className="surface-panel__copy">
+                <h2 className="surface-panel__title">Tick Split</h2>
+                <p className="surface-panel__subtitle">
+                  Split the base size across Tick 0, Tick 1, and Tick 2.
+                </p>
               </div>
             </div>
-
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Tick Split</h2>
-                  <p className="surface-panel__subtitle">
-                    Split the base size across Tick 0, Tick 1, and Tick 2.
-                  </p>
+            <div className="surface-panel__body space-y-4">
+              {([
+                ["tick0_multiplier", "Tick 0"],
+                ["tick1_multiplier", "Tick 1"],
+                ["tick2_multiplier", "Tick 2"],
+              ] as const).map(([key, label]) => (
+                <div key={key}>
+                  <label className="field-label">{label}</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.05"
+                    value={endgame[key]}
+                    disabled={!canEdit}
+                    onChange={(event) =>
+                      patchEndgame({
+                        [key]: parseNonNegative(event.target.value, endgame[key]),
+                      } as Partial<BotConfig["strategy_settings"]["endgame"]>)
+                    }
+                    className="field-input"
+                  />
                 </div>
-              </div>
-              <div className="surface-panel__body space-y-4">
-                {([
-                  ["tick0_multiplier", "Tick 0"],
-                  ["tick1_multiplier", "Tick 1"],
-                  ["tick2_multiplier", "Tick 2"],
-                ] as const).map(([key, label]) => (
-                  <div key={key}>
-                    <label className="field-label">{label}</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.05"
-                      value={endgame[key]}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchEndgame({
-                          [key]: parseNonNegative(event.target.value, endgame[key]),
-                        } as Partial<BotConfig["strategy_settings"]["endgame"]>)
-                      }
-                      className="field-input"
-                    />
-                  </div>
-                ))}
-                <div className="metric-detail">
-                  Current total: {(total * 100).toFixed(0)}% | Rail tooltip:{" "}
-                  {`${Math.round(endgame.tick0_multiplier * 100)} / ${Math.round(
-                    endgame.tick1_multiplier * 100
-                  )} / ${Math.round(endgame.tick2_multiplier * 100)}`}
-                </div>
+              ))}
+              <div className="metric-detail">
+                Current total: {(total * 100).toFixed(0)}% | Rail tooltip:{" "}
+                {`${Math.round(endgame.tick0_multiplier * 100)} / ${Math.round(
+                  endgame.tick1_multiplier * 100
+                )} / ${Math.round(endgame.tick2_multiplier * 100)}`}
               </div>
             </div>
           </div>
@@ -944,50 +992,25 @@ export function StrategyEditorPane({
       const evcurve = config.strategy_settings.evcurve;
       return (
         <div className="space-y-4">
-          <div className="grid gap-4 xl:grid-cols-2">
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Timeframes</h2>
-                  <p className="surface-panel__subtitle">Enable or disable the EVCurve legs you want active.</p>
-                </div>
-              </div>
-              <div className="surface-panel__body space-y-4">
-                <div className="flex flex-wrap gap-2">
-                  {["15m", "1h", "4h", "1d"].map((timeframe) => {
-                    const active = evcurve.timeframes.includes(timeframe);
-                    return (
-                      <button
-                        key={timeframe}
-                        type="button"
-                        disabled={!canEdit}
-                        onClick={() =>
-                          patchEVCurve({ timeframes: toggleString(evcurve.timeframes, timeframe) })
-                        }
-                        className={`mode-choice ${active ? "mode-choice--active" : ""}`.trim()}
-                      >
-                        {timeframeLabel(timeframe)}
-                      </button>
-                    );
-                  })}
-                </div>
-                <div>
-                  <label className="field-label">1D Enabled</label>
-                  {renderBooleanChoice(evcurve.d1_enabled, (next) => patchEVCurve({ d1_enabled: next }), !canEdit)}
-                </div>
+          <div className="surface-panel">
+            <div className="surface-panel__header">
+              <div className="surface-panel__copy">
+                <h2 className="surface-panel__title">Sizing Model</h2>
+                <p className="surface-panel__subtitle">
+                  Daily size is derived from the shared symbol multiplier and the EVCurve timeframe multiplier.
+                </p>
               </div>
             </div>
-
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Sizing Model</h2>
-                  <p className="surface-panel__subtitle">
-                    Daily size is derived from the shared symbol multiplier and the EVCurve timeframe multiplier.
-                  </p>
-                </div>
+            <div className="surface-panel__body space-y-4">
+              <div>
+                <label className="field-label">1D Enabled</label>
+                {renderBooleanChoice(
+                  evcurve.d1_enabled,
+                  (next) => patchEVCurve({ d1_enabled: next }),
+                  !canEdit
+                )}
               </div>
-              <div className="surface-panel__body">
+              <div>
                 <div className="metric-label">Formula</div>
                 <div className="metric-value">Base Size x Symbol Multiplier x Timeframe Multiplier</div>
                 <div className="metric-detail">
@@ -1007,103 +1030,70 @@ export function StrategyEditorPane({
       const sessionBand = config.strategy_settings.session_band;
       return (
         <div className="space-y-4">
-          <div className="grid gap-4 xl:grid-cols-2">
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Timeframes</h2>
-                  <p className="surface-panel__subtitle">Choose which SessionBand windows can trade, including 5m.</p>
-                </div>
-              </div>
-              <div className="surface-panel__body">
-                <div className="flex flex-wrap gap-2">
-                  {["5m", "15m", "1h", "4h"].map((timeframe) => {
-                    const active = sessionBand.timeframes.includes(timeframe);
-                    return (
-                      <button
-                        key={timeframe}
-                        type="button"
-                        disabled={!canEdit}
-                        onClick={() =>
-                          patchSessionBand({
-                            timeframes: toggleString(sessionBand.timeframes, timeframe),
-                          })
-                        }
-                        className={`mode-choice ${active ? "mode-choice--active" : ""}`.trim()}
-                      >
-                        {timeframeLabel(timeframe)}
-                      </button>
-                    );
-                  })}
-                </div>
+          <div className="surface-panel">
+            <div className="surface-panel__header">
+              <div className="surface-panel__copy">
+                <h2 className="surface-panel__title">Tau Windows</h2>
+                <p className="surface-panel__subtitle">Control which late windows can trigger and how heavily they size.</p>
               </div>
             </div>
-
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Tau Windows</h2>
-                  <p className="surface-panel__subtitle">Control which late windows can trigger and how heavily they size.</p>
+            <div className="surface-panel__body space-y-4">
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="field-label">T-2</label>
+                  {renderBooleanChoice(
+                    sessionBand.tau2_enabled,
+                    (next) => patchSessionBand({ tau2_enabled: next }),
+                    !canEdit
+                  )}
+                </div>
+                <div>
+                  <label className="field-label">T-2 Multiplier</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.05"
+                    value={sessionBand.tau2_multiplier}
+                    disabled={!canEdit}
+                    onChange={(event) =>
+                      patchSessionBand({
+                        tau2_multiplier: parseNonNegative(
+                          event.target.value,
+                          sessionBand.tau2_multiplier
+                        ),
+                      })
+                    }
+                    className="field-input"
+                  />
                 </div>
               </div>
-              <div className="surface-panel__body space-y-4">
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="field-label">T-2</label>
-                    {renderBooleanChoice(
-                      sessionBand.tau2_enabled,
-                      (next) => patchSessionBand({ tau2_enabled: next }),
-                      !canEdit
-                    )}
-                  </div>
-                  <div>
-                    <label className="field-label">T-2 multiplier</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.05"
-                      value={sessionBand.tau2_multiplier}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchSessionBand({
-                          tau2_multiplier: parseNonNegative(
-                            event.target.value,
-                            sessionBand.tau2_multiplier
-                          ),
-                        })
-                      }
-                      className="field-input"
-                    />
-                  </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="field-label">T-1</label>
+                  {renderBooleanChoice(
+                    sessionBand.tau1_enabled,
+                    (next) => patchSessionBand({ tau1_enabled: next }),
+                    !canEdit
+                  )}
                 </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="field-label">T-1</label>
-                    {renderBooleanChoice(
-                      sessionBand.tau1_enabled,
-                      (next) => patchSessionBand({ tau1_enabled: next }),
-                      !canEdit
-                    )}
-                  </div>
-                  <div>
-                    <label className="field-label">T-1 multiplier</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.05"
-                      value={sessionBand.tau1_multiplier}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchSessionBand({
-                          tau1_multiplier: parseNonNegative(
-                            event.target.value,
-                            sessionBand.tau1_multiplier
-                          ),
-                        })
-                      }
-                      className="field-input"
-                    />
-                  </div>
+                <div>
+                  <label className="field-label">T-1 Multiplier</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.05"
+                    value={sessionBand.tau1_multiplier}
+                    disabled={!canEdit}
+                    onChange={(event) =>
+                      patchSessionBand({
+                        tau1_multiplier: parseNonNegative(
+                          event.target.value,
+                          sessionBand.tau1_multiplier
+                        ),
+                      })
+                    }
+                    className="field-input"
+                  />
                 </div>
               </div>
             </div>

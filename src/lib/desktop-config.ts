@@ -58,6 +58,7 @@ type StrategyMeta = (typeof STRATEGIES)[number];
 type Timeframe = "5m" | "15m" | "1h" | "4h" | "1d";
 
 const ALL_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h", "1d"] as const;
+const PREMARKET_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h"] as const;
 const SESSIONBAND_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h"] as const;
 
 function normalizeMMRewardsMarketMode(value: string | undefined) {
@@ -133,6 +134,7 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
   premarket: {
     tp_enabled: true,
     active_cap_per_asset: 100,
+    timeframes: ["5m", "15m", "1h", "4h"],
     entry_ladder_mode_5m: "normal",
     entry_ladder_mode_non_m5: "normal",
     cancel_after_open_sec: {
@@ -309,6 +311,10 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
       premarket: {
         ...DEFAULT_CONFIG.strategy_settings.premarket,
         ...saved?.strategy_settings?.premarket,
+        timeframes:
+          saved?.strategy_settings?.premarket?.timeframes?.length
+            ? saved.strategy_settings.premarket.timeframes
+            : DEFAULT_CONFIG.strategy_settings.premarket.timeframes,
         entry_ladder_mode_5m: normalizePremarketLadderSafetyMode(
           saved?.strategy_settings?.premarket?.entry_ladder_mode_5m
         ),
@@ -684,6 +690,8 @@ export function formatEndgameSplitTooltip(config: BotConfig): string {
 
 export function strategyTimeframeOptions(strategy: StrategyKey): readonly Timeframe[] {
   switch (strategy) {
+    case "premarket":
+      return PREMARKET_TIMEFRAMES;
     case "session_band":
       return SESSIONBAND_TIMEFRAMES;
     case "evcurve":

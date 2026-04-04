@@ -79,6 +79,7 @@ const SAMPLE_CONFIG: BotConfig = {
     premarket: {
       tp_enabled: true,
       active_cap_per_asset: 100,
+      timeframes: ["5m", "15m", "1h", "4h"],
       entry_ladder_mode_5m: "normal",
       entry_ladder_mode_non_m5: "normal",
       cancel_after_open_sec: {

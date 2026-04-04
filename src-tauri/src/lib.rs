@@ -169,6 +169,8 @@ struct DesktopPremarketCancelAfterOpen {
 struct DesktopPremarketSettings {
     tp_enabled: bool,
     active_cap_per_asset: f64,
+    #[serde(default = "default_premarket_timeframes")]
+    timeframes: Vec<String>,
     #[serde(default = "default_premarket_ladder_mode_5m")]
     entry_ladder_mode_5m: String,
     #[serde(default = "default_premarket_ladder_mode_non_m5")]
@@ -468,6 +470,13 @@ fn default_premarket_ladder_mode_5m() -> String {
     default_premarket_ladder_mode(PREMARKET_LADDER_MODE_ENV_KEY_5M)
 }
 
+fn default_premarket_timeframes() -> Vec<String> {
+    csv_list(
+        config_io::env_template_default_string("EVPOLY_PREMARKET_TIMEFRAMES"),
+        &["5m", "15m", "1h", "4h"],
+    )
+}
+
 fn default_premarket_ladder_mode_non_m5() -> String {
     default_premarket_ladder_mode(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
 }
@@ -678,6 +687,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET",
                     100.0,
                 ),
+                timeframes: default_premarket_timeframes(),
                 entry_ladder_mode_5m: default_premarket_ladder_mode_5m(),
                 entry_ladder_mode_non_m5: default_premarket_ladder_mode_non_m5(),
                 cancel_after_open_sec: DesktopPremarketCancelAfterOpen {
@@ -1452,6 +1462,10 @@ fn desktop_config_to_profile_payload(
         number_to_json(config.strategy_settings.premarket.active_cap_per_asset),
     );
     strategy.insert(
+        "EVPOLY_PREMARKET_TIMEFRAMES".to_string(),
+        Value::String(config.strategy_settings.premarket.timeframes.join(",")),
+    );
+    strategy.insert(
         PREMARKET_LADDER_MODE_ENV_KEY_5M.to_string(),
         Value::String(normalize_premarket_ladder_safety_mode(Some(
             config
@@ -2048,6 +2062,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
             "premarket": {
                 "tp_enabled": bool_from_object(&strategy, "EVPOLY_PREMARKET_TP_ENABLE", config_io::env_template_default_bool("EVPOLY_PREMARKET_TP_ENABLE", true)),
                 "active_cap_per_asset": f64_from_object(&strategy, "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET", config_io::env_template_default_f64("EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET", 100.0)),
+                "timeframes": csv_from_object(&strategy, "EVPOLY_PREMARKET_TIMEFRAMES", &["5m", "15m", "1h", "4h"]),
                 "entry_ladder_mode_5m": infer_premarket_ladder_mode_5m(&strategy),
                 "entry_ladder_mode_non_m5": infer_premarket_ladder_mode_non_m5(&strategy),
                 "cancel_after_open_sec": {
@@ -4313,6 +4328,7 @@ mod tests {
             "0x2222222222222222222222222222222222222222".to_string(),
             1,
         );
+        config.strategy_settings.premarket.timeframes = vec!["15m".to_string(), "1h".to_string()];
         config.strategy_settings.premarket.entry_ladder_mode_5m = "safe".to_string();
         config.strategy_settings.premarket.entry_ladder_mode_non_m5 = "aggressive".to_string();
 
@@ -4326,6 +4342,10 @@ mod tests {
         assert_eq!(
             strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5),
             Some(&serde_json::json!("aggressive"))
+        );
+        assert_eq!(
+            strategy.get("EVPOLY_PREMARKET_TIMEFRAMES"),
+            Some(&serde_json::json!("15m,1h"))
         );
     }
 

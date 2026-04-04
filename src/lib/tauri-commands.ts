@@ -231,6 +231,7 @@ export type PremarketLadderSafetyMode = "normal" | "safe" | "aggressive";
 export interface PremarketSettings {
   tp_enabled: boolean;
   active_cap_per_asset: number;
+  timeframes: string[];
   entry_ladder_mode_5m: PremarketLadderSafetyMode;
   entry_ladder_mode_non_m5: PremarketLadderSafetyMode;
   cancel_after_open_sec: {

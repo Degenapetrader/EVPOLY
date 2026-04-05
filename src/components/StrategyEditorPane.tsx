@@ -1486,11 +1486,11 @@ export function StrategyEditorPane({
                       className="field-input"
                     />
                     <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Use a decimal ratio, so 0.05 means 5% of visible top-of-book depth.
+                      Use a decimal ratio, so 0.05 means 5% of visible bid depth across the passive quote band.
                     </p>
                   </div>
                   <div>
-                    <label className="field-label">Min Top Depth (USD)</label>
+                    <label className="field-label">Min Visible Depth (USD)</label>
                     <input
                       type="number"
                       min="0"
@@ -1508,7 +1508,7 @@ export function StrategyEditorPane({
                       className="field-input"
                     />
                     <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Depth Ratio mode stays out when the visible top depth is too thin.
+                      Depth Ratio mode stays out when combined visible bid depth across the passive band is too thin.
                     </p>
                   </div>
                 </div>

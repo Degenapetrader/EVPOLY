@@ -7,8 +7,6 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
-#[cfg(not(target_os = "windows"))]
-use std::ffi::OsString;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -659,7 +657,7 @@ fn process_name_matches(process_name: &str, image_names: &[&str]) -> bool {
 #[cfg(not(target_os = "windows"))]
 fn unix_process_matches(
     process_name: &str,
-    command_line: &[OsString],
+    command_line: &[String],
     image_names: &[&str],
     command_marker: &str,
 ) -> bool {
@@ -679,7 +677,7 @@ fn unix_matching_bot_pids(
         .processes()
         .iter()
         .filter_map(|(pid, process)| {
-            let process_name = process.name().to_string_lossy();
+            let process_name = process.name().to_string();
             unix_process_matches(&process_name, process.cmd(), image_names, command_marker)
                 .then_some(*pid)
         })
@@ -694,7 +692,7 @@ fn unix_processes_running(image_names: &[&str], command_marker: &str) -> Option<
 
 #[cfg(not(target_os = "windows"))]
 fn unix_stop_processes(image_names: &[&str], command_marker: &str) -> bool {
-    let mut system = System::new_all();
+    let system = System::new_all();
     let pids = unix_matching_bot_pids(&system, image_names, command_marker);
     let mut stopped = false;
 

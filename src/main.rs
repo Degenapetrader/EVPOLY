@@ -1227,6 +1227,20 @@ fn mm_sport_tick_price_precision(tick_size: f64) -> usize {
     6
 }
 
+fn mm_sport_one_tick(tick_size: f64) -> f64 {
+    tick_size.max(0.000_001)
+}
+
+fn mm_sport_passive_entry_price(best_bid: f64, tick_size: f64) -> f64 {
+    let tick = mm_sport_one_tick(tick_size);
+    (best_bid - tick).clamp(tick, 1.0 - tick)
+}
+
+fn mm_sport_passive_exit_price(best_ask: f64, tick_size: f64) -> f64 {
+    let tick = mm_sport_one_tick(tick_size);
+    (best_ask + tick).clamp(tick, 1.0 - tick)
+}
+
 fn mm_sport_price_close(a: f64, b: f64, tick_size: f64) -> bool {
     let eps = (tick_size.max(0.000001) * 0.25).max(1e-9);
     (a - b).abs() <= eps
@@ -1241,7 +1255,7 @@ fn mm_sport_size_shares_from_pending(row: &PendingOrderRecord) -> Option<f64> {
     (shares.is_finite() && shares > 0.0).then_some(shares)
 }
 
-const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 20_000.0;
+const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 2_000.0;
 const MM_SPORT_LOW_DEPTH_QUOTE_SIZE_MULT: f64 = 1.2;
 const MM_SPORT_FORCE_EXIT_WINDOW_MS: i64 = 30 * 60 * 1_000;
 const MM_SPORT_EXIT_FALLBACK_REFRESH_MS: i64 = 60_000;
@@ -1310,6 +1324,7 @@ fn mm_sport_exit_order_plan(
     game_start_ts_ms: i64,
     best_bid: f64,
     best_ask: f64,
+    tick_size: f64,
     second_best_bid: Option<f64>,
 ) -> MmSportExitOrderPlan {
     if exit_mode == mm::MmSportExitMode::Aggressive {
@@ -1328,7 +1343,9 @@ fn mm_sport_exit_order_plan(
         None
     };
     MmSportExitOrderPlan {
-        submit_exit_price: force_exit_price.unwrap_or(best_ask).max(0.000_001),
+        submit_exit_price: force_exit_price
+            .unwrap_or_else(|| mm_sport_passive_exit_price(best_ask, tick_size))
+            .max(0.000_001),
         submit_post_only: !force_exit_mode,
         force_exit_mode,
         aggressive_mode: false,
@@ -16410,6 +16427,7 @@ async fn main() -> Result<()> {
                                     market.game_start_ts_ms,
                                     best_bid,
                                     best_ask,
+                                    market.minimum_tick_size,
                                     second_best_bid,
                                 );
                                 if exit_order_plan.force_exit_mode {
@@ -16901,8 +16919,10 @@ async fn main() -> Result<()> {
                                 break;
                             }
                             let desired_bid_shares = target_bid_shares.max(0.0);
+                            let submit_bid_price =
+                                mm_sport_passive_entry_price(best_bid, market.minimum_tick_size);
                             let exchange_min_shares = (market.minimum_order_size_usd.max(1.0)
-                                / best_bid.max(0.000_001))
+                                / submit_bid_price.max(0.000_001))
                             .max(1.0);
                             let reward_min_shares = if mm_sport_cfg_for_loop.require_reward_eligible
                             {
@@ -16933,12 +16953,13 @@ async fn main() -> Result<()> {
                                         "min_quote_shares": min_quote_shares,
                                         "exchange_min_shares": exchange_min_shares,
                                         "reward_min_shares": reward_min_shares,
-                                        "best_bid": best_bid
+                                        "best_bid": best_bid,
+                                        "submit_bid_price": submit_bid_price
                                     }),
                                 );
                                 continue;
                             }
-                            let desired_bid_usd = desired_bid_shares * best_bid;
+                            let desired_bid_usd = desired_bid_shares * submit_bid_price;
 
                             let mut keep_buy_id: Option<String> = None;
                             let mut buy_cancel_rows = Vec::new();
@@ -16952,7 +16973,7 @@ async fn main() -> Result<()> {
                                     && !row_expired
                                     && mm_sport_order_matches_target(
                                         row,
-                                        best_bid,
+                                        submit_bid_price,
                                         desired_bid_usd,
                                         market.minimum_tick_size,
                                         mm_sport_cfg_for_loop.size_requote_delta_pct,
@@ -17017,7 +17038,7 @@ async fn main() -> Result<()> {
                                     market,
                                     token_id,
                                     "BUY",
-                                    best_bid,
+                                    submit_bid_price,
                                     desired_bid_shares,
                                     expiration_ts,
                                     now_ms_local,
@@ -17111,7 +17132,8 @@ async fn main() -> Result<()> {
                                                 "strategy_id": STRATEGY_ID_MM_SPORT_V1,
                                                 "condition_id": market.condition_id,
                                                 "token_id": token_id,
-                                                "price": best_bid,
+                                                "best_bid": best_bid,
+                                                "price": submit_bid_price,
                                                 "size_shares": desired_bid_shares,
                                                 "error": err_text
                                             }),
@@ -35166,6 +35188,7 @@ mod tests {
             game_start_ts_ms,
             0.47,
             0.52,
+            0.01,
             Some(0.46),
         );
         assert_eq!(
@@ -35189,6 +35212,7 @@ mod tests {
             game_start_ts_ms,
             0.47,
             0.52,
+            0.01,
             Some(0.46),
         );
         assert_eq!(
@@ -35199,6 +35223,38 @@ mod tests {
                 force_exit_mode: true,
                 aggressive_mode: false,
                 target_level: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn mm_sport_passive_prices_move_one_market_tick() {
+        assert!((mm_sport_passive_entry_price(0.60, 0.01) - 0.59).abs() < 1e-9);
+        assert!((mm_sport_passive_exit_price(0.61, 0.01) - 0.62).abs() < 1e-9);
+        assert!((mm_sport_passive_entry_price(0.5455, 0.0001) - 0.5454).abs() < 1e-9);
+        assert!((mm_sport_passive_exit_price(0.5455, 0.0001) - 0.5456).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mm_sport_exit_order_plan_normal_uses_offset_best_ask() {
+        let game_start_ts_ms = 2_000_000_000_000_i64;
+        let plan = mm_sport_exit_order_plan(
+            mm::MmSportExitMode::Normal,
+            game_start_ts_ms - 3_600_001,
+            game_start_ts_ms,
+            0.47,
+            0.52,
+            0.01,
+            Some(0.46),
+        );
+        assert_eq!(
+            plan,
+            MmSportExitOrderPlan {
+                submit_exit_price: 0.53,
+                submit_post_only: true,
+                force_exit_mode: false,
+                aggressive_mode: false,
+                target_level: 1,
             }
         );
     }

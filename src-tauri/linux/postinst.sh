@@ -271,11 +271,30 @@ configure_user_shortcuts() {
 
   user_runtime_dir="/run/user/$user_uid"
   if [ -d "$user_runtime_dir" ] && command -v runuser >/dev/null 2>&1; then
+    desktop_entry_checksum="$(sha256sum "$desktop_entry" | awk '{print $1}')"
+    runuser -u "$user_name" -- env \
+      DISPLAY=:0 \
+      XDG_RUNTIME_DIR="$user_runtime_dir" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_dir/bus" \
+      gio set -t string "$desktop_entry" metadata::xfce-exe-checksum "$desktop_entry_checksum" >/dev/null 2>&1 || true
+
+    runuser -u "$user_name" -- env \
+      DISPLAY=:0 \
+      XDG_RUNTIME_DIR="$user_runtime_dir" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_dir/bus" \
+      gio set -t string "$desktop_entry" metadata::trusted "true" >/dev/null 2>&1 || true
+
     runuser -u "$user_name" -- env \
       DISPLAY=:0 \
       XDG_RUNTIME_DIR="$user_runtime_dir" \
       DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_dir/bus" \
       xfce4-panel -r >/dev/null 2>&1 || true
+
+    runuser -u "$user_name" -- env \
+      DISPLAY=:0 \
+      XDG_RUNTIME_DIR="$user_runtime_dir" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_dir/bus" \
+      xfdesktop --reload >/dev/null 2>&1 || true
   fi
 }
 

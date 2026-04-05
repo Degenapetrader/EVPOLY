@@ -259,9 +259,9 @@ configure_user_shortcuts() {
   desktop_dir="$user_home/Desktop"
   mkdir -p "$desktop_dir"
   desktop_entry="$desktop_dir/EVPoly.desktop"
-  write_evpoly_desktop_entry "$desktop_entry"
-  chmod 0755 "$desktop_entry" || true
-  chown "$user_uid:$user_gid" "$desktop_entry" || true
+  rm -f "$desktop_entry"
+  ln -s "$EVPOLY_DESKTOP_SOURCE" "$desktop_entry"
+  chown -h "$user_uid:$user_gid" "$desktop_entry" || true
 
   panel_launcher_root="$user_home/.config/xfce4/panel"
   mkdir -p "$panel_launcher_root"
@@ -271,7 +271,7 @@ configure_user_shortcuts() {
 
   user_runtime_dir="/run/user/$user_uid"
   if [ -d "$user_runtime_dir" ] && command -v runuser >/dev/null 2>&1; then
-    desktop_entry_checksum="$(sha256sum "$desktop_entry" | awk '{print $1}')"
+    desktop_entry_checksum="$(sha256sum "$EVPOLY_DESKTOP_SOURCE" | awk '{print $1}')"
     runuser -u "$user_name" -- env \
       DISPLAY=:0 \
       XDG_RUNTIME_DIR="$user_runtime_dir" \
@@ -302,8 +302,8 @@ configure_xsession_defaults() {
   write_file "$SKEL_XSESSION" "$XSESSION_CONTENT"
   chmod 0644 "$SKEL_XSESSION"
   mkdir -p "$SKEL_DESKTOP_DIR"
-  write_evpoly_desktop_entry "$SKEL_DESKTOP_DIR/EVPoly.desktop"
-  chmod 0755 "$SKEL_DESKTOP_DIR/EVPoly.desktop"
+  rm -f "$SKEL_DESKTOP_DIR/EVPoly.desktop"
+  ln -s "$EVPOLY_DESKTOP_SOURCE" "$SKEL_DESKTOP_DIR/EVPoly.desktop"
 
   getent passwd | while IFS=: read -r user_name _ user_uid user_gid _ user_home user_shell; do
     case "$user_home" in

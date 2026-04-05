@@ -116,6 +116,7 @@ Both `UI-v*` and `UI-hotfix-v*` trigger the release workflow. The fast lane now 
   - `src-tauri/binaries/evpoly-bot-x86_64-unknown-linux-gnu`
 - The package also installs and configures `xrdp` + `xorgxrdp` so Windows Remote Desktop can connect to the VPS after install.
 - If a local host firewall is active, the package opens `3389/tcp` for Remote Desktop and keeps `OpenSSH` allowed.
+- This package is meant for a dedicated EVPoly VPS. Keep that machine focused on EVPoly instead of loading it up with unrelated software.
 - Release pipeline on the `Linux` branch auto-builds this sidecar and packages it into the `.deb` artifact during CI.
 
 ### Linux Release Tags
@@ -124,8 +125,8 @@ Linux desktop releases use their own tag lane from the `Linux` branch:
 
 ```bash
 git push origin Linux
-git tag Linux-v1.0.26
-git push origin Linux-v1.0.26
+git tag Linux-v1.0.27
+git push origin Linux-v1.0.27
 ```
 
 Both `Linux-v*` and `Linux-hotfix-v*` trigger the Linux-only release workflow.

@@ -459,7 +459,6 @@ export function Home() {
                     }
                     disabled={!canOperate}
                     className="field-input field-input--compact"
-                    placeholder={suffix}
                     title={
                       strategy.key === "endgame"
                         ? `Split ${formatEndgameSplitTooltip(config)}`

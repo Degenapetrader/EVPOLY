@@ -96,6 +96,42 @@ function walletModeHelp(sigType: number): string {
   return "Use this if you want to pay gas fees yourself.";
 }
 
+const WALLET_MODE_OPTIONS = [
+  { value: 1, label: "Proxy Wallet" },
+  { value: 2, label: "Safe Wallet" },
+  { value: 0, label: "EOA" },
+] as const;
+
+function WalletModeSelector({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="segmented-control" role="radiogroup" aria-label="Wallet Mode">
+      {WALLET_MODE_OPTIONS.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            onClick={() => onChange(option.value)}
+            className={`segmented-control__option ${
+              active ? "segmented-control__option--active" : ""
+            }`.trim()}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function toStatusLabel(value: string | null | undefined): string {
   if (!value) return "Unknown";
   return value
@@ -496,20 +532,15 @@ export function Config() {
 
                   <div>
                     <label className="field-label">Wallet Mode</label>
-                    <select
-                      value={String(config.sig_type)}
-                      onChange={(event) =>
+                    <WalletModeSelector
+                      value={config.sig_type}
+                      onChange={(value) =>
                         setConfig((current) => ({
                           ...current,
-                          sig_type: Number(event.target.value),
+                          sig_type: value,
                         }))
                       }
-                      className="field-input"
-                    >
-                      <option value="1">Proxy Wallet</option>
-                      <option value="2">Safe Wallet</option>
-                      <option value="0">EOA</option>
-                    </select>
+                    />
                     <div className="metric-detail">{walletModeHelp(config.sig_type)}</div>
                   </div>
 
@@ -750,15 +781,10 @@ export function Config() {
 
                 <div>
                   <label className="field-label">Wallet Mode</label>
-                  <select
-                    value={createSigType}
-                    onChange={(event) => setCreateSigType(event.target.value)}
-                    className="field-input"
-                  >
-                    <option value="1">Proxy Wallet</option>
-                    <option value="2">Safe Wallet</option>
-                    <option value="0">EOA</option>
-                  </select>
+                  <WalletModeSelector
+                    value={Number(createSigType)}
+                    onChange={(value) => setCreateSigType(String(value))}
+                  />
                 </div>
 
                 <button

@@ -5,14 +5,20 @@ import { InfoPill } from "../components/InfoPill";
 import { SectionPanel } from "../components/SectionPanel";
 import { LegalModal, hasAcceptedTerms } from "../components/LegalModal";
 import {
+  createProfile,
   getGeoAccessStatus,
   getActiveProfileId,
   type GeoAccessStatus,
   initializePassword,
   isAuthInitialized,
+  listProfiles,
+  setActiveProfile,
   verifyPassword,
 } from "../lib/tauri-commands";
 import { useAppContext } from "../App";
+
+const DEFAULT_PROFILE_NAME = "Main Profile";
+const DEFAULT_SIGNATURE_TYPE = 1;
 
 function AuthShell({
   badge,
@@ -79,7 +85,7 @@ function AuthShell({
 
 export function Login() {
   const navigate = useNavigate();
-  const { setAuthenticated } = useAppContext();
+  const { setActiveProfileId, setAuthenticated } = useAppContext();
   const [initialized, setInitialized] = useState<boolean | null>(null);
   const [authInitError, setAuthInitError] = useState<string | null>(null);
   const [password, setPasswordVal] = useState("");
@@ -118,6 +124,26 @@ export function Login() {
     void resolveInit();
   }, []);
 
+  const ensureActiveProfile = async () => {
+    const current = await getActiveProfileId();
+    if (current) {
+      setActiveProfileId(current);
+      return current;
+    }
+
+    const profiles = await listProfiles();
+    if (profiles.length > 0) {
+      await setActiveProfile(profiles[0].id);
+      setActiveProfileId(profiles[0].id);
+      return profiles[0].id;
+    }
+
+    const created = await createProfile(DEFAULT_PROFILE_NAME, "", DEFAULT_SIGNATURE_TYPE);
+    await setActiveProfile(created.id);
+    setActiveProfileId(created.id);
+    return created.id;
+  };
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError("");
@@ -136,7 +162,7 @@ export function Login() {
       try {
         await initializePassword(password);
         setAuthenticated(true);
-        await getActiveProfileId();
+        await ensureActiveProfile();
         navigate("/home");
       } catch (err) {
         setError(String(err));
@@ -151,7 +177,7 @@ export function Login() {
       const valid = await verifyPassword(password);
       if (valid) {
         setAuthenticated(true);
-        await getActiveProfileId();
+        await ensureActiveProfile();
         navigate("/home");
       } else {
         setError("Incorrect password.");

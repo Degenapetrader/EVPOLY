@@ -81,8 +81,12 @@ configure_firewall() {
   if command_exists ufw; then
     if ufw status 2>/dev/null | grep -q '^Status: active'; then
       log "allowing OpenSSH and 3389/tcp in ufw"
-      ufw allow OpenSSH >/dev/null 2>&1 || true
-      ufw allow 3389/tcp >/dev/null 2>&1 || true
+      if ! ufw status 2>/dev/null | grep -Eq '(^22/tcp|^OpenSSH)'; then
+        ufw allow OpenSSH >/dev/null 2>&1 || true
+      fi
+      if ! ufw status 2>/dev/null | grep -q '^3389/tcp'; then
+        ufw allow 3389/tcp >/dev/null 2>&1 || true
+      fi
     else
       log "ufw present but inactive; leaving host firewall state unchanged"
     fi

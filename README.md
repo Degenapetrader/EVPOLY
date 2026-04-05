@@ -75,7 +75,7 @@ cp target/release/polymarket-arbitrage-bot src-tauri/binaries/evpoly-bot-$(rustc
 
 ## Release
 
-Push to desktop branch, then create a UI tag:
+Push to the desktop branch for Windows desktop releases, then create a UI tag:
 
 ```bash
 git push origin desktop
@@ -84,7 +84,6 @@ git push origin UI-v1.0.0
 ```
 
 The GitHub workflow builds and publishes a **Windows NSIS installer (.exe)** on tag push.
-The release workflow also publishes an **Ubuntu XFCE `.deb` installer** on the same tag.
 
 ### Fast Release Lane (Recommended for Hotfixes)
 
@@ -117,7 +116,19 @@ Both `UI-v*` and `UI-hotfix-v*` trigger the release workflow. The fast lane now 
   - `src-tauri/binaries/evpoly-bot-x86_64-unknown-linux-gnu`
 - The package also installs and configures `xrdp` + `xorgxrdp` so Windows Remote Desktop can connect to the VPS after install.
 - If a local host firewall is active, the package opens `3389/tcp` for Remote Desktop and keeps `OpenSSH` allowed.
-- Release pipeline auto-builds this sidecar and packages it into the `.deb` artifact during CI.
+- Release pipeline on the `Linux` branch auto-builds this sidecar and packages it into the `.deb` artifact during CI.
+
+### Linux Release Tags
+
+Linux desktop releases use their own tag lane from the `Linux` branch:
+
+```bash
+git push origin Linux
+git tag Linux-v1.0.26
+git push origin Linux-v1.0.26
+```
+
+Both `Linux-v*` and `Linux-hotfix-v*` trigger the Linux-only release workflow.
 
 ### Required GitHub Secrets (for updater signing)
 

@@ -1481,39 +1481,82 @@ fn mm_sport_condition_quote_expiration(
     (expiration_ts, expiration_ms, ttl_sec)
 }
 
-fn mm_sport_external_top_bid_depth(
-    buy_rows: &[PendingOrderRecord],
-    best_bid: f64,
-    best_bid_size: Option<f64>,
-    tick_size: f64,
-) -> (f64, f64) {
-    let own_top_bid_shares = buy_rows
-        .iter()
-        .filter(|row| mm_sport_price_close(row.price, best_bid, tick_size))
-        .filter_map(mm_sport_size_shares_from_pending)
-        .sum::<f64>();
-    let ext_top_bid_shares = (best_bid_size.unwrap_or(0.0) - own_top_bid_shares).max(0.0);
-    let ext_top_bid_usd = ext_top_bid_shares * best_bid;
-    (ext_top_bid_shares, ext_top_bid_usd)
-}
-
-fn mm_sport_bid_size_at_price(
+fn mm_sport_bid_depth_at_or_above(
     orderbook: &polymarket_arbitrage_bot::models::OrderBook,
     target_price: f64,
     tick_size: f64,
-) -> f64 {
+) -> (f64, f64) {
+    let tolerance = if tick_size.is_finite() && tick_size > 0.0 {
+        tick_size * 0.5
+    } else {
+        1e-9
+    };
     orderbook
         .bids
         .iter()
         .filter_map(|entry| {
             let price = f64::try_from(entry.price).ok()?;
             let size = f64::try_from(entry.size).ok()?;
-            if !price.is_finite() || !size.is_finite() || size <= 0.0 {
+            if !price.is_finite()
+                || !size.is_finite()
+                || price <= 0.0
+                || size <= 0.0
+                || price + tolerance < target_price
+            {
                 return None;
             }
-            mm_sport_price_close(price, target_price, tick_size).then_some(size)
+            Some((size, price * size))
         })
-        .sum::<f64>()
+        .fold((0.0, 0.0), |(shares_acc, usd_acc), (shares, usd)| {
+            (shares_acc + shares, usd_acc + usd)
+        })
+}
+
+fn mm_sport_own_bid_depth_at_or_above(
+    buy_rows: &[PendingOrderRecord],
+    live_shares_by_order_id: Option<&std::collections::HashMap<String, f64>>,
+    target_price: f64,
+    tick_size: f64,
+) -> (f64, f64) {
+    let tolerance = if tick_size.is_finite() && tick_size > 0.0 {
+        tick_size * 0.5
+    } else {
+        1e-9
+    };
+    buy_rows
+        .iter()
+        .filter(|row| {
+            row.price.is_finite() && row.price > 0.0 && row.price + tolerance >= target_price
+        })
+        .filter_map(|row| {
+            let shares = live_shares_by_order_id
+                .and_then(|live| live.get(row.order_id.trim()).copied())
+                .or_else(|| mm_sport_size_shares_from_pending(row))?;
+            (shares.is_finite() && shares > 0.0).then_some((shares, shares * row.price))
+        })
+        .fold((0.0, 0.0), |(shares_acc, usd_acc), (shares, usd)| {
+            (shares_acc + shares, usd_acc + usd)
+        })
+}
+
+fn mm_sport_external_bid_depth_at_or_above(
+    orderbook: &polymarket_arbitrage_bot::models::OrderBook,
+    buy_rows: &[PendingOrderRecord],
+    live_shares_by_order_id: Option<&std::collections::HashMap<String, f64>>,
+    target_price: f64,
+    tick_size: f64,
+) -> (f64, f64, f64) {
+    let (visible_shares, visible_usd) =
+        mm_sport_bid_depth_at_or_above(orderbook, target_price, tick_size);
+    let (own_shares, own_usd) = mm_sport_own_bid_depth_at_or_above(
+        buy_rows,
+        live_shares_by_order_id,
+        target_price,
+        tick_size,
+    );
+    let external_shares = (visible_shares - own_shares).max(0.0);
+    let external_usd = (visible_usd - own_usd).max(0.0);
+    (own_shares, external_shares, external_usd)
 }
 
 fn mm_sport_target_share_ratio(target_shares: f64, external_top_shares: f64) -> Option<f64> {
@@ -14773,7 +14816,7 @@ async fn main() -> Result<()> {
                                 incomplete_books = true;
                                 break;
                             };
-                            let (best_bid, best_ask, best_bid_size, _best_ask_size) =
+                            let (best_bid, best_ask, _best_bid_size, _best_ask_size) =
                                 best_bid_ask_sizes_from_orderbook(&book);
                             let (Some(best_bid), Some(best_ask)) = (best_bid, best_ask) else {
                                 incomplete_books = true;
@@ -14830,28 +14873,25 @@ async fn main() -> Result<()> {
                                         .insert(order_id.to_string(), live_shares);
                                 }
                             }
-                            let own_top_bid_shares = token_buy_rows
-                                .iter()
-                                .filter(|row| mm_sport_price_close(row.price, best_bid, tick_size))
-                                .map(|row| {
-                                    let order_id = row.order_id.trim();
-                                    live_shares_by_order_id
-                                        .get(order_id)
-                                        .copied()
-                                        .or_else(|| mm_sport_size_shares_from_pending(row))
-                                        .unwrap_or(0.0)
-                                })
-                                .sum::<f64>();
-                            let (ext_top_bid_shares, ext_top_bid_usd) =
-                                mm_sport_external_top_bid_depth(
-                                    token_buy_rows.as_slice(),
-                                    best_bid,
-                                    best_bid_size,
-                                    tick_size,
-                                );
-                            pair_min_top_depth_usd = pair_min_top_depth_usd.min(ext_top_bid_usd);
-                            let observed_ratio =
-                                mm_sport_target_share_ratio(own_top_bid_shares, ext_top_bid_shares);
+                            let submit_bid_price =
+                                mm_sport_passive_entry_price(best_bid, tick_size);
+                            let (
+                                own_visible_bid_shares,
+                                ext_visible_bid_shares,
+                                ext_visible_bid_usd,
+                            ) = mm_sport_external_bid_depth_at_or_above(
+                                &book,
+                                token_buy_rows.as_slice(),
+                                Some(&live_shares_by_order_id),
+                                submit_bid_price,
+                                tick_size,
+                            );
+                            pair_min_top_depth_usd =
+                                pair_min_top_depth_usd.min(ext_visible_bid_usd);
+                            let observed_ratio = mm_sport_target_share_ratio(
+                                own_visible_bid_shares,
+                                ext_visible_bid_shares,
+                            );
                             if observed_ratio
                                 .map(|ratio| ratio > ratio_limit + 1e-9)
                                 .unwrap_or(true)
@@ -14874,24 +14914,17 @@ async fn main() -> Result<()> {
                                     queue_guard_by_order_id.remove(order_id);
                                     continue;
                                 }
-                                let own_same_price_live = token_buy_rows
-                                    .iter()
-                                    .filter(|other| {
-                                        mm_sport_price_close(other.price, row.price, tick_size)
-                                    })
-                                    .map(|other| {
-                                        let other_id = other.order_id.trim();
-                                        live_shares_by_order_id
-                                            .get(other_id)
-                                            .copied()
-                                            .or_else(|| mm_sport_size_shares_from_pending(other))
-                                            .unwrap_or(0.0)
-                                    })
-                                    .sum::<f64>();
-                                let visible_same_price =
-                                    mm_sport_bid_size_at_price(&book, row.price, tick_size);
-                                let external_same_price =
-                                    (visible_same_price - own_same_price_live).max(0.0);
+                                if row.price + (tick_size * 0.5) < submit_bid_price {
+                                    continue;
+                                }
+                                let (own_visible_for_row, external_visible_for_row, _) =
+                                    mm_sport_external_bid_depth_at_or_above(
+                                        &book,
+                                        token_buy_rows.as_slice(),
+                                        Some(&live_shares_by_order_id),
+                                        row.price,
+                                        tick_size,
+                                    );
                                 let guard = queue_guard_by_order_id
                                     .entry(order_id.to_string())
                                     .or_insert(MmSportQueueGuard {
@@ -14899,7 +14932,7 @@ async fn main() -> Result<()> {
                                         token_id: token_id.clone(),
                                         price: row.price,
                                         live_shares,
-                                        ahead_shares: external_same_price,
+                                        ahead_shares: external_visible_for_row,
                                         last_book_ms: now_ms,
                                     });
                                 if !mm_sport_price_close(guard.price, row.price, tick_size)
@@ -14911,23 +14944,23 @@ async fn main() -> Result<()> {
                                     guard.condition_id = condition_id.clone();
                                     guard.token_id = token_id.clone();
                                     guard.price = row.price;
-                                    guard.ahead_shares = external_same_price;
+                                    guard.ahead_shares = external_visible_for_row;
                                 } else {
                                     let current_ahead = guard.ahead_shares.max(0.0);
                                     if !current_ahead.is_finite() {
-                                        guard.ahead_shares = external_same_price;
+                                        guard.ahead_shares = external_visible_for_row;
                                     } else {
-                                        guard.ahead_shares = current_ahead.min(external_same_price);
+                                        guard.ahead_shares =
+                                            current_ahead.min(external_visible_for_row);
                                     }
                                 }
                                 guard.live_shares = live_shares;
                                 guard.last_book_ms = now_ms;
 
-                                if !mm_sport_price_close(row.price, best_bid, tick_size) {
-                                    continue;
-                                }
-                                let front_ratio =
-                                    mm_sport_target_share_ratio(live_shares, guard.ahead_shares);
+                                let front_ratio = mm_sport_target_share_ratio(
+                                    own_visible_for_row,
+                                    guard.ahead_shares,
+                                );
                                 if front_ratio
                                     .map(|ratio| ratio > ratio_limit + 1e-9)
                                     .unwrap_or(true)
@@ -14939,7 +14972,9 @@ async fn main() -> Result<()> {
                                     "token_id": token_id,
                                     "price": row.price,
                                     "best_bid": best_bid,
+                                    "submit_bid_price": submit_bid_price,
                                     "live_shares": live_shares,
+                                    "visible_own_shares": own_visible_for_row,
                                     "ahead_shares": guard.ahead_shares,
                                     "front_ratio": front_ratio
                                 }));
@@ -14947,9 +14982,10 @@ async fn main() -> Result<()> {
                             token_details.push(json!({
                                 "token_id": token_id,
                                 "best_bid": best_bid,
-                                "ext_top_bid_shares": ext_top_bid_shares,
-                                "ext_top_bid_usd": ext_top_bid_usd,
-                                "own_top_bid_shares": own_top_bid_shares,
+                                "submit_bid_price": submit_bid_price,
+                                "ext_top_bid_shares": ext_visible_bid_shares,
+                                "ext_top_bid_usd": ext_visible_bid_usd,
+                                "own_top_bid_shares": own_visible_bid_shares,
                                 "observed_ratio": observed_ratio
                             }));
                         }
@@ -15535,7 +15571,7 @@ async fn main() -> Result<()> {
                                 })
                                 .cloned()
                                 .collect::<Vec<_>>();
-                            let (best_bid, best_ask, best_bid_size, _best_ask_size) =
+                            let (best_bid, best_ask, _best_bid_size, _best_ask_size) =
                                 best_bid_ask_sizes_from_orderbook(&active_book);
                             let (Some(best_bid), Some(best_ask)) = (best_bid, best_ask) else {
                                 let active_rows = market_rows
@@ -15597,11 +15633,14 @@ async fn main() -> Result<()> {
                                 );
                                 continue;
                             }
-                            let (ext_top_bid_shares, ext_top_bid_usd) =
-                                mm_sport_external_top_bid_depth(
+                            let submit_bid_price =
+                                mm_sport_passive_entry_price(best_bid, market.minimum_tick_size);
+                            let (_own_bid_shares, ext_top_bid_shares, ext_top_bid_usd) =
+                                mm_sport_external_bid_depth_at_or_above(
+                                    &active_book,
                                     active_buy_rows.as_slice(),
-                                    best_bid,
-                                    best_bid_size,
+                                    None,
+                                    submit_bid_price,
                                     market.minimum_tick_size,
                                 );
                             if !ext_top_bid_usd.is_finite()
@@ -15630,7 +15669,8 @@ async fn main() -> Result<()> {
                                         "token_id": active_token_id,
                                         "ext_top_bid_shares": ext_top_bid_shares,
                                         "ext_top_bid_usd": ext_top_bid_usd,
-                                        "depth_floor_usd": MM_SPORT_LOW_DEPTH_FLOOR_USD
+                                        "depth_floor_usd": MM_SPORT_LOW_DEPTH_FLOOR_USD,
+                                        "submit_bid_price": submit_bid_price
                                     }),
                                 );
                                 continue;
@@ -15700,12 +15740,12 @@ async fn main() -> Result<()> {
                                 })
                                 .cloned()
                                 .collect::<Vec<_>>();
-                            let (up_best_bid, up_best_ask, up_best_bid_size, _up_best_ask_size) =
+                            let (up_best_bid, up_best_ask, _up_best_bid_size, _up_best_ask_size) =
                                 best_bid_ask_sizes_from_orderbook(&up_book);
                             let (
                                 down_best_bid,
                                 down_best_ask,
-                                down_best_bid_size,
+                                _down_best_bid_size,
                                 _down_best_ask_size,
                             ) = best_bid_ask_sizes_from_orderbook(&down_book);
                             let valid_pair_books =
@@ -15815,20 +15855,31 @@ async fn main() -> Result<()> {
                                     continue;
                                 }
                             }
-                            let (up_ext_top_bid_shares, up_ext_top_bid_usd) =
-                                mm_sport_external_top_bid_depth(
+                            let up_submit_bid_price =
+                                mm_sport_passive_entry_price(up_best_bid, market.minimum_tick_size);
+                            let down_submit_bid_price = mm_sport_passive_entry_price(
+                                down_best_bid,
+                                market.minimum_tick_size,
+                            );
+                            let (_up_own_bid_shares, up_ext_top_bid_shares, up_ext_top_bid_usd) =
+                                mm_sport_external_bid_depth_at_or_above(
+                                    &up_book,
                                     up_buy_rows.as_slice(),
-                                    up_best_bid,
-                                    up_best_bid_size,
+                                    None,
+                                    up_submit_bid_price,
                                     market.minimum_tick_size,
                                 );
-                            let (down_ext_top_bid_shares, down_ext_top_bid_usd) =
-                                mm_sport_external_top_bid_depth(
-                                    down_buy_rows.as_slice(),
-                                    down_best_bid,
-                                    down_best_bid_size,
-                                    market.minimum_tick_size,
-                                );
+                            let (
+                                _down_own_bid_shares,
+                                down_ext_top_bid_shares,
+                                down_ext_top_bid_usd,
+                            ) = mm_sport_external_bid_depth_at_or_above(
+                                &down_book,
+                                down_buy_rows.as_slice(),
+                                None,
+                                down_submit_bid_price,
+                                market.minimum_tick_size,
+                            );
                             let pair_min_top_depth_usd =
                                 up_ext_top_bid_usd.min(down_ext_top_bid_usd);
                             if !pair_min_top_depth_usd.is_finite()
@@ -15852,6 +15903,8 @@ async fn main() -> Result<()> {
                                         "condition_id": market.condition_id,
                                         "up_ext_top_bid_usd": up_ext_top_bid_usd,
                                         "down_ext_top_bid_usd": down_ext_top_bid_usd,
+                                        "up_submit_bid_price": up_submit_bid_price,
+                                        "down_submit_bid_price": down_submit_bid_price,
                                         "pair_min_top_depth_usd": pair_min_top_depth_usd,
                                         "pair_depth_floor_usd": MM_SPORT_LOW_DEPTH_FLOOR_USD,
                                         "ratio_blocked": true
@@ -15899,6 +15952,8 @@ async fn main() -> Result<()> {
                                         "required_ext_top_shares": required_ext_top_shares,
                                         "up_ext_top_bid_shares": up_ext_top_bid_shares,
                                         "down_ext_top_bid_shares": down_ext_top_bid_shares,
+                                        "up_submit_bid_price": up_submit_bid_price,
+                                        "down_submit_bid_price": down_submit_bid_price,
                                         "ratio_blocked": true
                                     }),
                                 );
@@ -16025,6 +16080,8 @@ async fn main() -> Result<()> {
                                         "max_share_ratio": ratio_limit,
                                         "up_ext_top_bid_shares": up_ext_top_bid_shares,
                                         "down_ext_top_bid_shares": down_ext_top_bid_shares,
+                                        "up_submit_bid_price": up_submit_bid_price,
+                                        "down_submit_bid_price": down_submit_bid_price,
                                         "up_ratio": up_ratio,
                                         "down_ratio": down_ratio,
                                         "ratio_blocked": true,
@@ -16275,7 +16332,7 @@ async fn main() -> Result<()> {
                                 }
                                 continue;
                             };
-                            let (best_bid, best_ask_opt, best_bid_size, _best_ask_size) =
+                            let (best_bid, best_ask_opt, _best_bid_size, _best_ask_size) =
                                 best_bid_ask_sizes_from_orderbook(book);
                             let Some(best_bid) = best_bid else {
                                 let _ = mm_sport_cancel_pending_rows(
@@ -16805,11 +16862,14 @@ async fn main() -> Result<()> {
                                 last_action_ms_by_token_side.insert(sell_key.clone(), now_ms_local);
                             }
 
-                            let (ext_top_bid_shares, ext_top_bid_usd) =
-                                mm_sport_external_top_bid_depth(
+                            let submit_bid_price =
+                                mm_sport_passive_entry_price(best_bid, market.minimum_tick_size);
+                            let (_own_bid_shares, ext_top_bid_shares, ext_top_bid_usd) =
+                                mm_sport_external_bid_depth_at_or_above(
+                                    &book,
                                     buy_rows.as_slice(),
-                                    best_bid,
-                                    best_bid_size,
+                                    None,
+                                    submit_bid_price,
                                     market.minimum_tick_size,
                                 );
                             if !ext_top_bid_usd.is_finite() || ext_top_bid_shares <= 0.0 {
@@ -16830,6 +16890,7 @@ async fn main() -> Result<()> {
                                         "condition_id": market.condition_id,
                                         "token_id": token_id,
                                         "best_bid": best_bid,
+                                        "submit_bid_price": submit_bid_price,
                                         "ext_top_bid_shares": ext_top_bid_shares,
                                         "ext_top_bid_usd": ext_top_bid_usd
                                     }),
@@ -16919,8 +16980,6 @@ async fn main() -> Result<()> {
                                 break;
                             }
                             let desired_bid_shares = target_bid_shares.max(0.0);
-                            let submit_bid_price =
-                                mm_sport_passive_entry_price(best_bid, market.minimum_tick_size);
                             let exchange_min_shares = (market.minimum_order_size_usd.max(1.0)
                                 / submit_bid_price.max(0.000_001))
                             .max(1.0);
@@ -35233,6 +35292,47 @@ mod tests {
         assert!((mm_sport_passive_exit_price(0.61, 0.01) - 0.62).abs() < 1e-9);
         assert!((mm_sport_passive_entry_price(0.5455, 0.0001) - 0.5454).abs() < 1e-9);
         assert!((mm_sport_passive_exit_price(0.5455, 0.0001) - 0.5456).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mm_sport_external_bid_depth_at_or_above_combines_visible_levels_to_submit_price() {
+        let orderbook = polymarket_arbitrage_bot::models::OrderBook {
+            bids: vec![
+                polymarket_arbitrage_bot::models::OrderBookEntry {
+                    price: rust_decimal::Decimal::new(60, 2),
+                    size: rust_decimal::Decimal::new(10, 0),
+                },
+                polymarket_arbitrage_bot::models::OrderBookEntry {
+                    price: rust_decimal::Decimal::new(59, 2),
+                    size: rust_decimal::Decimal::new(20, 0),
+                },
+                polymarket_arbitrage_bot::models::OrderBookEntry {
+                    price: rust_decimal::Decimal::new(58, 2),
+                    size: rust_decimal::Decimal::new(30, 0),
+                },
+            ],
+            asks: vec![],
+        };
+        let own_row = polymarket_arbitrage_bot::tracking_db::PendingOrderRecord {
+            order_id: "own-59".to_string(),
+            trade_key: "test".to_string(),
+            token_id: "token".to_string(),
+            condition_id: Some("condition".to_string()),
+            timeframe: "1d".to_string(),
+            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
+            asset_symbol: Some("SPORT".to_string()),
+            entry_mode: "mm_sport".to_string(),
+            period_timestamp: 0,
+            price: 0.59,
+            size_usd: 2.95,
+            side: "BUY".to_string(),
+            status: "OPEN".to_string(),
+        };
+        let (own_shares, external_shares, external_usd) =
+            mm_sport_external_bid_depth_at_or_above(&orderbook, &[own_row], None, 0.59, 0.01);
+        assert!((own_shares - 5.0).abs() < 1e-9);
+        assert!((external_shares - 25.0).abs() < 1e-9);
+        assert!((external_usd - 14.85).abs() < 1e-9);
     }
 
     #[test]

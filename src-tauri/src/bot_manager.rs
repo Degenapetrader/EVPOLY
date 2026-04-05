@@ -662,9 +662,7 @@ fn unix_process_matches(
     command_marker: &str,
 ) -> bool {
     process_name_matches(process_name, image_names)
-        && command_line
-            .iter()
-            .any(|arg| arg.to_string_lossy().contains(command_marker))
+        && command_line.iter().any(|arg| arg.contains(command_marker))
 }
 
 #[cfg(not(target_os = "windows"))]

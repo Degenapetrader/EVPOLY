@@ -91,7 +91,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
   @media (min-width: 1024px) {
     .app-shell {
-      grid-template-columns: 19.25rem minmax(0, 1fr);
+      grid-template-columns: 19.75rem minmax(0, 1fr);
     }
   }
 
@@ -656,7 +656,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
   .strategy-rail__row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(4.7rem, 5rem);
+    grid-template-columns: minmax(0, 1fr) auto minmax(6.15rem, 6.65rem);
     align-items: center;
     gap: 0.55rem;
     padding: 0.2rem 0.1rem 0.2rem 0.2rem;
@@ -684,13 +684,20 @@ input[type="number"]::-webkit-inner-spin-button {
     text-overflow: ellipsis;
   }
 
+  .strategy-rail__control {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.38rem;
+    min-width: 6.15rem;
+  }
+
   .strategy-rail__field {
-    position: relative;
-    min-width: 4.7rem;
+    min-width: 0;
   }
 
   .strategy-rail__field .field-input--compact {
-    padding: 0.56rem 1.55rem 0.56rem 0.68rem;
+    padding: 0.56rem 0.68rem;
     border-radius: 0.78rem;
     font-size: 0.86rem;
     font-variant-numeric: tabular-nums;
@@ -698,21 +705,19 @@ input[type="number"]::-webkit-inner-spin-button {
   }
 
   .strategy-rail__field-suffix {
-    position: absolute;
-    right: 0.58rem;
-    top: 50%;
-    transform: translateY(-50%);
     color: var(--text-muted);
-    font-size: 0.68rem;
+    font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
     pointer-events: none;
+    min-width: 1.4rem;
+    text-align: left;
   }
 
   .strategy-rail__subrow {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(4.7rem, 5rem);
+    grid-template-columns: minmax(0, 1fr) auto minmax(6.15rem, 6.65rem);
     align-items: center;
     gap: 0.55rem;
     padding: 0 0.1rem 0.2rem 0.2rem;

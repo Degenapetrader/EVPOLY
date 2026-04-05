@@ -441,31 +441,32 @@ export function Home() {
                   {enabled ? "On" : "Off"}
                 </button>
 
-                <div className="strategy-rail__field" title={controlTitle}>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    value={value}
-                    aria-label={`${strategy.label} ${strategySizeLabel(strategy.key, config)}`}
-                    onChange={(event) =>
-                      setConfig((current) =>
-                        updateStrategySize(
-                          current,
-                          strategy.key,
-                          parseNonNegative(event.target.value, value)
+                <div className="strategy-rail__control" title={controlTitle}>
+                  <div className="strategy-rail__field">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={value}
+                      aria-label={`${strategy.label} ${strategySizeLabel(strategy.key, config)}`}
+                      onChange={(event) =>
+                        setConfig((current) =>
+                          updateStrategySize(
+                            current,
+                            strategy.key,
+                            parseNonNegative(event.target.value, value)
+                          )
                         )
-                      )
-                    }
-                    disabled={!canOperate}
-                    className="field-input field-input--compact"
-                    placeholder={suffix}
-                    title={
-                      strategy.key === "endgame"
-                        ? `Split ${formatEndgameSplitTooltip(config)}`
-                        : controlTitle
-                    }
-                  />
+                      }
+                      disabled={!canOperate}
+                      className="field-input field-input--compact"
+                      title={
+                        strategy.key === "endgame"
+                          ? `Split ${formatEndgameSplitTooltip(config)}`
+                          : controlTitle
+                      }
+                    />
+                  </div>
                   <span className="strategy-rail__field-suffix">{suffix}</span>
                 </div>
               </div>

@@ -78,12 +78,20 @@ jobs:
           args: --bundles deb
           tagName: ${{ github.ref_name }}
           releaseName: "EVPoly Desktop ${{ github.ref_name }}"
-          releaseBody: "Desktop installers for EVPoly. Windows ships as an NSIS .exe and Ubuntu XFCE ships as a .deb package."
+          releaseBody: "Desktop installers for EVPoly. Windows ships as an NSIS .exe and Ubuntu XFCE ships as a .deb package with EVPoly, the bundled bot sidecar, and Remote Desktop support."
           releaseDraft: false
           prerelease: false
 
       - name: Ubuntu deb smoke
         run: bash scripts/smoke-installer-linux.sh
+
+      - name: Install Ubuntu deb
+        run: sudo apt-get install -y ./src-tauri/target/release/bundle/deb/*.deb
+
+      - name: Verify installed Linux binaries
+        run: |
+          test -x /usr/bin/evpoly-desktop
+          test -x /usr/bin/evpoly-bot
 
   windows-installer:
     needs:
@@ -151,7 +159,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "EVPoly Desktop ${{ github.ref_name }}"
-          releaseBody: "Desktop installers for EVPoly. Windows ships as an NSIS .exe and Ubuntu XFCE ships as a .deb package."
+          releaseBody: "Desktop installers for EVPoly. Windows ships as an NSIS .exe and Ubuntu XFCE ships as a .deb package with EVPoly, the bundled bot sidecar, and Remote Desktop support."
           releaseDraft: false
           prerelease: false
 

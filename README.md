@@ -115,6 +115,8 @@ Both `UI-v*` and `UI-hotfix-v*` trigger the release workflow. The fast lane now 
 - The Linux installer target is Debian (`.deb`) for `Ubuntu 24.04 XFCE x86_64`.
 - The app bundles the EVPOLY bot as a Linux sidecar:
   - `src-tauri/binaries/evpoly-bot-x86_64-unknown-linux-gnu`
+- The package also installs and configures `xrdp` + `xorgxrdp` so Windows Remote Desktop can connect to the VPS after install.
+- If a local host firewall is active, the package opens `3389/tcp` for Remote Desktop and keeps `OpenSSH` allowed.
 - Release pipeline auto-builds this sidecar and packages it into the `.deb` artifact during CI.
 
 ### Required GitHub Secrets (for updater signing)

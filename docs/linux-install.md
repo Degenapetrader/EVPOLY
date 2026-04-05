@@ -9,6 +9,7 @@ Supported target:
 Goal:
 - buy the VPS
 - install EVPoly
+- connect with Windows Remote Desktop
 - open the app
 - onboard
 - click `Start`
@@ -25,7 +26,14 @@ No Rust, Node, Cargo, or manual sidecar setup is required for a normal install.
 sudo apt install ./EVPoly_*_amd64.deb
 ```
 
-4. Open `EVPoly` from the desktop application menu.
+4. The EVPoly package automatically:
+   - installs the bundled EVPoly app and bot
+   - installs `xrdp` and `xorgxrdp`
+   - configures XFCE for Remote Desktop login
+   - opens local TCP `3389` if a host firewall such as `ufw` is already active
+5. From a Windows laptop, open `Remote Desktop Connection` and connect to your VPS IP address.
+6. Sign in with the Ubuntu desktop user you created on Vultr.
+7. Open `EVPoly` from the desktop application menu.
 
 ## First Run
 
@@ -42,6 +50,7 @@ EVPoly creates its own runtime folders, bundled bot sidecar, logs, and generated
 - `Weekend`, strategy toggles, and all normal desktop controls work the same way as Windows.
 - The packaged app already includes the EVPoly bot sidecar.
 - You do not need to clone the repo to run EVPoly on the VPS.
+- If you later attach a separate Vultr Firewall, also allow inbound TCP `3389` there.
 
 ## Troubleshooting
 
@@ -57,3 +66,9 @@ If the app opens but the bot does not start:
 - save the profile
 - press `Start` again
 - then check `Open Logs` inside EVPoly
+
+If Windows Remote Desktop cannot connect:
+- confirm the VPS IP is correct
+- confirm the Ubuntu desktop user password is correct
+- confirm local port `3389/tcp` is reachable
+- if you attached a Vultr Firewall later, allow TCP `3389` there too

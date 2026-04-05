@@ -19,6 +19,29 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 
 dpkg-deb -I "${DEB_PATH}" >/dev/null
 dpkg-deb -x "${DEB_PATH}" "${WORK_DIR}/root"
+dpkg-deb -e "${DEB_PATH}" "${WORK_DIR}/control"
+
+CONTROL_FILE="${WORK_DIR}/control/control"
+if [[ ! -f "${CONTROL_FILE}" ]]; then
+  echo "error: packaged .deb is missing control metadata" >&2
+  exit 1
+fi
+
+for dep in libayatana-appindicator3-1 libgtk-3-0 libwebkit2gtk-4.1-0 xrdp xorgxrdp; do
+  if ! grep -q "${dep}" "${CONTROL_FILE}"; then
+    echo "error: packaged .deb is missing dependency ${dep}" >&2
+    exit 1
+  fi
+done
+
+for maintainer_script in postinst postrm; do
+  SCRIPT_PATH="${WORK_DIR}/control/${maintainer_script}"
+  if [[ ! -f "${SCRIPT_PATH}" ]]; then
+    echo "error: packaged .deb is missing ${maintainer_script}" >&2
+    exit 1
+  fi
+  sh -n "${SCRIPT_PATH}"
+done
 
 DESKTOP_FILE="$(find "${WORK_DIR}/root/usr/share/applications" -maxdepth 1 -type f -name '*.desktop' | head -n 1)"
 if [[ -z "${DESKTOP_FILE}" ]]; then

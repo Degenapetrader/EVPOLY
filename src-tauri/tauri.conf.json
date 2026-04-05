@@ -52,6 +52,15 @@
     ],
     "linux": {
       "deb": {
+        "depends": [
+          "libayatana-appindicator3-1",
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "xrdp",
+          "xorgxrdp"
+        ],
+        "postInstallScript": "./linux/postinst.sh",
+        "postRemoveScript": "./linux/postrm.sh",
         "files": {
           "/usr/share/doc/evpoly/linux-install.md": "../docs/linux-install.md"
         }

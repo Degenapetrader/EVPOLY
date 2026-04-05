@@ -56,6 +56,17 @@ select {
   font: inherit;
 }
 
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -80,7 +91,7 @@ select {
 
   @media (min-width: 1024px) {
     .app-shell {
-      grid-template-columns: 18rem minmax(0, 1fr);
+      grid-template-columns: 19.25rem minmax(0, 1fr);
     }
   }
 
@@ -490,6 +501,48 @@ select {
     border-radius: 0.85rem;
   }
 
+  .segmented-control {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.55rem;
+    border-radius: 1.1rem;
+    border: 1px solid var(--border);
+    background: rgba(10, 16, 24, 0.78);
+    padding: 0.4rem;
+  }
+
+  .segmented-control__option {
+    min-width: 0;
+    border: 1px solid transparent;
+    border-radius: 0.9rem;
+    background: transparent;
+    color: var(--text-secondary);
+    padding: 0.76rem 0.7rem;
+    font-size: 0.9rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    transition:
+      border-color 160ms ease,
+      background 160ms ease,
+      color 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .segmented-control__option:hover {
+    color: var(--text-primary);
+    border-color: rgba(114, 145, 183, 0.16);
+    background: rgba(255, 255, 255, 0.02);
+  }
+
+  .segmented-control__option--active {
+    color: var(--text-primary);
+    border-color: rgba(99, 181, 255, 0.26);
+    background:
+      linear-gradient(180deg, rgba(80, 160, 235, 0.2), rgba(43, 98, 162, 0.12)),
+      rgba(12, 20, 30, 0.98);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  }
+
   .mode-choice {
     border-radius: 1.05rem;
     border: 1px solid var(--border);
@@ -603,7 +656,7 @@ select {
 
   .strategy-rail__row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(4.9rem, 5.3rem);
+    grid-template-columns: minmax(0, 1fr) auto minmax(4.7rem, 5rem);
     align-items: center;
     gap: 0.55rem;
     padding: 0.2rem 0.1rem 0.2rem 0.2rem;
@@ -623,8 +676,8 @@ select {
 
   .strategy-rail__label {
     color: var(--text-primary);
-    font-size: 0.92rem;
-    font-weight: 650;
+    font-size: 0.9rem;
+    font-weight: 625;
     letter-spacing: -0.03em;
     white-space: nowrap;
     overflow: hidden;
@@ -633,19 +686,20 @@ select {
 
   .strategy-rail__field {
     position: relative;
-    min-width: 4.9rem;
+    min-width: 4.7rem;
   }
 
   .strategy-rail__field .field-input--compact {
-    padding: 0.56rem 1.7rem 0.56rem 0.68rem;
+    padding: 0.56rem 1.55rem 0.56rem 0.68rem;
     border-radius: 0.78rem;
-    font-size: 0.88rem;
+    font-size: 0.86rem;
+    font-variant-numeric: tabular-nums;
     text-align: right;
   }
 
   .strategy-rail__field-suffix {
     position: absolute;
-    right: 0.65rem;
+    right: 0.58rem;
     top: 50%;
     transform: translateY(-50%);
     color: var(--text-muted);
@@ -658,7 +712,7 @@ select {
 
   .strategy-rail__subrow {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(4.9rem, 5.3rem);
+    grid-template-columns: minmax(0, 1fr) auto minmax(4.7rem, 5rem);
     align-items: center;
     gap: 0.55rem;
     padding: 0 0.1rem 0.2rem 0.2rem;

@@ -468,6 +468,7 @@ export function Home() {
                   />
                   <span className="strategy-rail__field-suffix">{suffix}</span>
                 </div>
+                </div>
               </div>
 
               {showPreHitRow ? (

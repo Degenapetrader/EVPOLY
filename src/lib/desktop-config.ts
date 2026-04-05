@@ -195,7 +195,7 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     near_expiry_exit_window_sec: 86400,
     inventory_exit_mode: "normal",
     max_share_ratio: 0.05,
-    min_top_depth_usd: 100000,
+    min_top_depth_usd: 10000,
     quote_expiry_min_sec: 180,
     quote_expiry_max_sec: 300,
   },

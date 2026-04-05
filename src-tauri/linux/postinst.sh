@@ -7,6 +7,8 @@ XRDP_INI="/etc/xrdp/xrdp.ini"
 XRDP_INI_BACKUP="/etc/xrdp/xrdp.ini.evpoly.bak"
 XRDP_MARKER="# managed-by-evpoly"
 SKEL_XSESSION="/etc/skel/.xsession"
+SKEL_DESKTOP_DIR="/etc/skel/Desktop"
+EVPOLY_DESKTOP_SOURCE="/usr/share/applications/EVPoly.desktop"
 XSESSION_CONTENT="${XRDP_MARKER}
 startxfce4
 "
@@ -120,11 +122,171 @@ configure_user_xsession() {
   chmod 0644 "$user_home/.xsession" || true
 }
 
+write_evpoly_desktop_entry() {
+  target_path="$1"
+  cat > "$target_path" <<'EOF'
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=EVPoly
+Comment=Open EVPoly
+Exec=evpoly-desktop
+Icon=evpoly-desktop
+StartupNotify=true
+Terminal=false
+Categories=Office;Finance;
+OnlyShowIn=XFCE;
+X-XFCE-Source=file:///usr/share/applications/EVPoly.desktop
+EOF
+}
+
+configure_panel_launcher() {
+  user_home="$1"
+
+  panel_xml="$user_home/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml"
+  panel_dir="$user_home/.config/xfce4/panel"
+
+  [ -f "$panel_xml" ] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+
+  python3 - "$panel_xml" "$panel_dir" <<'PY'
+import os
+import sys
+import xml.etree.ElementTree as ET
+
+xml_path = sys.argv[1]
+panel_dir = sys.argv[2]
+launcher_file = "evpoly.desktop"
+
+tree = ET.parse(xml_path)
+root = tree.getroot()
+
+plugins_root = root.find("./property[@name='plugins']")
+panels_root = root.find("./property[@name='panels']")
+panel_two = panels_root.find("./property[@name='panel-2']") if panels_root is not None else None
+plugin_ids = panel_two.find("./property[@name='plugin-ids']") if panel_two is not None else None
+
+if plugins_root is None or plugin_ids is None:
+    sys.exit(0)
+
+for plugin in plugins_root.findall("./property"):
+    if plugin.get("value") != "launcher":
+        continue
+    items = plugin.find("./property[@name='items']")
+    if items is None:
+        continue
+    for value in items.findall("./value"):
+        if value.get("value") == launcher_file:
+            sys.exit(0)
+
+existing_ids = []
+for plugin in plugins_root.findall("./property"):
+    name = plugin.get("name", "")
+    if name.startswith("plugin-"):
+        try:
+            existing_ids.append(int(name.split("-", 1)[1]))
+        except ValueError:
+            pass
+
+plugin_id = max(existing_ids or [22]) + 1
+launcher_dir = os.path.join(panel_dir, f"launcher-{plugin_id}")
+os.makedirs(launcher_dir, exist_ok=True)
+launcher_path = os.path.join(launcher_dir, launcher_file)
+with open(launcher_path, "w", encoding="utf-8") as handle:
+    handle.write(
+        "[Desktop Entry]\n"
+        "Version=1.0\n"
+        "Type=Application\n"
+        "Name=EVPoly\n"
+        "Comment=Open EVPoly\n"
+        "Exec=evpoly-desktop\n"
+        "Icon=evpoly-desktop\n"
+        "StartupNotify=true\n"
+        "Terminal=false\n"
+        "Categories=Office;Finance;\n"
+        "OnlyShowIn=XFCE;\n"
+        "X-XFCE-Source=file:///usr/share/applications/EVPoly.desktop\n"
+    )
+
+new_plugin = ET.Element("property", {
+    "name": f"plugin-{plugin_id}",
+    "type": "string",
+    "value": "launcher",
+})
+items_prop = ET.SubElement(new_plugin, "property", {
+    "name": "items",
+    "type": "array",
+})
+ET.SubElement(items_prop, "value", {
+    "type": "string",
+    "value": launcher_file,
+})
+
+anchor_name = "plugin-21"
+inserted = False
+children = list(plugins_root)
+for idx, child in enumerate(children):
+    if child.get("name") == anchor_name:
+        plugins_root.insert(idx, new_plugin)
+        inserted = True
+        break
+if not inserted:
+    plugins_root.append(new_plugin)
+
+new_value = ET.Element("value", {"type": "int", "value": str(plugin_id)})
+id_children = list(plugin_ids)
+inserted = False
+for idx, child in enumerate(id_children):
+    if child.get("value") == "21":
+        plugin_ids.insert(idx, new_value)
+        inserted = True
+        break
+if not inserted:
+    plugin_ids.append(new_value)
+
+tree.write(xml_path, encoding="UTF-8", xml_declaration=True)
+PY
+}
+
+configure_user_shortcuts() {
+  user_name="$1"
+  user_home="$2"
+  user_uid="$3"
+  user_gid="$4"
+
+  [ -d "$user_home" ] || return 0
+
+  desktop_dir="$user_home/Desktop"
+  mkdir -p "$desktop_dir"
+  desktop_entry="$desktop_dir/EVPoly.desktop"
+  write_evpoly_desktop_entry "$desktop_entry"
+  chmod 0755 "$desktop_entry" || true
+  chown "$user_uid:$user_gid" "$desktop_entry" || true
+
+  panel_launcher_root="$user_home/.config/xfce4/panel"
+  mkdir -p "$panel_launcher_root"
+  configure_panel_launcher "$user_home"
+  find "$panel_launcher_root" -maxdepth 2 -type f -name 'evpoly.desktop' -exec chown "$user_uid:$user_gid" {} \; 2>/dev/null || true
+  find "$panel_launcher_root" -maxdepth 2 -type f -name 'evpoly.desktop' -exec chmod 0644 {} \; 2>/dev/null || true
+
+  user_runtime_dir="/run/user/$user_uid"
+  if [ -d "$user_runtime_dir" ] && command -v runuser >/dev/null 2>&1; then
+    runuser -u "$user_name" -- env \
+      DISPLAY=:0 \
+      XDG_RUNTIME_DIR="$user_runtime_dir" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_dir/bus" \
+      xfce4-panel -r >/dev/null 2>&1 || true
+  fi
+}
+
 configure_xsession_defaults() {
   write_file "$SKEL_XSESSION" "$XSESSION_CONTENT"
   chmod 0644 "$SKEL_XSESSION"
+  mkdir -p "$SKEL_DESKTOP_DIR"
+  write_evpoly_desktop_entry "$SKEL_DESKTOP_DIR/EVPoly.desktop"
+  chmod 0755 "$SKEL_DESKTOP_DIR/EVPoly.desktop"
 
-  getent passwd | while IFS=: read -r _ _ user_uid user_gid _ user_home user_shell; do
+  getent passwd | while IFS=: read -r user_name _ user_uid user_gid _ user_home user_shell; do
     case "$user_home" in
       /home/*) ;;
       *) continue ;;
@@ -136,6 +298,7 @@ configure_xsession_defaults() {
       continue
     fi
     configure_user_xsession "$user_home" "$user_uid" "$user_gid"
+    configure_user_shortcuts "$user_name" "$user_home" "$user_uid" "$user_gid"
   done
 }
 

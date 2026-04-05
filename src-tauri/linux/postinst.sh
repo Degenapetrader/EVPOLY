@@ -288,13 +288,13 @@ configure_user_shortcuts() {
       DISPLAY=:0 \
       XDG_RUNTIME_DIR="$user_runtime_dir" \
       DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_dir/bus" \
-      xfce4-panel -r >/dev/null 2>&1 || true
+      sh -lc 'xfce4-panel -r >/dev/null 2>&1 </dev/null &' || true
 
     runuser -u "$user_name" -- env \
       DISPLAY=:0 \
       XDG_RUNTIME_DIR="$user_runtime_dir" \
       DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_dir/bus" \
-      xfdesktop --reload >/dev/null 2>&1 || true
+      sh -lc 'xfdesktop --reload >/dev/null 2>&1 </dev/null &' || true
   fi
 }
 

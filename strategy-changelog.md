@@ -9,6 +9,13 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-04-05
+- `mm_sport_v1`: passive quote depth now follows the real two-level passive band instead of top-of-book only.
+  - BUY depth/ratio checks now aggregate visible bid depth from `best bid` through the passive quote price (`best bid - 1 tick`).
+  - passive SELL exits now record the same cumulative ask-side context from `best ask` through the passive exit price (`best ask + 1 tick`).
+  - hard thin-depth safety floor lowered from `$2,000` to `$1,000`.
+  - default configurable `EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD` lowered from `$100,000` to `$10,000` in env examples.
+
 ### 2026-04-01
 - `premarket_v1`: overlapping deterministic schedule slots now use timeframe priority instead of additive fanout.
   - Priority order: `4h > 1h > 15m > 5m`

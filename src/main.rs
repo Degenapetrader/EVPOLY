@@ -1255,7 +1255,7 @@ fn mm_sport_size_shares_from_pending(row: &PendingOrderRecord) -> Option<f64> {
     (shares.is_finite() && shares > 0.0).then_some(shares)
 }
 
-const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 2_000.0;
+const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 1_000.0;
 const MM_SPORT_LOW_DEPTH_QUOTE_SIZE_MULT: f64 = 1.2;
 const MM_SPORT_FORCE_EXIT_WINDOW_MS: i64 = 30 * 60 * 1_000;
 const MM_SPORT_EXIT_FALLBACK_REFRESH_MS: i64 = 60_000;
@@ -1512,6 +1512,37 @@ fn mm_sport_bid_depth_at_or_above(
         })
 }
 
+fn mm_sport_ask_depth_at_or_below(
+    orderbook: &polymarket_arbitrage_bot::models::OrderBook,
+    target_price: f64,
+    tick_size: f64,
+) -> (f64, f64) {
+    let tolerance = if tick_size.is_finite() && tick_size > 0.0 {
+        tick_size * 0.5
+    } else {
+        1e-9
+    };
+    orderbook
+        .asks
+        .iter()
+        .filter_map(|entry| {
+            let price = f64::try_from(entry.price).ok()?;
+            let size = f64::try_from(entry.size).ok()?;
+            if !price.is_finite()
+                || !size.is_finite()
+                || price <= 0.0
+                || size <= 0.0
+                || price - tolerance > target_price
+            {
+                return None;
+            }
+            Some((size, price * size))
+        })
+        .fold((0.0, 0.0), |(shares_acc, usd_acc), (shares, usd)| {
+            (shares_acc + shares, usd_acc + usd)
+        })
+}
+
 fn mm_sport_own_bid_depth_at_or_above(
     buy_rows: &[PendingOrderRecord],
     live_shares_by_order_id: Option<&std::collections::HashMap<String, f64>>,
@@ -1539,6 +1570,33 @@ fn mm_sport_own_bid_depth_at_or_above(
         })
 }
 
+fn mm_sport_own_ask_depth_at_or_below(
+    sell_rows: &[PendingOrderRecord],
+    live_shares_by_order_id: Option<&std::collections::HashMap<String, f64>>,
+    target_price: f64,
+    tick_size: f64,
+) -> (f64, f64) {
+    let tolerance = if tick_size.is_finite() && tick_size > 0.0 {
+        tick_size * 0.5
+    } else {
+        1e-9
+    };
+    sell_rows
+        .iter()
+        .filter(|row| {
+            row.price.is_finite() && row.price > 0.0 && row.price - tolerance <= target_price
+        })
+        .filter_map(|row| {
+            let shares = live_shares_by_order_id
+                .and_then(|live| live.get(row.order_id.trim()).copied())
+                .or_else(|| mm_sport_size_shares_from_pending(row))?;
+            (shares.is_finite() && shares > 0.0).then_some((shares, shares * row.price))
+        })
+        .fold((0.0, 0.0), |(shares_acc, usd_acc), (shares, usd)| {
+            (shares_acc + shares, usd_acc + usd)
+        })
+}
+
 fn mm_sport_external_bid_depth_at_or_above(
     orderbook: &polymarket_arbitrage_bot::models::OrderBook,
     buy_rows: &[PendingOrderRecord],
@@ -1550,6 +1608,26 @@ fn mm_sport_external_bid_depth_at_or_above(
         mm_sport_bid_depth_at_or_above(orderbook, target_price, tick_size);
     let (own_shares, own_usd) = mm_sport_own_bid_depth_at_or_above(
         buy_rows,
+        live_shares_by_order_id,
+        target_price,
+        tick_size,
+    );
+    let external_shares = (visible_shares - own_shares).max(0.0);
+    let external_usd = (visible_usd - own_usd).max(0.0);
+    (own_shares, external_shares, external_usd)
+}
+
+fn mm_sport_external_ask_depth_at_or_below(
+    orderbook: &polymarket_arbitrage_bot::models::OrderBook,
+    sell_rows: &[PendingOrderRecord],
+    live_shares_by_order_id: Option<&std::collections::HashMap<String, f64>>,
+    target_price: f64,
+    tick_size: f64,
+) -> (f64, f64, f64) {
+    let (visible_shares, visible_usd) =
+        mm_sport_ask_depth_at_or_below(orderbook, target_price, tick_size);
+    let (own_shares, own_usd) = mm_sport_own_ask_depth_at_or_below(
+        sell_rows,
         live_shares_by_order_id,
         target_price,
         tick_size,
@@ -16552,6 +16630,18 @@ async fn main() -> Result<()> {
 
                                 let desired_exit_usd =
                                     desired_exit_shares * exit_order_plan.submit_exit_price;
+                                let (_own_ask_shares, ext_top_ask_shares, ext_top_ask_usd) =
+                                    if exit_order_plan.submit_post_only {
+                                        mm_sport_external_ask_depth_at_or_below(
+                                            &book,
+                                            sell_rows.as_slice(),
+                                            None,
+                                            exit_order_plan.submit_exit_price,
+                                            market.minimum_tick_size,
+                                        )
+                                    } else {
+                                        (0.0, 0.0, 0.0)
+                                    };
                                 let mut keep_sell_id: Option<String> = None;
                                 let mut sell_cancel_rows = Vec::new();
                                 for row in &sell_rows {
@@ -16671,6 +16761,8 @@ async fn main() -> Result<()> {
                                                     "condition_id": market.condition_id,
                                                     "token_id": token_id,
                                                     "side": "SELL",
+                                                    "ext_top_ask_shares": ext_top_ask_shares,
+                                                    "ext_top_ask_usd": ext_top_ask_usd,
                                                     "post_only": exit_order_plan.submit_post_only,
                                                     "expiration_ts": expiration_ts,
                                                     "expiration_ms": expiration_ms,
@@ -16779,6 +16871,8 @@ async fn main() -> Result<()> {
                                                     "token_id": token_id,
                                                     "price": exit_order_plan.submit_exit_price,
                                                     "size_shares": desired_exit_shares,
+                                                    "ext_top_ask_shares": ext_top_ask_shares,
+                                                    "ext_top_ask_usd": ext_top_ask_usd,
                                                     "force_exit_mode": exit_order_plan.force_exit_mode,
                                                     "aggressive_mode": exit_order_plan.aggressive_mode,
                                                     "error_kind": error_kind,
@@ -35333,6 +35427,47 @@ mod tests {
         assert!((own_shares - 5.0).abs() < 1e-9);
         assert!((external_shares - 25.0).abs() < 1e-9);
         assert!((external_usd - 14.85).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mm_sport_external_ask_depth_at_or_below_combines_visible_levels_to_submit_price() {
+        let orderbook = polymarket_arbitrage_bot::models::OrderBook {
+            bids: vec![],
+            asks: vec![
+                polymarket_arbitrage_bot::models::OrderBookEntry {
+                    price: rust_decimal::Decimal::new(61, 2),
+                    size: rust_decimal::Decimal::new(10, 0),
+                },
+                polymarket_arbitrage_bot::models::OrderBookEntry {
+                    price: rust_decimal::Decimal::new(62, 2),
+                    size: rust_decimal::Decimal::new(20, 0),
+                },
+                polymarket_arbitrage_bot::models::OrderBookEntry {
+                    price: rust_decimal::Decimal::new(63, 2),
+                    size: rust_decimal::Decimal::new(30, 0),
+                },
+            ],
+        };
+        let own_row = polymarket_arbitrage_bot::tracking_db::PendingOrderRecord {
+            order_id: "own-62".to_string(),
+            trade_key: "test".to_string(),
+            token_id: "token".to_string(),
+            condition_id: Some("condition".to_string()),
+            timeframe: "1d".to_string(),
+            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
+            asset_symbol: Some("SPORT".to_string()),
+            entry_mode: "mm_sport".to_string(),
+            period_timestamp: 0,
+            price: 0.62,
+            size_usd: 6.2,
+            side: "SELL".to_string(),
+            status: "OPEN".to_string(),
+        };
+        let (own_shares, external_shares, external_usd) =
+            mm_sport_external_ask_depth_at_or_below(&orderbook, &[own_row], None, 0.62, 0.01);
+        assert!((own_shares - 10.0).abs() < 1e-9);
+        assert!((external_shares - 20.0).abs() < 1e-9);
+        assert!((external_usd - 12.3).abs() < 1e-9);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-name: Release EVPoly Desktop (Windows)
+name: Release EVPoly Desktop
 
 on:
   push:
@@ -33,9 +33,62 @@ jobs:
       - name: Fast gate checks
         run: INSTALL_DEPS=1 RUN_FRONTEND_BUILD=1 RUN_CARGO_CHECK=0 RUN_SMOKE=0 bash scripts/desktop-gate-fast.sh
 
+  linux-deb:
+    needs:
+      - preflight-linux-fast
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout desktop repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux system dependencies
+        run: bash scripts/install-linux-system-deps.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build EVPOLY sidecar (Linux)
+        run: bash scripts/build-sidecar-linux.sh
+
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Desktop tests
+        run: npm test
+
+      - name: Runtime smoke checks
+        run: bash scripts/smoke-release.sh
+
+      - name: Build and publish Ubuntu deb
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          args: --bundles deb
+          tagName: ${{ github.ref_name }}
+          releaseName: "EVPoly Desktop ${{ github.ref_name }}"
+          releaseBody: "Desktop installers for EVPoly. Windows ships as an NSIS .exe and Ubuntu XFCE ships as a .deb package."
+          releaseDraft: false
+          prerelease: false
+
+      - name: Ubuntu deb smoke
+        run: bash scripts/smoke-installer-linux.sh
+
   windows-installer:
     needs:
       - preflight-linux-fast
+      - linux-deb
     runs-on: windows-latest
 
     steps:
@@ -98,7 +151,7 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "EVPoly Desktop ${{ github.ref_name }}"
-          releaseBody: "Windows one-click installer (.exe) for EVPoly Desktop."
+          releaseBody: "Desktop installers for EVPoly. Windows ships as an NSIS .exe and Ubuntu XFCE ships as a .deb package."
           releaseDraft: false
           prerelease: false
 

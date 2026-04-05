@@ -7,18 +7,34 @@ use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
+#[cfg(not(target_os = "windows"))]
+use std::ffi::OsString;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
+#[cfg(target_os = "windows")]
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+#[cfg(not(target_os = "windows"))]
+use sysinfo::System;
 use tauri::AppHandle;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+#[cfg(target_os = "windows")]
+const BOT_PROCESS_NAMES: [&str; 2] = ["evpoly-bot.exe", "evpoly-bot-real.exe"];
+#[cfg(not(target_os = "windows"))]
+const BOT_PROCESS_NAMES: [&str; 5] = [
+    "evpoly-bot",
+    "evpoly-bot-real",
+    "polymarket-arbitrage-bot",
+    "evpoly-bot-x86_64-unknown-linux-gnu",
+    "evpoly-bot-aarch64-unknown-linux-gnu",
+];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum BotStatus {
@@ -337,6 +353,8 @@ impl BotManager {
     }
 
     fn reconcile_runtime_state(&self) {
+        let config_marker = runtime_config_marker(&self.data_dir);
+
         #[cfg(target_os = "windows")]
         {
             let current_status = match self.inner.lock() {
@@ -347,15 +365,9 @@ impl BotManager {
                 return;
             }
 
-            let config_marker = self
-                .data_dir
-                .join("runtime.config.json")
-                .to_string_lossy()
-                .to_string();
-            let Some(processes_running) = windows_processes_running(
-                &["evpoly-bot.exe", "evpoly-bot-real.exe"],
-                &config_marker,
-            ) else {
+            let Some(processes_running) =
+                windows_processes_running(&BOT_PROCESS_NAMES, &config_marker)
+            else {
                 return;
             };
 
@@ -371,10 +383,7 @@ impl BotManager {
             if processes_running {
                 drop(inner);
                 self.force_cleanup_orphan_processes();
-                if let Some(false) = windows_processes_running(
-                    &["evpoly-bot.exe", "evpoly-bot-real.exe"],
-                    &config_marker,
-                ) {
+                if let Some(false) = windows_processes_running(&BOT_PROCESS_NAMES, &config_marker) {
                     if let Ok(mut inner) = self.inner.lock() {
                         finalize_stop(&mut inner);
                     }
@@ -386,11 +395,38 @@ impl BotManager {
 
         #[cfg(not(target_os = "windows"))]
         {
+            let current_status = match self.inner.lock() {
+                Ok(inner) => inner.status.clone(),
+                Err(_) => return,
+            };
+            if current_status != BotStatus::Stopping {
+                return;
+            }
+
+            let Some(processes_running) =
+                unix_processes_running(&BOT_PROCESS_NAMES, &config_marker)
+            else {
+                return;
+            };
+
             let mut inner = match self.inner.lock() {
                 Ok(inner) => inner,
                 Err(_) => return,
             };
-            if inner.status == BotStatus::Stopping && inner.child.is_none() {
+
+            if inner.status != BotStatus::Stopping {
+                return;
+            }
+
+            if processes_running {
+                drop(inner);
+                self.force_cleanup_orphan_processes();
+                if let Some(false) = unix_processes_running(&BOT_PROCESS_NAMES, &config_marker) {
+                    if let Ok(mut inner) = self.inner.lock() {
+                        finalize_stop(&mut inner);
+                    }
+                }
+            } else {
                 finalize_stop(&mut inner);
             }
         }
@@ -399,12 +435,20 @@ impl BotManager {
     fn force_cleanup_orphan_processes(&self) {
         #[cfg(target_os = "windows")]
         {
-            let config_marker = self
-                .data_dir
-                .join("runtime.config.json")
-                .to_string_lossy()
-                .to_string();
-            if windows_stop_processes(&["evpoly-bot.exe", "evpoly-bot-real.exe"], &config_marker) {
+            let config_marker = runtime_config_marker(&self.data_dir);
+            if windows_stop_processes(&BOT_PROCESS_NAMES, &config_marker) {
+                append_debug_line(
+                    &self.data_dir.join("evpoly-debug.log.txt"),
+                    "SYSTEM",
+                    "forced bot orphan cleanup via process scan",
+                );
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let config_marker = runtime_config_marker(&self.data_dir);
+            if unix_stop_processes(&BOT_PROCESS_NAMES, &config_marker) {
                 append_debug_line(
                     &self.data_dir.join("evpoly-debug.log.txt"),
                     "SYSTEM",
@@ -461,6 +505,13 @@ fn ensure_bot_runtime_dirs(data_dir: &PathBuf) -> Result<(), String> {
     std::fs::create_dir_all(data_dir.join("history"))
         .map_err(|e| format!("prepare bot history directory: {e}"))?;
     Ok(())
+}
+
+fn runtime_config_marker(data_dir: &PathBuf) -> String {
+    data_dir
+        .join("runtime.config.json")
+        .to_string_lossy()
+        .to_string()
 }
 
 fn shutdown_request_context(env_path: &PathBuf) -> Result<Option<BotRequestContext>, String> {
@@ -595,6 +646,65 @@ fn windows_stop_processes(image_names: &[&str], command_marker: &str) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+fn process_name_matches(process_name: &str, image_names: &[&str]) -> bool {
+    let normalized = process_name.trim().to_ascii_lowercase();
+    image_names.iter().any(|name| {
+        let image = name.trim().to_ascii_lowercase();
+        normalized == image || normalized.starts_with(&format!("{image}-"))
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn unix_process_matches(
+    process_name: &str,
+    command_line: &[OsString],
+    image_names: &[&str],
+    command_marker: &str,
+) -> bool {
+    process_name_matches(process_name, image_names)
+        && command_line
+            .iter()
+            .any(|arg| arg.to_string_lossy().contains(command_marker))
+}
+
+#[cfg(not(target_os = "windows"))]
+fn unix_matching_bot_pids(
+    system: &System,
+    image_names: &[&str],
+    command_marker: &str,
+) -> Vec<sysinfo::Pid> {
+    system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            let process_name = process.name().to_string_lossy();
+            unix_process_matches(&process_name, process.cmd(), image_names, command_marker)
+                .then_some(*pid)
+        })
+        .collect()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn unix_processes_running(image_names: &[&str], command_marker: &str) -> Option<bool> {
+    let system = System::new_all();
+    Some(!unix_matching_bot_pids(&system, image_names, command_marker).is_empty())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn unix_stop_processes(image_names: &[&str], command_marker: &str) -> bool {
+    let mut system = System::new_all();
+    let pids = unix_matching_bot_pids(&system, image_names, command_marker);
+    let mut stopped = false;
+
+    for pid in pids {
+        if let Some(process) = system.process(pid) {
+            stopped |= process.kill();
+        }
+    }
+
+    stopped
 }
 
 fn read_env_file_pairs(path: &PathBuf) -> Result<HashMap<String, String>, String> {
@@ -755,7 +865,7 @@ fn json_value_to_query_pair(key: &str, value: &Value) -> Option<(String, String)
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_bot_runtime_dirs;
+    use super::{ensure_bot_runtime_dirs, process_name_matches};
 
     #[test]
     fn ensure_bot_runtime_dirs_creates_history_subdir() {
@@ -774,5 +884,21 @@ mod tests {
         assert!(temp_dir.join("history").exists());
 
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn process_name_matches_accepts_linux_sidecar_suffixes() {
+        assert!(process_name_matches(
+            "evpoly-bot-x86_64-unknown-linux-gnu",
+            &["evpoly-bot", "polymarket-arbitrage-bot"]
+        ));
+        assert!(process_name_matches(
+            "polymarket-arbitrage-bot",
+            &["evpoly-bot", "polymarket-arbitrage-bot"]
+        ));
+        assert!(!process_name_matches(
+            "random-helper",
+            &["evpoly-bot", "polymarket-arbitrage-bot"]
+        ));
     }
 }

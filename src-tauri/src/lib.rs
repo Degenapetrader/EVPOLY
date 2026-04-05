@@ -471,7 +471,9 @@ fn normalize_weekend_policy(value: Option<&str>) -> String {
 }
 
 fn default_weekend_policy() -> String {
-    normalize_weekend_policy(config_io::env_template_default_string(WEEKEND_POLICY_ENV_KEY).as_deref())
+    normalize_weekend_policy(
+        config_io::env_template_default_string(WEEKEND_POLICY_ENV_KEY).as_deref(),
+    )
 }
 
 fn default_premarket_ladder_mode(env_key: &str) -> String {
@@ -1440,7 +1442,9 @@ fn desktop_config_to_profile_payload(
     );
     strategy.insert(
         WEEKEND_POLICY_ENV_KEY.to_string(),
-        Value::String(normalize_weekend_policy(Some(config.weekend_policy.as_str()))),
+        Value::String(normalize_weekend_policy(Some(
+            config.weekend_policy.as_str(),
+        ))),
     );
     strategy.insert("POLY_ENABLE_ETH_TRADING".to_string(), bool_to_json(has_eth));
     strategy.insert(
@@ -4240,9 +4244,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_desktop_config, desktop_config_to_profile_payload,
-        infer_premarket_ladder_mode_5m, infer_premarket_ladder_mode_non_m5, merge_config_object,
-        merge_desktop_secrets,
+        default_desktop_config, desktop_config_to_profile_payload, infer_premarket_ladder_mode_5m,
+        infer_premarket_ladder_mode_non_m5, merge_config_object, merge_desktop_secrets,
         premarket_default_ladder_prices_m5, premarket_default_ladder_prices_non_m5,
         premarket_default_ladder_weights, premarket_ladder_prices_for_mode,
         remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,

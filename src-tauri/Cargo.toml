@@ -35,3 +35,4 @@ dirs = "5"
 uuid = { version = "1", features = ["v4"] }
 ethers-signers = "2.0"
 zeroize = "1"
+sysinfo = "0.30"

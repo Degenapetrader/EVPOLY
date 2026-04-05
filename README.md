@@ -20,6 +20,13 @@ Setup Doctor:
 
 See [docs/setup_doctor.md](./docs/setup_doctor.md) for user guidance and AI-helper notes.
 
+## Ubuntu XFCE Install
+
+For the noob-friendly Linux path, use the packaged Ubuntu installer instead of building from source.
+
+- User install guide: [docs/linux-install.md](./docs/linux-install.md)
+- Supported desktop target: `Ubuntu 24.04 XFCE x86_64`
+
 ## Restricted Jurisdictions
 
 EVPoly is unavailable in certain restricted jurisdictions due to regulatory, sanctions, or platform restrictions. Use from restricted jurisdictions, or use of VPNs and proxies to bypass geographic restrictions, is prohibited.
@@ -31,7 +38,7 @@ EVPoly is unavailable in certain restricted jurisdictions due to regulatory, san
 
 - [Rust](https://rustup.rs/) (stable)
 - [Node.js](https://nodejs.org/) >= 18
-- Linux: `sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf`
+- Linux dev/build deps: `bash scripts/install-linux-system-deps.sh`
 
 ## Development
 
@@ -77,6 +84,7 @@ git push origin UI-v1.0.0
 ```
 
 The GitHub workflow builds and publishes a **Windows NSIS installer (.exe)** on tag push.
+The release workflow also publishes an **Ubuntu XFCE `.deb` installer** on the same tag.
 
 ### Fast Release Lane (Recommended for Hotfixes)
 
@@ -101,6 +109,13 @@ Both `UI-v*` and `UI-hotfix-v*` trigger the release workflow. The fast lane now 
 - The app bundles the EVPOLY bot as a Windows sidecar:
   - `src-tauri/binaries/evpoly-bot-x86_64-pc-windows-msvc.exe`
 - Release pipeline auto-builds this sidecar from `Degenapetrader/EVPOLY` main during CI.
+
+### One-Click Ubuntu Installer
+
+- The Linux installer target is Debian (`.deb`) for `Ubuntu 24.04 XFCE x86_64`.
+- The app bundles the EVPOLY bot as a Linux sidecar:
+  - `src-tauri/binaries/evpoly-bot-x86_64-unknown-linux-gnu`
+- Release pipeline auto-builds this sidecar and packages it into the `.deb` artifact during CI.
 
 ### Required GitHub Secrets (for updater signing)
 

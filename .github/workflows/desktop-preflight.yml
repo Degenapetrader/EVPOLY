@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - desktop
+      - Linux
   pull_request:
     branches:
       - desktop
+      - Linux
   workflow_dispatch:
     inputs:
       full_smoke:
@@ -66,11 +68,20 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.full_smoke == true }}
     needs:
       - preflight-linux-fast
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout desktop repo
         uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        run: bash scripts/install-linux-system-deps.sh
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -78,5 +89,20 @@ jobs:
       - name: Build EVPOLY sidecar (Linux)
         run: bash scripts/build-sidecar-linux.sh
 
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Desktop tests
+        run: npm test
+
+      - name: Cargo tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --quiet
+
       - name: Runtime smoke checks
         run: bash scripts/smoke-release.sh
+
+      - name: Build Ubuntu deb
+        run: npm run tauri:build -- --bundles deb
+
+      - name: Ubuntu deb smoke
+        run: bash scripts/smoke-installer-linux.sh

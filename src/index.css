@@ -656,7 +656,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
   .strategy-rail__row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(6.15rem, 6.65rem);
+    grid-template-columns: minmax(0, 1fr) auto minmax(6.5rem, 7.2rem);
     align-items: center;
     gap: 0.55rem;
     padding: 0.2rem 0.1rem 0.2rem 0.2rem;
@@ -689,14 +689,21 @@ input[type="number"]::-webkit-inner-spin-button {
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: center;
     gap: 0.38rem;
-    min-width: 6.15rem;
+    min-width: 6.5rem;
   }
 
   .strategy-rail__field {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.38rem;
     min-width: 0;
   }
 
   .strategy-rail__field .field-input--compact {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 0;
     padding: 0.56rem 0.68rem;
     border-radius: 0.78rem;
     font-size: 0.86rem;
@@ -705,6 +712,8 @@ input[type="number"]::-webkit-inner-spin-button {
   }
 
   .strategy-rail__field-suffix {
+    flex: 0 0 auto;
+    white-space: nowrap;
     color: var(--text-muted);
     font-size: 0.7rem;
     font-weight: 700;
@@ -717,7 +726,7 @@ input[type="number"]::-webkit-inner-spin-button {
 
   .strategy-rail__subrow {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(6.15rem, 6.65rem);
+    grid-template-columns: minmax(0, 1fr) auto minmax(6.5rem, 7.2rem);
     align-items: center;
     gap: 0.55rem;
     padding: 0 0.1rem 0.2rem 0.2rem;

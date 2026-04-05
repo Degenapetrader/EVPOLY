@@ -458,15 +458,14 @@ export function Home() {
                           )
                         )
                       }
-                      disabled={!canOperate}
-                      className="field-input field-input--compact"
-                      title={
-                        strategy.key === "endgame"
-                          ? `Split ${formatEndgameSplitTooltip(config)}`
-                          : controlTitle
-                      }
-                    />
-                  </div>
+                    disabled={!canOperate}
+                    className="field-input field-input--compact"
+                    title={
+                      strategy.key === "endgame"
+                        ? `Split ${formatEndgameSplitTooltip(config)}`
+                        : controlTitle
+                    }
+                  />
                   <span className="strategy-rail__field-suffix">{suffix}</span>
                 </div>
               </div>

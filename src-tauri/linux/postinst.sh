@@ -3,6 +3,8 @@ set -eu
 
 XRDP_STARTWM="/etc/xrdp/startwm.sh"
 XRDP_STARTWM_BACKUP="/etc/xrdp/startwm.sh.evpoly.bak"
+XRDP_INI="/etc/xrdp/xrdp.ini"
+XRDP_INI_BACKUP="/etc/xrdp/xrdp.ini.evpoly.bak"
 XRDP_MARKER="# managed-by-evpoly"
 SKEL_XSESSION="/etc/skel/.xsession"
 XSESSION_CONTENT="${XRDP_MARKER}
@@ -27,10 +29,24 @@ write_file() {
   printf "%s" "$file_content" > "$target_path"
 }
 
-configure_xrdp_session() {
-  if [ -f "$XRDP_STARTWM" ] && ! grep -q "$XRDP_MARKER" "$XRDP_STARTWM"; then
-    cp -f "$XRDP_STARTWM" "$XRDP_STARTWM_BACKUP"
+backup_once() {
+  source_path="$1"
+  backup_path="$2"
+  if [ -f "$source_path" ] && [ ! -f "$backup_path" ]; then
+    cp -f "$source_path" "$backup_path"
   fi
+}
+
+configure_xrdp_ini() {
+  backup_once "$XRDP_INI" "$XRDP_INI_BACKUP"
+
+  if [ -f "$XRDP_INI" ]; then
+    sed -i 's/^autorun=.*/autorun=Xorg/' "$XRDP_INI"
+  fi
+}
+
+configure_xrdp_session() {
+  backup_once "$XRDP_STARTWM" "$XRDP_STARTWM_BACKUP"
 
   cat > "$XRDP_STARTWM" <<'EOF'
 #!/bin/sh
@@ -41,6 +57,37 @@ fi
 if [ -r "$HOME/.profile" ]; then
   . "$HOME/.profile"
 fi
+
+set_rdp_scaling() {
+  if ! command -v xrandr >/dev/null 2>&1; then
+    return 0
+  fi
+
+  MODE="$(xrandr --current 2>/dev/null | awk '/\*/ { print $1; exit }')"
+  WIDTH="${MODE%x*}"
+  HEIGHT="${MODE#*x}"
+
+  case "${WIDTH:-}" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  case "${HEIGHT:-}" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+
+  if [ "$WIDTH" -ge 3000 ] || [ "$HEIGHT" -ge 1800 ]; then
+    export GDK_SCALE=2
+    export QT_AUTO_SCREEN_SCALE_FACTOR=0
+    export QT_SCALE_FACTOR=2
+    export XCURSOR_SIZE=48
+  elif [ "$WIDTH" -ge 2200 ] || [ "$HEIGHT" -ge 1400 ]; then
+    export GDK_SCALE=2
+    export QT_AUTO_SCREEN_SCALE_FACTOR=0
+    export QT_SCALE_FACTOR=1.5
+    export XCURSOR_SIZE=36
+  fi
+}
+
+set_rdp_scaling
 exec startxfce4
 EOF
   chmod 0755 "$XRDP_STARTWM"
@@ -101,6 +148,13 @@ configure_firewall() {
   fi
 }
 
+configure_xrdp_tls() {
+  if command -v getent >/dev/null 2>&1 && getent group ssl-cert >/dev/null 2>&1 && id xrdp >/dev/null 2>&1; then
+    log "granting xrdp access to TLS private key"
+    usermod -a -G ssl-cert xrdp >/dev/null 2>&1 || true
+  fi
+}
+
 enable_xrdp_services() {
   if ! systemd_available; then
     log "systemd is unavailable in this environment; skipping xrdp auto-start"
@@ -117,8 +171,10 @@ enable_xrdp_services() {
 
 case "${1:-configure}" in
   configure|abort-upgrade|abort-remove|abort-deconfigure)
+    configure_xrdp_ini
     configure_xrdp_session
     configure_xsession_defaults
+    configure_xrdp_tls
     configure_firewall
     enable_xrdp_services
     log "EVPoly Remote Desktop is ready on TCP 3389"

@@ -3,6 +3,8 @@ set -eu
 
 XRDP_STARTWM="/etc/xrdp/startwm.sh"
 XRDP_STARTWM_BACKUP="/etc/xrdp/startwm.sh.evpoly.bak"
+XRDP_INI="/etc/xrdp/xrdp.ini"
+XRDP_INI_BACKUP="/etc/xrdp/xrdp.ini.evpoly.bak"
 XRDP_MARKER="# managed-by-evpoly"
 
 log() {
@@ -29,6 +31,12 @@ restore_xrdp_session() {
   fi
 }
 
+restore_xrdp_ini() {
+  if [ -f "$XRDP_INI_BACKUP" ]; then
+    mv -f "$XRDP_INI_BACKUP" "$XRDP_INI"
+  fi
+}
+
 case "${1:-}" in
   remove|purge)
     if systemd_available; then
@@ -39,6 +47,7 @@ case "${1:-}" in
       systemctl disable xrdp-sesman >/dev/null 2>&1 || true
     fi
     restore_xrdp_session
+    restore_xrdp_ini
     ;;
   upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
     ;;

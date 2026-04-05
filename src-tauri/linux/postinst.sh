@@ -88,6 +88,21 @@ set_rdp_scaling() {
 }
 
 set_rdp_scaling
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+unset DESKTOP_SESSION
+export XDG_CURRENT_DESKTOP=XFCE
+export XDG_SESSION_DESKTOP=xfce
+export XDG_SESSION_TYPE=x11
+
+if command -v dbus-run-session >/dev/null 2>&1; then
+  exec dbus-run-session -- startxfce4
+fi
+
+if command -v dbus-launch >/dev/null 2>&1; then
+  exec dbus-launch --exit-with-session startxfce4
+fi
+
 exec startxfce4
 EOF
   chmod 0755 "$XRDP_STARTWM"

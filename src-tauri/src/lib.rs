@@ -3,6 +3,7 @@ pub mod bot_manager;
 pub mod config_io;
 pub mod crypto_vault;
 pub mod geo_access;
+pub mod liquidity_rewards;
 pub mod log_stream;
 pub mod onboard;
 pub mod portfolio_api;
@@ -13,10 +14,11 @@ pub mod wallet_sync;
 use crate::auth::AppAuth;
 use crate::bot_manager::BotManager;
 use crate::geo_access::GeoAccessStatus;
+use crate::liquidity_rewards::{LiquidityRewardsCacheEntry, LiquidityRewardsQuery};
 use crate::profile_manager::{Profile, ProfileManager};
 use crate::wallet_sync::{WalletSyncManager, WalletSyncRuntimeConfig};
 
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use ethers_signers::{LocalWallet, Signer};
 use std::collections::HashMap;
 use std::path::Path;
@@ -34,6 +36,8 @@ use tauri::{AppHandle, Manager, State};
 struct AppDataDir(PathBuf);
 #[derive(Default)]
 struct MarketMetadataState(Mutex<HashMap<String, MarketMetadata>>);
+#[derive(Default)]
+struct LiquidityRewardsState(Mutex<Option<LiquidityRewardsCacheEntry>>);
 
 type AuthState = Arc<Mutex<AppAuth>>;
 type ProfileState = Arc<Mutex<ProfileManager>>;
@@ -2279,6 +2283,77 @@ fn query_ack_latency_summary(conn: &Connection) -> (u64, Option<f64>) {
     .unwrap_or((0, None))
 }
 
+fn profile_created_date(profile: &Profile) -> Option<NaiveDate> {
+    DateTime::parse_from_rfc3339(profile.created_at.as_str())
+        .ok()
+        .map(|dt| dt.date_naive())
+}
+
+fn earliest_local_activity_date(conn: &Connection) -> Option<NaiveDate> {
+    let earliest_ts_ms = conn
+        .query_row(
+            "SELECT MIN(ts_ms) FROM trade_events WHERE ts_ms IS NOT NULL",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()?;
+    Utc.timestamp_millis_opt(earliest_ts_ms)
+        .single()
+        .map(|dt| dt.date_naive())
+}
+
+fn liquidity_rewards_start_date(profile: &Profile, conn: Option<&Connection>) -> NaiveDate {
+    let today = Utc::now().date_naive();
+    let profile_date = profile_created_date(profile).unwrap_or(today);
+    let db_date = conn
+        .and_then(earliest_local_activity_date)
+        .unwrap_or(profile_date);
+    profile_date.min(db_date).min(today)
+}
+
+fn build_liquidity_rewards_query(
+    profile: &Profile,
+    auth: &AppAuth,
+    db_path: &Path,
+) -> Result<LiquidityRewardsQuery, String> {
+    let secrets = decrypt_profile_secrets(profile, auth)?;
+    let private_key = secrets
+        .get("POLY_PRIVATE_KEY")
+        .cloned()
+        .ok_or_else(|| "missing POLY_PRIVATE_KEY in profile secrets".to_string())?;
+
+    let start_date = Connection::open(db_path)
+        .ok()
+        .as_ref()
+        .map(|conn| liquidity_rewards_start_date(profile, Some(conn)))
+        .unwrap_or_else(|| liquidity_rewards_start_date(profile, None));
+
+    Ok(LiquidityRewardsQuery {
+        private_key,
+        maker_address: profile.primary_wallet_address(),
+        signature_type: profile.signature_type,
+        start_date,
+    })
+}
+
+async fn load_liquidity_rewards_overview(
+    query: &LiquidityRewardsQuery,
+    cache: &Mutex<Option<LiquidityRewardsCacheEntry>>,
+) -> Result<(Option<f64>, Option<f64>, Option<String>), String> {
+    let cached = cache.lock().map_err(|e| e.to_string())?.clone();
+    let summary: liquidity_rewards::LiquidityRewardsSummary =
+        liquidity_rewards::fetch_summary(query, cached)
+            .await
+            .map_err(|e| e.to_string())?;
+    *cache.lock().map_err(|e| e.to_string())? = Some(summary.cache.clone());
+    Ok((
+        Some(summary.today_rewards_usd),
+        Some(summary.lifetime_rewards_usd),
+        Some(summary.as_of_utc),
+    ))
+}
+
 fn count_unknown_ack_warnings(data_dir: &Path, max_lines: usize) -> usize {
     let path = data_dir.join(FULL_DEBUG_LOG_NAME);
     let batch = match log_stream::read_log_tail(&path, None, max_lines.max(1)) {
@@ -2716,8 +2791,10 @@ fn build_home_activity_batch(
 async fn build_home_overview_payload(
     app: AppHandle,
     bot: State<'_, BotState>,
+    auth: State<'_, AuthState>,
     profiles: State<'_, ProfileState>,
     wallet_sync: State<'_, WalletSyncState>,
+    liquidity_rewards: State<'_, LiquidityRewardsState>,
     data_dir: State<'_, AppDataDir>,
 ) -> Result<serde_json::Value, String> {
     let bot_snapshot = {
@@ -2750,6 +2827,10 @@ async fn build_home_overview_payload(
             "available_balance": Value::Null,
             "total_equity": Value::Null,
             "pnl_today_utc": 0.0,
+            "liquidity_rewards_today": Value::Null,
+            "liquidity_rewards_lifetime": Value::Null,
+            "liquidity_rewards_as_of_utc": Value::Null,
+            "liquidity_rewards_error": Value::Null,
             "bot_state": bot_snapshot.0,
             "mode": "dry_run",
             "active_strategy_count": 0,
@@ -2769,6 +2850,18 @@ async fn build_home_overview_payload(
     };
 
     let wallet_address = profile.primary_wallet_address();
+    let db_path = resolve_tracking_db_path(&data_dir.0);
+    let rewards_query = {
+        let auth = auth.lock().map_err(|e| e.to_string())?;
+        build_liquidity_rewards_query(&profile, &auth, &db_path)?
+    };
+    let rewards_result = tokio::time::timeout(
+        Duration::from_secs(20),
+        load_liquidity_rewards_overview(&rewards_query, &liquidity_rewards.0),
+    )
+    .await
+    .map_err(|_| "liquidity rewards refresh timed out".to_string());
+
     let (available_balance_result, portfolio_value_result) = tokio::join!(
         tokio::time::timeout(Duration::from_secs(15), get_wallet_balance(app.clone())),
         tokio::time::timeout(
@@ -2790,8 +2883,6 @@ async fn build_home_overview_payload(
         (Some(available), Some(portfolio)) => Some(available + portfolio),
         _ => None,
     };
-
-    let db_path = resolve_tracking_db_path(&data_dir.0);
     let (pnl_today_utc, ack_sample_count, avg_ack_latency_ms) = Connection::open(&db_path)
         .ok()
         .map(|conn| {
@@ -2800,6 +2891,16 @@ async fn build_home_overview_payload(
             (pnl, ack_count, ack_avg)
         })
         .unwrap_or((0.0, 0, None));
+    let (
+        liquidity_rewards_today,
+        liquidity_rewards_lifetime,
+        liquidity_rewards_as_of_utc,
+        liquidity_rewards_error,
+    ) = match rewards_result {
+        Ok(Ok((today, lifetime, as_of_utc))) => (today, lifetime, as_of_utc, None),
+        Ok(Err(err)) => (None, None, None, Some(err)),
+        Err(err) => (None, None, None, Some(err)),
+    };
     let mode = match bot_snapshot.1 {
         Some(true) => "dry_run",
         Some(false) => "live",
@@ -2812,6 +2913,9 @@ async fn build_home_overview_payload(
     }
     if let Err(err) = &portfolio_value_result {
         warnings.push(format!("Portfolio value degraded: {err}"));
+    }
+    if let Some(err) = &liquidity_rewards_error {
+        warnings.push(format!("Liquidity rewards degraded: {err}"));
     }
     if recent_unknown_ack_count > 0 {
         warnings.push(format!(
@@ -2828,6 +2932,10 @@ async fn build_home_overview_payload(
         "available_balance": available_balance,
         "total_equity": total_equity,
         "pnl_today_utc": pnl_today_utc,
+        "liquidity_rewards_today": liquidity_rewards_today,
+        "liquidity_rewards_lifetime": liquidity_rewards_lifetime,
+        "liquidity_rewards_as_of_utc": liquidity_rewards_as_of_utc,
+        "liquidity_rewards_error": liquidity_rewards_error,
         "bot_state": bot_snapshot.0,
         "mode": mode,
         "active_strategy_count": count_enabled_strategies(&profile),
@@ -3904,11 +4012,22 @@ async fn get_wallet_balance(app: AppHandle) -> Result<f64, String> {
 async fn get_home_overview(
     app: AppHandle,
     bot: State<'_, BotState>,
+    auth: State<'_, AuthState>,
     profiles: State<'_, ProfileState>,
     wallet_sync: State<'_, WalletSyncState>,
+    liquidity_rewards: State<'_, LiquidityRewardsState>,
     data_dir: State<'_, AppDataDir>,
 ) -> Result<serde_json::Value, String> {
-    build_home_overview_payload(app, bot, profiles, wallet_sync, data_dir).await
+    build_home_overview_payload(
+        app,
+        bot,
+        auth,
+        profiles,
+        wallet_sync,
+        liquidity_rewards,
+        data_dir,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -4063,6 +4182,7 @@ pub fn run() {
         .manage(bot)
         .manage(wallet_sync)
         .manage(MarketMetadataState::default())
+        .manage(LiquidityRewardsState::default())
         .setup(|app| {
             let status_item =
                 MenuItem::with_id(app, "status", "EVPoly: Stopped", false, None::<&str>)?;

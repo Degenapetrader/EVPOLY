@@ -68,17 +68,17 @@ jobs:
       - name: Runtime smoke checks
         run: bash scripts/smoke-release.sh
 
-      - name: Build and publish Ubuntu deb
+      - name: Build and publish Ubuntu deb + AppImage
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          args: --bundles deb
+          args: --bundles deb,appimage
           tagName: ${{ github.ref_name }}
           releaseName: "EVPoly Linux ${{ github.ref_name }}"
-          releaseBody: "Ubuntu XFCE .deb installer for EVPoly Linux. Includes the EVPoly desktop app, bundled bot sidecar, and Remote Desktop support."
+          releaseBody: "Ubuntu XFCE .deb installer plus AppImage updater artifact for EVPoly Linux. Includes the EVPoly desktop app, bundled bot sidecar, and Remote Desktop support."
           releaseDraft: false
           prerelease: false
 

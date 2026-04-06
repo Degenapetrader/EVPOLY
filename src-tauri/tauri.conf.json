@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "EVPoly",
-  "version": "1.0.33",
+  "version": "1.0.34",
   "identifier": "com.evpoly.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -32,7 +32,8 @@
     "active": true,
     "targets": [
       "nsis",
-      "deb"
+      "deb",
+      "appimage"
     ],
     "createUpdaterArtifacts": true,
     "category": "Finance",

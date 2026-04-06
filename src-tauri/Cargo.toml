@@ -1,6 +1,6 @@
 [package]
 name = "evpoly-desktop"
-version = "1.0.28"
+version = "1.0.29"
 description = "EVPoly Desktop - Cross-platform trading bot manager"
 authors = ["Degenapetrader"]
 license = "SEE LICENSE"
@@ -20,6 +20,7 @@ tauri = { version = "2", features = ["tray-icon", "custom-protocol"] }
 tauri-plugin-log = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
+anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"
@@ -35,3 +36,10 @@ dirs = "5"
 uuid = { version = "1", features = ["v4"] }
 ethers-signers = "2.0"
 zeroize = "1"
+alloy-primitives = "1.0.27"
+alloy-signer = "1.0.27"
+alloy-signer-local = "1.0.27"
+hmac = "0.12"
+polymarket-client-sdk = { version = "0.4.4", features = ["clob"] }
+secrecy = "0.10"
+sha2 = "0.10"

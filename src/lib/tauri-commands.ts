@@ -68,6 +68,10 @@ export interface HomeOverview {
   available_balance: number | null;
   total_equity: number | null;
   pnl_today_utc: number;
+  liquidity_rewards_today: number | null;
+  liquidity_rewards_lifetime: number | null;
+  liquidity_rewards_as_of_utc: string | null;
+  liquidity_rewards_error: string | null;
   bot_state: string;
   mode: "live" | "dry_run" | string;
   active_strategy_count: number;

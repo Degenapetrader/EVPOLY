@@ -530,7 +530,7 @@ export function Home() {
 
   const renderOverview = () => (
     <div className="page-stack">
-      <div className="grid gap-4 xl:grid-cols-4">
+      <div className="grid gap-4 xl:grid-cols-5">
         <SectionPanel title="Portfolio" subtitle="Total account value across cash and open positions.">
           <div className="text-4xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
             {formatUsd(overview?.total_equity)}
@@ -567,6 +567,34 @@ export function Home() {
           <div className="mt-3 text-sm text-[var(--text-secondary)]">
             {overview?.active_strategy_count ?? 0} active strategies
           </div>
+        </SectionPanel>
+
+        <SectionPanel
+          title="Liquidity Rewards"
+          subtitle="Polymarket liquidity rewards from the active trading wallet."
+        >
+          <div className="text-4xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
+            {formatUsd(overview?.liquidity_rewards_today)}
+          </div>
+          <div className="mt-3 text-sm text-[var(--text-secondary)]">
+            Today (UTC)
+          </div>
+          <div className="mt-1 text-sm text-[var(--text-secondary)]">
+            Lifetime:{" "}
+            <span className="text-[var(--text-primary)]">
+              {formatUsd(overview?.liquidity_rewards_lifetime)}
+            </span>
+          </div>
+          {overview?.liquidity_rewards_as_of_utc ? (
+            <div className="mt-1 text-xs text-[var(--text-tertiary)]">
+              Updated {formatRelativeTime(overview.liquidity_rewards_as_of_utc)}
+            </div>
+          ) : null}
+          {overview?.liquidity_rewards_error ? (
+            <div className="mt-3 inline-alert inline-alert--warning">
+              {overview.liquidity_rewards_error}
+            </div>
+          ) : null}
         </SectionPanel>
 
         <SectionPanel title="Latency" subtitle="Average acknowledgement latency from the last 24 hours.">

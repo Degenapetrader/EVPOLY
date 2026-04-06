@@ -66,8 +66,8 @@ Copy and paste these commands exactly:
 
 ```bash
 cd /root
-wget https://github.com/Degenapetrader/EVPOLY/releases/download/Linux-v1.0.27/EVPoly_1.0.27_amd64.deb -O EVPoly_1.0.27_amd64.deb
-apt update && apt install -y ./EVPoly_1.0.27_amd64.deb
+wget https://github.com/Degenapetrader/EVPOLY/releases/download/Linux-v1.0.32/EVPoly_1.0.32_amd64.deb -O EVPoly_1.0.32_amd64.deb
+apt update && apt install -y ./EVPoly_1.0.32_amd64.deb
 ```
 
 That install will automatically:
@@ -131,7 +131,7 @@ Run:
 
 ```bash
 apt update
-apt install -y ./EVPoly_1.0.27_amd64.deb
+apt install -y ./EVPoly_1.0.32_amd64.deb
 ```
 
 ## If EVPoly Opens But The Bot Does Not Start

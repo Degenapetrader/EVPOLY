@@ -11,6 +11,7 @@ What this package does for you:
 - installs the bundled EVPoly bot
 - installs and configures Remote Desktop support
 - prepares the VPS so you can connect from a Windows laptop with `Remote Desktop Connection`
+- follows the Linux-only EVPoly update channel inside the app
 
 What you do **not** need:
 - Rust
@@ -89,6 +90,15 @@ After install finishes:
 6. Open `EVPoly` from the desktop or Applications menu
 
 You do **not** need VNC.
+
+## Linux App Updates
+
+The Linux app checks the Linux release lane only.
+
+That means:
+- Linux updates come from `Linux-v...` releases
+- Windows desktop releases do not affect the Linux updater
+- if EVPoly shows an update banner on Linux, it is for a Linux package release
 
 ## First EVPoly Run
 

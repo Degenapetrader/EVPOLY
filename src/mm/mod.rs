@@ -385,8 +385,7 @@ impl MmSportConfig {
             hard_disable: env_bool("EVPOLY_MM_SPORT_HARD_DISABLE", false),
             poll_ms: env_u64("EVPOLY_MM_SPORT_POLL_MS", 250).clamp(50, 30_000),
             event_driven_enable: env_bool("EVPOLY_MM_SPORT_EVENT_DRIVEN_ENABLE", true),
-            event_fallback_poll_ms: env_u64("EVPOLY_MM_SPORT_EVENT_FALLBACK_POLL_MS", 200)
-                .clamp(50, 30_000),
+            event_fallback_poll_ms: 1_000,
             ws_stale_ms: env_u64("EVPOLY_MM_SPORT_WS_STALE_MS", 2_500).clamp(250, 30_000) as i64,
             discovery_refresh_sec: 300,
             rewards_page_budget: env_u32("EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET", 8).clamp(1, 200),

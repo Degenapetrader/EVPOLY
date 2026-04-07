@@ -436,6 +436,10 @@ Older entries may reference env keys that were removed in later commits.
   - removed runtime env path `EVPOLY_MM_SPORT_DISCOVERY_REFRESH_SEC`.
   - MM Sport discovery now always refreshes every 5 minutes regardless of env.
 
+- `mm_sport_v1` timeout fallback wake cadence is now hardcoded to `1000ms` with no env override (`src/mm/mod.rs`, `.env.example`, `.env.full.example`):
+  - removed runtime env path `EVPOLY_MM_SPORT_EVENT_FALLBACK_POLL_MS`.
+  - event-driven MM Sport still prefers websocket updates first, but its backup poll now always wakes once per second.
+
 - `mm_sport_v1` now uses websocket-first eventing and side-clamped top-depth gating for quote size control (`src/main.rs`, `src/polymarket_ws.rs`, `src/mm/mod.rs`, `.env.example`, `.env.full.example`):
   - mm sport discovered token/condition scopes are now injected into polymarket WS subscription targets, enabling websocket-first orderbook and user-order/fill updates for sports markets.
   - loop wake path is now event-driven (`market` + `user` WS) with timeout fallback to polling (`EVPOLY_MM_SPORT_EVENT_FALLBACK_POLL_MS`).

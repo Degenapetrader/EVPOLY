@@ -230,6 +230,13 @@ export interface SetupDoctorResult {
   popup?: SetupDoctorPopup | null;
 }
 
+export interface PendingLinuxResumeOffer {
+  reason: "linux_update" | "previous_run" | string;
+  simulation: boolean;
+  profile_id?: string | null;
+  prepared_at_utc?: string | null;
+}
+
 export type PremarketLadderSafetyMode = "normal" | "safe" | "aggressive";
 export type WeekendPolicy = "off" | "pause";
 
@@ -451,6 +458,15 @@ export const stopBot = (): Promise<void> =>
 
 export const restartBot = (simulation: boolean): Promise<void> =>
   invoke("restart_bot", { simulation });
+
+export const prepareLinuxUpdateInstall = (): Promise<PendingLinuxResumeOffer | null> =>
+  invoke("prepare_linux_update_install");
+
+export const getLinuxResumeOffer = (): Promise<PendingLinuxResumeOffer | null> =>
+  invoke("get_linux_resume_offer");
+
+export const clearLinuxResumeOffer = (): Promise<void> =>
+  invoke("clear_linux_resume_offer");
 
 export const getBotStatus = (): Promise<string> =>
   invoke("get_bot_status");

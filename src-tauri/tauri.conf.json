@@ -57,6 +57,7 @@
           "xrdp",
           "xorgxrdp"
         ],
+        "preInstallScript": "./linux/preinst.sh",
         "postInstallScript": "./linux/postinst.sh",
         "postRemoveScript": "./linux/postrm.sh",
         "files": {

@@ -12,7 +12,7 @@ pub mod wallet_rpc;
 pub mod wallet_sync;
 
 use crate::auth::AppAuth;
-use crate::bot_manager::BotManager;
+use crate::bot_manager::{BotManager, PendingResumeOffer};
 use crate::geo_access::GeoAccessStatus;
 use crate::liquidity_rewards::{LiquidityRewardsCacheEntry, LiquidityRewardsQuery};
 use crate::profile_manager::{Profile, ProfileManager};
@@ -3131,6 +3131,9 @@ fn start_bot(
             ));
         }
     }
+    bot.lock()
+        .map_err(|e| e.to_string())?
+        .clear_pending_resume_offer()?;
     Ok(())
 }
 
@@ -3184,7 +3187,102 @@ fn restart_bot(
             ));
         }
     }
+    bot.lock()
+        .map_err(|e| e.to_string())?
+        .clear_pending_resume_offer()?;
     Ok(())
+}
+
+#[tauri::command]
+fn prepare_linux_update_install(
+    bot: State<'_, BotState>,
+    profiles: State<'_, ProfileState>,
+    wallet_sync: State<'_, WalletSyncState>,
+) -> Result<Option<PendingResumeOffer>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let profile_id = profiles
+            .lock()
+            .map_err(|e| e.to_string())?
+            .get_active_profile_id();
+
+        let prepared = {
+            let manager = bot.lock().map_err(|e| e.to_string())?;
+            if !manager.is_running() {
+                return Ok(None);
+            }
+
+            let simulation = manager.simulation_mode().unwrap_or(false);
+            let offer = PendingResumeOffer {
+                reason: "linux_update".to_string(),
+                simulation,
+                profile_id: profile_id.clone(),
+                prepared_at_utc: Some(Utc::now().to_rfc3339()),
+            };
+            manager.save_pending_resume_offer(
+                offer.reason.as_str(),
+                offer.simulation,
+                offer.profile_id.clone(),
+            )?;
+            offer
+        };
+
+        if let Err(err) = wallet_sync.lock().map_err(|e| e.to_string())?.stop() {
+            let _ = bot
+                .lock()
+                .map_err(|e| e.to_string())?
+                .clear_pending_resume_offer();
+            return Err(err);
+        }
+
+        if let Err(err) = bot.lock().map_err(|e| e.to_string())?.stop() {
+            let _ = bot
+                .lock()
+                .map_err(|e| e.to_string())?
+                .clear_pending_resume_offer();
+            return Err(err);
+        }
+
+        Ok(Some(prepared))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (bot, profiles, wallet_sync);
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+fn get_linux_resume_offer(bot: State<'_, BotState>) -> Result<Option<PendingResumeOffer>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let manager = bot.lock().map_err(|e| e.to_string())?;
+        if manager.is_running() {
+            let _ = manager.clear_pending_resume_offer();
+            return Ok(None);
+        }
+        Ok(manager.load_pending_resume_offer())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bot;
+        Ok(None)
+    }
+}
+
+#[tauri::command]
+fn clear_linux_resume_offer(bot: State<'_, BotState>) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        bot.lock()
+            .map_err(|e| e.to_string())?
+            .clear_pending_resume_offer()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = bot;
+        Ok(())
+    }
 }
 
 #[tauri::command]
@@ -4367,6 +4465,9 @@ pub fn run() {
             start_bot,
             stop_bot,
             restart_bot,
+            prepare_linux_update_install,
+            get_linux_resume_offer,
+            clear_linux_resume_offer,
             get_bot_status,
             get_log_lines,
             bot_api_request,

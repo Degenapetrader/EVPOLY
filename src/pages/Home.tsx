@@ -31,10 +31,13 @@ import {
   type StrategyKey,
 } from "../lib/desktop-config";
 import {
+  clearLinuxResumeOffer,
   getGeoAccessStatus,
   getActiveProfileId,
+  getLinuxResumeOffer,
   getSavedConfig,
   lockSession,
+  prepareLinuxUpdateInstall,
   restartBot,
   runSetupDoctor,
   saveConfig,
@@ -42,6 +45,7 @@ import {
   stopBot,
   type BotConfig,
   type GeoAccessStatus,
+  type PendingLinuxResumeOffer,
   type SetupDoctorResult,
 } from "../lib/tauri-commands";
 
@@ -98,6 +102,17 @@ const WEEKEND_POLICY_TOOLTIP_PAUSE =
 const WEEKEND_POLICY_TOOLTIP_OFF =
   "Premarket, Endgame, EVCurve, and SessionBand keep trading on weekends.";
 
+function resumeOfferCopy(offer: PendingLinuxResumeOffer): string {
+  if (offer.reason === "linux_update") {
+    return "EVPoly stopped the bot before installing the Linux update.";
+  }
+  return "EVPoly detected that the bot was running in the previous Linux session.";
+}
+
+function resumeOfferActionLabel(offer: PendingLinuxResumeOffer): string {
+  return offer.simulation ? "Resume Simulation" : "Resume Live Bot";
+}
+
 export function Home() {
   const navigate = useNavigate();
   const { strategySlug } = useParams();
@@ -121,6 +136,8 @@ export function Home() {
   const [doctorLoading, setDoctorLoading] = useState(false);
   const [doctorResult, setDoctorResult] = useState<SetupDoctorResult | null>(null);
   const [doctorDialogOpen, setDoctorDialogOpen] = useState(false);
+  const [pendingResumeOffer, setPendingResumeOffer] = useState<PendingLinuxResumeOffer | null>(null);
+  const [resumeLoading, setResumeLoading] = useState(false);
 
   const selectedStrategy = useMemo(
     () => strategyKeyFromRoute(strategySlug),
@@ -175,6 +192,26 @@ export function Home() {
     })();
   }, []);
 
+  useEffect(() => {
+    if (!configLoaded) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const offer = await getLinuxResumeOffer();
+        if (!cancelled) {
+          setPendingResumeOffer(offer);
+        }
+      } catch {
+        if (!cancelled) {
+          setPendingResumeOffer(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [configLoaded]);
+
   const dirty = useMemo(() => JSON.stringify(config) !== savedSnapshot, [config, savedSnapshot]);
   const displayError = actionError || overviewError || activityError;
   const canOperate = Boolean(activeProfileId && configLoaded);
@@ -187,14 +224,81 @@ export function Home() {
   const handleUpdate = async () => {
     if (!pendingUpdate || updateDownloading) return;
     setUpdateDownloading(true);
+    let preparedResume: PendingLinuxResumeOffer | null = null;
     try {
+      if (activeProfileId && dirty) {
+        await saveConfig(activeProfileId, config);
+        setSavedSnapshot(JSON.stringify(config));
+      }
+      preparedResume = await prepareLinuxUpdateInstall();
       await pendingUpdate.downloadAndInstall();
       setPendingUpdate(null);
       setUpdateVersion(null);
+    } catch (err) {
+      const updateMessage = getErrorText(err, "Linux update failed");
+      if (preparedResume) {
+        try {
+          await startBot(preparedResume.simulation);
+          await clearLinuxResumeOffer();
+          setPendingResumeOffer(null);
+          await refreshOverview();
+          await refreshActivity({ reset: true });
+          setActionError(`${updateMessage}. The previous bot session was restored.`);
+        } catch (resumeErr) {
+          setActionError(
+            `${updateMessage}. Resume failed: ${getErrorText(
+              resumeErr,
+              "bot restore after update failure did not complete"
+            )}`
+          );
+        }
+      } else {
+        setActionError(updateMessage);
+      }
     } finally {
       setUpdateDownloading(false);
     }
   };
+
+  const handleResumeOffer = async () => {
+    if (!pendingResumeOffer) return;
+    setResumeLoading(true);
+    setActionError(null);
+    try {
+      if (activeProfileId && dirty) {
+        await saveConfig(activeProfileId, config);
+        setSavedSnapshot(JSON.stringify(config));
+      }
+      await startBot(pendingResumeOffer.simulation);
+      await clearLinuxResumeOffer();
+      setPendingResumeOffer(null);
+      await refreshOverview();
+      await refreshActivity({ reset: true });
+    } catch (err) {
+      setActionError(getErrorText(err, "failed to resume the previous bot session"));
+    } finally {
+      setResumeLoading(false);
+    }
+  };
+
+  const handleDismissResumeOffer = async () => {
+    setResumeLoading(true);
+    try {
+      await clearLinuxResumeOffer();
+      setPendingResumeOffer(null);
+    } catch (err) {
+      setActionError(getErrorText(err, "failed to dismiss the resume prompt"));
+    } finally {
+      setResumeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!botRunning || !pendingResumeOffer) return;
+    void clearLinuxResumeOffer()
+      .catch(() => undefined)
+      .finally(() => setPendingResumeOffer(null));
+  }, [botRunning, pendingResumeOffer]);
 
   const handleProfileSwitch = async (profileId: string) => {
     setActiveProfileId(profileId);
@@ -762,6 +866,39 @@ export function Home() {
       }
       banner={
         <div className="space-y-3">
+          {pendingResumeOffer && !botRunning ? (
+            <div className="surface-panel">
+              <div className="surface-panel__body flex flex-wrap items-center justify-between gap-3 pt-[var(--space-5)]">
+                <div className="space-y-1">
+                  <div className="text-sm font-medium text-[var(--text-primary)]">
+                    {resumeOfferCopy(pendingResumeOffer)}
+                  </div>
+                  <div className="text-xs text-[var(--text-secondary)]">
+                    Resume the previous {pendingResumeOffer.simulation ? "simulation" : "live"} run
+                    when you are ready.
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleDismissResumeOffer()}
+                    disabled={resumeLoading}
+                    className="ui-button text-sm"
+                  >
+                    Not now
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleResumeOffer()}
+                    disabled={resumeLoading || !canOperate}
+                    className="ui-button ui-button--accent text-sm"
+                  >
+                    {resumeLoading ? "Resuming..." : resumeOfferActionLabel(pendingResumeOffer)}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : null}
           <UpdateBanner
             version={updateDownloading ? "Downloading..." : updateVersion}
             onUpdate={handleUpdate}

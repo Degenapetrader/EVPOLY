@@ -51,6 +51,14 @@ struct LastState {
     simulation: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PendingResumeOffer {
+    pub reason: String,
+    pub simulation: bool,
+    pub profile_id: Option<String>,
+    pub prepared_at_utc: Option<String>,
+}
+
 #[derive(Clone)]
 pub struct BotRequestContext {
     pub base_url: String,
@@ -379,6 +387,61 @@ impl BotManager {
         let json = std::fs::read_to_string(path).ok()?;
         let state: LastState = serde_json::from_str(&json).ok()?;
         Some((state.was_running, state.simulation))
+    }
+
+    pub fn save_pending_resume_offer(
+        &self,
+        reason: &str,
+        simulation: bool,
+        profile_id: Option<String>,
+    ) -> Result<(), String> {
+        let offer = PendingResumeOffer {
+            reason: reason.to_string(),
+            simulation,
+            profile_id,
+            prepared_at_utc: Some(Utc::now().to_rfc3339()),
+        };
+        let path = self.data_dir.join("pending_resume.json");
+        std::fs::write(
+            path,
+            serde_json::to_string(&offer).map_err(|e| format!("serialize pending resume: {e}"))?,
+        )
+        .map_err(|e| format!("write pending resume: {e}"))
+    }
+
+    pub fn load_pending_resume_offer(&self) -> Option<PendingResumeOffer> {
+        let path = self.data_dir.join("pending_resume.json");
+        let explicit = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|json| serde_json::from_str::<PendingResumeOffer>(&json).ok());
+        if explicit.is_some() {
+            return explicit;
+        }
+
+        let (was_running, simulation) = self.load_last_state()?;
+        if !was_running {
+            return None;
+        }
+
+        Some(PendingResumeOffer {
+            reason: "previous_run".to_string(),
+            simulation,
+            profile_id: None,
+            prepared_at_utc: None,
+        })
+    }
+
+    pub fn clear_pending_resume_offer(&self) -> Result<(), String> {
+        let path = self.data_dir.join("pending_resume.json");
+        match std::fs::remove_file(path) {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("remove pending resume: {err}")),
+        }
+        if !self.is_running() {
+            self.save_last_state(false, false);
+        }
+        Ok(())
     }
 
     fn reconcile_runtime_state(&self) {

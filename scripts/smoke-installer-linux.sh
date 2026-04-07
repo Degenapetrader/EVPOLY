@@ -34,7 +34,7 @@ for dep in libayatana-appindicator3-1 libgtk-3-0 libwebkit2gtk-4.1-0 xrdp xorgxr
   fi
 done
 
-for maintainer_script in postinst postrm; do
+for maintainer_script in preinst postinst postrm; do
   SCRIPT_PATH="${WORK_DIR}/control/${maintainer_script}"
   if [[ ! -f "${SCRIPT_PATH}" ]]; then
     echo "error: packaged .deb is missing ${maintainer_script}" >&2

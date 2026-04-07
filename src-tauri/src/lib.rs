@@ -20,6 +20,7 @@ use crate::wallet_sync::{WalletSyncManager, WalletSyncRuntimeConfig};
 
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use ethers_signers::{LocalWallet, Signer};
+use fs2::FileExt;
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -62,6 +63,11 @@ const DESKTOP_SECRET_KEYS: [&str; 11] = [
 const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
 const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
 const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
+const DESKTOP_INSTANCE_LOCK_NAME: &str = "desktop-instance.lock";
+
+struct DesktopInstanceGuard {
+    _file: std::fs::File,
+}
 
 #[derive(Clone, Default)]
 struct MarketMetadata {
@@ -2226,6 +2232,24 @@ fn ensure_debug_log_files(data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn acquire_desktop_instance_guard(data_dir: &Path) -> Result<DesktopInstanceGuard, String> {
+    let path = data_dir.join(DESKTOP_INSTANCE_LOCK_NAME);
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| format!("open desktop instance lock {}: {e}", path.display()))?;
+    file.try_lock_exclusive().map_err(|e| {
+        format!(
+            "another EVPoly desktop instance is already running for this data directory (lock: {}): {e}",
+            path.display()
+        )
+    })?;
+    Ok(DesktopInstanceGuard { _file: file })
+}
+
 fn count_enabled_strategies(profile: &Profile) -> usize {
     let strategy = profile
         .strategy_config
@@ -4166,6 +4190,13 @@ pub fn run() {
     config_io::cleanup_generated_env_files(&data_dir);
     let _ = ensure_debug_log_files(&data_dir);
     append_desktop_debug_line(&data_dir, "SYSTEM", "desktop app startup");
+    let _desktop_instance_guard = match acquire_desktop_instance_guard(&data_dir) {
+        Ok(guard) => guard,
+        Err(err) => {
+            append_desktop_debug_line(&data_dir, "SYSTEM", err.as_str());
+            return;
+        }
+    };
 
     let auth: AuthState = Arc::new(Mutex::new(AppAuth::new(data_dir.clone())));
     let profiles: ProfileState = Arc::new(Mutex::new(ProfileManager::new(data_dir.clone())));

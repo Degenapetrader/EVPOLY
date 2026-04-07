@@ -3,10 +3,12 @@
 use crate::config_io;
 use crate::log_stream::{append_file_log_line, LogBuffer};
 use chrono::Utc;
+use fs2::FileExt;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -61,12 +63,17 @@ struct BotInner {
     env_path: Option<PathBuf>,
     stop_requested: bool,
     simulation: bool,
+    ownership_lock: Option<BotOwnershipGuard>,
 }
 
 pub struct BotManager {
     data_dir: PathBuf,
     inner: Arc<Mutex<BotInner>>,
     log_buffer: Arc<Mutex<LogBuffer>>,
+}
+
+struct BotOwnershipGuard {
+    _file: File,
 }
 
 impl BotManager {
@@ -79,6 +86,7 @@ impl BotManager {
                 env_path: None,
                 stop_requested: false,
                 simulation: false,
+                ownership_lock: None,
             })),
             log_buffer: Arc::new(Mutex::new(LogBuffer::new())),
         }
@@ -92,6 +100,27 @@ impl BotManager {
         simulation: bool,
     ) -> Result<(), String> {
         ensure_bot_runtime_dirs(&self.data_dir)?;
+        let ownership_lock = acquire_bot_ownership_lock(&self.data_dir)?;
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            let system = System::new_all();
+            let pids = unix_matching_bot_pids(
+                &system,
+                &BOT_PROCESS_NAMES,
+                &runtime_config_marker(&self.data_dir),
+            );
+            if !pids.is_empty() {
+                let pid_list = pids
+                    .into_iter()
+                    .map(|pid| pid.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(format!(
+                    "another EVPoly bot process is already running for this runtime config (pids: {pid_list})"
+                ));
+            }
+        }
 
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         if inner.status != BotStatus::Stopped && !matches!(inner.status, BotStatus::Error(_)) {
@@ -128,6 +157,7 @@ impl BotManager {
         inner.child = Some(child);
         inner.env_path = Some(env_path.clone());
         inner.simulation = simulation;
+        inner.ownership_lock = Some(ownership_lock);
         drop(inner);
 
         let log_buf = self.log_buffer.clone();
@@ -195,6 +225,7 @@ impl BotManager {
                             inner.child = None;
                             inner.stop_requested = false;
                             inner.simulation = false;
+                            inner.ownership_lock = None;
                             if was_stopping || stop_requested || payload.code == Some(0) {
                                 inner.status = BotStatus::Stopped;
                             } else {
@@ -495,6 +526,7 @@ fn finalize_stop(inner: &mut BotInner) {
     }
     inner.child = None;
     inner.simulation = false;
+    inner.ownership_lock = None;
     inner.status = BotStatus::Stopped;
 }
 
@@ -510,6 +542,28 @@ fn runtime_config_marker(data_dir: &PathBuf) -> String {
         .join("runtime.config.json")
         .to_string_lossy()
         .to_string()
+}
+
+fn bot_ownership_lock_path(data_dir: &PathBuf) -> PathBuf {
+    data_dir.join("bot-runtime.lock")
+}
+
+fn acquire_bot_ownership_lock(data_dir: &PathBuf) -> Result<BotOwnershipGuard, String> {
+    let path = bot_ownership_lock_path(data_dir);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| format!("open bot runtime lock file {}: {e}", path.display()))?;
+    file.try_lock_exclusive().map_err(|e| {
+        format!(
+            "another EVPoly desktop instance already owns the bot runtime lock {}: {e}",
+            path.display()
+        )
+    })?;
+    Ok(BotOwnershipGuard { _file: file })
 }
 
 fn shutdown_request_context(env_path: &PathBuf) -> Result<Option<BotRequestContext>, String> {

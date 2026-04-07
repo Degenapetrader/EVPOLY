@@ -18,7 +18,7 @@ use crate::liquidity_rewards::{LiquidityRewardsCacheEntry, LiquidityRewardsQuery
 use crate::profile_manager::{Profile, ProfileManager};
 use crate::wallet_sync::{WalletSyncManager, WalletSyncRuntimeConfig};
 
-use chrono::{NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use ethers_signers::{LocalWallet, Signer};
 use std::collections::HashMap;
 use std::path::Path;
@@ -2283,8 +2283,33 @@ fn query_ack_latency_summary(conn: &Connection) -> (u64, Option<f64>) {
     .unwrap_or((0, None))
 }
 
-fn liquidity_rewards_start_date(_profile: &Profile, _conn: Option<&Connection>) -> NaiveDate {
-    NaiveDate::from_ymd_opt(2025, 1, 1).expect("valid liquidity rewards backfill start date")
+fn profile_created_date(profile: &Profile) -> Option<NaiveDate> {
+    DateTime::parse_from_rfc3339(profile.created_at.as_str())
+        .ok()
+        .map(|dt| dt.date_naive())
+}
+
+fn earliest_local_activity_date(conn: &Connection) -> Option<NaiveDate> {
+    let earliest_ts_ms = conn
+        .query_row(
+            "SELECT MIN(ts_ms) FROM trade_events WHERE ts_ms IS NOT NULL",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .ok()
+        .flatten()?;
+    Utc.timestamp_millis_opt(earliest_ts_ms)
+        .single()
+        .map(|dt| dt.date_naive())
+}
+
+fn liquidity_rewards_start_date(profile: &Profile, conn: Option<&Connection>) -> NaiveDate {
+    let today = Utc::now().date_naive();
+    let profile_date = profile_created_date(profile).unwrap_or(today);
+    let db_date = conn
+        .and_then(earliest_local_activity_date)
+        .unwrap_or(profile_date);
+    profile_date.min(db_date).min(today)
 }
 
 fn build_liquidity_rewards_query(

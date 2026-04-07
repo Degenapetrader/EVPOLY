@@ -11,7 +11,7 @@ What this package does for you:
 - installs the bundled EVPoly bot
 - installs and configures Remote Desktop support
 - prepares the VPS so you can connect from a Windows laptop with `Remote Desktop Connection`
-- follows the Linux-only EVPoly update channel inside the app
+- checks the Linux-only EVPoly update channel inside the app
 
 What you do **not** need:
 - Rust
@@ -66,8 +66,8 @@ Copy and paste these commands exactly:
 
 ```bash
 cd /root
-wget https://github.com/Degenapetrader/EVPOLY/releases/download/Linux-v1.0.32/EVPoly_1.0.32_amd64.deb -O EVPoly_1.0.32_amd64.deb
-apt update && apt install -y ./EVPoly_1.0.32_amd64.deb
+wget https://github.com/Degenapetrader/EVPOLY/releases/download/Linux-v1.0.40/EVPoly_1.0.40_amd64.deb -O EVPoly_1.0.40_amd64.deb
+apt update && apt install -y ./EVPoly_1.0.40_amd64.deb
 ```
 
 That install will automatically:
@@ -93,12 +93,76 @@ You do **not** need VNC.
 
 ## Linux App Updates
 
-The Linux app checks the Linux release lane only.
+EVPoly Linux updates use the Ubuntu `.deb` package.
 
 That means:
 - Linux updates come from `Linux-v...` releases
 - Windows desktop releases do not affect the Linux updater
 - if EVPoly shows an update banner on Linux, it is for a Linux package release
+- Linux does **not** do a Windows-style in-place self-update
+
+### Normal Update Flow Inside EVPoly
+
+When EVPoly shows a new version banner:
+
+1. Click `Download Latest .deb`
+2. Your browser will open the newest Ubuntu package download
+3. Download the file
+4. Install that `.deb`
+5. Open EVPoly again
+
+Important:
+- your profiles stay intact
+- your bot settings stay intact
+- this is an upgrade install, not a fresh setup
+
+### If You Are On An Older Linux Version
+
+Older Linux builds may still show the old `Update Now` button.
+
+If that old button does nothing:
+
+1. Ignore it
+2. Download the newest `.deb` manually
+3. Install the new `.deb`
+4. Open EVPoly again
+
+You only need to do that manual upgrade once to move onto the new honest Linux update flow.
+
+### Easy Manual Update From The Linux Desktop
+
+If you are already inside the Ubuntu desktop on the VPS:
+
+1. Open the browser
+2. Download the latest file named like `EVPoly_1.0.40_amd64.deb`
+3. Open `Terminal`
+4. Run:
+
+```bash
+cd ~/Downloads
+sudo apt install ./EVPoly_1.0.40_amd64.deb
+```
+
+After install finishes:
+
+1. Open `EVPoly` again
+2. If EVPoly offers to resume the previous bot session after the upgrade, press the resume button
+
+### Manual Update From SSH
+
+If you prefer to update from a Windows laptop over SSH:
+
+```bash
+cd /root
+wget https://github.com/Degenapetrader/EVPOLY/releases/download/Linux-v1.0.40/EVPoly_1.0.40_amd64.deb -O EVPoly_1.0.40_amd64.deb
+apt update && apt install -y ./EVPoly_1.0.40_amd64.deb
+```
+
+After that:
+
+1. reconnect to the Ubuntu desktop over Remote Desktop
+2. open `EVPoly`
+3. resume the previous bot session if EVPoly offers it
 
 ## First EVPoly Run
 
@@ -106,7 +170,7 @@ When EVPoly opens:
 
 1. Open `Settings`
 2. Create your desktop password if this is the first launch
-3. Create a profile if EVPoly asks for one
+3. EVPoly may create a starter profile for you automatically
 4. Run onboarding
 5. Save the profile
 6. Go back to `Home`
@@ -131,7 +195,7 @@ Run:
 
 ```bash
 apt update
-apt install -y ./EVPoly_1.0.32_amd64.deb
+apt install -y ./EVPoly_1.0.40_amd64.deb
 ```
 
 ## If EVPoly Opens But The Bot Does Not Start

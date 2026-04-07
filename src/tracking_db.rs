@@ -818,6 +818,74 @@ pub struct OpenPositionInventoryRow {
 }
 
 #[derive(Debug, Clone)]
+pub struct MmSportHolderSnapshotRecord {
+    pub condition_id: String,
+    pub market_slug: String,
+    pub sport_key: String,
+    pub token_id: String,
+    pub wallet_address: String,
+    pub display_name: Option<String>,
+    pub outcome: Option<String>,
+    pub outcome_index: i64,
+    pub shares: f64,
+    pub side_total_shares: f64,
+    pub side_selected_coverage_pct: f64,
+    pub holds_both_sides: bool,
+    pub snapshot_ts_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MmSportWalletProfileRecord {
+    pub wallet_address: String,
+    pub sport_key: String,
+    pub label: String,
+    pub sample_count_7d: i64,
+    pub sample_count_30d: i64,
+    pub sports_market_count_7d: i64,
+    pub sports_market_count_30d: i64,
+    pub buy_count_7d: i64,
+    pub sell_count_7d: i64,
+    pub buy_count_30d: i64,
+    pub sell_count_30d: i64,
+    pub hold_to_settle_rate: f64,
+    pub pre_halt_sell_rate: f64,
+    pub exit_window_sell_rate: f64,
+    pub same_event_both_sides_rate: f64,
+    pub confidence: f64,
+    pub last_profiled_at_ms: i64,
+    pub detail_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MmSportMarketRiskRecord {
+    pub condition_id: String,
+    pub market_slug: String,
+    pub sport_key: String,
+    pub computed_at_ms: i64,
+    pub up_entry_band_depth_shares: f64,
+    pub down_entry_band_depth_shares: f64,
+    pub up_expected_pre_halt_shares: f64,
+    pub down_expected_pre_halt_shares: f64,
+    pub up_expected_exit_window_shares: f64,
+    pub down_expected_exit_window_shares: f64,
+    pub up_pre_halt_pressure: f64,
+    pub down_pre_halt_pressure: f64,
+    pub up_exit_window_crowding: f64,
+    pub down_exit_window_crowding: f64,
+    pub up_top3_share_pct: f64,
+    pub down_top3_share_pct: f64,
+    pub up_two_sided_share_pct: f64,
+    pub down_two_sided_share_pct: f64,
+    pub up_profiled_share_pct: f64,
+    pub down_profiled_share_pct: f64,
+    pub up_extra_entry_ticks: i64,
+    pub down_extra_entry_ticks: i64,
+    pub up_size_multiplier: f64,
+    pub down_size_multiplier: f64,
+    pub detail_json: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct EntryFillEventRecord {
     pub event_key: String,
     pub ts_ms: i64,
@@ -2486,6 +2554,91 @@ CREATE TABLE IF NOT EXISTS evcurve_period_bases_v1 (
 
 CREATE INDEX IF NOT EXISTS idx_evcurve_period_bases_ts
     ON evcurve_period_bases_v1(period_open_ts DESC);
+"#,
+    )?;
+    Ok(())
+}
+
+fn ensure_mm_sport_holder_intel_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS mm_sport_holder_snapshot_v1 (
+    condition_id TEXT NOT NULL,
+    market_slug TEXT NOT NULL,
+    sport_key TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    wallet_address TEXT NOT NULL,
+    display_name TEXT,
+    outcome TEXT,
+    outcome_index INTEGER NOT NULL DEFAULT 0,
+    shares REAL NOT NULL,
+    side_total_shares REAL NOT NULL,
+    side_selected_coverage_pct REAL NOT NULL,
+    holds_both_sides INTEGER NOT NULL DEFAULT 0,
+    snapshot_ts_ms INTEGER NOT NULL,
+    PRIMARY KEY(condition_id, token_id, wallet_address)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mm_sport_holder_snapshot_condition
+    ON mm_sport_holder_snapshot_v1(condition_id, snapshot_ts_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_mm_sport_holder_snapshot_wallet
+    ON mm_sport_holder_snapshot_v1(wallet_address, snapshot_ts_ms DESC);
+
+CREATE TABLE IF NOT EXISTS mm_sport_wallet_profile_v1 (
+    wallet_address TEXT NOT NULL,
+    sport_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    sample_count_7d INTEGER NOT NULL DEFAULT 0,
+    sample_count_30d INTEGER NOT NULL DEFAULT 0,
+    sports_market_count_7d INTEGER NOT NULL DEFAULT 0,
+    sports_market_count_30d INTEGER NOT NULL DEFAULT 0,
+    buy_count_7d INTEGER NOT NULL DEFAULT 0,
+    sell_count_7d INTEGER NOT NULL DEFAULT 0,
+    buy_count_30d INTEGER NOT NULL DEFAULT 0,
+    sell_count_30d INTEGER NOT NULL DEFAULT 0,
+    hold_to_settle_rate REAL NOT NULL DEFAULT 0,
+    pre_halt_sell_rate REAL NOT NULL DEFAULT 0,
+    exit_window_sell_rate REAL NOT NULL DEFAULT 0,
+    same_event_both_sides_rate REAL NOT NULL DEFAULT 0,
+    confidence REAL NOT NULL DEFAULT 0,
+    detail_json TEXT,
+    last_profiled_at_ms INTEGER NOT NULL,
+    PRIMARY KEY(wallet_address, sport_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mm_sport_wallet_profile_last
+    ON mm_sport_wallet_profile_v1(last_profiled_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS mm_sport_market_risk_v1 (
+    condition_id TEXT NOT NULL PRIMARY KEY,
+    market_slug TEXT NOT NULL,
+    sport_key TEXT NOT NULL,
+    computed_at_ms INTEGER NOT NULL,
+    up_entry_band_depth_shares REAL NOT NULL DEFAULT 0,
+    down_entry_band_depth_shares REAL NOT NULL DEFAULT 0,
+    up_expected_pre_halt_shares REAL NOT NULL DEFAULT 0,
+    down_expected_pre_halt_shares REAL NOT NULL DEFAULT 0,
+    up_expected_exit_window_shares REAL NOT NULL DEFAULT 0,
+    down_expected_exit_window_shares REAL NOT NULL DEFAULT 0,
+    up_pre_halt_pressure REAL NOT NULL DEFAULT 0,
+    down_pre_halt_pressure REAL NOT NULL DEFAULT 0,
+    up_exit_window_crowding REAL NOT NULL DEFAULT 0,
+    down_exit_window_crowding REAL NOT NULL DEFAULT 0,
+    up_top3_share_pct REAL NOT NULL DEFAULT 0,
+    down_top3_share_pct REAL NOT NULL DEFAULT 0,
+    up_two_sided_share_pct REAL NOT NULL DEFAULT 0,
+    down_two_sided_share_pct REAL NOT NULL DEFAULT 0,
+    up_profiled_share_pct REAL NOT NULL DEFAULT 0,
+    down_profiled_share_pct REAL NOT NULL DEFAULT 0,
+    up_extra_entry_ticks INTEGER NOT NULL DEFAULT 0,
+    down_extra_entry_ticks INTEGER NOT NULL DEFAULT 0,
+    up_size_multiplier REAL NOT NULL DEFAULT 1,
+    down_size_multiplier REAL NOT NULL DEFAULT 1,
+    detail_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_mm_sport_market_risk_computed
+    ON mm_sport_market_risk_v1(computed_at_ms DESC);
 "#,
     )?;
     Ok(())
@@ -4569,6 +4722,7 @@ WHERE id IN (
         ensure_settlement_v2_schema(&conn)?;
         ensure_lifecycle_wallet_schema(&conn)?;
         ensure_mm_market_state_schema(&conn)?;
+        ensure_mm_sport_holder_intel_schema(&conn)?;
         // Repair historical ENTRY_FILL rows that missed condition_id by inferring from
         // the same token_id, then replay missing v2 fill rows idempotently.
         conn.execute(
@@ -4664,6 +4818,7 @@ ON CONFLICT(position_key) DO UPDATE SET
         ensure_mm_market_state_schema(&conn)?;
         ensure_strategy_feature_snapshot_schema(&conn)?;
         ensure_evcurve_period_base_schema(&conn)?;
+        ensure_mm_sport_holder_intel_schema(&conn)?;
         backfill_snapback_feature_snapshots_into_unified(&conn)?;
         let read_pool_size = std::env::var("EVPOLY_DB_READ_POOL_SIZE")
             .ok()
@@ -5319,6 +5474,189 @@ ORDER BY updated_at_ms DESC, condition_id ASC
                 out.push(row?);
             }
             Ok(out)
+        })
+    }
+
+    pub fn replace_mm_sport_holder_snapshot(
+        &self,
+        condition_id: &str,
+        rows: &[MmSportHolderSnapshotRecord],
+    ) -> Result<()> {
+        let condition_id = condition_id.trim().to_ascii_lowercase();
+        if condition_id.is_empty() {
+            return Err(anyhow!("mm sport holder snapshot requires condition_id"));
+        }
+        self.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM mm_sport_holder_snapshot_v1 WHERE condition_id=?1",
+                params![condition_id],
+            )?;
+            let mut stmt = conn.prepare(
+                r#"
+INSERT INTO mm_sport_holder_snapshot_v1 (
+    condition_id, market_slug, sport_key, token_id, wallet_address, display_name, outcome,
+    outcome_index, shares, side_total_shares, side_selected_coverage_pct, holds_both_sides, snapshot_ts_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+"#,
+            )?;
+            for row in rows {
+                stmt.execute(params![
+                    row.condition_id.trim().to_ascii_lowercase(),
+                    row.market_slug.trim(),
+                    row.sport_key.trim().to_ascii_lowercase(),
+                    row.token_id.trim(),
+                    row.wallet_address.trim().to_ascii_lowercase(),
+                    row.display_name.as_deref().map(str::trim),
+                    row.outcome.as_deref().map(str::trim),
+                    row.outcome_index,
+                    row.shares,
+                    row.side_total_shares,
+                    row.side_selected_coverage_pct,
+                    if row.holds_both_sides { 1_i64 } else { 0_i64 },
+                    row.snapshot_ts_ms
+                ])?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn upsert_mm_sport_wallet_profile(&self, row: &MmSportWalletProfileRecord) -> Result<()> {
+        let wallet_address = row.wallet_address.trim().to_ascii_lowercase();
+        let sport_key = row.sport_key.trim().to_ascii_lowercase();
+        if wallet_address.is_empty() || sport_key.is_empty() {
+            return Err(anyhow!(
+                "mm sport wallet profile requires wallet_address and sport_key"
+            ));
+        }
+        self.with_conn(|conn| {
+            conn.execute(
+                r#"
+INSERT INTO mm_sport_wallet_profile_v1 (
+    wallet_address, sport_key, label, sample_count_7d, sample_count_30d,
+    sports_market_count_7d, sports_market_count_30d,
+    buy_count_7d, sell_count_7d, buy_count_30d, sell_count_30d,
+    hold_to_settle_rate, pre_halt_sell_rate, exit_window_sell_rate,
+    same_event_both_sides_rate, confidence, detail_json, last_profiled_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+ON CONFLICT(wallet_address, sport_key) DO UPDATE SET
+    label=excluded.label,
+    sample_count_7d=excluded.sample_count_7d,
+    sample_count_30d=excluded.sample_count_30d,
+    sports_market_count_7d=excluded.sports_market_count_7d,
+    sports_market_count_30d=excluded.sports_market_count_30d,
+    buy_count_7d=excluded.buy_count_7d,
+    sell_count_7d=excluded.sell_count_7d,
+    buy_count_30d=excluded.buy_count_30d,
+    sell_count_30d=excluded.sell_count_30d,
+    hold_to_settle_rate=excluded.hold_to_settle_rate,
+    pre_halt_sell_rate=excluded.pre_halt_sell_rate,
+    exit_window_sell_rate=excluded.exit_window_sell_rate,
+    same_event_both_sides_rate=excluded.same_event_both_sides_rate,
+    confidence=excluded.confidence,
+    detail_json=excluded.detail_json,
+    last_profiled_at_ms=excluded.last_profiled_at_ms
+"#,
+                params![
+                    wallet_address,
+                    sport_key,
+                    row.label.trim(),
+                    row.sample_count_7d,
+                    row.sample_count_30d,
+                    row.sports_market_count_7d,
+                    row.sports_market_count_30d,
+                    row.buy_count_7d,
+                    row.sell_count_7d,
+                    row.buy_count_30d,
+                    row.sell_count_30d,
+                    row.hold_to_settle_rate,
+                    row.pre_halt_sell_rate,
+                    row.exit_window_sell_rate,
+                    row.same_event_both_sides_rate,
+                    row.confidence,
+                    row.detail_json.as_deref(),
+                    row.last_profiled_at_ms
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn upsert_mm_sport_market_risk(&self, row: &MmSportMarketRiskRecord) -> Result<()> {
+        let condition_id = row.condition_id.trim().to_ascii_lowercase();
+        if condition_id.is_empty() {
+            return Err(anyhow!("mm sport market risk requires condition_id"));
+        }
+        self.with_conn(|conn| {
+            conn.execute(
+                r#"
+INSERT INTO mm_sport_market_risk_v1 (
+    condition_id, market_slug, sport_key, computed_at_ms,
+    up_entry_band_depth_shares, down_entry_band_depth_shares,
+    up_expected_pre_halt_shares, down_expected_pre_halt_shares,
+    up_expected_exit_window_shares, down_expected_exit_window_shares,
+    up_pre_halt_pressure, down_pre_halt_pressure,
+    up_exit_window_crowding, down_exit_window_crowding,
+    up_top3_share_pct, down_top3_share_pct,
+    up_two_sided_share_pct, down_two_sided_share_pct,
+    up_profiled_share_pct, down_profiled_share_pct,
+    up_extra_entry_ticks, down_extra_entry_ticks,
+    up_size_multiplier, down_size_multiplier, detail_json
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+ON CONFLICT(condition_id) DO UPDATE SET
+    market_slug=excluded.market_slug,
+    sport_key=excluded.sport_key,
+    computed_at_ms=excluded.computed_at_ms,
+    up_entry_band_depth_shares=excluded.up_entry_band_depth_shares,
+    down_entry_band_depth_shares=excluded.down_entry_band_depth_shares,
+    up_expected_pre_halt_shares=excluded.up_expected_pre_halt_shares,
+    down_expected_pre_halt_shares=excluded.down_expected_pre_halt_shares,
+    up_expected_exit_window_shares=excluded.up_expected_exit_window_shares,
+    down_expected_exit_window_shares=excluded.down_expected_exit_window_shares,
+    up_pre_halt_pressure=excluded.up_pre_halt_pressure,
+    down_pre_halt_pressure=excluded.down_pre_halt_pressure,
+    up_exit_window_crowding=excluded.up_exit_window_crowding,
+    down_exit_window_crowding=excluded.down_exit_window_crowding,
+    up_top3_share_pct=excluded.up_top3_share_pct,
+    down_top3_share_pct=excluded.down_top3_share_pct,
+    up_two_sided_share_pct=excluded.up_two_sided_share_pct,
+    down_two_sided_share_pct=excluded.down_two_sided_share_pct,
+    up_profiled_share_pct=excluded.up_profiled_share_pct,
+    down_profiled_share_pct=excluded.down_profiled_share_pct,
+    up_extra_entry_ticks=excluded.up_extra_entry_ticks,
+    down_extra_entry_ticks=excluded.down_extra_entry_ticks,
+    up_size_multiplier=excluded.up_size_multiplier,
+    down_size_multiplier=excluded.down_size_multiplier,
+    detail_json=excluded.detail_json
+"#,
+                params![
+                    condition_id,
+                    row.market_slug.trim(),
+                    row.sport_key.trim().to_ascii_lowercase(),
+                    row.computed_at_ms,
+                    row.up_entry_band_depth_shares,
+                    row.down_entry_band_depth_shares,
+                    row.up_expected_pre_halt_shares,
+                    row.down_expected_pre_halt_shares,
+                    row.up_expected_exit_window_shares,
+                    row.down_expected_exit_window_shares,
+                    row.up_pre_halt_pressure,
+                    row.down_pre_halt_pressure,
+                    row.up_exit_window_crowding,
+                    row.down_exit_window_crowding,
+                    row.up_top3_share_pct,
+                    row.down_top3_share_pct,
+                    row.up_two_sided_share_pct,
+                    row.down_two_sided_share_pct,
+                    row.up_profiled_share_pct,
+                    row.down_profiled_share_pct,
+                    row.up_extra_entry_ticks,
+                    row.down_extra_entry_ticks,
+                    row.up_size_multiplier,
+                    row.down_size_multiplier,
+                    row.detail_json.as_deref()
+                ],
+            )?;
+            Ok(())
         })
     }
 

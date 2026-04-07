@@ -1,6 +1,8 @@
 // Modules are in lib.rs for reuse
 use polymarket_arbitrage_bot::*;
 
+mod mm_sport_holder_intel;
+
 use anyhow::{Context, Result};
 use chrono::{Datelike, Timelike, Utc};
 use chrono_tz::America::New_York;
@@ -69,8 +71,9 @@ use polymarket_arbitrage_bot::strategy::{
 use polymarket_arbitrage_bot::strategy_decider::{self, PremarketIntent, StrategyDeciderConfig};
 use polymarket_arbitrage_bot::symbol_ownership;
 use polymarket_arbitrage_bot::tracking_db::{
-    db_contention_premarket_throttle_factor, db_lock_contention_snapshot, PendingOrderRecord,
-    StrategyFeatureSnapshotIntentRecord, TrackingDb, TradeEventRecord,
+    db_contention_premarket_throttle_factor, db_lock_contention_snapshot,
+    MmSportHolderSnapshotRecord, MmSportMarketRiskRecord, MmSportWalletProfileRecord,
+    PendingOrderRecord, StrategyFeatureSnapshotIntentRecord, TrackingDb, TradeEventRecord,
 };
 use polymarket_arbitrage_bot::trader::{EntryExecutionMode, Trader};
 use polymarket_arbitrage_bot::weekend_policy;
@@ -1236,6 +1239,16 @@ fn mm_sport_passive_entry_price(best_bid: f64, tick_size: f64) -> f64 {
     (best_bid - tick).clamp(tick, 1.0 - tick)
 }
 
+fn mm_sport_passive_entry_price_with_extra_ticks(
+    best_bid: f64,
+    tick_size: f64,
+    extra_ticks: u32,
+) -> f64 {
+    let tick = mm_sport_one_tick(tick_size);
+    let total_ticks = 1.0 + extra_ticks as f64;
+    (best_bid - (tick * total_ticks)).clamp(tick, 1.0 - tick)
+}
+
 fn mm_sport_passive_exit_price(best_ask: f64, tick_size: f64) -> f64 {
     let tick = mm_sport_one_tick(tick_size);
     best_ask.clamp(tick, 1.0 - tick)
@@ -2235,6 +2248,357 @@ async fn mm_sport_discover_markets(
     }
     report.selected_markets = markets.len();
     Ok((markets, report))
+}
+
+async fn mm_sport_refresh_holder_intel_for_market(
+    market: &MmSportMarket,
+    now_ms: i64,
+    tracking_db: &TrackingDb,
+    holder_snapshot_cache_by_condition: &mut std::collections::HashMap<
+        String,
+        mm_sport_holder_intel::MarketHolderSnapshot,
+    >,
+    holder_snapshot_retry_after_ms_by_condition: &mut std::collections::HashMap<String, i64>,
+    wallet_profile_cache_by_key: &mut std::collections::HashMap<
+        String,
+        mm_sport_holder_intel::WalletSportProfile,
+    >,
+    wallet_profile_retry_after_ms_by_key: &mut std::collections::HashMap<String, i64>,
+    holder_snapshot_refresh_budget: &mut usize,
+    wallet_profile_refresh_budget: &mut usize,
+) -> Option<mm_sport_holder_intel::MarketHolderSnapshot> {
+    let condition_key = market.condition_id.trim().to_ascii_lowercase();
+    if condition_key.is_empty() {
+        return None;
+    }
+    let retry_after_ms = holder_snapshot_retry_after_ms_by_condition
+        .get(condition_key.as_str())
+        .copied()
+        .unwrap_or(0);
+    let snapshot_due = holder_snapshot_cache_by_condition
+        .get(condition_key.as_str())
+        .map(|snapshot| {
+            now_ms.saturating_sub(snapshot.fetched_at_ms)
+                >= mm_sport_holder_intel::HOLDER_SNAPSHOT_REFRESH_MS
+        })
+        .unwrap_or(true);
+    if snapshot_due && now_ms >= retry_after_ms && *holder_snapshot_refresh_budget > 0 {
+        *holder_snapshot_refresh_budget = holder_snapshot_refresh_budget.saturating_sub(1);
+        match mm_sport_holder_intel::fetch_holder_snapshot_for_market(market, now_ms).await {
+            Ok(Some(snapshot)) => {
+                let up_coverage_pct = if snapshot.up_total_shares > 0.0 {
+                    snapshot.up_selected_shares / snapshot.up_total_shares
+                } else {
+                    0.0
+                };
+                let down_coverage_pct = if snapshot.down_total_shares > 0.0 {
+                    snapshot.down_selected_shares / snapshot.down_total_shares
+                } else {
+                    0.0
+                };
+                let snapshot_rows = snapshot
+                    .entries
+                    .iter()
+                    .map(|entry| MmSportHolderSnapshotRecord {
+                        condition_id: snapshot.condition_id.clone(),
+                        market_slug: snapshot.market_slug.clone(),
+                        sport_key: snapshot.sport_key.clone(),
+                        token_id: entry.token_id.clone(),
+                        wallet_address: entry.wallet_address.clone(),
+                        display_name: entry.display_name.clone(),
+                        outcome: Some(entry.outcome.clone()),
+                        outcome_index: entry.outcome_index,
+                        shares: entry.shares,
+                        side_total_shares: if entry
+                            .token_id
+                            .eq_ignore_ascii_case(market.up_token_id.as_str())
+                        {
+                            snapshot.up_total_shares
+                        } else {
+                            snapshot.down_total_shares
+                        },
+                        side_selected_coverage_pct: if entry
+                            .token_id
+                            .eq_ignore_ascii_case(market.up_token_id.as_str())
+                        {
+                            up_coverage_pct
+                        } else {
+                            down_coverage_pct
+                        },
+                        holds_both_sides: entry.holds_both_sides,
+                        snapshot_ts_ms: snapshot.fetched_at_ms,
+                    })
+                    .collect::<Vec<_>>();
+                if let Err(err) = tracking_db.replace_mm_sport_holder_snapshot(
+                    snapshot.condition_id.as_str(),
+                    snapshot_rows.as_slice(),
+                ) {
+                    warn!(
+                        "mm sport failed to persist holder snapshot condition_id={} err={}",
+                        snapshot.condition_id, err
+                    );
+                }
+                holder_snapshot_retry_after_ms_by_condition.remove(condition_key.as_str());
+                holder_snapshot_cache_by_condition.insert(condition_key.clone(), snapshot.clone());
+                log_event(
+                    "mm_sport_holder_snapshot_refreshed",
+                    json!({
+                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                        "condition_id": snapshot.condition_id,
+                        "market_slug": snapshot.market_slug,
+                        "sport_key": snapshot.sport_key,
+                        "selected_wallet_count": snapshot.entries.len(),
+                        "up_total_shares": snapshot.up_total_shares,
+                        "down_total_shares": snapshot.down_total_shares,
+                        "up_selected_shares": snapshot.up_selected_shares,
+                        "down_selected_shares": snapshot.down_selected_shares,
+                        "up_selected_coverage_pct": up_coverage_pct,
+                        "down_selected_coverage_pct": down_coverage_pct
+                    }),
+                );
+            }
+            Ok(None) => {
+                holder_snapshot_retry_after_ms_by_condition.insert(
+                    condition_key.clone(),
+                    now_ms.saturating_add(mm_sport_holder_intel::HOLDER_SNAPSHOT_RETRY_MS),
+                );
+            }
+            Err(err) => {
+                holder_snapshot_retry_after_ms_by_condition.insert(
+                    condition_key.clone(),
+                    now_ms.saturating_add(mm_sport_holder_intel::HOLDER_SNAPSHOT_RETRY_MS),
+                );
+                log_event(
+                    "mm_sport_holder_snapshot_refresh_failed",
+                    json!({
+                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                        "condition_id": market.condition_id,
+                        "market_slug": market.market_slug,
+                        "error": err.to_string()
+                    }),
+                );
+            }
+        }
+    }
+
+    let snapshot = holder_snapshot_cache_by_condition
+        .get(condition_key.as_str())
+        .cloned()?;
+    if *wallet_profile_refresh_budget == 0 {
+        return Some(snapshot);
+    }
+
+    let mut wallets_to_refresh = snapshot
+        .entries
+        .iter()
+        .map(|entry| (entry.wallet_address.clone(), entry.shares))
+        .collect::<Vec<_>>();
+    wallets_to_refresh.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    wallets_to_refresh.dedup_by(|a, b| a.0.eq_ignore_ascii_case(b.0.as_str()));
+
+    for (wallet_address, _) in wallets_to_refresh {
+        if *wallet_profile_refresh_budget == 0 {
+            break;
+        }
+        let profile_key = mm_sport_holder_intel::wallet_profile_cache_key(
+            wallet_address.as_str(),
+            snapshot.sport_key.as_str(),
+        );
+        let retry_after_ms = wallet_profile_retry_after_ms_by_key
+            .get(profile_key.as_str())
+            .copied()
+            .unwrap_or(0);
+        let profile_due = wallet_profile_cache_by_key
+            .get(profile_key.as_str())
+            .map(|profile| {
+                now_ms.saturating_sub(profile.last_profiled_at_ms)
+                    >= mm_sport_holder_intel::WALLET_PROFILE_REFRESH_MS
+            })
+            .unwrap_or(true);
+        if !profile_due || now_ms < retry_after_ms {
+            continue;
+        }
+        *wallet_profile_refresh_budget = wallet_profile_refresh_budget.saturating_sub(1);
+        match mm_sport_holder_intel::fetch_wallet_profile(
+            wallet_address.as_str(),
+            snapshot.sport_key.as_str(),
+            now_ms,
+        )
+        .await
+        {
+            Ok(Some(profile)) => {
+                let detail_json = serde_json::to_string(&json!({
+                    "label": profile.label,
+                    "sample_count_7d": profile.sample_count_7d,
+                    "sample_count_30d": profile.sample_count_30d,
+                    "sports_market_count_7d": profile.sports_market_count_7d,
+                    "sports_market_count_30d": profile.sports_market_count_30d
+                }))
+                .ok();
+                if let Err(err) =
+                    tracking_db.upsert_mm_sport_wallet_profile(&MmSportWalletProfileRecord {
+                        wallet_address: profile.wallet_address.clone(),
+                        sport_key: profile.sport_key.clone(),
+                        label: profile.label.clone(),
+                        sample_count_7d: profile.sample_count_7d as i64,
+                        sample_count_30d: profile.sample_count_30d as i64,
+                        sports_market_count_7d: profile.sports_market_count_7d as i64,
+                        sports_market_count_30d: profile.sports_market_count_30d as i64,
+                        buy_count_7d: profile.buy_count_7d as i64,
+                        sell_count_7d: profile.sell_count_7d as i64,
+                        buy_count_30d: profile.buy_count_30d as i64,
+                        sell_count_30d: profile.sell_count_30d as i64,
+                        hold_to_settle_rate: profile.hold_to_settle_rate,
+                        pre_halt_sell_rate: profile.pre_halt_sell_rate,
+                        exit_window_sell_rate: profile.exit_window_sell_rate,
+                        same_event_both_sides_rate: profile.same_event_both_sides_rate,
+                        confidence: profile.confidence,
+                        last_profiled_at_ms: profile.last_profiled_at_ms,
+                        detail_json,
+                    })
+                {
+                    warn!(
+                        "mm sport failed to persist wallet profile wallet={} sport={} err={}",
+                        profile.wallet_address, profile.sport_key, err
+                    );
+                }
+                wallet_profile_retry_after_ms_by_key.remove(profile_key.as_str());
+                wallet_profile_cache_by_key.insert(profile_key.clone(), profile.clone());
+                log_event(
+                    "mm_sport_wallet_profile_refreshed",
+                    json!({
+                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                        "wallet_address": profile.wallet_address,
+                        "sport_key": profile.sport_key,
+                        "label": profile.label,
+                        "sample_count_7d": profile.sample_count_7d,
+                        "sample_count_30d": profile.sample_count_30d,
+                        "hold_to_settle_rate": profile.hold_to_settle_rate,
+                        "pre_halt_sell_rate": profile.pre_halt_sell_rate,
+                        "exit_window_sell_rate": profile.exit_window_sell_rate,
+                        "same_event_both_sides_rate": profile.same_event_both_sides_rate,
+                        "confidence": profile.confidence
+                    }),
+                );
+            }
+            Ok(None) => {
+                wallet_profile_retry_after_ms_by_key.insert(
+                    profile_key.clone(),
+                    now_ms.saturating_add(mm_sport_holder_intel::WALLET_PROFILE_RETRY_MS),
+                );
+            }
+            Err(err) => {
+                wallet_profile_retry_after_ms_by_key.insert(
+                    profile_key.clone(),
+                    now_ms.saturating_add(mm_sport_holder_intel::WALLET_PROFILE_RETRY_MS),
+                );
+                log_event(
+                    "mm_sport_wallet_profile_refresh_failed",
+                    json!({
+                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                        "wallet_address": wallet_address,
+                        "sport_key": snapshot.sport_key,
+                        "error": err.to_string()
+                    }),
+                );
+            }
+        }
+    }
+
+    Some(snapshot)
+}
+
+fn mm_sport_record_holder_market_risk(
+    tracking_db: &TrackingDb,
+    market_risk: &mm_sport_holder_intel::MarketRiskSnapshot,
+    last_holder_risk_persist_ms_by_condition: &mut std::collections::HashMap<String, i64>,
+    last_holder_risk_log_ms_by_condition: &mut std::collections::HashMap<String, i64>,
+) {
+    let condition_key = market_risk.condition_id.trim().to_ascii_lowercase();
+    if condition_key.is_empty() {
+        return;
+    }
+    let detail_json = serde_json::to_string(market_risk).ok();
+    let should_persist = last_holder_risk_persist_ms_by_condition
+        .get(condition_key.as_str())
+        .map(|last| market_risk.computed_at_ms.saturating_sub(*last) >= 60_000)
+        .unwrap_or(true);
+    if should_persist {
+        if let Err(err) = tracking_db.upsert_mm_sport_market_risk(&MmSportMarketRiskRecord {
+            condition_id: market_risk.condition_id.clone(),
+            market_slug: market_risk.market_slug.clone(),
+            sport_key: market_risk.sport_key.clone(),
+            computed_at_ms: market_risk.computed_at_ms,
+            up_entry_band_depth_shares: market_risk.up.entry_band_depth_shares,
+            down_entry_band_depth_shares: market_risk.down.entry_band_depth_shares,
+            up_expected_pre_halt_shares: market_risk.up.expected_pre_halt_shares,
+            down_expected_pre_halt_shares: market_risk.down.expected_pre_halt_shares,
+            up_expected_exit_window_shares: market_risk.up.expected_exit_window_shares,
+            down_expected_exit_window_shares: market_risk.down.expected_exit_window_shares,
+            up_pre_halt_pressure: market_risk.up.pre_halt_pressure,
+            down_pre_halt_pressure: market_risk.down.pre_halt_pressure,
+            up_exit_window_crowding: market_risk.up.exit_window_crowding,
+            down_exit_window_crowding: market_risk.down.exit_window_crowding,
+            up_top3_share_pct: market_risk.up.top3_share_pct,
+            down_top3_share_pct: market_risk.down.top3_share_pct,
+            up_two_sided_share_pct: market_risk.up.two_sided_share_pct,
+            down_two_sided_share_pct: market_risk.down.two_sided_share_pct,
+            up_profiled_share_pct: market_risk.up.profiled_share_pct,
+            down_profiled_share_pct: market_risk.down.profiled_share_pct,
+            up_extra_entry_ticks: market_risk.up.extra_entry_ticks as i64,
+            down_extra_entry_ticks: market_risk.down.extra_entry_ticks as i64,
+            up_size_multiplier: market_risk.up.size_multiplier,
+            down_size_multiplier: market_risk.down.size_multiplier,
+            detail_json: detail_json.clone(),
+        }) {
+            warn!(
+                "mm sport failed to persist holder market risk condition_id={} err={}",
+                market_risk.condition_id, err
+            );
+        } else {
+            last_holder_risk_persist_ms_by_condition
+                .insert(condition_key.clone(), market_risk.computed_at_ms);
+        }
+    }
+
+    let adjustment_active = market_risk.up.extra_entry_ticks > 0
+        || market_risk.down.extra_entry_ticks > 0
+        || market_risk.up.size_multiplier < 0.999
+        || market_risk.down.size_multiplier < 0.999
+        || market_risk.up.exit_window_crowding >= 0.5
+        || market_risk.down.exit_window_crowding >= 0.5;
+    let should_log = adjustment_active
+        && last_holder_risk_log_ms_by_condition
+            .get(condition_key.as_str())
+            .map(|last| market_risk.computed_at_ms.saturating_sub(*last) >= 60_000)
+            .unwrap_or(true);
+    if should_log {
+        last_holder_risk_log_ms_by_condition
+            .insert(condition_key.clone(), market_risk.computed_at_ms);
+        log_event(
+            "mm_sport_market_risk_scored",
+            json!({
+                "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                "condition_id": market_risk.condition_id,
+                "market_slug": market_risk.market_slug,
+                "sport_key": market_risk.sport_key,
+                "up_pre_halt_pressure": market_risk.up.pre_halt_pressure,
+                "down_pre_halt_pressure": market_risk.down.pre_halt_pressure,
+                "up_exit_window_crowding": market_risk.up.exit_window_crowding,
+                "down_exit_window_crowding": market_risk.down.exit_window_crowding,
+                "up_extra_entry_ticks": market_risk.up.extra_entry_ticks,
+                "down_extra_entry_ticks": market_risk.down.extra_entry_ticks,
+                "up_size_multiplier": market_risk.up.size_multiplier,
+                "down_size_multiplier": market_risk.down.size_multiplier,
+                "up_top3_share_pct": market_risk.up.top3_share_pct,
+                "down_top3_share_pct": market_risk.down.top3_share_pct,
+                "up_two_sided_share_pct": market_risk.up.two_sided_share_pct,
+                "down_two_sided_share_pct": market_risk.down.two_sided_share_pct,
+                "up_profiled_share_pct": market_risk.up.profiled_share_pct,
+                "down_profiled_share_pct": market_risk.down.profiled_share_pct
+            }),
+        );
+    }
 }
 
 fn admin_api_enabled() -> bool {
@@ -13666,6 +14030,30 @@ async fn main() -> Result<()> {
                 let mut depth_ratio_available_usdc_cached_at_ms = 0_i64;
                 let mut depth_ratio_balance_error_log_ms = 0_i64;
                 let mut depth_ratio_allowance_zero_fallback_log_ms = 0_i64;
+                let mut holder_snapshot_cache_by_condition: std::collections::HashMap<
+                    String,
+                    mm_sport_holder_intel::MarketHolderSnapshot,
+                > = std::collections::HashMap::new();
+                let mut holder_snapshot_retry_after_ms_by_condition: std::collections::HashMap<
+                    String,
+                    i64,
+                > = std::collections::HashMap::new();
+                let mut wallet_profile_cache_by_key: std::collections::HashMap<
+                    String,
+                    mm_sport_holder_intel::WalletSportProfile,
+                > = std::collections::HashMap::new();
+                let mut wallet_profile_retry_after_ms_by_key: std::collections::HashMap<
+                    String,
+                    i64,
+                > = std::collections::HashMap::new();
+                let mut last_holder_risk_log_ms_by_condition: std::collections::HashMap<
+                    String,
+                    i64,
+                > = std::collections::HashMap::new();
+                let mut last_holder_risk_persist_ms_by_condition: std::collections::HashMap<
+                    String,
+                    i64,
+                > = std::collections::HashMap::new();
 
                 if mm_sport_cfg_for_loop.exit_mode == mm::MmSportExitMode::NoExit {
                     match tracking_db_for_mm_sport.get_runtime_parameter_state_for_strategy(
@@ -13813,6 +14201,10 @@ async fn main() -> Result<()> {
                     }
 
                     let now_ms = chrono::Utc::now().timestamp_millis();
+                    let mut holder_snapshot_refresh_budget =
+                        mm_sport_holder_intel::HOLDER_REFRESH_BUDGET_PER_LOOP;
+                    let mut wallet_profile_refresh_budget =
+                        mm_sport_holder_intel::WALLET_PROFILE_REFRESH_BUDGET_PER_LOOP;
                     quote_expiry_by_condition
                         .retain(|_, (expiration_ms, _)| *expiration_ms > now_ms);
                     if now_ms.saturating_sub(last_reconcile_failed_rearm_ms) >= 60_000 {
@@ -15600,6 +15992,10 @@ async fn main() -> Result<()> {
                             String,
                             f64,
                         > = std::collections::HashMap::new();
+                        let mut holder_risk_by_token: std::collections::HashMap<
+                            String,
+                            mm_sport_holder_intel::SideRiskAdjustment,
+                        > = std::collections::HashMap::new();
                         if inventory_exit_mode {
                             let (up_book_res, down_book_res) = tokio::join!(
                                 api_for_mm_sport.get_orderbook(market.up_token_id.as_str()),
@@ -15781,6 +16177,55 @@ async fn main() -> Result<()> {
                                         .max(floor_shares)
                                 }
                             };
+                            if let Some(snapshot) = mm_sport_refresh_holder_intel_for_market(
+                                market,
+                                now_ms,
+                                &tracking_db_for_mm_sport,
+                                &mut holder_snapshot_cache_by_condition,
+                                &mut holder_snapshot_retry_after_ms_by_condition,
+                                &mut wallet_profile_cache_by_key,
+                                &mut wallet_profile_retry_after_ms_by_key,
+                                &mut holder_snapshot_refresh_budget,
+                                &mut wallet_profile_refresh_budget,
+                            )
+                            .await
+                            {
+                                let market_risk = if active_token_id
+                                    .eq_ignore_ascii_case(market.up_token_id.as_str())
+                                {
+                                    mm_sport_holder_intel::compute_market_risk(
+                                        market,
+                                        &snapshot,
+                                        &wallet_profile_cache_by_key,
+                                        ext_top_bid_shares,
+                                        0.0,
+                                        now_ms,
+                                    )
+                                } else {
+                                    mm_sport_holder_intel::compute_market_risk(
+                                        market,
+                                        &snapshot,
+                                        &wallet_profile_cache_by_key,
+                                        0.0,
+                                        ext_top_bid_shares,
+                                        now_ms,
+                                    )
+                                };
+                                mm_sport_record_holder_market_risk(
+                                    &tracking_db_for_mm_sport,
+                                    &market_risk,
+                                    &mut last_holder_risk_persist_ms_by_condition,
+                                    &mut last_holder_risk_log_ms_by_condition,
+                                );
+                                let side_risk = if active_token_id
+                                    .eq_ignore_ascii_case(market.up_token_id.as_str())
+                                {
+                                    market_risk.up
+                                } else {
+                                    market_risk.down
+                                };
+                                holder_risk_by_token.insert(active_token_id.clone(), side_risk);
+                            }
                             planned_buy_shares_by_token
                                 .insert(active_token_id.clone(), target_bid_shares);
                             books_by_token.insert(active_token_id.clone(), active_book);
@@ -16340,6 +16785,38 @@ async fn main() -> Result<()> {
                                 );
                                 continue;
                             }
+                            if let Some(snapshot) = mm_sport_refresh_holder_intel_for_market(
+                                market,
+                                now_ms,
+                                &tracking_db_for_mm_sport,
+                                &mut holder_snapshot_cache_by_condition,
+                                &mut holder_snapshot_retry_after_ms_by_condition,
+                                &mut wallet_profile_cache_by_key,
+                                &mut wallet_profile_retry_after_ms_by_key,
+                                &mut holder_snapshot_refresh_budget,
+                                &mut wallet_profile_refresh_budget,
+                            )
+                            .await
+                            {
+                                let market_risk = mm_sport_holder_intel::compute_market_risk(
+                                    market,
+                                    &snapshot,
+                                    &wallet_profile_cache_by_key,
+                                    up_ext_top_bid_shares,
+                                    down_ext_top_bid_shares,
+                                    now_ms,
+                                );
+                                mm_sport_record_holder_market_risk(
+                                    &tracking_db_for_mm_sport,
+                                    &market_risk,
+                                    &mut last_holder_risk_persist_ms_by_condition,
+                                    &mut last_holder_risk_log_ms_by_condition,
+                                );
+                                holder_risk_by_token
+                                    .insert(market.up_token_id.clone(), market_risk.up);
+                                holder_risk_by_token
+                                    .insert(market.down_token_id.clone(), market_risk.down);
+                            }
                             planned_buy_shares_by_token
                                 .insert(market.up_token_id.clone(), up_quote_shares);
                             planned_buy_shares_by_token
@@ -16892,6 +17369,10 @@ async fn main() -> Result<()> {
                                 .copied()
                                 .unwrap_or(0.0);
                             let raw_planned_bid_shares = target_bid_shares;
+                            let holder_risk = holder_risk_by_token
+                                .get(token_id.as_str())
+                                .copied()
+                                .unwrap_or_default();
                             if mm_sport_cfg_for_loop.quote_size_mode
                                 == mm::MmSportQuoteSizeMode::DepthRatio
                             {
@@ -16909,6 +17390,35 @@ async fn main() -> Result<()> {
                                         }
                                     }
                                 }
+                            }
+                            if holder_risk.size_multiplier.is_finite()
+                                && holder_risk.size_multiplier >= 0.0
+                                && holder_risk.size_multiplier < 0.999_999
+                            {
+                                let scaled_bid_shares =
+                                    (target_bid_shares * holder_risk.size_multiplier).max(0.0);
+                                if (scaled_bid_shares - target_bid_shares).abs() > 1e-9 {
+                                    log_event(
+                                        "mm_sport_quote_scaled_holder_risk",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                            "condition_id": market.condition_id,
+                                            "token_id": token_id,
+                                            "raw_planned_bid_shares": raw_planned_bid_shares,
+                                            "pre_risk_target_bid_shares": target_bid_shares,
+                                            "size_multiplier": holder_risk.size_multiplier,
+                                            "scaled_target_bid_shares": scaled_bid_shares,
+                                            "pre_halt_pressure": holder_risk.pre_halt_pressure,
+                                            "exit_window_crowding": holder_risk.exit_window_crowding,
+                                            "top3_share_pct": holder_risk.top3_share_pct,
+                                            "two_sided_share_pct": holder_risk.two_sided_share_pct,
+                                            "profiled_share_pct": holder_risk.profiled_share_pct,
+                                            "profiled_holder_count": holder_risk.profiled_holder_count,
+                                            "selected_holder_count": holder_risk.selected_holder_count
+                                        }),
+                                    );
+                                }
+                                target_bid_shares = scaled_bid_shares;
                             }
                             if !target_bid_shares.is_finite() || target_bid_shares <= 0.0 {
                                 if mm_sport_cfg_for_loop.quote_size_mode
@@ -16956,8 +17466,31 @@ async fn main() -> Result<()> {
                                 last_action_ms_by_token_side.insert(sell_key.clone(), now_ms_local);
                             }
 
-                            let submit_bid_price =
-                                mm_sport_passive_entry_price(best_bid, market.minimum_tick_size);
+                            let submit_bid_price = mm_sport_passive_entry_price_with_extra_ticks(
+                                best_bid,
+                                market.minimum_tick_size,
+                                holder_risk.extra_entry_ticks,
+                            );
+                            if holder_risk.extra_entry_ticks > 0 {
+                                log_event(
+                                    "mm_sport_quote_widened_holder_risk",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                        "condition_id": market.condition_id,
+                                        "token_id": token_id,
+                                        "best_bid": best_bid,
+                                        "submit_bid_price": submit_bid_price,
+                                        "extra_entry_ticks": holder_risk.extra_entry_ticks,
+                                        "pre_halt_pressure": holder_risk.pre_halt_pressure,
+                                        "exit_window_crowding": holder_risk.exit_window_crowding,
+                                        "top3_share_pct": holder_risk.top3_share_pct,
+                                        "two_sided_share_pct": holder_risk.two_sided_share_pct,
+                                        "profiled_share_pct": holder_risk.profiled_share_pct,
+                                        "profiled_holder_count": holder_risk.profiled_holder_count,
+                                        "selected_holder_count": holder_risk.selected_holder_count
+                                    }),
+                                );
+                            }
                             let (_own_bid_shares, ext_top_bid_shares, ext_top_bid_usd) =
                                 mm_sport_external_bid_depth_at_or_above(
                                     &book,

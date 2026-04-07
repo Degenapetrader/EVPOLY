@@ -1770,47 +1770,6 @@ fn mm_sport_order_still_active(tracking_db: &TrackingDb, order_id: &str) -> bool
         .unwrap_or(false)
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct MmSportWalletFillConfirmation {
-    confirmed: bool,
-    wallet_inventory_shares: f64,
-    db_inventory_shares: f64,
-    required_wallet_shares: f64,
-}
-
-fn mm_sport_wallet_fill_confirmation(
-    tracking_db: &TrackingDb,
-    row: &PendingOrderRecord,
-    matched_units: f64,
-) -> MmSportWalletFillConfirmation {
-    let Some(condition_id) = row
-        .condition_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return MmSportWalletFillConfirmation::default();
-    };
-    let Ok(state) = tracking_db.get_mm_live_token_state(
-        row.strategy_id.as_str(),
-        condition_id,
-        row.timeframe.as_str(),
-        row.period_timestamp,
-        row.token_id.as_str(),
-    ) else {
-        return MmSportWalletFillConfirmation::default();
-    };
-    let wallet_inventory_shares = state.wallet_inventory_shares.unwrap_or(0.0).max(0.0);
-    let db_inventory_shares = state.db_inventory_shares.unwrap_or(0.0).max(0.0);
-    let required_wallet_shares = ((db_inventory_shares + matched_units.max(0.0)) * 0.98).max(0.0);
-    MmSportWalletFillConfirmation {
-        confirmed: wallet_inventory_shares + 1e-6 >= required_wallet_shares,
-        wallet_inventory_shares,
-        db_inventory_shares,
-        required_wallet_shares,
-    }
-}
-
 fn mm_sport_record_fill_from_pending(
     tracking_db: &TrackingDb,
     row: &PendingOrderRecord,
@@ -1830,39 +1789,6 @@ fn mm_sport_record_fill_from_pending(
         return false;
     }
     let is_buy_fill = normalized_side.eq_ignore_ascii_case("BUY");
-    if is_buy_fill {
-        let confirmation = mm_sport_wallet_fill_confirmation(tracking_db, row, matched_units);
-        if !confirmation.confirmed {
-            log_event(
-                "mm_sport_fill_unconfirmed_terminal_reconcile",
-                json!({
-                    "strategy_id": row.strategy_id,
-                    "condition_id": row.condition_id,
-                    "token_id": row.token_id,
-                    "timeframe": row.timeframe,
-                    "period_timestamp": row.period_timestamp,
-                    "order_id": order_id,
-                    "reason": reason,
-                    "matched_units": matched_units,
-                    "wallet_inventory_shares": confirmation.wallet_inventory_shares,
-                    "db_inventory_shares": confirmation.db_inventory_shares,
-                    "required_wallet_shares": confirmation.required_wallet_shares,
-                }),
-            );
-            warn!(
-                "MM sport terminal reconcile fill rejected order_id={} condition_id={:?} token_id={} reason={} matched_units={:.4} wallet_inventory_shares={:.4} db_inventory_shares={:.4} required_wallet_shares={:.4}",
-                order_id,
-                row.condition_id,
-                row.token_id,
-                reason,
-                matched_units,
-                confirmation.wallet_inventory_shares,
-                confirmation.db_inventory_shares,
-                confirmation.required_wallet_shares
-            );
-            return false;
-        }
-    }
     let event_type = if is_buy_fill { "ENTRY_FILL" } else { "EXIT" };
     let event_key = if is_buy_fill {
         format!("entry_fill_order:{}", order_id)
@@ -34853,54 +34779,6 @@ mod tests {
         }
     }
 
-    fn mm_sport_temp_db_path(label: &str) -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .map(|value| value.as_nanos())
-            .unwrap_or_default();
-        std::env::temp_dir().join(format!(
-            "evpoly-{}-{}-{}.db",
-            label,
-            std::process::id(),
-            nanos
-        ))
-    }
-
-    fn ensure_test_wallet_positions_table(path: &std::path::Path) -> anyhow::Result<()> {
-        let conn = rusqlite::Connection::open(path)?;
-        conn.execute_batch(
-            r#"
-CREATE TABLE IF NOT EXISTS wallet_positions_live_latest_v1 (
-    wallet_address TEXT NOT NULL,
-    condition_id TEXT NOT NULL,
-    token_id TEXT NOT NULL,
-    snapshot_ts_ms INTEGER NOT NULL,
-    outcome TEXT,
-    opposite_outcome TEXT,
-    slug TEXT,
-    event_slug TEXT,
-    title TEXT,
-    token_type TEXT,
-    position_size REAL,
-    avg_price REAL,
-    cur_price REAL,
-    initial_value REAL,
-    current_value REAL,
-    cash_pnl REAL,
-    realized_pnl REAL,
-    redeemable INTEGER,
-    mergeable INTEGER,
-    negative_risk INTEGER,
-    end_date TEXT,
-    raw_json TEXT,
-    PRIMARY KEY (wallet_address, condition_id, token_id)
-);
-"#,
-        )?;
-        Ok(())
-    }
-
     #[test]
     fn admin_api_defaults_are_hardened() {
         with_admin_env(
@@ -34916,133 +34794,6 @@ CREATE TABLE IF NOT EXISTS wallet_positions_live_latest_v1 (
                 assert!(admin_api_token().is_none());
             },
         );
-    }
-
-    #[test]
-    fn mm_sport_terminal_reconcile_requires_wallet_confirmation_for_buy_fills() -> anyhow::Result<()>
-    {
-        let path = mm_sport_temp_db_path("mm-sport-terminal-fill-confirm");
-        let db = TrackingDb::new(&path)?;
-        ensure_test_wallet_positions_table(path.as_path())?;
-        let row = PendingOrderRecord {
-            order_id: "ord-mm-sport-confirm".to_string(),
-            trade_key: "trade-mm-sport-confirm".to_string(),
-            token_id: "token-mm-sport-confirm".to_string(),
-            condition_id: Some("cond-mm-sport-confirm".to_string()),
-            timeframe: "1d".to_string(),
-            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
-            asset_symbol: Some("NHL".to_string()),
-            entry_mode: "depth_ratio".to_string(),
-            period_timestamp: 1_775_527_200,
-            price: 0.61,
-            size_usd: 61.0,
-            side: "BUY".to_string(),
-            status: "OPEN".to_string(),
-        };
-
-        let missing = mm_sport_wallet_fill_confirmation(&db, &row, 100.0);
-        assert!(!missing.confirmed);
-        assert_eq!(missing.wallet_inventory_shares, 0.0);
-        assert_eq!(missing.db_inventory_shares, 0.0);
-        assert!((missing.required_wallet_shares - 98.0).abs() < 1e-9);
-
-        let conn = rusqlite::Connection::open(&path)?;
-        conn.execute(
-            r#"
-INSERT OR REPLACE INTO wallet_positions_live_latest_v1 (
-    wallet_address, condition_id, token_id, snapshot_ts_ms, position_size, avg_price, cur_price, current_value
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-"#,
-            rusqlite::params![
-                "0xwallet",
-                "cond-mm-sport-confirm",
-                "token-mm-sport-confirm",
-                123_000_i64,
-                100.0_f64,
-                0.61_f64,
-                0.61_f64,
-                61.0_f64
-            ],
-        )?;
-        drop(conn);
-
-        let confirmed = mm_sport_wallet_fill_confirmation(&db, &row, 100.0);
-        assert!(confirmed.confirmed);
-        assert!((confirmed.wallet_inventory_shares - 100.0).abs() < 1e-9);
-        assert!((confirmed.required_wallet_shares - 98.0).abs() < 1e-9);
-
-        drop(db);
-        let _ = std::fs::remove_file(path);
-        Ok(())
-    }
-
-    #[test]
-    fn mm_sport_terminal_reconcile_requires_incremental_wallet_inventory() -> anyhow::Result<()> {
-        let path = mm_sport_temp_db_path("mm-sport-terminal-fill-delta");
-        let db = TrackingDb::new(&path)?;
-        ensure_test_wallet_positions_table(path.as_path())?;
-        db.record_trade_event(&TradeEventRecord {
-            event_key: Some("existing-mm-sport-entry".to_string()),
-            ts_ms: 100_000,
-            period_timestamp: 1_775_527_200,
-            timeframe: "1d".to_string(),
-            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
-            asset_symbol: Some("NHL".to_string()),
-            condition_id: Some("cond-mm-sport-delta".to_string()),
-            token_id: Some("token-mm-sport-delta".to_string()),
-            token_type: Some("Sharks".to_string()),
-            side: Some("BUY".to_string()),
-            event_type: "ENTRY_FILL".to_string(),
-            price: Some(0.55),
-            units: Some(40.0),
-            notional_usd: Some(22.0),
-            pnl_usd: None,
-            reason: Some("unit_test_existing_inventory".to_string()),
-        })?;
-        let conn = rusqlite::Connection::open(&path)?;
-        conn.execute(
-            r#"
-INSERT OR REPLACE INTO wallet_positions_live_latest_v1 (
-    wallet_address, condition_id, token_id, snapshot_ts_ms, position_size, avg_price, cur_price, current_value
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-"#,
-            rusqlite::params![
-                "0xwallet",
-                "cond-mm-sport-delta",
-                "token-mm-sport-delta",
-                124_000_i64,
-                120.0_f64,
-                0.58_f64,
-                0.59_f64,
-                70.8_f64
-            ],
-        )?;
-        drop(conn);
-        let row = PendingOrderRecord {
-            order_id: "ord-mm-sport-delta".to_string(),
-            trade_key: "trade-mm-sport-delta".to_string(),
-            token_id: "token-mm-sport-delta".to_string(),
-            condition_id: Some("cond-mm-sport-delta".to_string()),
-            timeframe: "1d".to_string(),
-            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
-            asset_symbol: Some("NHL".to_string()),
-            entry_mode: "depth_ratio".to_string(),
-            period_timestamp: 1_775_527_200,
-            price: 0.61,
-            size_usd: 61.0,
-            side: "BUY".to_string(),
-            status: "OPEN".to_string(),
-        };
-
-        let confirmation = mm_sport_wallet_fill_confirmation(&db, &row, 100.0);
-        assert!(!confirmation.confirmed);
-        assert!((confirmation.wallet_inventory_shares - 120.0).abs() < 1e-9);
-        assert!((confirmation.db_inventory_shares - 40.0).abs() < 1e-9);
-        assert!((confirmation.required_wallet_shares - 137.2).abs() < 1e-9);
-
-        drop(db);
-        let _ = std::fs::remove_file(path);
-        Ok(())
     }
 
     #[test]

@@ -67,7 +67,7 @@ pub struct WalletSportProfile {
     pub last_profiled_at_ms: i64,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SideRiskAdjustment {
     pub entry_band_depth_shares: f64,
     pub expected_pre_halt_shares: f64,
@@ -81,6 +81,25 @@ pub struct SideRiskAdjustment {
     pub selected_holder_count: usize,
     pub extra_entry_ticks: u32,
     pub size_multiplier: f64,
+}
+
+impl Default for SideRiskAdjustment {
+    fn default() -> Self {
+        Self {
+            entry_band_depth_shares: 0.0,
+            expected_pre_halt_shares: 0.0,
+            expected_exit_window_shares: 0.0,
+            pre_halt_pressure: 0.0,
+            exit_window_crowding: 0.0,
+            top3_share_pct: 0.0,
+            two_sided_share_pct: 0.0,
+            profiled_share_pct: 0.0,
+            profiled_holder_count: 0,
+            selected_holder_count: 0,
+            extra_entry_ticks: 0,
+            size_multiplier: 1.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -868,6 +887,13 @@ mod tests {
         assert_eq!(map_pressure_to_quote_adjustment(0.8), (1, 0.85));
         assert_eq!(map_pressure_to_quote_adjustment(1.5), (2, 0.65));
         assert_eq!(map_pressure_to_quote_adjustment(3.0), (4, 0.40));
+    }
+
+    #[test]
+    fn default_side_risk_is_neutral() {
+        let risk = SideRiskAdjustment::default();
+        assert_eq!(risk.extra_entry_ticks, 0);
+        assert_eq!(risk.size_multiplier, 1.0);
     }
 
     #[test]

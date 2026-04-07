@@ -1691,10 +1691,10 @@ export function StrategyEditorPane({
                   </div>
                   <p className="mt-2 text-sm text-[var(--text-secondary)]">
                     {mmSport.inventory_exit_mode === "aggressive"
-                      ? "Aggressive leans harder on the bid to exit sooner."
+                      ? "Aggressive tries to sell the position right after it gets filled."
                       : mmSport.inventory_exit_mode === "no_exit"
                         ? "Feeling Lucky skips forced cleanup exits and lets inventory ride."
-                        : "Auto uses the normal cleanup path when MM Sport needs to exit."}
+                        : "Auto uses the normal cleanup path and best-effort inventory exits, but rare failures can still happen."}
                   </p>
                 </div>
               </div>

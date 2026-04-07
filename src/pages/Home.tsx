@@ -582,7 +582,7 @@ export function Home() {
             Today (UTC)
           </div>
           <div className="mt-1 text-sm text-[var(--text-secondary)]">
-            Since Jan 1, 2025:{" "}
+            Since Using EVPoly:{" "}
             <span className="text-[var(--text-primary)]">
               {formatUsd(overview?.liquidity_rewards_lifetime)}
             </span>

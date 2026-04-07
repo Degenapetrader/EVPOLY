@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { open } from "@tauri-apps/plugin-shell";
 import { check } from "@tauri-apps/plugin-updater";
 import { AppShell } from "../components/AppShell";
 import { GeoAccessDialog } from "../components/GeoAccessDialog";
@@ -37,7 +38,6 @@ import {
   getLinuxResumeOffer,
   getSavedConfig,
   lockSession,
-  prepareLinuxUpdateInstall,
   restartBot,
   runSetupDoctor,
   saveConfig,
@@ -111,6 +111,10 @@ function resumeOfferCopy(offer: PendingLinuxResumeOffer): string {
 
 function resumeOfferActionLabel(offer: PendingLinuxResumeOffer): string {
   return offer.simulation ? "Resume Simulation" : "Resume Live Bot";
+}
+
+function linuxDebDownloadUrl(version: string): string {
+  return `https://github.com/Degenapetrader/EVPOLY/releases/download/Linux-v${version}/EVPoly_${version}_amd64.deb`;
 }
 
 export function Home() {
@@ -222,39 +226,13 @@ export function Home() {
   );
 
   const handleUpdate = async () => {
-    if (!pendingUpdate || updateDownloading) return;
+    if (!pendingUpdate || !updateVersion || updateDownloading) return;
     setUpdateDownloading(true);
-    let preparedResume: PendingLinuxResumeOffer | null = null;
+    setActionError(null);
     try {
-      if (activeProfileId && dirty) {
-        await saveConfig(activeProfileId, config);
-        setSavedSnapshot(JSON.stringify(config));
-      }
-      preparedResume = await prepareLinuxUpdateInstall();
-      await pendingUpdate.downloadAndInstall();
-      setPendingUpdate(null);
-      setUpdateVersion(null);
+      await open(linuxDebDownloadUrl(updateVersion));
     } catch (err) {
-      const updateMessage = getErrorText(err, "Linux update failed");
-      if (preparedResume) {
-        try {
-          await startBot(preparedResume.simulation);
-          await clearLinuxResumeOffer();
-          setPendingResumeOffer(null);
-          await refreshOverview();
-          await refreshActivity({ reset: true });
-          setActionError(`${updateMessage}. The previous bot session was restored.`);
-        } catch (resumeErr) {
-          setActionError(
-            `${updateMessage}. Resume failed: ${getErrorText(
-              resumeErr,
-              "bot restore after update failure did not complete"
-            )}`
-          );
-        }
-      } else {
-        setActionError(updateMessage);
-      }
+      setActionError(getErrorText(err, "failed to open the latest Ubuntu package"));
     } finally {
       setUpdateDownloading(false);
     }
@@ -900,8 +878,11 @@ export function Home() {
             </div>
           ) : null}
           <UpdateBanner
-            version={updateDownloading ? "Downloading..." : updateVersion}
+            version={updateVersion}
             onUpdate={handleUpdate}
+            actionLabel={updateDownloading ? "Opening..." : "Download Latest .deb"}
+            detail="Downloads the newest Ubuntu package. Your profiles and bot settings stay intact."
+            disabled={updateDownloading}
           />
           {displayError ? <div className="inline-alert">{displayError}</div> : null}
         </div>

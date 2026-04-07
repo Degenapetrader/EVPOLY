@@ -1238,7 +1238,7 @@ fn mm_sport_passive_entry_price(best_bid: f64, tick_size: f64) -> f64 {
 
 fn mm_sport_passive_exit_price(best_ask: f64, tick_size: f64) -> f64 {
     let tick = mm_sport_one_tick(tick_size);
-    (best_ask + tick).clamp(tick, 1.0 - tick)
+    best_ask.clamp(tick, 1.0 - tick)
 }
 
 fn mm_sport_price_close(a: f64, b: f64, tick_size: f64) -> bool {
@@ -35383,9 +35383,9 @@ mod tests {
     #[test]
     fn mm_sport_passive_prices_move_one_market_tick() {
         assert!((mm_sport_passive_entry_price(0.60, 0.01) - 0.59).abs() < 1e-9);
-        assert!((mm_sport_passive_exit_price(0.61, 0.01) - 0.62).abs() < 1e-9);
+        assert!((mm_sport_passive_exit_price(0.61, 0.01) - 0.61).abs() < 1e-9);
         assert!((mm_sport_passive_entry_price(0.5455, 0.0001) - 0.5454).abs() < 1e-9);
-        assert!((mm_sport_passive_exit_price(0.5455, 0.0001) - 0.5456).abs() < 1e-9);
+        assert!((mm_sport_passive_exit_price(0.5455, 0.0001) - 0.5455).abs() < 1e-9);
     }
 
     #[test]
@@ -35471,7 +35471,7 @@ mod tests {
     }
 
     #[test]
-    fn mm_sport_exit_order_plan_normal_uses_offset_best_ask() {
+    fn mm_sport_exit_order_plan_normal_uses_best_ask() {
         let game_start_ts_ms = 2_000_000_000_000_i64;
         let plan = mm_sport_exit_order_plan(
             mm::MmSportExitMode::Normal,
@@ -35485,7 +35485,7 @@ mod tests {
         assert_eq!(
             plan,
             MmSportExitOrderPlan {
-                submit_exit_price: 0.53,
+                submit_exit_price: 0.52,
                 submit_post_only: true,
                 force_exit_mode: false,
                 aggressive_mode: false,

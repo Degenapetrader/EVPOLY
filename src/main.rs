@@ -1158,7 +1158,31 @@ fn mm_sport_is_match_market(slug: &str, question: &str) -> bool {
         || question_lc.contains(" vs ")
         || question_lc.contains(" v. ")
         || question_lc.contains(" v ");
-    slug_vs || question_vs
+    slug_vs || question_vs || mm_sport_is_dated_winner_market(question_lc.as_str())
+}
+
+fn mm_sport_is_dated_winner_market(question_lc: &str) -> bool {
+    if !question_lc.starts_with("will ") {
+        return false;
+    }
+    let Some((_, raw_suffix)) = question_lc.rsplit_once(" win on ") else {
+        return false;
+    };
+    let suffix = raw_suffix.trim_end_matches('?');
+    let bytes = suffix.as_bytes();
+    if bytes.len() != 10 {
+        return false;
+    }
+    bytes[0].is_ascii_digit()
+        && bytes[1].is_ascii_digit()
+        && bytes[2].is_ascii_digit()
+        && bytes[3].is_ascii_digit()
+        && bytes[4] == b'-'
+        && bytes[5].is_ascii_digit()
+        && bytes[6].is_ascii_digit()
+        && bytes[7] == b'-'
+        && bytes[8].is_ascii_digit()
+        && bytes[9].is_ascii_digit()
 }
 
 fn mm_sport_error_looks_rate_limited(message: &str) -> bool {
@@ -36181,6 +36205,30 @@ mod tests {
             .collect::<std::collections::HashSet<_>>();
         assert!(conditions.contains("cond-hot"));
         assert!(!conditions.contains("cond-prestart"));
+    }
+
+    #[test]
+    fn mm_sport_match_market_accepts_dated_winner_questions() {
+        assert!(mm_sport_is_match_market(
+            "champions-league-psg-liv-2026-04-08-psg",
+            "Will Paris Saint-Germain FC win on 2026-04-08?"
+        ));
+        assert!(mm_sport_is_match_market(
+            "champions-league-fcb-atm-2026-04-08-fcb",
+            "Will FC Barcelona win on 2026-04-08?"
+        ));
+    }
+
+    #[test]
+    fn mm_sport_match_market_keeps_long_horizon_team_futures_excluded() {
+        assert!(!mm_sport_is_match_market(
+            "will-liverpool-win-the-202526-champions-league",
+            "Will Liverpool win the 2025–26 Champions League?"
+        ));
+        assert!(!mm_sport_is_match_market(
+            "will-barcelona-win-the-202526-la-liga",
+            "Will Barcelona win the 2025–26 La Liga?"
+        ));
     }
 
     #[test]

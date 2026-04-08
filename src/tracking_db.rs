@@ -684,6 +684,7 @@ pub struct UiDashboardDbSummary {
     pub losing_trades: u64,
     pub avg_ack_latency_ms: Option<f64>,
     pub ack_sample_count: u64,
+    pub ack_warning_count_recent: u64,
     pub open_positions_count: u64,
     pub recent_orders_count: u64,
     pub last_event_ts_ms: Option<i64>,
@@ -10031,13 +10032,39 @@ GROUP BY strategy_id
                     },
                 )
                 .unwrap_or((0, 0));
+            let ack_latency_expr = r#"
+CASE
+    WHEN COALESCE(json_valid(reason), 0) = 0 THEN NULL
+    ELSE COALESCE(
+        CAST(json_extract(reason, '$.api_post_order_ms') AS REAL),
+        CAST(json_extract(reason, '$.order_ack_latency_ms') AS REAL),
+        CASE
+            WHEN json_extract(reason, '$.acked_at_ms') IS NOT NULL
+              AND json_extract(reason, '$.submitted_at_ms') IS NOT NULL
+              AND CAST(json_extract(reason, '$.acked_at_ms') AS INTEGER) >= CAST(json_extract(reason, '$.submitted_at_ms') AS INTEGER)
+            THEN CAST(json_extract(reason, '$.acked_at_ms') AS REAL) - CAST(json_extract(reason, '$.submitted_at_ms') AS REAL)
+            ELSE NULL
+        END
+    )
+END
+"#;
             let (ack_sample_count, avg_ack_latency_ms): (u64, Option<f64>) = conn
                 .query_row(
-                    "SELECT \
-                        COALESCE(SUM(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN 1 ELSE 0 END), 0), \
-                        AVG(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN CAST(ack_ts_ms - submit_ts_ms AS REAL) END) \
-                     FROM strategy_feature_snapshots_v1",
-                    [],
+                    format!(
+                        "WITH ack_events AS ( \
+                            SELECT ts_ms, {ack_latency_expr} AS ack_latency_ms \
+                            FROM trade_events \
+                            WHERE event_type='ENTRY_ACK' \
+                              AND (?1 = 0 OR ({})) \
+                        ) \
+                        SELECT \
+                            COALESCE(SUM(CASE WHEN ack_latency_ms IS NOT NULL AND ack_latency_ms >= 0.0 THEN 1 ELSE 0 END), 0), \
+                            AVG(CASE WHEN ack_latency_ms IS NOT NULL AND ack_latency_ms >= 0.0 THEN ack_latency_ms END) \
+                        FROM ack_events",
+                        prod_filter
+                    )
+                    .as_str(),
+                    params![prod_only],
                     |row| {
                         Ok((
                             row.get::<_, i64>(0)?.max(0) as u64,
@@ -10046,6 +10073,30 @@ GROUP BY strategy_id
                     },
                 )
                 .unwrap_or((0, None));
+            let ack_warning_count_recent: u64 = conn
+                .query_row(
+                    format!(
+                        "WITH ack_events AS ( \
+                            SELECT ts_ms, {ack_latency_expr} AS ack_latency_ms \
+                            FROM trade_events \
+                            WHERE event_type='ENTRY_ACK' \
+                              AND (?2 = 0 OR ({})) \
+                        ) \
+                        SELECT \
+                            COALESCE(SUM(CASE \
+                                WHEN ts_ms >= ?1 \
+                                  AND ack_latency_ms IS NOT NULL \
+                                  AND ack_latency_ms > 500.0 \
+                                THEN 1 ELSE 0 END), 0) \
+                        FROM ack_events",
+                        prod_filter
+                    )
+                    .as_str(),
+                    params![recent_window_start_ms, prod_only],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap_or(0)
+                .max(0) as u64;
             let open_positions_count: u64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM positions_v2 WHERE status='OPEN'",
@@ -10128,6 +10179,7 @@ GROUP BY strategy_id
                 losing_trades,
                 avg_ack_latency_ms,
                 ack_sample_count,
+                ack_warning_count_recent,
                 open_positions_count,
                 recent_orders_count,
                 last_event_ts_ms: last_event.as_ref().map(|row| row.0),
@@ -17335,6 +17387,138 @@ WHERE strategy_id=?1
             .map_err(Into::into)
         })?;
         assert_eq!(snapshot_rows, 1);
+
+        drop(db);
+        cleanup_db(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn ui_dashboard_ack_latency_prefers_trade_event_ack_reason_over_seed_snapshot_times(
+    ) -> Result<()> {
+        let path = temp_db_path("ui_dashboard_ack_latency_trade_event_reason");
+        let db = TrackingDb::new(&path)?;
+        let period = 1_700_060_000_u64;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        db.upsert_strategy_feature_snapshot_intent(&StrategyFeatureSnapshotIntentRecord {
+            strategy_id: STRATEGY_ID_PREMARKET_V1.to_string(),
+            timeframe: "15m".to_string(),
+            period_timestamp: period,
+            market_key: Some("btc".to_string()),
+            asset_symbol: Some("BTC".to_string()),
+            condition_id: Some("cond-ack-metric".to_string()),
+            token_id: "token-ack-metric".to_string(),
+            impulse_id: "premarket:r0".to_string(),
+            decision_id: Some("decision-ack-metric".to_string()),
+            rung_id: Some("r0".to_string()),
+            slice_id: None,
+            request_id: Some("req-ack-metric".to_string()),
+            order_id: Some("ord-ack-metric".to_string()),
+            trade_key: Some("trade-ack-metric".to_string()),
+            position_key: None,
+            intent_status: Some("submitted".to_string()),
+            execution_status: Some("ack".to_string()),
+            intent_ts_ms: now_ms.saturating_sub(130_000),
+            submit_ts_ms: Some(now_ms.saturating_sub(125_000)),
+            ack_ts_ms: Some(now_ms),
+            fill_ts_ms: None,
+            exit_ts_ms: None,
+            settled_ts_ms: None,
+            entry_notional_usd: Some(9.68),
+            exit_notional_usd: None,
+            realized_pnl_usd: None,
+            settled_pnl_usd: None,
+            hold_ms: None,
+            feature_json: None,
+            decision_context_json: None,
+            execution_context_json: None,
+        })?;
+
+        db.record_trade_event(&TradeEventRecord {
+            event_key: Some("entry_ack:ack-metric".to_string()),
+            ts_ms: now_ms,
+            period_timestamp: period,
+            timeframe: "15m".to_string(),
+            strategy_id: STRATEGY_ID_PREMARKET_V1.to_string(),
+            asset_symbol: Some("BTC".to_string()),
+            condition_id: Some("cond-ack-metric".to_string()),
+            token_id: Some("token-ack-metric".to_string()),
+            token_type: Some("BTC Up".to_string()),
+            side: Some("BUY".to_string()),
+            event_type: "ENTRY_ACK".to_string(),
+            price: Some(0.44),
+            units: Some(22.0),
+            notional_usd: Some(9.68),
+            pnl_usd: None,
+            reason: Some(
+                format!(
+                    r#"{{"request_id":"req-ack-metric","order_id":"ord-ack-metric","trade_key":"trade-ack-metric","submitted_at_ms":{},"acked_at_ms":{},"order_ack_latency_ms":750,"api_post_order_ms":32}}"#,
+                    now_ms.saturating_sub(750),
+                    now_ms
+                ),
+            ),
+        })?;
+
+        let summary = db.summarize_ui_dashboard()?;
+        assert_eq!(summary.ack_sample_count, 1);
+        assert_eq!(summary.ack_warning_count_recent, 0);
+        let avg = summary
+            .avg_ack_latency_ms
+            .expect("expected ack latency average");
+        assert!(
+            (avg - 32.0).abs() < 1e-9,
+            "expected avg ack latency to prefer api_post_order_ms, got {avg}"
+        );
+
+        drop(db);
+        cleanup_db(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn ui_dashboard_ack_latency_falls_back_to_end_to_end_ack_reason_when_post_order_missing(
+    ) -> Result<()> {
+        let path = temp_db_path("ui_dashboard_ack_latency_ack_reason_fallback");
+        let db = TrackingDb::new(&path)?;
+        let period = 1_700_060_100_u64;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        db.record_trade_event(&TradeEventRecord {
+            event_key: Some("entry_ack:ack-metric-fallback".to_string()),
+            ts_ms: now_ms,
+            period_timestamp: period,
+            timeframe: "15m".to_string(),
+            strategy_id: STRATEGY_ID_PREMARKET_V1.to_string(),
+            asset_symbol: Some("BTC".to_string()),
+            condition_id: Some("cond-ack-metric-fallback".to_string()),
+            token_id: Some("token-ack-metric-fallback".to_string()),
+            token_type: Some("BTC Up".to_string()),
+            side: Some("BUY".to_string()),
+            event_type: "ENTRY_ACK".to_string(),
+            price: Some(0.44),
+            units: Some(22.0),
+            notional_usd: Some(9.68),
+            pnl_usd: None,
+            reason: Some(
+                format!(
+                    r#"{{"request_id":"req-ack-metric-fallback","order_id":"ord-ack-metric-fallback","trade_key":"trade-ack-metric-fallback","submitted_at_ms":{},"acked_at_ms":{},"order_ack_latency_ms":750}}"#,
+                    now_ms.saturating_sub(750),
+                    now_ms
+                ),
+            ),
+        })?;
+
+        let summary = db.summarize_ui_dashboard()?;
+        assert_eq!(summary.ack_sample_count, 1);
+        assert_eq!(summary.ack_warning_count_recent, 1);
+        let avg = summary
+            .avg_ack_latency_ms
+            .expect("expected ack latency average");
+        assert!(
+            (avg - 750.0).abs() < 1e-9,
+            "expected avg ack latency to fall back to end-to-end ack timing, got {avg}"
+        );
 
         drop(db);
         cleanup_db(&path);

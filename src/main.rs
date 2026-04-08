@@ -1285,6 +1285,9 @@ const MM_SPORT_DEPTH_RATIO_ALLOWANCE_ZERO_FALLBACK_LOG_COOLDOWN_MS: i64 = 30_000
 const MM_SPORT_NO_EXIT_SIDE_PAUSE_STATE_KEY: &str = "mm_sport_no_exit_side_pauses";
 const MM_SPORT_RUNTIME_STATE_UPDATED_BY: &str = "mm_sport";
 const MM_SPORT_NO_EXIT_HOLD_LOG_COOLDOWN_MS: i64 = 300_000;
+const MM_SPORT_SCOPE_SCOUT_ANCHOR_MARKETS: usize = 24;
+const MM_SPORT_SCOPE_SCOUT_ROTATE_MARKETS: usize = 24;
+const MM_SPORT_SCOPE_SCOUT_ROTATE_INTERVAL_MS: i64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct MmSportNoExitSidePauseState {
@@ -1329,6 +1332,127 @@ fn mm_sport_market_mode_flags(
         inventory_exit_mode,
         hold_mode: exit_mode == mm::MmSportExitMode::NoExit && prestart_quote_halt,
     }
+}
+
+fn mm_sport_next_scout_offset(
+    current_offset: usize,
+    discovered_len: usize,
+    anchor_count: usize,
+    rotate_count: usize,
+) -> usize {
+    let tail_len = discovered_len.saturating_sub(anchor_count);
+    if tail_len <= rotate_count || rotate_count == 0 {
+        return 0;
+    }
+    (current_offset + rotate_count) % tail_len
+}
+
+fn mm_sport_build_active_markets(
+    discovered_markets: &[MmSportMarket],
+    fallback_exit_markets_by_condition: &std::collections::HashMap<String, MmSportMarket>,
+    open_orders_by_condition: &std::collections::HashMap<String, Vec<PendingOrderRecord>>,
+    inventory_condition_ids: &std::collections::HashSet<String>,
+    entry_pause_until_by_condition: &std::collections::HashMap<String, i64>,
+    bust_pause_until_by_condition: &std::collections::HashMap<String, i64>,
+    ratio_pause_until_by_condition: &std::collections::HashMap<String, i64>,
+    quote_expiry_by_condition: &std::collections::HashMap<String, (i64, u64)>,
+    no_exit_side_pause_by_token: &std::collections::HashMap<String, MmSportNoExitSidePauseState>,
+    now_ms: i64,
+    scout_anchor_count: usize,
+    scout_rotate_count: usize,
+    scout_offset: usize,
+) -> Vec<MmSportMarket> {
+    let mut hot_condition_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    hot_condition_ids.extend(
+        open_orders_by_condition
+            .keys()
+            .filter(|value| !value.trim().is_empty())
+            .cloned(),
+    );
+    hot_condition_ids.extend(
+        inventory_condition_ids
+            .iter()
+            .filter(|value| !value.trim().is_empty())
+            .cloned(),
+    );
+    hot_condition_ids.extend(
+        entry_pause_until_by_condition
+            .keys()
+            .filter(|value| !value.trim().is_empty())
+            .cloned(),
+    );
+    hot_condition_ids.extend(
+        bust_pause_until_by_condition
+            .keys()
+            .filter(|value| !value.trim().is_empty())
+            .cloned(),
+    );
+    hot_condition_ids.extend(
+        ratio_pause_until_by_condition
+            .keys()
+            .filter(|value| !value.trim().is_empty())
+            .cloned(),
+    );
+    hot_condition_ids.extend(
+        quote_expiry_by_condition
+            .keys()
+            .filter(|value| !value.trim().is_empty())
+            .cloned(),
+    );
+    hot_condition_ids.extend(
+        fallback_exit_markets_by_condition
+            .keys()
+            .filter(|value| !value.trim().is_empty())
+            .cloned(),
+    );
+    hot_condition_ids.extend(
+        no_exit_side_pause_by_token
+            .values()
+            .map(|state| state.condition_id.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
+    );
+
+    let scout_candidates = discovered_markets
+        .iter()
+        .filter(|market| !mm_sport_prestart_exit_mode(now_ms, market.game_start_ts_ms))
+        .collect::<Vec<_>>();
+    let anchor_take = scout_anchor_count.min(scout_candidates.len());
+    for market in scout_candidates.iter().take(anchor_take) {
+        hot_condition_ids.insert(market.condition_id.clone());
+    }
+    if scout_rotate_count > 0 && scout_candidates.len() > anchor_take {
+        let tail = &scout_candidates[anchor_take..];
+        let rotate_take = scout_rotate_count.min(tail.len());
+        if rotate_take > 0 {
+            let offset = scout_offset % tail.len();
+            for idx in 0..rotate_take {
+                let market = tail[(offset + idx) % tail.len()];
+                hot_condition_ids.insert(market.condition_id.clone());
+            }
+        }
+    }
+
+    let mut active_markets = Vec::new();
+    let mut seen_conditions: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for market in discovered_markets {
+        let condition_key = market.condition_id.trim().to_ascii_lowercase();
+        if condition_key.is_empty()
+            || !hot_condition_ids.contains(market.condition_id.as_str())
+            || !seen_conditions.insert(condition_key)
+        {
+            continue;
+        }
+        active_markets.push(market.clone());
+    }
+    for market in fallback_exit_markets_by_condition.values() {
+        let condition_key = market.condition_id.trim().to_ascii_lowercase();
+        if condition_key.is_empty() || !seen_conditions.insert(condition_key) {
+            continue;
+        }
+        active_markets.push(market.clone());
+    }
+    active_markets
 }
 
 fn mm_sport_exit_order_plan(
@@ -14054,6 +14178,8 @@ async fn main() -> Result<()> {
                     String,
                     i64,
                 > = std::collections::HashMap::new();
+                let mut mm_sport_scope_scout_offset = 0usize;
+                let mut mm_sport_scope_scout_rotated_at_ms = 0_i64;
 
                 if mm_sport_cfg_for_loop.exit_mode == mm::MmSportExitMode::NoExit {
                     match tracking_db_for_mm_sport.get_runtime_parameter_state_for_strategy(
@@ -15585,16 +15711,39 @@ async fn main() -> Result<()> {
                         );
                     }
 
-                    let mut active_markets = discovered_markets.clone();
-                    let mut active_condition_ids = active_markets
+                    if mm_sport_scope_scout_rotated_at_ms <= 0 {
+                        mm_sport_scope_scout_rotated_at_ms = now_ms;
+                    } else if now_ms.saturating_sub(mm_sport_scope_scout_rotated_at_ms)
+                        >= MM_SPORT_SCOPE_SCOUT_ROTATE_INTERVAL_MS
+                    {
+                        mm_sport_scope_scout_offset = mm_sport_next_scout_offset(
+                            mm_sport_scope_scout_offset,
+                            discovered_markets.len(),
+                            MM_SPORT_SCOPE_SCOUT_ANCHOR_MARKETS,
+                            MM_SPORT_SCOPE_SCOUT_ROTATE_MARKETS,
+                        );
+                        mm_sport_scope_scout_rotated_at_ms = now_ms;
+                    }
+
+                    let active_markets = mm_sport_build_active_markets(
+                        discovered_markets.as_slice(),
+                        &fallback_exit_markets_by_condition,
+                        &open_orders_by_condition,
+                        &inventory_condition_ids,
+                        &entry_pause_until_by_condition,
+                        &bust_pause_until_by_condition,
+                        &ratio_pause_until_by_condition,
+                        &quote_expiry_by_condition,
+                        &no_exit_side_pause_by_token,
+                        now_ms,
+                        MM_SPORT_SCOPE_SCOUT_ANCHOR_MARKETS,
+                        MM_SPORT_SCOPE_SCOUT_ROTATE_MARKETS,
+                        mm_sport_scope_scout_offset,
+                    );
+                    let active_condition_ids = active_markets
                         .iter()
                         .map(|market| market.condition_id.to_ascii_lowercase())
                         .collect::<std::collections::HashSet<_>>();
-                    for market in fallback_exit_markets_by_condition.values() {
-                        if active_condition_ids.insert(market.condition_id.to_ascii_lowercase()) {
-                            active_markets.push(market.clone());
-                        }
-                    }
                     let orphan_cancel_candidates = open_orders_by_condition
                         .iter()
                         .filter(|(condition_id, rows)| {
@@ -17844,6 +17993,10 @@ async fn main() -> Result<()> {
                                 "strategy_id": STRATEGY_ID_MM_SPORT_V1,
                                 "exit_mode": mm_sport_cfg_for_loop.exit_mode.as_str(),
                                 "discovered_markets": discovered_markets.len(),
+                                "active_markets": active_markets.len(),
+                                "scope_scout_anchor_markets": MM_SPORT_SCOPE_SCOUT_ANCHOR_MARKETS,
+                                "scope_scout_rotate_markets": MM_SPORT_SCOPE_SCOUT_ROTATE_MARKETS,
+                                "open_order_conditions": open_orders_by_condition.len(),
                                 "entry_paused_markets": entry_pause_until_by_condition.len(),
                                 "bust_paused_markets": bust_pause_until_by_condition.len(),
                                 "ratio_paused_markets": ratio_pause_until_by_condition.len(),
@@ -35863,6 +36016,143 @@ mod tests {
                 hold_mode: true,
             }
         );
+    }
+
+    fn mm_sport_test_market(
+        condition: &str,
+        reward_rate_per_day: f64,
+        game_start_ts_ms: i64,
+    ) -> MmSportMarket {
+        MmSportMarket {
+            condition_id: condition.to_string(),
+            market_slug: format!("sports/test/{}", condition),
+            reward_rate_per_day,
+            reward_min_size_shares: 1.0,
+            minimum_tick_size: 0.01,
+            minimum_order_size_usd: 1.0,
+            game_start_ts_ms,
+            period_timestamp: u64::try_from((game_start_ts_ms / 1_000).max(0)).unwrap_or(0),
+            up_token_id: format!("{}_up", condition),
+            down_token_id: format!("{}_down", condition),
+        }
+    }
+
+    fn mm_sport_test_pending_row(condition: &str, token: &str) -> PendingOrderRecord {
+        PendingOrderRecord {
+            order_id: format!("order-{}", condition),
+            trade_key: format!("trade-{}", condition),
+            token_id: token.to_string(),
+            condition_id: Some(condition.to_string()),
+            timeframe: "1h".to_string(),
+            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
+            asset_symbol: Some("TEST".to_string()),
+            entry_mode: "MmSport".to_string(),
+            period_timestamp: 0,
+            price: 0.55,
+            size_usd: 100.0,
+            side: "BUY".to_string(),
+            status: "OPEN".to_string(),
+        }
+    }
+
+    #[test]
+    fn mm_sport_active_scope_keeps_hot_state_and_rotating_scouts() {
+        let now_ms = 2_000_000_000_000_i64;
+        let discovered_markets = vec![
+            mm_sport_test_market("cond-a", 900.0, now_ms + 86_400_000),
+            mm_sport_test_market("cond-b", 800.0, now_ms + 86_400_000),
+            mm_sport_test_market("cond-c", 700.0, now_ms + 86_400_000),
+            mm_sport_test_market("cond-d", 600.0, now_ms + 86_400_000),
+            mm_sport_test_market("cond-e", 500.0, now_ms + 86_400_000),
+            mm_sport_test_market("cond-f", 400.0, now_ms + 86_400_000),
+        ];
+        let mut fallback_exit = std::collections::HashMap::new();
+        fallback_exit.insert(
+            "cond-z".to_string(),
+            mm_sport_test_market("cond-z", 1.0, now_ms + 3_600_000),
+        );
+        let mut open_orders = std::collections::HashMap::new();
+        open_orders.insert(
+            "cond-f".to_string(),
+            vec![mm_sport_test_pending_row("cond-f", "cond-f_up")],
+        );
+        let inventory_conditions = std::collections::HashSet::from(["cond-e".to_string()]);
+        let entry_pause =
+            std::collections::HashMap::from([("cond-d".to_string(), now_ms + 60_000)]);
+        let bust_pause = std::collections::HashMap::new();
+        let ratio_pause = std::collections::HashMap::new();
+        let quote_expiry =
+            std::collections::HashMap::from([("cond-c".to_string(), (now_ms + 60_000, 300))]);
+        let no_exit_side_pause = std::collections::HashMap::new();
+
+        let active = mm_sport_build_active_markets(
+            discovered_markets.as_slice(),
+            &fallback_exit,
+            &open_orders,
+            &inventory_conditions,
+            &entry_pause,
+            &bust_pause,
+            &ratio_pause,
+            &quote_expiry,
+            &no_exit_side_pause,
+            now_ms,
+            2,
+            1,
+            1,
+        );
+
+        let conditions = active
+            .iter()
+            .map(|market| market.condition_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(conditions.contains("cond-a"));
+        assert!(conditions.contains("cond-b"));
+        assert!(conditions.contains("cond-d"));
+        assert!(conditions.contains("cond-e"));
+        assert!(conditions.contains("cond-f"));
+        assert!(conditions.contains("cond-z"));
+        assert!(conditions.contains("cond-d") && conditions.contains("cond-e"));
+        assert!(conditions.contains("cond-c"));
+    }
+
+    #[test]
+    fn mm_sport_active_scope_skips_prestart_scouts_without_state() {
+        let now_ms = 2_000_000_000_000_i64;
+        let discovered_markets = vec![
+            mm_sport_test_market("cond-hot", 900.0, now_ms + 86_400_000),
+            mm_sport_test_market("cond-prestart", 800.0, now_ms + 30 * 60 * 1_000),
+        ];
+        let fallback_exit = std::collections::HashMap::new();
+        let open_orders = std::collections::HashMap::new();
+        let inventory_conditions = std::collections::HashSet::new();
+        let entry_pause = std::collections::HashMap::new();
+        let bust_pause = std::collections::HashMap::new();
+        let ratio_pause = std::collections::HashMap::new();
+        let quote_expiry = std::collections::HashMap::new();
+        let no_exit_side_pause = std::collections::HashMap::new();
+
+        let active = mm_sport_build_active_markets(
+            discovered_markets.as_slice(),
+            &fallback_exit,
+            &open_orders,
+            &inventory_conditions,
+            &entry_pause,
+            &bust_pause,
+            &ratio_pause,
+            &quote_expiry,
+            &no_exit_side_pause,
+            now_ms,
+            4,
+            0,
+            0,
+        );
+
+        let conditions = active
+            .iter()
+            .map(|market| market.condition_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(conditions.contains("cond-hot"));
+        assert!(!conditions.contains("cond-prestart"));
     }
 
     #[test]

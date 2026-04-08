@@ -597,7 +597,7 @@ export function Home() {
           ) : null}
         </SectionPanel>
 
-        <SectionPanel title="Latency" subtitle="Average acknowledgement latency from the last 24 hours.">
+        <SectionPanel title="Latency" subtitle="Average acknowledgement latency across recorded entry acknowledgements.">
           <div className="text-4xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
             {overview?.avg_ack_latency_ms !== null && overview?.avg_ack_latency_ms !== undefined
               ? `${overview.avg_ack_latency_ms.toFixed(1)} ms`

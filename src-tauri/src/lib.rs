@@ -2293,18 +2293,48 @@ fn query_pnl_today_utc(conn: &Connection) -> f64 {
     .unwrap_or(0.0)
 }
 
-fn query_ack_latency_summary(conn: &Connection) -> (u64, Option<f64>) {
+fn query_ack_latency_summary(conn: &Connection) -> (u64, Option<f64>, u64) {
     let cutoff_ms = ack_latency_window_start_ms();
-    conn.query_row(
-        "SELECT \
-            COALESCE(SUM(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN 1 ELSE 0 END), 0), \
-            AVG(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN CAST(ack_ts_ms - submit_ts_ms AS REAL) END) \
-         FROM strategy_feature_snapshots_v1 \
-         WHERE ack_ts_ms IS NOT NULL AND ack_ts_ms >= ?1",
-        [cutoff_ms],
-        |row| Ok((row.get::<_, i64>(0)?.max(0) as u64, row.get::<_, Option<f64>>(1)?)),
+    let ack_latency_expr = r#"
+CASE
+    WHEN COALESCE(json_valid(reason), 0) = 0 THEN NULL
+    ELSE COALESCE(
+        CAST(json_extract(reason, '$.api_post_order_ms') AS REAL),
+        CAST(json_extract(reason, '$.order_ack_latency_ms') AS REAL),
+        CASE
+            WHEN json_extract(reason, '$.acked_at_ms') IS NOT NULL
+              AND json_extract(reason, '$.submitted_at_ms') IS NOT NULL
+              AND CAST(json_extract(reason, '$.acked_at_ms') AS INTEGER) >= CAST(json_extract(reason, '$.submitted_at_ms') AS INTEGER)
+            THEN CAST(json_extract(reason, '$.acked_at_ms') AS REAL) - CAST(json_extract(reason, '$.submitted_at_ms') AS REAL)
+            ELSE NULL
+        END
     )
-    .unwrap_or((0, None))
+END
+"#;
+    conn.query_row(
+        format!(
+            "WITH ack_events AS ( \
+                SELECT ts_ms, {ack_latency_expr} AS ack_latency_ms \
+                FROM trade_events \
+                WHERE event_type='ENTRY_ACK' \
+            ) \
+            SELECT \
+                COALESCE(SUM(CASE WHEN ack_latency_ms IS NOT NULL AND ack_latency_ms >= 0.0 THEN 1 ELSE 0 END), 0), \
+                AVG(CASE WHEN ack_latency_ms IS NOT NULL AND ack_latency_ms >= 0.0 THEN ack_latency_ms END), \
+                COALESCE(SUM(CASE WHEN ts_ms >= ?1 AND ack_latency_ms IS NOT NULL AND ack_latency_ms > 500.0 THEN 1 ELSE 0 END), 0) \
+            FROM ack_events"
+        )
+        .as_str(),
+        [cutoff_ms],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?.max(0) as u64,
+                row.get::<_, Option<f64>>(1)?,
+                row.get::<_, i64>(2)?.max(0) as u64,
+            ))
+        },
+    )
+    .unwrap_or((0, None, 0))
 }
 
 fn profile_created_date(profile: &Profile) -> Option<NaiveDate> {
@@ -2836,6 +2866,16 @@ async fn build_home_overview_payload(
         )
     };
     let wallet_sync_status = wallet_sync.lock().map_err(|e| e.to_string())?.status();
+    let db_path = resolve_tracking_db_path(&data_dir.0);
+    let (pnl_today_utc, ack_sample_count, avg_ack_latency_ms, recent_ack_warning_count) =
+        Connection::open(&db_path)
+            .ok()
+            .map(|conn| {
+                let pnl = query_pnl_today_utc(&conn);
+                let (ack_count, ack_avg, ack_warnings) = query_ack_latency_summary(&conn);
+                (pnl, ack_count, ack_avg, ack_warnings)
+            })
+            .unwrap_or((0.0, 0, None, 0));
     let recent_unknown_ack_count = count_unknown_ack_warnings(&data_dir.0, 160) as u64;
 
     let maybe_profile = {
@@ -2866,15 +2906,14 @@ async fn build_home_overview_payload(
             "last_heartbeat_at_ms": Value::Null,
             "available_balance_error": Value::Null,
             "portfolio_value_error": Value::Null,
-            "ack_warning_count_recent": recent_unknown_ack_count,
-            "avg_ack_latency_ms": Value::Null,
-            "ack_sample_count": 0,
+            "ack_warning_count_recent": recent_ack_warning_count,
+            "avg_ack_latency_ms": avg_ack_latency_ms,
+            "ack_sample_count": ack_sample_count,
             "warnings": [],
         }));
     };
 
     let wallet_address = profile.primary_wallet_address();
-    let db_path = resolve_tracking_db_path(&data_dir.0);
     let rewards_query = {
         let auth = auth.lock().map_err(|e| e.to_string())?;
         build_liquidity_rewards_query(&profile, &auth, &db_path)?
@@ -2907,14 +2946,6 @@ async fn build_home_overview_payload(
         (Some(available), Some(portfolio)) => Some(available + portfolio),
         _ => None,
     };
-    let (pnl_today_utc, ack_sample_count, avg_ack_latency_ms) = Connection::open(&db_path)
-        .ok()
-        .map(|conn| {
-            let pnl = query_pnl_today_utc(&conn);
-            let (ack_count, ack_avg) = query_ack_latency_summary(&conn);
-            (pnl, ack_count, ack_avg)
-        })
-        .unwrap_or((0.0, 0, None));
     let (
         liquidity_rewards_today,
         liquidity_rewards_lifetime,
@@ -2940,6 +2971,11 @@ async fn build_home_overview_payload(
     }
     if let Some(err) = &liquidity_rewards_error {
         warnings.push(format!("Liquidity rewards degraded: {err}"));
+    }
+    if recent_ack_warning_count > 0 {
+        warnings.push(format!(
+            "Recent order acknowledgements are degraded: {recent_ack_warning_count} acknowledgements exceeded 500 ms in the last 24 hours."
+        ));
     }
     if recent_unknown_ack_count > 0 {
         warnings.push(format!(
@@ -2971,7 +3007,7 @@ async fn build_home_overview_payload(
         "last_heartbeat_at_ms": Value::Null,
         "available_balance_error": available_balance_result.err(),
         "portfolio_value_error": portfolio_value_result.err(),
-        "ack_warning_count_recent": recent_unknown_ack_count,
+        "ack_warning_count_recent": recent_ack_warning_count,
         "avg_ack_latency_ms": avg_ack_latency_ms,
         "ack_sample_count": ack_sample_count,
         "warnings": warnings,
@@ -3932,18 +3968,7 @@ fn get_trade_stats(data_dir: State<'_, AppDataDir>) -> serde_json::Value {
     } else {
         0.0
     };
-    let cutoff_ms = ack_latency_window_start_ms();
-    let (ack_sample_count, avg_ack_latency_ms): (i64, Option<f64>) = conn
-        .query_row(
-            "SELECT \
-                COALESCE(SUM(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN 1 ELSE 0 END), 0), \
-                AVG(CASE WHEN ack_ts_ms IS NOT NULL AND submit_ts_ms IS NOT NULL AND ack_ts_ms >= submit_ts_ms THEN CAST(ack_ts_ms - submit_ts_ms AS REAL) END) \
-             FROM strategy_feature_snapshots_v1 \
-             WHERE ack_ts_ms IS NOT NULL AND ack_ts_ms >= ?1",
-            [cutoff_ms],
-            |row| Ok((row.get(0)?, row.get::<_, Option<f64>>(1)?)),
-        )
-        .unwrap_or((0, None));
+    let (ack_sample_count, avg_ack_latency_ms, _) = query_ack_latency_summary(&conn);
 
     let mut pnl_history = Vec::new();
     if let Ok(mut stmt) = conn.prepare(

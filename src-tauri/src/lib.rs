@@ -4526,12 +4526,13 @@ mod tests {
         infer_premarket_ladder_mode_non_m5, merge_config_object, merge_desktop_secrets,
         premarket_default_ladder_prices_m5, premarket_default_ladder_prices_non_m5,
         premarket_default_ladder_weights, premarket_ladder_prices_for_mode,
+        profile_to_desktop_config,
         remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
         PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
         PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
         WEEKEND_POLICY_ENV_KEY,
     };
-    use crate::{config_io, profile_manager::Profile};
+    use crate::{auth::AppAuth, config_io, profile_manager::Profile};
     use std::collections::HashMap;
 
     fn profile_with_simulation(simulation: Option<bool>) -> Profile {
@@ -4665,6 +4666,44 @@ mod tests {
         assert_eq!(
             strategy.get(WEEKEND_POLICY_ENV_KEY),
             Some(&serde_json::json!("pause"))
+        );
+    }
+
+    #[test]
+    fn mm_sport_depth_ratio_round_trip_preserves_max_share_ratio() {
+        let mut config = default_desktop_config(
+            "0x1111111111111111111111111111111111111111".to_string(),
+            "0x2222222222222222222222222222222222222222".to_string(),
+            1,
+        );
+        config.strategy_settings.mm_sport.quote_size_mode = "depth_ratio".to_string();
+        config.strategy_settings.mm_sport.max_share_ratio = 0.4;
+
+        let (strategy, sizing, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        let profile = Profile {
+            id: "p2".to_string(),
+            name: "desktop".to_string(),
+            eoa_wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
+            proxy_wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            signature_type: 1,
+            encrypted_secrets: String::new(),
+            strategy_config: strategy,
+            sizing_config: sizing,
+            created_at: "now".to_string(),
+            last_used: "now".to_string(),
+        };
+        let auth = AppAuth::new(std::env::temp_dir().join("evpoly-test-auth"));
+
+        let value = profile_to_desktop_config(&profile, &auth).expect("profile to desktop config");
+
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["quote_size_mode"],
+            serde_json::json!("depth_ratio")
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["max_share_ratio"],
+            serde_json::json!(0.4)
         );
     }
 

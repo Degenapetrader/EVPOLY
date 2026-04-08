@@ -88,14 +88,43 @@ cleanup() {
 }
 trap cleanup EXIT
 
+resolve_remote_core_ref() {
+  local repo="$1"
+  local ref="$2"
+
+  if [[ -z "${ref}" ]]; then
+    return 1
+  fi
+
+  if [[ ! "${ref}" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+    printf '%s\n' "${ref}"
+    return 0
+  fi
+
+  local normalized_ref
+  normalized_ref="$(echo "${ref}" | tr '[:upper:]' '[:lower:]')"
+  while IFS=$'\t' read -r sha remote_ref; do
+    sha="$(echo "${sha}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${sha}" == "${normalized_ref}"* ]]; then
+      printf '%s\n' "${remote_ref}"
+      return 0
+    fi
+  done < <(git ls-remote --heads --tags "${repo}" 2>/dev/null)
+
+  return 1
+}
+
 ensure_local_core_ref() {
   if git rev-parse --verify "${CORE_REF}^{commit}" >/dev/null 2>&1; then
     return 0
   fi
 
   if git remote get-url origin >/dev/null 2>&1; then
-    echo "[build-sidecar-linux] fetching pinned core ref from origin"
-    git fetch --depth=1 origin "${CORE_REF}" >/dev/null 2>&1 || true
+    remote_fetch_ref="$(resolve_remote_core_ref origin "${CORE_REF}" || true)"
+    if [[ -n "${remote_fetch_ref}" ]]; then
+      echo "[build-sidecar-linux] fetching pinned core ref from origin via ${remote_fetch_ref}"
+      git fetch --depth=1 origin "${remote_fetch_ref}" >/dev/null 2>&1 || true
+    fi
   fi
 
   git rev-parse --verify "${CORE_REF}^{commit}" >/dev/null 2>&1
@@ -109,7 +138,16 @@ if ensure_local_core_ref; then
 else
   echo "[build-sidecar-linux] cloning ${CORE_REPO} ref=${CORE_REF}"
   git clone --filter=blob:none "${CORE_REPO}" "${WORK_DIR}"
-  git -C "${WORK_DIR}" checkout --detach "${CORE_REF}"
+  if ! git -C "${WORK_DIR}" checkout --detach "${CORE_REF}"; then
+    remote_fetch_ref="$(resolve_remote_core_ref "${CORE_REPO}" "${CORE_REF}" || true)"
+    if [[ -z "${remote_fetch_ref}" ]]; then
+      echo "[build-sidecar-linux] unable to resolve remote ref for pinned core ref ${CORE_REF}" >&2
+      exit 1
+    fi
+    echo "[build-sidecar-linux] direct checkout failed; fetching ${remote_fetch_ref} and retrying"
+    git -C "${WORK_DIR}" fetch --depth=1 origin "${remote_fetch_ref}"
+    git -C "${WORK_DIR}" checkout --detach "${CORE_REF}"
+  fi
 fi
 
 if [[ -d "${CORE_PATCH_DIR}" ]]; then

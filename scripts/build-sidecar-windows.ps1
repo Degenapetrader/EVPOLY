@@ -131,8 +131,44 @@ $sourceMode = "remote-clone"
 $buildProfile = "release"
 
 function Test-GitCommitExists([string]$Ref) {
-  & git rev-parse --verify ("{0}^{{commit}}" -f $Ref) *> $null
-  return ($LASTEXITCODE -eq 0)
+  if ([string]::IsNullOrWhiteSpace($Ref)) {
+    return $false
+  }
+
+  try {
+    & git rev-parse --verify ("{0}^{{commit}}" -f $Ref) *> $null
+    return ($LASTEXITCODE -eq 0)
+  }
+  catch {
+    return $false
+  }
+}
+
+function Resolve-RemoteCoreRef([string]$Repo, [string]$Ref) {
+  if ([string]::IsNullOrWhiteSpace($Ref)) {
+    return $null
+  }
+
+  if ($Ref -notmatch '^[0-9a-fA-F]{7,40}$') {
+    return $Ref
+  }
+
+  $normalizedRef = $Ref.ToLowerInvariant()
+  try {
+    foreach ($line in (& git ls-remote --heads --tags $Repo 2>$null)) {
+      if ($line -match '^(?<sha>[0-9a-fA-F]{40})\s+(?<name>\S+)$') {
+        $sha = $matches['sha'].ToLowerInvariant()
+        if ($sha.StartsWith($normalizedRef)) {
+          return $matches['name']
+        }
+      }
+    }
+  }
+  catch {
+    return $null
+  }
+
+  return $null
 }
 
 function Invoke-BestEffortNativeCommand {
@@ -173,10 +209,13 @@ function Ensure-LocalCoreRef([string]$Ref) {
 
   & git remote get-url origin *> $null
   if ($LASTEXITCODE -eq 0) {
-    Write-Host "[build-sidecar-windows] fetching pinned core ref from origin"
-    [void](Invoke-BestEffortNativeCommand -Label "git fetch pinned core ref" -Attempts 2 -InitialDelaySeconds 3 -Command {
-      & git fetch --depth=1 origin $Ref *> $null
-    })
+    $remoteFetchRef = Resolve-RemoteCoreRef "origin" $Ref
+    if ($remoteFetchRef) {
+      Write-Host ("[build-sidecar-windows] fetching pinned core ref from origin via {0}" -f $remoteFetchRef)
+      [void](Invoke-BestEffortNativeCommand -Label "git fetch pinned core ref" -Attempts 2 -InitialDelaySeconds 3 -Command {
+        & git fetch --depth=1 origin $remoteFetchRef *> $null
+      })
+    }
   }
 
   return (Test-GitCommitExists $Ref)
@@ -203,9 +242,13 @@ try {
     if (-not (Invoke-BestEffortNativeCommand -Label "git checkout pinned core ref" -Attempts 2 -InitialDelaySeconds 3 -Command {
       git -C $workDir checkout --detach $CoreRef
     })) {
-      Write-Warning "[build-sidecar-windows] direct checkout of pinned core ref failed after clone; refreshing main branch and retrying"
-      [void](Invoke-BestEffortNativeCommand -Label "git fetch origin main fallback" -Attempts 2 -InitialDelaySeconds 3 -Command {
-        git -C $workDir fetch --depth=1 origin main
+      $remoteFetchRef = Resolve-RemoteCoreRef $CoreRepo $CoreRef
+      if (-not $remoteFetchRef) {
+        throw ("unable to resolve remote ref for pinned core ref {0}" -f $CoreRef)
+      }
+      Write-Warning ("[build-sidecar-windows] direct checkout of pinned core ref failed after clone; fetching {0} and retrying" -f $remoteFetchRef)
+      [void](Invoke-BestEffortNativeCommand -Label "git fetch pinned core ref fallback" -Attempts 2 -InitialDelaySeconds 3 -Command {
+        git -C $workDir fetch --depth=1 origin $remoteFetchRef
       })
       git -C $workDir checkout --detach $CoreRef
     }

@@ -345,6 +345,7 @@ pub struct MmSportConfig {
     pub pair_baseline_quote_size_mult: f64,
     pub max_share_ratio: f64,
     pub min_top_depth_usd: f64,
+    pub inventory_exit_start_sec: u64,
     pub pause_after_fill_sec: u64,
     pub no_exit_side_pause_sec: u64,
     pub bust_window_ms: i64,
@@ -403,6 +404,8 @@ impl MmSportConfig {
             .clamp(0.1, 20.0),
             max_share_ratio: env_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05).clamp(0.01, 0.99),
             min_top_depth_usd: env_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 100_000.0).max(0.0),
+            inventory_exit_start_sec: env_u64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28_800)
+                .clamp(300, 172_800),
             pause_after_fill_sec: env_u64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 7_200)
                 .clamp(60, 86_400),
             no_exit_side_pause_sec: env_u64("EVPOLY_MM_SPORT_NO_EXIT_SIDE_PAUSE_SEC", 3_600)
@@ -681,7 +684,7 @@ impl MmRewardsConfig {
             runtime_mode,
             market_mode,
             auto_require_rewards_feed: env_bool("EVPOLY_MM_AUTO_REQUIRE_REWARDS_FEED", true),
-            auto_top_n: 80,
+            auto_top_n: env_usize("EVPOLY_MM_AUTO_TOP_N", 80).clamp(1, 500),
             auto_refresh_sec: env_u64("EVPOLY_MM_AUTO_REFRESH_SEC", 900).clamp(10, 900),
             auto_scan_limit: 1_000,
             auto_min_feasible_levels: 1,
@@ -698,7 +701,7 @@ impl MmRewardsConfig {
                 300.0,
             )
             .max(0.0),
-            auto_rank_budget_usd: 2_000.0,
+            auto_rank_budget_usd: env_f64("EVPOLY_MM_AUTO_RANK_BUDGET_USD", 2_000.0).max(0.0),
             min_reward_rate_hint: env_f64("EVPOLY_MM_MIN_REWARD_RATE_HINT", 15.0).max(0.0),
             min_total_reward_quote: env_f64("EVPOLY_MM_MIN_TOTAL_REWARD_QUOTE", 15.0).max(0.0),
             max_reward_min_size: env_f64("EVPOLY_MM_MAX_REWARD_MIN_SIZE", 0.0).max(0.0),
@@ -1252,22 +1255,40 @@ fn env_bool_with_alias(name: &str, alias: &str, default: bool) -> bool {
 fn env_u64(name: &str, default: u64) -> u64 {
     std::env::var(name)
         .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
+        .and_then(|v| parse_u64_like(v.trim()))
         .unwrap_or(default)
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
+        .and_then(|v| parse_usize_like(v.trim()))
         .unwrap_or(default)
 }
 
 fn env_u32(name: &str, default: u32) -> u32 {
     std::env::var(name)
         .ok()
-        .and_then(|v| v.trim().parse::<u32>().ok())
+        .and_then(|v| parse_u32_like(v.trim()))
         .unwrap_or(default)
+}
+
+fn parse_u64_like(raw: &str) -> Option<u64> {
+    raw.parse::<u64>().ok().or_else(|| {
+        let parsed = raw.parse::<f64>().ok()?;
+        if !parsed.is_finite() || parsed < 0.0 || parsed.fract().abs() > f64::EPSILON {
+            return None;
+        }
+        (parsed <= u64::MAX as f64).then_some(parsed as u64)
+    })
+}
+
+fn parse_usize_like(raw: &str) -> Option<usize> {
+    parse_u64_like(raw).and_then(|value| usize::try_from(value).ok())
+}
+
+fn parse_u32_like(raw: &str) -> Option<u32> {
+    parse_u64_like(raw).and_then(|value| u32::try_from(value).ok())
 }
 
 fn env_f64(name: &str, default: f64) -> f64 {
@@ -1459,6 +1480,49 @@ mod tests {
                 let cfg = MmSportConfig::from_env();
                 assert_eq!(cfg.exit_mode, MmSportExitMode::NoExit);
                 assert_eq!(cfg.no_exit_side_pause_sec, 5_400);
+            },
+        );
+    }
+
+    #[test]
+    fn mm_sport_config_accepts_whole_number_float_env_values() {
+        with_mm_env(
+            &[
+                ("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", Some("600.0")),
+                ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", Some("90.0")),
+                ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", Some("180.0")),
+            ],
+            || {
+                let cfg = MmSportConfig::from_env();
+                assert_eq!(cfg.pause_after_fill_sec, 600);
+                assert_eq!(cfg.quote_expiry_min_sec, 90);
+                assert_eq!(cfg.quote_expiry_max_sec, 180);
+            },
+        );
+    }
+
+    #[test]
+    fn mm_sport_config_reads_inventory_exit_start_override() {
+        with_mm_env(
+            &[("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", Some("21600.0"))],
+            || {
+                let cfg = MmSportConfig::from_env();
+                assert_eq!(cfg.inventory_exit_start_sec, 21_600);
+            },
+        );
+    }
+
+    #[test]
+    fn mm_rewards_config_reads_auto_top_n_and_rank_budget_overrides() {
+        with_mm_env(
+            &[
+                ("EVPOLY_MM_AUTO_TOP_N", Some("125.0")),
+                ("EVPOLY_MM_AUTO_RANK_BUDGET_USD", Some("3500")),
+            ],
+            || {
+                let cfg = MmRewardsConfig::from_env();
+                assert_eq!(cfg.auto_top_n, 125);
+                assert_eq!(cfg.auto_rank_budget_usd, 3_500.0);
             },
         );
     }

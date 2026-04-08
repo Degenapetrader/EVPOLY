@@ -1064,9 +1064,16 @@ fn tick_metadata_backoff_error(err_text: &str) -> bool {
         || (lower.contains("order metadata prewarm blocked") && lower.contains("tick metadata"))
 }
 
-fn mm_sport_prestart_exit_mode(now_ms: i64, game_start_ts_ms: i64) -> bool {
+fn mm_sport_prestart_exit_mode(
+    now_ms: i64,
+    game_start_ts_ms: i64,
+    inventory_exit_start_sec: u64,
+) -> bool {
+    let inventory_exit_start_window_ms = inventory_exit_start_sec
+        .saturating_mul(1_000)
+        .min(i64::MAX as u64) as i64;
     game_start_ts_ms > 0
-        && now_ms >= game_start_ts_ms.saturating_sub(MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS)
+        && now_ms >= game_start_ts_ms.saturating_sub(inventory_exit_start_window_ms)
         && now_ms < game_start_ts_ms
 }
 
@@ -1270,7 +1277,6 @@ fn mm_sport_size_shares_from_pending(row: &PendingOrderRecord) -> Option<f64> {
 
 const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 1_000.0;
 const MM_SPORT_LOW_DEPTH_QUOTE_SIZE_MULT: f64 = 1.2;
-const MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS: i64 = 8 * 60 * 60 * 1_000;
 const MM_SPORT_FORCE_EXIT_WINDOW_MS: i64 = 30 * 60 * 1_000;
 const MM_SPORT_EXIT_FALLBACK_REFRESH_MS: i64 = 60_000;
 const MM_SPORT_EXIT_FALLBACK_IMMEDIATE_RETRY_MS: i64 = 15_000;
@@ -1317,10 +1323,12 @@ fn mm_sport_market_mode_flags(
     exit_mode: mm::MmSportExitMode,
     now_ms: i64,
     game_start_ts_ms: i64,
+    inventory_exit_start_sec: u64,
     condition_has_inventory: bool,
     fill_pause_active: bool,
 ) -> MmSportMarketModeFlags {
-    let prestart_quote_halt = mm_sport_prestart_exit_mode(now_ms, game_start_ts_ms);
+    let prestart_quote_halt =
+        mm_sport_prestart_exit_mode(now_ms, game_start_ts_ms, inventory_exit_start_sec);
     let inventory_exit_mode = match exit_mode {
         mm::MmSportExitMode::Normal => {
             prestart_quote_halt || (condition_has_inventory && !fill_pause_active)
@@ -1416,7 +1424,13 @@ fn mm_sport_build_active_markets(
 
     let scout_candidates = discovered_markets
         .iter()
-        .filter(|market| !mm_sport_prestart_exit_mode(now_ms, market.game_start_ts_ms))
+        .filter(|market| {
+            !mm_sport_prestart_exit_mode(
+                now_ms,
+                market.game_start_ts_ms,
+                mm_sport_cfg.inventory_exit_start_sec,
+            )
+        })
         .collect::<Vec<_>>();
     let anchor_take = scout_anchor_count.min(scout_candidates.len());
     for market in scout_candidates.iter().take(anchor_take) {
@@ -15313,6 +15327,7 @@ async fn main() -> Result<()> {
                                         !mm_sport_prestart_exit_mode(
                                             now_ms,
                                             market.game_start_ts_ms,
+                                            mm_sport_cfg_for_loop.inventory_exit_start_sec,
                                         ) && buy_rows_by_token.len() == 1
                                             && {
                                                 let up_paused = mm_sport_no_exit_side_pause_active(
@@ -15954,6 +15969,7 @@ async fn main() -> Result<()> {
                             mm_sport_cfg_for_loop.exit_mode,
                             now_ms,
                             market.game_start_ts_ms,
+                            mm_sport_cfg_for_loop.inventory_exit_start_sec,
                             condition_has_inventory,
                             fill_pause_active,
                         );
@@ -35870,21 +35886,26 @@ mod tests {
     #[test]
     fn mm_sport_prestart_window_is_exact_8_hours_before_start() {
         let game_start_ts_ms = 2_000_000_000_000_i64;
+        let inventory_exit_start_sec = 8 * 60 * 60;
         assert!(!mm_sport_prestart_exit_mode(
-            game_start_ts_ms - MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS - 1,
-            game_start_ts_ms
+            game_start_ts_ms - (inventory_exit_start_sec * 1_000) as i64 - 1,
+            game_start_ts_ms,
+            inventory_exit_start_sec
         ));
         assert!(mm_sport_prestart_exit_mode(
-            game_start_ts_ms - MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS,
-            game_start_ts_ms
+            game_start_ts_ms - (inventory_exit_start_sec * 1_000) as i64,
+            game_start_ts_ms,
+            inventory_exit_start_sec
         ));
         assert!(mm_sport_prestart_exit_mode(
             game_start_ts_ms - 1,
-            game_start_ts_ms
+            game_start_ts_ms,
+            inventory_exit_start_sec
         ));
         assert!(!mm_sport_prestart_exit_mode(
             game_start_ts_ms,
-            game_start_ts_ms
+            game_start_ts_ms,
+            inventory_exit_start_sec
         ));
     }
 
@@ -35917,6 +35938,7 @@ mod tests {
             mm::MmSportExitMode::Normal,
             game_start_ts_ms - 3_600_001,
             game_start_ts_ms,
+            8 * 60 * 60,
             true,
             true,
         );
@@ -35933,6 +35955,7 @@ mod tests {
             mm::MmSportExitMode::Normal,
             game_start_ts_ms - 3_600_001,
             game_start_ts_ms,
+            8 * 60 * 60,
             true,
             false,
         );
@@ -35947,8 +35970,9 @@ mod tests {
 
         let prestart = mm_sport_market_mode_flags(
             mm::MmSportExitMode::Normal,
-            game_start_ts_ms - MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS,
+            game_start_ts_ms - (8 * 60 * 60 * 1_000),
             game_start_ts_ms,
+            8 * 60 * 60,
             false,
             true,
         );
@@ -35969,6 +35993,7 @@ mod tests {
             mm::MmSportExitMode::Aggressive,
             game_start_ts_ms - 3_600_001,
             game_start_ts_ms,
+            8 * 60 * 60,
             true,
             true,
         );
@@ -35990,6 +36015,7 @@ mod tests {
             mm::MmSportExitMode::NoExit,
             game_start_ts_ms - 3_600_001,
             game_start_ts_ms,
+            8 * 60 * 60,
             true,
             false,
         );
@@ -36004,8 +36030,9 @@ mod tests {
 
         let hold = mm_sport_market_mode_flags(
             mm::MmSportExitMode::NoExit,
-            game_start_ts_ms - MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS,
+            game_start_ts_ms - (8 * 60 * 60 * 1_000),
             game_start_ts_ms,
+            8 * 60 * 60,
             true,
             false,
         );

@@ -1673,22 +1673,40 @@ fn env_bool(key: &str, default: bool) -> bool {
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
+        .and_then(|v| parse_u64_like(v.trim()))
         .unwrap_or(default)
 }
 
 fn env_u32(key: &str, default: u32) -> u32 {
     std::env::var(key)
         .ok()
-        .and_then(|v| v.trim().parse::<u32>().ok())
+        .and_then(|v| parse_u32_like(v.trim()))
         .unwrap_or(default)
 }
 
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key)
         .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
+        .and_then(|v| parse_usize_like(v.trim()))
         .unwrap_or(default)
+}
+
+fn parse_u64_like(raw: &str) -> Option<u64> {
+    raw.parse::<u64>().ok().or_else(|| {
+        let parsed = raw.parse::<f64>().ok()?;
+        if !parsed.is_finite() || parsed < 0.0 || parsed.fract().abs() > f64::EPSILON {
+            return None;
+        }
+        (parsed <= u64::MAX as f64).then_some(parsed as u64)
+    })
+}
+
+fn parse_u32_like(raw: &str) -> Option<u32> {
+    parse_u64_like(raw).and_then(|value| u32::try_from(value).ok())
+}
+
+fn parse_usize_like(raw: &str) -> Option<usize> {
+    parse_u64_like(raw).and_then(|value| usize::try_from(value).ok())
 }
 
 fn env_i64(key: &str, default: i64) -> i64 {

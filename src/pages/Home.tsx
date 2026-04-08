@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { open } from "@tauri-apps/plugin-shell";
 import { check } from "@tauri-apps/plugin-updater";
 import { AppShell } from "../components/AppShell";
 import { GeoAccessDialog } from "../components/GeoAccessDialog";
@@ -33,6 +32,7 @@ import {
 } from "../lib/desktop-config";
 import {
   clearLinuxResumeOffer,
+  downloadLinuxUpdateDeb,
   getGeoAccessStatus,
   getActiveProfileId,
   getLinuxResumeOffer,
@@ -132,6 +132,7 @@ export function Home() {
   const [logsOpen, setLogsOpen] = useState(false);
   const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   const [updateDownloading, setUpdateDownloading] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
   const [pendingUpdate, setPendingUpdate] =
     useState<Awaited<ReturnType<typeof check>> | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<string>(JSON.stringify(DEFAULT_CONFIG));
@@ -229,10 +230,18 @@ export function Home() {
     if (!pendingUpdate || !updateVersion || updateDownloading) return;
     setUpdateDownloading(true);
     setActionError(null);
+    setUpdateMessage(null);
     try {
-      await open(linuxDebDownloadUrl(updateVersion));
+      const outputPath = await downloadLinuxUpdateDeb(updateVersion);
+      setUpdateMessage(
+        `Downloaded ${updateVersion} to ${outputPath}. Install it with: sudo apt install ${outputPath}`
+      );
     } catch (err) {
-      setActionError(getErrorText(err, "failed to open the latest Ubuntu package"));
+      setActionError(
+        `${getErrorText(err, "failed to download the latest Ubuntu package")}. Direct link: ${linuxDebDownloadUrl(
+          updateVersion
+        )}`
+      );
     } finally {
       setUpdateDownloading(false);
     }
@@ -880,10 +889,11 @@ export function Home() {
           <UpdateBanner
             version={updateVersion}
             onUpdate={handleUpdate}
-            actionLabel={updateDownloading ? "Opening..." : "Download Latest .deb"}
-            detail="Downloads the newest Ubuntu package. Your profiles and bot settings stay intact."
+            actionLabel={updateDownloading ? "Downloading..." : "Download Latest .deb"}
+            detail="Downloads the newest Ubuntu package straight into your Downloads folder. Your profiles and bot settings stay intact."
             disabled={updateDownloading}
           />
+          {updateMessage ? <div className="inline-alert inline-alert--warning">{updateMessage}</div> : null}
           {displayError ? <div className="inline-alert">{displayError}</div> : null}
         </div>
       }

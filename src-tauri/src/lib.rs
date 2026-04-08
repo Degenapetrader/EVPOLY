@@ -4257,6 +4257,54 @@ fn open_logs_folder(data_dir: State<'_, AppDataDir>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn download_linux_update_deb(version: String) -> Result<String, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let version = version.trim();
+        if version.is_empty() {
+            return Err("missing update version".to_string());
+        }
+
+        let file_name = format!("EVPoly_{version}_amd64.deb");
+        let url = format!(
+            "https://github.com/Degenapetrader/EVPOLY/releases/download/Linux-v{version}/{file_name}"
+        );
+        let download_dir = dirs::download_dir()
+            .or_else(|| dirs::home_dir().map(|home| home.join("Downloads")))
+            .ok_or_else(|| "download directory unavailable".to_string())?;
+        std::fs::create_dir_all(&download_dir).map_err(|e| format!("create download dir: {e}"))?;
+
+        let response = reqwest::Client::builder()
+            .build()
+            .map_err(|e| format!("build download client: {e}"))?
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("download update package: {e}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(format!("download update package: HTTP {status}"));
+        }
+
+        let output_path = download_dir.join(&file_name);
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| format!("read update package: {e}"))?;
+        tokio::fs::write(&output_path, &bytes)
+            .await
+            .map_err(|e| format!("save update package: {e}"))?;
+
+        Ok(output_path.to_string_lossy().to_string())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = version;
+        Err("linux-only command".to_string())
+    }
+}
+
 // ── Onboard ──────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -4513,6 +4561,7 @@ pub fn run() {
             run_wallet_sync_now,
             get_data_dir_path,
             open_logs_folder,
+            download_linux_update_deb,
             run_onboarding,
         ])
         .run(tauri::generate_context!())

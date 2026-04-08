@@ -594,3 +594,6 @@ export const getDataDirPath = (): Promise<string> =>
 
 export const openLogsFolder = (): Promise<void> =>
   invoke("open_logs_folder");
+
+export const downloadLinuxUpdateDeb = (version: string): Promise<string> =>
+  invoke("download_linux_update_deb", { version });

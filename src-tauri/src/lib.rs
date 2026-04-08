@@ -242,7 +242,7 @@ struct DesktopMmSportSettings {
     quote_size_mode: String,
     min_reward_rate_per_day: f64,
     pause_after_fill_sec: f64,
-    near_expiry_exit_window_sec: f64,
+    inventory_exit_start_hours: f64,
     inventory_exit_mode: String,
     max_share_ratio: f64,
     min_top_depth_usd: f64,
@@ -864,10 +864,10 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC",
                     7200.0,
                 ),
-                near_expiry_exit_window_sec: config_io::env_template_default_f64(
-                    "EVPOLY_MM_NEAR_EXPIRY_EXIT_WINDOW_SEC",
-                    86400.0,
-                ),
+                inventory_exit_start_hours: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC",
+                    28800.0,
+                ) / 3600.0,
                 inventory_exit_mode: normalize_mm_sport_exit_mode(
                     config_io::env_template_default_string("EVPOLY_MM_SPORT_EXIT_MODE")
                         .as_deref()
@@ -1759,12 +1759,13 @@ fn desktop_config_to_profile_payload(
         number_to_json(config.strategy_settings.mm_sport.pause_after_fill_sec),
     );
     strategy.insert(
-        "EVPOLY_MM_NEAR_EXPIRY_EXIT_WINDOW_SEC".to_string(),
+        "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC".to_string(),
         number_to_json(
             config
                 .strategy_settings
                 .mm_sport
-                .near_expiry_exit_window_sec,
+                .inventory_exit_start_hours
+                * 3600.0,
         ),
     );
     strategy.insert(
@@ -2153,7 +2154,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 ),
                 "min_reward_rate_per_day": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 300.0)),
                 "pause_after_fill_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 7200.0)),
-                "near_expiry_exit_window_sec": f64_from_object(&strategy, "EVPOLY_MM_NEAR_EXPIRY_EXIT_WINDOW_SEC", config_io::env_template_default_f64("EVPOLY_MM_NEAR_EXPIRY_EXIT_WINDOW_SEC", 86400.0)),
+                "inventory_exit_start_hours": f64_from_object(&strategy, "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28800.0)) / 3600.0,
                 "inventory_exit_mode": normalize_mm_sport_exit_mode(
                     string_from_object(&strategy, "EVPOLY_MM_SPORT_EXIT_MODE", "normal").as_str()
                 ),

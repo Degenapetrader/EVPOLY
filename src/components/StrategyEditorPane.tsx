@@ -1280,19 +1280,34 @@ export function StrategyEditorPane({
               <div className="surface-panel__body grid gap-4">
                 <div>
                   <label className="field-label">Market Mode</label>
-                  <select
-                    value={mmRewards.market_mode}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchMMRewards({
-                        market_mode: event.target.value as BotConfig["strategy_settings"]["mm_rewards"]["market_mode"],
-                      })
-                    }
-                    className="field-input"
-                  >
-                    <option value="auto">Auto</option>
-                    <option value="hybrid">Hybrid</option>
-                  </select>
+                  <div className="segmented-control segmented-control--two" role="radiogroup" aria-label="MM Rewards Market Mode">
+                    {[
+                      ["auto", "Auto"],
+                      ["hybrid", "Hybrid"],
+                    ].map(([value, label]) => {
+                      const active = mmRewards.market_mode === value;
+                      return (
+                        <button
+                          key={value}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          disabled={!canEdit}
+                          onClick={() =>
+                            patchMMRewards({
+                              market_mode:
+                                value as BotConfig["strategy_settings"]["mm_rewards"]["market_mode"],
+                            })
+                          }
+                          className={`segmented-control__option ${
+                            active ? "segmented-control__option--active" : ""
+                          }`.trim()}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
                   <p className="mt-2 text-sm text-[var(--text-secondary)]">
                     {mmRewards.market_mode === "hybrid"
                       ? "Hybrid keeps auto discovery and adds the slugs you list below."

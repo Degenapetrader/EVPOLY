@@ -511,6 +511,10 @@ input[type="number"]::-webkit-inner-spin-button {
     padding: 0.4rem;
   }
 
+  .segmented-control--two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .segmented-control__option {
     min-width: 0;
     border: 1px solid transparent;

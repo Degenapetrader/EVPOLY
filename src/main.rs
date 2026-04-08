@@ -1367,6 +1367,7 @@ fn mm_sport_build_active_markets(
     quote_expiry_by_condition: &std::collections::HashMap<String, (i64, u64)>,
     no_exit_side_pause_by_token: &std::collections::HashMap<String, MmSportNoExitSidePauseState>,
     now_ms: i64,
+    inventory_exit_start_sec: u64,
     scout_anchor_count: usize,
     scout_rotate_count: usize,
     scout_offset: usize,
@@ -1425,11 +1426,7 @@ fn mm_sport_build_active_markets(
     let scout_candidates = discovered_markets
         .iter()
         .filter(|market| {
-            !mm_sport_prestart_exit_mode(
-                now_ms,
-                market.game_start_ts_ms,
-                mm_sport_cfg.inventory_exit_start_sec,
-            )
+            !mm_sport_prestart_exit_mode(now_ms, market.game_start_ts_ms, inventory_exit_start_sec)
         })
         .collect::<Vec<_>>();
     let anchor_take = scout_anchor_count.min(scout_candidates.len());
@@ -15752,6 +15749,7 @@ async fn main() -> Result<()> {
                         &quote_expiry_by_condition,
                         &no_exit_side_pause_by_token,
                         now_ms,
+                        mm_sport_cfg_for_loop.inventory_exit_start_sec,
                         MM_SPORT_SCOPE_SCOUT_ANCHOR_MARKETS,
                         MM_SPORT_SCOPE_SCOUT_ROTATE_MARKETS,
                         mm_sport_scope_scout_offset,
@@ -36124,6 +36122,7 @@ mod tests {
             &quote_expiry,
             &no_exit_side_pause,
             now_ms,
+            28_800,
             2,
             1,
             1,
@@ -36170,6 +36169,7 @@ mod tests {
             &quote_expiry,
             &no_exit_side_pause,
             now_ms,
+            28_800,
             4,
             0,
             0,

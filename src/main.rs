@@ -1066,7 +1066,7 @@ fn tick_metadata_backoff_error(err_text: &str) -> bool {
 
 fn mm_sport_prestart_exit_mode(now_ms: i64, game_start_ts_ms: i64) -> bool {
     game_start_ts_ms > 0
-        && now_ms >= game_start_ts_ms.saturating_sub(60 * 60 * 1_000)
+        && now_ms >= game_start_ts_ms.saturating_sub(MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS)
         && now_ms < game_start_ts_ms
 }
 
@@ -1270,6 +1270,7 @@ fn mm_sport_size_shares_from_pending(row: &PendingOrderRecord) -> Option<f64> {
 
 const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 1_000.0;
 const MM_SPORT_LOW_DEPTH_QUOTE_SIZE_MULT: f64 = 1.2;
+const MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS: i64 = 8 * 60 * 60 * 1_000;
 const MM_SPORT_FORCE_EXIT_WINDOW_MS: i64 = 30 * 60 * 1_000;
 const MM_SPORT_EXIT_FALLBACK_REFRESH_MS: i64 = 60_000;
 const MM_SPORT_EXIT_FALLBACK_IMMEDIATE_RETRY_MS: i64 = 15_000;
@@ -35867,14 +35868,14 @@ mod tests {
     }
 
     #[test]
-    fn mm_sport_prestart_window_is_exact_60_minutes_before_start() {
+    fn mm_sport_prestart_window_is_exact_8_hours_before_start() {
         let game_start_ts_ms = 2_000_000_000_000_i64;
         assert!(!mm_sport_prestart_exit_mode(
-            game_start_ts_ms - 3_600_001,
+            game_start_ts_ms - MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS - 1,
             game_start_ts_ms
         ));
         assert!(mm_sport_prestart_exit_mode(
-            game_start_ts_ms - 3_600_000,
+            game_start_ts_ms - MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS,
             game_start_ts_ms
         ));
         assert!(mm_sport_prestart_exit_mode(
@@ -35946,7 +35947,7 @@ mod tests {
 
         let prestart = mm_sport_market_mode_flags(
             mm::MmSportExitMode::Normal,
-            game_start_ts_ms - 3_600_000,
+            game_start_ts_ms - MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS,
             game_start_ts_ms,
             false,
             true,
@@ -36003,7 +36004,7 @@ mod tests {
 
         let hold = mm_sport_market_mode_flags(
             mm::MmSportExitMode::NoExit,
-            game_start_ts_ms - 3_600_000,
+            game_start_ts_ms - MM_SPORT_PRESTART_QUOTE_HALT_WINDOW_MS,
             game_start_ts_ms,
             true,
             false,

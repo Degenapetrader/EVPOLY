@@ -133,7 +133,7 @@ const SAMPLE_CONFIG: BotConfig = {
       quote_size_mode: "multiple",
       min_reward_rate_per_day: 300,
       pause_after_fill_sec: 7200,
-      near_expiry_exit_window_sec: 86400,
+      inventory_exit_start_hours: 8,
       inventory_exit_mode: "normal",
       max_share_ratio: 0.05,
       min_top_depth_usd: 100000,

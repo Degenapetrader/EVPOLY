@@ -72,9 +72,15 @@ pub(crate) fn env_template_default_f64(key: &str, default: f64) -> f64 {
 }
 
 fn value_to_env_string(v: &Value) -> String {
-    v.as_str()
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| v.to_string())
+    if let Some(s) = v.as_str() {
+        return s.to_string();
+    }
+    if let Some(number) = v.as_f64() {
+        if number.is_finite() && number.fract().abs() <= f64::EPSILON {
+            return format!("{number:.0}");
+        }
+    }
+    v.to_string()
 }
 
 fn bool_from_config(config: &Value, key: &str, default: bool) -> bool {
@@ -468,6 +474,36 @@ mod tests {
         let content = std::fs::read_to_string(&env_path).expect("read env");
 
         assert!(content.contains("EVPOLY_MM_MARKET_MODE=hybrid"));
+
+        let _ = std::fs::remove_file(env_path);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn generate_env_file_writes_integer_like_numbers_without_decimal_suffix() {
+        let mut profile = sample_profile();
+        profile.strategy_config = serde_json::json!({
+            "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC": 600.0,
+            "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC": 90.0,
+            "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC": 180.0,
+            "EVPOLY_MM_AUTO_REFRESH_SEC": 300.0
+        });
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "evpoly-config-io-int-values-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let env_path =
+            generate_env_file(&profile, &HashMap::new(), &temp_dir).expect("generate env");
+        let content = std::fs::read_to_string(&env_path).expect("read env");
+
+        assert!(content.contains("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC=600"));
+        assert!(content.contains("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC=90"));
+        assert!(content.contains("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC=180"));
+        assert!(content.contains("EVPOLY_MM_AUTO_REFRESH_SEC=300"));
+        assert!(!content.contains("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC=600.0"));
 
         let _ = std::fs::remove_file(env_path);
         let _ = std::fs::remove_dir_all(temp_dir);

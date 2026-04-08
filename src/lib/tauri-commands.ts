@@ -300,7 +300,7 @@ export interface MMSportSettings {
   quote_size_mode: MMSportQuoteSizeMode;
   min_reward_rate_per_day: number;
   pause_after_fill_sec: number;
-  near_expiry_exit_window_sec: number;
+  inventory_exit_start_hours: number;
   inventory_exit_mode: MMSportInventoryExitMode;
   max_share_ratio: number;
   min_top_depth_usd: number;

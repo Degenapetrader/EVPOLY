@@ -1273,11 +1273,11 @@ export function StrategyEditorPane({
                 <div className="surface-panel__copy">
                   <h2 className="surface-panel__title">Market Selection</h2>
                   <p className="surface-panel__subtitle">
-                    Choose how MM Rewards picks markets and how often it refreshes.
+                    Control how MM Rewards chooses scanner markets and how often it rotates them.
                   </p>
                 </div>
               </div>
-              <div className="surface-panel__body grid gap-4">
+              <div className="surface-panel__body grid gap-5">
                 <div>
                   <label className="field-label">Market Mode</label>
                   <select
@@ -1316,7 +1316,7 @@ export function StrategyEditorPane({
                     </p>
                   </div>
                 ) : null}
-                <div className="grid gap-4 md:grid-cols-3">
+                <div className="grid gap-4 md:grid-cols-2">
                   <div>
                     <label className="field-label">Auto Top N</label>
                     <input
@@ -1332,6 +1332,10 @@ export function StrategyEditorPane({
                       }
                       className="field-input"
                     />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Auto mode only considers the top N ranked reward markets each refresh. Lower
+                      values stay selective; higher values scan wider.
+                    </p>
                   </div>
                   <div>
                     <label className="field-label">Refresh Sec</label>
@@ -1351,25 +1355,9 @@ export function StrategyEditorPane({
                       }
                       className="field-input"
                     />
-                  </div>
-                  <div>
-                    <label className="field-label">Rank Budget (USD)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={mmRewards.auto_rank_budget_usd}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMRewards({
-                          auto_rank_budget_usd: parseNonNegative(
-                            event.target.value,
-                            mmRewards.auto_rank_budget_usd
-                          ),
-                        })
-                      }
-                      className="field-input"
-                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      How often MM Rewards reruns auto market selection and refreshes the pool.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -1386,7 +1374,7 @@ export function StrategyEditorPane({
               </div>
               <div className="surface-panel__body grid gap-4">
                 <div>
-                    <label className="field-label">Blacklist Keywords</label>
+                  <label className="field-label">Blacklist Keywords</label>
                   <input
                     type="text"
                     value={mmRewards.blacklist_keywords}
@@ -1394,9 +1382,13 @@ export function StrategyEditorPane({
                     onChange={(event) => patchMMRewards({ blacklist_keywords: event.target.value })}
                     className="field-input"
                   />
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    Comma-separated words or phrases that should keep MM Rewards away from matching
+                    markets.
+                  </p>
                 </div>
                 <div>
-                    <label className="field-label">Reward Min Shares Cap</label>
+                  <label className="field-label">Reward Min Shares Cap</label>
                   <input
                     type="number"
                     min="0"
@@ -1410,9 +1402,12 @@ export function StrategyEditorPane({
                           mmRewards.reward_min_shares_cap
                         ),
                       })
-                    }
-                    className="field-input"
-                  />
+                      }
+                      className="field-input"
+                    />
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    Optional ceiling for oversized reward floors. Set `0` to ignore this filter.
+                  </p>
                 </div>
               </div>
             </div>
@@ -1549,7 +1544,7 @@ export function StrategyEditorPane({
                 <div className="surface-panel__copy">
                   <h2 className="surface-panel__title">Pacing</h2>
                   <p className="surface-panel__subtitle">
-                    Control quote pacing and near-expiry exit timing.
+                    Control when MM Sport starts cleanup and how long it cools down after a fill.
                   </p>
                 </div>
               </div>
@@ -1569,9 +1564,13 @@ export function StrategyEditorPane({
                           mmSport.min_reward_rate_per_day
                         ),
                       })
-                    }
-                    className="field-input"
-                  />
+                      }
+                      className="field-input"
+                    />
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    Minimum daily liquidity reward rate a sports market must offer before MM Sport
+                    will quote it.
+                  </p>
                 </div>
                 <div>
                   <label className="field-label">Pause After Fill (Sec)</label>
@@ -1588,28 +1587,36 @@ export function StrategyEditorPane({
                           mmSport.pause_after_fill_sec
                         ),
                       })
-                    }
-                    className="field-input"
-                  />
+                      }
+                      className="field-input"
+                    />
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    After a buy fill, `Auto` waits this long before normal cleanup starts. If the
+                    market reaches the inventory-exit window first, cleanup can still begin sooner.
+                  </p>
                 </div>
                 <div>
-                  <label className="field-label">Near-Expiry Exit Window (Sec)</label>
+                  <label className="field-label">Inventory Exit Starts (Hours)</label>
                   <input
                     type="number"
                     min="0"
                     step="1"
-                    value={mmSport.near_expiry_exit_window_sec}
+                    value={mmSport.inventory_exit_start_hours}
                     disabled={!canEdit}
                     onChange={(event) =>
                       patchMMSport({
-                        near_expiry_exit_window_sec: parseNonNegative(
+                        inventory_exit_start_hours: parseNonNegative(
                           event.target.value,
-                          mmSport.near_expiry_exit_window_sec
+                          mmSport.inventory_exit_start_hours
                         ),
                       })
                     }
                     className="field-input"
                   />
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    MM Sport stops opening fresh entry quotes and switches into inventory cleanup
+                    this many hours before game start.
+                  </p>
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
@@ -1630,6 +1637,9 @@ export function StrategyEditorPane({
                       }
                       className="field-input"
                     />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Shortest quote lifetime MM Sport will use before refreshing a resting entry.
+                    </p>
                   </div>
                   <div>
                     <label className="field-label">Quote Expiry Max (Sec)</label>
@@ -1649,6 +1659,9 @@ export function StrategyEditorPane({
                       }
                       className="field-input"
                     />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Longest quote lifetime MM Sport will allow when market conditions stay calm.
+                    </p>
                   </div>
                 </div>
               </div>
@@ -1691,11 +1704,17 @@ export function StrategyEditorPane({
                   </div>
                   <p className="mt-2 text-sm text-[var(--text-secondary)]">
                     {mmSport.inventory_exit_mode === "aggressive"
-                      ? "Aggressive tries to sell the position right after it gets filled."
+                      ? "Aggressive starts trying to sell the position immediately after a fill instead of waiting for the normal cooldown."
                       : mmSport.inventory_exit_mode === "no_exit"
-                        ? "Feeling Lucky skips forced cleanup exits and lets inventory ride."
+                        ? "Feeling Lucky disables forced cleanup exits. Inventory can stay open into live play or all the way to settlement, which is closer to speculative gambling than controlled market making."
                         : "Auto uses the normal cleanup path and best-effort inventory exits, but rare failures can still happen."}
                   </p>
+                  {mmSport.inventory_exit_mode === "no_exit" ? (
+                    <div className="inline-alert inline-alert--warning">
+                      Feeling Lucky is intentionally high risk. Use it only if you are comfortable
+                      holding sports inventory without forced cleanup.
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>

@@ -4056,14 +4056,22 @@ async fn main() -> Result<()> {
         }
     }
 
-    let core_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_PREMARKET_ENABLE", true)
-        || env_bool_named("EVPOLY_STRATEGY_ENDGAME_ENABLE", true)
-        || env_bool_named("EVPOLY_STRATEGY_EVCURVE_ENABLE", true)
-        || env_bool_named("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true)
-        || env_bool_named("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true);
-    let mm_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_MM_REWARDS_ENABLE", false)
-        || env_bool_named("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false);
+    let premarket_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_PREMARKET_ENABLE", true);
+    let endgame_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_ENDGAME_ENABLE", true);
+    let evcurve_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_EVCURVE_ENABLE", true);
+    let sessionband_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true);
+    let evsnipe_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true);
+    let mm_rewards_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_MM_REWARDS_ENABLE", false);
+    let mm_sport_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false);
+    let core_strategy_enabled = premarket_strategy_enabled
+        || endgame_strategy_enabled
+        || evcurve_strategy_enabled
+        || sessionband_strategy_enabled
+        || evsnipe_strategy_enabled;
+    let mm_strategy_enabled = mm_rewards_strategy_enabled || mm_sport_strategy_enabled;
     let mm_only_mode = !core_strategy_enabled && mm_strategy_enabled;
+    let shared_signal_runtime_enabled =
+        endgame_strategy_enabled || evcurve_strategy_enabled || sessionband_strategy_enabled;
 
     if !is_simulation && !mm_only_mode && env_bool_named("EVPOLY_MARKET_PREWARM_ENABLE", true) {
         let mut prewarm_symbols = vec!["BTC".to_string()];
@@ -4329,95 +4337,117 @@ async fn main() -> Result<()> {
     // 2) Discover markets and construct monitor/detector/trader.
     // 3) Reconcile + restore position state.
     // 4) Launch recurring loops (closure checks, rollover, entry callback).
-    let hl_signal_tasks =
-        hl_signals::spawn_hl_signal_pipeline(HlSignalsConfig::default(), signal_state.clone());
-    let binance_signal_task =
-        binance_wss::spawn_binance_trade_feed(BinanceWssConfig::default(), signal_state.clone());
-    let coinbase_signal_task = coinbase_ws::spawn_coinbase_level2_feed(
-        CoinbaseWsConfig::default(),
-        coinbase_book_state.clone(),
-        Some(coinbase_trade_notify.clone()),
-    );
-    let signal_state_liveness = signal_state.clone();
-    let coinbase_state_liveness = coinbase_book_state.clone();
-    tokio::spawn(async move {
-        let check_interval_sec = std::env::var("EVPOLY_SIGNAL_LIVENESS_CHECK_SEC")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(20)
-            .max(5);
-        let stale_age_ms = std::env::var("EVPOLY_SIGNAL_LIVENESS_STALE_MS")
-            .ok()
-            .and_then(|v| v.parse::<i64>().ok())
-            .unwrap_or(180_000)
-            .max(15_000);
-        let fail_fast = std::env::var("EVPOLY_SIGNAL_FAIL_FAST")
-            .ok()
-            .map(|v| {
-                matches!(
-                    v.trim().to_ascii_lowercase().as_str(),
-                    "1" | "true" | "yes" | "on"
-                )
-            })
-            .unwrap_or(true);
-
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(check_interval_sec)).await;
-            let mut dead_tasks = Vec::new();
-            for (idx, task) in hl_signal_tasks.iter().enumerate() {
-                if task.is_finished() {
-                    dead_tasks.push(format!("hl_signal_task_{}", idx));
+    let hl_signal_tasks = if shared_signal_runtime_enabled {
+        hl_signals::spawn_hl_signal_pipeline(HlSignalsConfig::default(), signal_state.clone())
+    } else {
+        Vec::<tokio::task::JoinHandle<()>>::new()
+    };
+    let binance_signal_task = if shared_signal_runtime_enabled {
+        Some(binance_wss::spawn_binance_trade_feed(
+            BinanceWssConfig::default(),
+            signal_state.clone(),
+        ))
+    } else {
+        None
+    };
+    let coinbase_signal_task = if shared_signal_runtime_enabled {
+        Some(coinbase_ws::spawn_coinbase_level2_feed(
+            CoinbaseWsConfig::default(),
+            coinbase_book_state.clone(),
+            Some(coinbase_trade_notify.clone()),
+        ))
+    } else {
+        None
+    };
+    if shared_signal_runtime_enabled {
+        let signal_state_liveness = signal_state.clone();
+        let coinbase_state_liveness = coinbase_book_state.clone();
+        tokio::spawn(async move {
+            let check_interval_sec = std::env::var("EVPOLY_SIGNAL_LIVENESS_CHECK_SEC")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(20)
+                .max(5);
+            let stale_age_ms = std::env::var("EVPOLY_SIGNAL_LIVENESS_STALE_MS")
+                .ok()
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(180_000)
+                .max(15_000);
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_secs(check_interval_sec)).await;
+                let mut dead_tasks = Vec::new();
+                for (idx, task) in hl_signal_tasks.iter().enumerate() {
+                    if task.is_finished() {
+                        dead_tasks.push(format!("hl_signal_task_{}", idx));
+                    }
                 }
-            }
-            if binance_signal_task.is_finished() {
-                dead_tasks.push("binance_signal_task".to_string());
-            }
-            if coinbase_signal_task.is_finished() {
-                dead_tasks.push("coinbase_signal_task".to_string());
-            }
+                if binance_signal_task
+                    .as_ref()
+                    .map(|task| task.is_finished())
+                    .unwrap_or(false)
+                {
+                    dead_tasks.push("binance_signal_task".to_string());
+                }
+                if coinbase_signal_task
+                    .as_ref()
+                    .map(|task| task.is_finished())
+                    .unwrap_or(false)
+                {
+                    dead_tasks.push("coinbase_signal_task".to_string());
+                }
 
-            let (newest_update_ms, source_ages_ms) = {
-                let guard = signal_state_liveness.read().await;
+                let (newest_update_ms, source_ages_ms) = {
+                    let guard = signal_state_liveness.read().await;
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    (
+                        guard.newest_source_update_ms(),
+                        guard.source_ages_ms(now_ms),
+                    )
+                };
+                let (coinbase_state, coinbase_last_update_ms) = {
+                    let guard = coinbase_state_liveness.read().await;
+                    (
+                        format!("{:?}", guard.feed_state).to_uppercase(),
+                        guard.last_update_ms,
+                    )
+                };
                 let now_ms = chrono::Utc::now().timestamp_millis();
-                (
-                    guard.newest_source_update_ms(),
-                    guard.source_ages_ms(now_ms),
-                )
-            };
-            let (coinbase_state, coinbase_last_update_ms) = {
-                let guard = coinbase_state_liveness.read().await;
-                (
-                    format!("{:?}", guard.feed_state).to_uppercase(),
-                    guard.last_update_ms,
-                )
-            };
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let signal_stale =
-                newest_update_ms <= 0 || now_ms.saturating_sub(newest_update_ms) > stale_age_ms;
-            let coinbase_stale = coinbase_last_update_ms <= 0
-                || now_ms.saturating_sub(coinbase_last_update_ms) > stale_age_ms;
+                let signal_stale =
+                    newest_update_ms <= 0 || now_ms.saturating_sub(newest_update_ms) > stale_age_ms;
+                let coinbase_stale = coinbase_last_update_ms <= 0
+                    || now_ms.saturating_sub(coinbase_last_update_ms) > stale_age_ms;
 
-            if !dead_tasks.is_empty() || signal_stale || coinbase_stale {
-                log_event(
-                    "signal_pipeline_degraded",
-                    json!({
-                        "dead_tasks": dead_tasks,
-                        "signal_stale": signal_stale,
-                        "coinbase_stale": coinbase_stale,
-                        "coinbase_state": coinbase_state,
-                        "coinbase_last_update_ms": coinbase_last_update_ms,
-                        "newest_update_ms": newest_update_ms,
-                        "stale_age_ms": stale_age_ms,
-                        "source_ages_ms": source_ages_ms
-                    }),
-                );
-                if fail_fast {
-                    eprintln!("❌ Signal pipeline unhealthy; fail-fast enabled. Exiting.");
-                    std::process::exit(1);
+                if !dead_tasks.is_empty() || signal_stale || coinbase_stale {
+                    log_event(
+                        "signal_pipeline_degraded",
+                        json!({
+                            "dead_tasks": dead_tasks,
+                            "signal_stale": signal_stale,
+                            "coinbase_stale": coinbase_stale,
+                            "coinbase_state": coinbase_state,
+                            "coinbase_last_update_ms": coinbase_last_update_ms,
+                            "newest_update_ms": newest_update_ms,
+                            "stale_age_ms": stale_age_ms,
+                            "source_ages_ms": source_ages_ms,
+                            "fatal": false
+                        }),
+                    );
+                    // Shared signal degradation is logged but no longer stops the bot.
                 }
             }
-        }
-    });
+        });
+    } else {
+        log_event(
+            "signal_pipeline_skipped_strategy_mode",
+            json!({
+                "premarket_enabled": premarket_strategy_enabled,
+                "evsnipe_enabled": evsnipe_strategy_enabled,
+                "mm_rewards_enabled": mm_rewards_strategy_enabled,
+                "mm_sport_enabled": mm_sport_strategy_enabled,
+                "shared_signal_runtime_enabled": shared_signal_runtime_enabled
+            }),
+        );
+    }
     let strategy_book = new_shared_strategy_book();
     let (premarket_tx, mut premarket_rx) = tokio::sync::mpsc::channel::<PremarketIntent>(128);
     let decider_cfg = StrategyDeciderConfig::default();
@@ -4435,7 +4465,13 @@ async fn main() -> Result<()> {
         strategy_book.clone(),
         premarket_tx,
     );
-    eprintln!("📶 Signal infra started: HL files/L4 + Binance WSS");
+    if shared_signal_runtime_enabled {
+        eprintln!("📶 Signal infra started: HL files/L4 + Binance WSS");
+    } else {
+        eprintln!(
+            "⏭️ Shared signal infra skipped (no enabled strategy depends on the startup signal watchdog)"
+        );
+    }
     eprintln!(
         "🧭 Strategy scheduler started (premarket_enabled={})",
         premarket_enabled

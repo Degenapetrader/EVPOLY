@@ -1537,6 +1537,8 @@ async fn health_indicators(ctx: &BotAdminContext) -> Value {
         .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(180_000)
         .max(15_000);
+    let shared_signal_health_relevant = any_enabled_strategy_requires_shared_signal_health();
+    let shared_coinbase_health_relevant = any_enabled_strategy_requires_shared_coinbase_health();
 
     let (signal_newest_update_ms, signal_source_ages) = {
         let guard = ctx.signal_state.read().await;
@@ -1550,7 +1552,8 @@ async fn health_indicators(ctx: &BotAdminContext) -> Value {
     } else {
         i64::MAX
     };
-    let signal_stale = signal_newest_update_ms <= 0 || signal_age_ms > stale_age_ms;
+    let signal_stale = shared_signal_health_relevant
+        && (signal_newest_update_ms <= 0 || signal_age_ms > stale_age_ms);
 
     let (coinbase_last_update_ms, coinbase_feed_state) = {
         let guard = ctx.coinbase_state.read().await;
@@ -1561,7 +1564,8 @@ async fn health_indicators(ctx: &BotAdminContext) -> Value {
     } else {
         i64::MAX
     };
-    let coinbase_stale = coinbase_last_update_ms <= 0 || coinbase_age_ms > stale_age_ms;
+    let coinbase_stale = shared_coinbase_health_relevant
+        && (coinbase_last_update_ms <= 0 || coinbase_age_ms > stale_age_ms);
 
     let events = load_recent_events(2_000);
     let window_start_ms = now_ms.saturating_sub(10 * 60 * 1_000);
@@ -1621,7 +1625,7 @@ async fn health_indicators(ctx: &BotAdminContext) -> Value {
     let indicators = vec![
         json!({
             "key": "signals.newest_update_age_ms",
-            "effective_value": if signal_age_ms == i64::MAX { Value::Null } else { json!(signal_age_ms) },
+            "effective_value": if !shared_signal_health_relevant || signal_age_ms == i64::MAX { Value::Null } else { json!(signal_age_ms) },
             "source": "runtime",
             "default_value": stale_age_ms,
             "restart_required": false,
@@ -1629,7 +1633,7 @@ async fn health_indicators(ctx: &BotAdminContext) -> Value {
         }),
         json!({
             "key": "coinbase.last_update_age_ms",
-            "effective_value": if coinbase_age_ms == i64::MAX { Value::Null } else { json!(coinbase_age_ms) },
+            "effective_value": if !shared_coinbase_health_relevant || coinbase_age_ms == i64::MAX { Value::Null } else { json!(coinbase_age_ms) },
             "source": "runtime",
             "default_value": stale_age_ms,
             "restart_required": false,
@@ -1677,6 +1681,8 @@ async fn health_indicators(ctx: &BotAdminContext) -> Value {
         "status": {
             "signal_stale": signal_stale,
             "coinbase_stale": coinbase_stale,
+            "shared_signal_health_relevant": shared_signal_health_relevant,
+            "shared_coinbase_health_relevant": shared_coinbase_health_relevant,
             "signal_newest_update_ms": if signal_newest_update_ms > 0 { Some(signal_newest_update_ms) } else { None },
             "coinbase_last_update_ms": if coinbase_last_update_ms > 0 { Some(coinbase_last_update_ms) } else { None },
             "coinbase_feed_state": coinbase_feed_state,
@@ -1720,6 +1726,26 @@ fn strategy_enabled(strategy_slug: &str) -> bool {
         .and_then(|key| std::env::var(key).ok())
         .and_then(|raw| parse_bool_raw(raw.as_str()))
         .unwrap_or_else(|| strategy_enable_default(strategy_slug))
+}
+
+fn strategy_requires_shared_signal_health(strategy_slug: &str) -> bool {
+    matches!(strategy_slug, "endgame" | "evcurve" | "sessionband")
+}
+
+fn strategy_requires_shared_coinbase_health(strategy_slug: &str) -> bool {
+    matches!(strategy_slug, "endgame" | "evcurve" | "sessionband")
+}
+
+fn any_enabled_strategy_requires_shared_signal_health() -> bool {
+    strategy_catalog()
+        .into_iter()
+        .any(|(slug, _, _)| strategy_enabled(slug) && strategy_requires_shared_signal_health(slug))
+}
+
+fn any_enabled_strategy_requires_shared_coinbase_health() -> bool {
+    strategy_catalog().into_iter().any(|(slug, _, _)| {
+        strategy_enabled(slug) && strategy_requires_shared_coinbase_health(slug)
+    })
 }
 
 fn strategy_slug_for_id(strategy_id: &str) -> Option<&'static str> {
@@ -1828,15 +1854,21 @@ fn market_data_blocker_from_health(health: &Value) -> Option<String> {
     {
         return Some("Trading authentication needs to recover.".to_string());
     }
-    if health_status_value(health, "signal_stale")
+    if health_status_value(health, "shared_signal_health_relevant")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+        && health_status_value(health, "signal_stale")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     {
         return Some("Waiting for live market data to recover.".to_string());
     }
-    if health_status_value(health, "coinbase_stale")
+    if health_status_value(health, "shared_coinbase_health_relevant")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+        && health_status_value(health, "coinbase_stale")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
     {
         return Some("Waiting for price feeds to recover.".to_string());
     }
@@ -1850,8 +1882,39 @@ fn market_data_blocker_from_health(health: &Value) -> Option<String> {
     None
 }
 
-fn global_blocker_reason(health: &Value, enabled_strategy_count: usize) -> Option<String> {
-    if enabled_strategy_count == 0 {
+fn strategy_market_data_blocker_from_health(health: &Value, strategy_slug: &str) -> Option<String> {
+    if health_status_value(health, "clob_auth_failure_degraded")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Some("Trading authentication needs to recover.".to_string());
+    }
+    if strategy_requires_shared_signal_health(strategy_slug)
+        && health_status_value(health, "signal_stale")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return Some("Waiting for live market data to recover.".to_string());
+    }
+    if strategy_requires_shared_coinbase_health(strategy_slug)
+        && health_status_value(health, "coinbase_stale")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        return Some("Waiting for price feeds to recover.".to_string());
+    }
+    if health_status_value(health, "failed_events_10m")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        >= 10
+    {
+        return Some("The bot hit repeated runtime errors and needs attention.".to_string());
+    }
+    None
+}
+
+fn global_blocker_reason(health: &Value, enabled_strategy_slugs: &[&str]) -> Option<String> {
+    if enabled_strategy_slugs.is_empty() {
         return Some("Turn on at least one strategy before you start trading.".to_string());
     }
     market_data_blocker_from_health(health)
@@ -1905,17 +1968,21 @@ async fn fetch_free_balance(ctx: &BotAdminContext) -> Option<f64> {
 
 async fn build_ui_dashboard_summary(ctx: &BotAdminContext) -> UiDashboardSummary {
     let health = health_indicators(ctx).await;
-    let enabled_strategies = strategy_catalog()
+    let enabled_strategy_slugs = strategy_catalog()
         .into_iter()
         .filter_map(|(slug, _, _)| {
             if strategy_enabled(slug) {
-                Some(strategy_label(slug).to_string())
+                Some(slug)
             } else {
                 None
             }
         })
         .collect::<Vec<_>>();
-    let blocker_reason = global_blocker_reason(&health, enabled_strategies.len());
+    let enabled_strategies = enabled_strategy_slugs
+        .iter()
+        .map(|slug| strategy_label(slug).to_string())
+        .collect::<Vec<_>>();
+    let blocker_reason = global_blocker_reason(&health, enabled_strategy_slugs.as_slice());
     let db_summary = ctx
         .trader
         .tracking_db()
@@ -2011,7 +2078,6 @@ async fn build_ui_dashboard_summary(ctx: &BotAdminContext) -> UiDashboardSummary
 
 async fn build_ui_strategy_states(ctx: &BotAdminContext) -> Vec<UiStrategyState> {
     let health = health_indicators(ctx).await;
-    let market_data_blocker = market_data_blocker_from_health(&health);
     let Some(db) = ctx.trader.tracking_db() else {
         return strategy_catalog()
             .into_iter()
@@ -2075,9 +2141,10 @@ async fn build_ui_strategy_states(ctx: &BotAdminContext) -> Vec<UiStrategyState>
                 "mm_sport" => Some("Waiting for sports reward markets worth quoting.".to_string()),
                 _ => None,
             };
+            let market_data_blocker = strategy_market_data_blocker_from_health(&health, slug);
             let blocker_reason = if !enabled {
                 None
-            } else if let Some(reason) = market_data_blocker.clone() {
+            } else if let Some(reason) = market_data_blocker {
                 Some(reason)
             } else if open_orders_count == 0 && open_positions_count == 0 {
                 idle_blocker
@@ -2179,10 +2246,19 @@ async fn collect_doctor_issues(
 
     let health = health_indicators(ctx).await;
     let status = health.get("status").cloned().unwrap_or_else(|| json!({}));
+    let shared_signal_health_relevant = status
+        .get("shared_signal_health_relevant")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let shared_coinbase_health_relevant = status
+        .get("shared_coinbase_health_relevant")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if status
         .get("signal_stale")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+        && shared_signal_health_relevant
     {
         issues.push(DoctorIssue {
             id: "health:signal_stale".to_string(),
@@ -2198,6 +2274,7 @@ async fn collect_doctor_issues(
         .get("coinbase_stale")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+        && shared_coinbase_health_relevant
     {
         issues.push(DoctorIssue {
             id: "health:coinbase_stale".to_string(),

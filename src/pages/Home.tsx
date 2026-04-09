@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { check } from "@tauri-apps/plugin-updater";
 import { AppShell } from "../components/AppShell";
 import { GeoAccessDialog } from "../components/GeoAccessDialog";
+import { HomePortfolioTabs } from "../components/HomePortfolioTabs";
 import { LogsDrawer } from "../components/LogsDrawer";
 import { ProfileSwitcher } from "../components/ProfileSwitcher";
 import { SectionPanel } from "../components/SectionPanel";
@@ -11,7 +12,6 @@ import { StatusBadge } from "../components/StatusBadge";
 import { StrategyEditorPane } from "../components/StrategyEditorPane";
 import { UpdateBanner } from "../components/UpdateBanner";
 import { useAppContext } from "../App";
-import { useHomeActivity } from "../hooks/useHomeActivity";
 import { useHomeOverview } from "../hooks/useHomeOverview";
 import {
   STRATEGIES,
@@ -68,28 +68,6 @@ function formatRelativeTime(value: string): string {
   return rtf.format(Math.round(diffSeconds / 86400), "day");
 }
 
-function formatControlValue(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: value % 1 === 0 ? 0 : 2,
-  }).format(value);
-}
-
-function activityActionClass(action?: string | null): "buy" | "sell" {
-  return action?.toLowerCase() === "sold" ? "sell" : "buy";
-}
-
-function activityOutcomeClass(outcome?: string | null): "positive" | "negative" | "neutral" {
-  const lower = outcome?.toLowerCase() ?? "";
-  if (lower.startsWith("yes") || lower.startsWith("up")) return "positive";
-  if (lower.startsWith("no") || lower.startsWith("down")) return "negative";
-  return "neutral";
-}
-
-function activityValueClass(value?: number | null): "positive" | "negative" | "neutral" {
-  if (typeof value !== "number" || !Number.isFinite(value) || value === 0) return "neutral";
-  return value > 0 ? "positive" : "negative";
-}
-
 function strategyKeyFromRoute(strategySlug?: string): StrategyKey | null {
   if (!strategySlug) return null;
   return (
@@ -122,7 +100,6 @@ export function Home() {
   const { strategySlug } = useParams();
   const { activeProfileId, setActiveProfileId, setAuthenticated } = useAppContext();
   const { overview, error: overviewError, refresh: refreshOverview } = useHomeOverview();
-  const { items, error: activityError, refresh: refreshActivity } = useHomeActivity(14);
   const [config, setConfig] = useState<BotConfig>(DEFAULT_CONFIG);
   const [configLoaded, setConfigLoaded] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -143,6 +120,7 @@ export function Home() {
   const [doctorDialogOpen, setDoctorDialogOpen] = useState(false);
   const [pendingResumeOffer, setPendingResumeOffer] = useState<PendingLinuxResumeOffer | null>(null);
   const [resumeLoading, setResumeLoading] = useState(false);
+  const [portfolioFeedSeed, setPortfolioFeedSeed] = useState(0);
 
   const selectedStrategy = useMemo(
     () => strategyKeyFromRoute(strategySlug),
@@ -218,13 +196,9 @@ export function Home() {
   }, [configLoaded]);
 
   const dirty = useMemo(() => JSON.stringify(config) !== savedSnapshot, [config, savedSnapshot]);
-  const displayError = actionError || overviewError || activityError;
+  const displayError = actionError || overviewError;
   const canOperate = Boolean(activeProfileId && configLoaded);
   const botRunning = overview?.bot_state === "running";
-  const activityItems = useMemo(
-    () => [...items].sort((left, right) => right.timestamp.localeCompare(left.timestamp)),
-    [items]
-  );
 
   const handleUpdate = async () => {
     if (!pendingUpdate || !updateVersion || updateDownloading) return;
@@ -260,7 +234,7 @@ export function Home() {
       await clearLinuxResumeOffer();
       setPendingResumeOffer(null);
       await refreshOverview();
-      await refreshActivity({ reset: true });
+      setPortfolioFeedSeed((current) => current + 1);
     } catch (err) {
       setActionError(getErrorText(err, "failed to resume the previous bot session"));
     } finally {
@@ -291,7 +265,7 @@ export function Home() {
     setActiveProfileId(profileId);
     await loadProfileConfig(profileId);
     await refreshOverview();
-    await refreshActivity({ reset: true });
+    setPortfolioFeedSeed((current) => current + 1);
   };
 
   const handleLock = async () => {
@@ -339,7 +313,7 @@ export function Home() {
       await startBot(false);
       setActionError(null);
       await refreshOverview();
-      await refreshActivity({ reset: true });
+      setPortfolioFeedSeed((current) => current + 1);
     } catch (err) {
       setActionError(getErrorText(err, "failed to start bot"));
     } finally {
@@ -361,7 +335,7 @@ export function Home() {
       await restartBot(false);
       setActionError(null);
       await refreshOverview();
-      await refreshActivity({ reset: true });
+      setPortfolioFeedSeed((current) => current + 1);
     } catch (err) {
       setActionError(getErrorText(err, "failed to restart bot"));
     } finally {
@@ -407,7 +381,7 @@ export function Home() {
       await stopBot();
       setActionError(null);
       await refreshOverview();
-      await refreshActivity({ reset: true });
+      setPortfolioFeedSeed((current) => current + 1);
     } catch (err) {
       setActionError(getErrorText(err, "failed to stop bot"));
     } finally {
@@ -423,7 +397,7 @@ export function Home() {
       setDoctorDialogOpen(true);
       setActionError(null);
       await refreshOverview();
-      await refreshActivity({ reset: true });
+      setPortfolioFeedSeed((current) => current + 1);
       if (activeProfileId) {
         await loadProfileConfig(activeProfileId);
       }
@@ -705,92 +679,11 @@ export function Home() {
         </SectionPanel>
       </div>
 
-      <SectionPanel
-        title="Activity Feed"
-        subtitle="Only completed buys and sells appear here."
-        actions={
-          <button type="button" onClick={() => setLogsOpen(true)} className="ui-button">
-            Open Logs
-          </button>
-        }
-      >
-        {activityItems.length === 0 ? (
-          <div className="empty-state">
-            {overview?.bot_state === "running"
-              ? "No recent trades yet. Filled buys and sells will appear here once the bot gets execution."
-              : "No recent trades yet. Start the bot or finish setup in Settings first."}
-          </div>
-        ) : (
-          <div className="activity-feed">
-            {activityItems.map((item, index) => (
-              <div
-                key={`${item.timestamp}-${index}`}
-                className={`activity-feed__row ${
-                  item.thumbnail_url ? "activity-feed__row--with-thumb" : ""
-                }`.trim()}
-              >
-                <div
-                  className={`activity-feed__action activity-feed__action--${activityActionClass(
-                    item.action
-                  )}`}
-                >
-                  <div className="activity-feed__marker">
-                    {activityActionClass(item.action) === "sell" ? "-" : "+"}
-                  </div>
-                  <div className="activity-feed__action-label">
-                    {item.action ?? "Trade"}
-                  </div>
-                </div>
-
-                {item.thumbnail_url ? (
-                  <div className="activity-feed__thumb">
-                    <img
-                      src={item.thumbnail_url}
-                      alt=""
-                      className="activity-feed__thumb-image"
-                      loading="lazy"
-                    />
-                  </div>
-                ) : null}
-
-                <div className="activity-feed__content">
-                  <div className="activity-feed__title">
-                    {item.market_title || item.title || item.message}
-                  </div>
-
-                  <div className="activity-feed__meta">
-                    {item.outcome ? (
-                      <span
-                        className={`activity-feed__chip activity-feed__chip--${activityOutcomeClass(
-                          item.outcome
-                        )}`}
-                      >
-                        {item.outcome}
-                      </span>
-                    ) : null}
-                    {item.quantity !== null && item.quantity !== undefined ? (
-                      <span>{formatControlValue(item.quantity)} shares</span>
-                    ) : null}
-                  </div>
-                </div>
-
-                <div className="activity-feed__aside">
-                  {item.cashflow_usd !== null && item.cashflow_usd !== undefined ? (
-                    <div
-                      className={`activity-feed__value activity-feed__value--${activityValueClass(
-                        item.cashflow_usd
-                      )}`}
-                    >
-                      {formatUsd(item.cashflow_usd)}
-                    </div>
-                  ) : null}
-                  <div className="activity-feed__time">{formatRelativeTime(item.timestamp)}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </SectionPanel>
+      <HomePortfolioTabs
+        key={`${activeProfileId ?? "none"}-${portfolioFeedSeed}`}
+        botState={overview?.bot_state}
+        onOpenLogs={() => setLogsOpen(true)}
+      />
     </div>
   );
 

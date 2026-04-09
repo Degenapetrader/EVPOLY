@@ -1760,13 +1760,7 @@ fn desktop_config_to_profile_payload(
     );
     strategy.insert(
         "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC".to_string(),
-        number_to_json(
-            config
-                .strategy_settings
-                .mm_sport
-                .inventory_exit_start_hours
-                * 3600.0,
-        ),
+        number_to_json(config.strategy_settings.mm_sport.inventory_exit_start_hours * 3600.0),
     );
     strategy.insert(
         "EVPOLY_MM_SPORT_EXIT_MODE".to_string(),
@@ -2427,6 +2421,80 @@ fn count_unknown_ack_warnings(data_dir: &Path, max_lines: usize) -> usize {
         .count()
 }
 
+fn format_api_timestamp(timestamp_secs: Option<i64>) -> Option<String> {
+    timestamp_secs
+        .and_then(|secs| Utc.timestamp_opt(secs, 0).single())
+        .map(|dt| dt.to_rfc3339())
+}
+
+fn title_case_words(raw: &str) -> String {
+    raw.split('_')
+        .flat_map(str::split_whitespace)
+        .filter(|segment| !segment.trim().is_empty())
+        .map(|segment| {
+            let lower = segment.to_ascii_lowercase();
+            let mut chars = lower.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn activity_action_label(row: &portfolio_api::ActivityRow) -> String {
+    let activity_type = row
+        .activity_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("activity");
+    match (
+        activity_type.to_ascii_uppercase().as_str(),
+        row.side
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_ascii_uppercase()
+            .as_str(),
+    ) {
+        ("TRADE", "BUY") => "Bought".to_string(),
+        ("TRADE", "SELL") => "Sold".to_string(),
+        ("REDEEM", _) => "Redeemed".to_string(),
+        ("MERGE", _) => "Merged".to_string(),
+        ("SPLIT", _) => "Split".to_string(),
+        (kind, _) => title_case_words(kind),
+    }
+}
+
+fn activity_cashflow_usd(row: &portfolio_api::ActivityRow) -> Option<f64> {
+    let amount = row.usdc_size?;
+    match (
+        row.activity_type
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_ascii_uppercase()
+            .as_str(),
+        row.side
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_ascii_uppercase()
+            .as_str(),
+    ) {
+        ("TRADE", "BUY") => Some(-amount),
+        ("TRADE", "SELL") => Some(amount),
+        ("REDEEM", _) => Some(amount),
+        _ => Some(amount),
+    }
+}
+
+fn decimal_to_f64<T: ToString>(value: T) -> Option<f64> {
+    value.to_string().parse::<f64>().ok()
+}
+
 fn timeframe_seconds(timeframe: &str) -> Option<i64> {
     match timeframe {
         "5m" => Some(5 * 60),
@@ -3041,6 +3109,88 @@ fn verify_password(auth: State<'_, AuthState>, password: String) -> Result<bool,
 #[tauri::command]
 fn lock_session(auth: State<'_, AuthState>) -> Result<(), String> {
     auth.lock().map_err(|e| e.to_string())?.clear_session();
+    Ok(())
+}
+
+fn wipe_local_app_data_contents(data_dir: &Path) -> Result<(), String> {
+    if !data_dir.exists() {
+        std::fs::create_dir_all(data_dir).map_err(|e| format!("create data dir: {e}"))?;
+        return Ok(());
+    }
+
+    let mut failures = Vec::new();
+    let entries = std::fs::read_dir(data_dir).map_err(|e| format!("read data dir: {e}"))?;
+
+    for entry in entries {
+        let entry = match entry {
+            Ok(value) => value,
+            Err(err) => {
+                failures.push(format!("read entry: {err}"));
+                continue;
+            }
+        };
+
+        let path = entry.path();
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+
+        if file_name == DESKTOP_DEBUG_LOG_NAME {
+            continue;
+        }
+
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else if file_name.starts_with(".env.generated") {
+            config_io::cleanup_env_file(&path);
+            Ok(())
+        } else {
+            std::fs::remove_file(&path)
+        };
+
+        if let Err(err) = result {
+            failures.push(format!("{file_name}: {err}"));
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "reset local data failed for {}",
+            failures.join(", ")
+        ))
+    }
+}
+
+#[tauri::command]
+fn reset_local_app_data(
+    data_dir: State<'_, AppDataDir>,
+    auth: State<'_, AuthState>,
+    bot: State<'_, BotState>,
+    wallet_sync: State<'_, WalletSyncState>,
+) -> Result<(), String> {
+    append_desktop_debug_line(&data_dir.0, "SYSTEM", "reset_local_app_data requested");
+
+    if let Ok(manager) = wallet_sync.lock() {
+        let _ = manager.stop();
+    }
+
+    if let Ok(manager) = bot.lock() {
+        let _ = manager.stop();
+    }
+
+    if let Ok(mut state) = auth.lock() {
+        state.clear_session();
+    }
+
+    config_io::cleanup_generated_env_files(&data_dir.0);
+    wipe_local_app_data_contents(&data_dir.0)?;
+    std::fs::create_dir_all(&data_dir.0).map_err(|e| format!("recreate data dir: {e}"))?;
+    let _ = ensure_debug_log_files(&data_dir.0);
+    append_desktop_debug_line(&data_dir.0, "SYSTEM", "reset_local_app_data completed");
     Ok(())
 }
 
@@ -4189,6 +4339,165 @@ fn get_home_activity(
 }
 
 #[tauri::command]
+async fn get_home_activity_api(
+    profiles: State<'_, ProfileState>,
+    limit: usize,
+) -> Result<serde_json::Value, String> {
+    let profile = {
+        let pm = profiles.lock().map_err(|e| e.to_string())?;
+        active_profile(&pm)?
+    };
+    let wallet_address = profile.primary_wallet_address();
+    let rows = portfolio_api::fetch_activity(&wallet_address, limit.clamp(1, 50)).await?;
+    let items = rows
+        .into_iter()
+        .map(|row| {
+            let action = activity_action_label(&row);
+            serde_json::json!({
+                "timestamp": format_api_timestamp(row.timestamp),
+                "action": action,
+                "message": row.title.clone().unwrap_or_else(|| action.clone()),
+                "market_title": row.title,
+                "title": row.title,
+                "outcome": row.outcome,
+                "quantity": row.size,
+                "cashflow_usd": activity_cashflow_usd(&row),
+                "thumbnail_url": row.icon,
+                "detail": row.slug,
+                "condition_id": row.condition_id,
+                "token_id": row.asset,
+                "activity_type": row.activity_type,
+                "side": row.side,
+                "transaction_hash": row.transaction_hash,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::Value::Array(items))
+}
+
+#[tauri::command]
+async fn get_home_positions_api(
+    profiles: State<'_, ProfileState>,
+    limit: usize,
+) -> Result<serde_json::Value, String> {
+    let profile = {
+        let pm = profiles.lock().map_err(|e| e.to_string())?;
+        active_profile(&pm)?
+    };
+    let wallet_address = profile.primary_wallet_address();
+    let rows = portfolio_api::fetch_positions(&wallet_address, limit.clamp(1, 100)).await?;
+    let items = rows
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "condition_id": row.condition_id,
+                "token_id": row.asset,
+                "market_title": row.title,
+                "market_slug": row.slug,
+                "thumbnail_url": row.icon,
+                "event_slug": row.event_slug,
+                "outcome": row.outcome,
+                "opposite_outcome": row.opposite_outcome,
+                "size": row.size,
+                "avg_price": row.avg_price,
+                "current_price": row.current_price,
+                "initial_value": row.initial_value,
+                "current_value": row.current_value,
+                "cash_pnl": row.cash_pnl,
+                "percent_pnl": row.percent_pnl,
+                "realized_pnl": row.realized_pnl,
+                "total_bought": row.total_bought,
+                "redeemable": row.redeemable,
+                "mergeable": row.mergeable,
+                "end_date": row.end_date,
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::Value::Array(items))
+}
+
+#[tauri::command]
+async fn get_home_open_orders_api(
+    auth: State<'_, AuthState>,
+    profiles: State<'_, ProfileState>,
+    market_metadata: State<'_, MarketMetadataState>,
+    limit: usize,
+) -> Result<serde_json::Value, String> {
+    let profile = {
+        let pm = profiles.lock().map_err(|e| e.to_string())?;
+        active_profile(&pm)?
+    };
+    let query = {
+        let auth = auth.lock().map_err(|e| e.to_string())?;
+        let secrets = decrypt_profile_secrets(&profile, &auth)?;
+        let private_key = secrets
+            .get("POLY_PRIVATE_KEY")
+            .cloned()
+            .ok_or_else(|| "missing POLY_PRIVATE_KEY in profile secrets".to_string())?;
+        portfolio_api::AuthenticatedClobQuery {
+            private_key,
+            maker_address: profile.primary_wallet_address(),
+            signature_type: profile.signature_type,
+        }
+    };
+    let rows = portfolio_api::fetch_open_orders(&query, limit.clamp(1, 100)).await?;
+    let items = rows
+        .into_iter()
+        .map(|row| {
+            let condition_id = format!("{:#x}", row.market);
+            let token_id = row.asset_id.to_string();
+            let metadata = resolve_market_metadata(&condition_id, &market_metadata);
+            let outcome = row.outcome.trim().to_string();
+            let metadata_outcome = metadata
+                .as_ref()
+                .and_then(|entry| entry.outcomes_by_token.get(&token_id).cloned());
+            let display_outcome = if outcome.is_empty() {
+                metadata_outcome
+            } else {
+                Some(outcome)
+            };
+            let original_size = decimal_to_f64(row.original_size);
+            let size_matched = decimal_to_f64(row.size_matched);
+            let price = decimal_to_f64(row.price);
+            let remaining_size = match (original_size, size_matched) {
+                (Some(total), Some(filled)) => Some((total - filled).max(0.0)),
+                (Some(total), None) => Some(total),
+                _ => None,
+            };
+            let total_notional = match (original_size, price) {
+                (Some(total), Some(px)) => Some(total * px),
+                _ => None,
+            };
+            let side = match row.side {
+                polymarket_client_sdk::clob::types::Side::Buy => "BUY",
+                polymarket_client_sdk::clob::types::Side::Sell => "SELL",
+                polymarket_client_sdk::clob::types::Side::Unknown => "UNKNOWN",
+                _ => "UNKNOWN",
+            };
+            serde_json::json!({
+                "id": row.id,
+                "status": format!("{:?}", row.status),
+                "condition_id": condition_id,
+                "token_id": token_id,
+                "market_title": metadata.as_ref().map(|entry| entry.title.clone()),
+                "thumbnail_url": metadata.and_then(|entry| entry.thumbnail_url.clone()),
+                "outcome": display_outcome,
+                "side": side,
+                "price": price,
+                "original_size": original_size,
+                "size_matched": size_matched,
+                "remaining_size": remaining_size,
+                "total_notional_usd": total_notional,
+                "created_at": row.created_at.to_rfc3339(),
+                "expiration": row.expiration.to_rfc3339(),
+                "order_type": format!("{:?}", row.order_type),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(serde_json::Value::Array(items))
+}
+
+#[tauri::command]
 fn get_wallet_sync_status(wallet_sync: State<'_, WalletSyncState>) -> serde_json::Value {
     serde_json::to_value(
         wallet_sync
@@ -4529,6 +4838,7 @@ pub fn run() {
             initialize_password,
             verify_password,
             lock_session,
+            reset_local_app_data,
             list_profiles,
             create_profile,
             get_profile,
@@ -4556,6 +4866,9 @@ pub fn run() {
             get_wallet_balance,
             get_home_overview,
             get_home_activity,
+            get_home_activity_api,
+            get_home_positions_api,
+            get_home_open_orders_api,
             get_wallet_sync_status,
             get_geo_access_status,
             run_wallet_sync_now,
@@ -4575,11 +4888,10 @@ mod tests {
         infer_premarket_ladder_mode_non_m5, merge_config_object, merge_desktop_secrets,
         premarket_default_ladder_prices_m5, premarket_default_ladder_prices_non_m5,
         premarket_default_ladder_weights, premarket_ladder_prices_for_mode,
-        profile_to_desktop_config,
-        remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
-        PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
-        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
-        WEEKEND_POLICY_ENV_KEY,
+        profile_to_desktop_config, remove_legacy_premarket_ladder_keys,
+        simulation_mode_from_profile, PREMARKET_LADDER_MODE_ENV_KEY_5M,
+        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
+        PREMARKET_LADDER_MODE_ENV_KEY_SHARED, WEEKEND_POLICY_ENV_KEY,
     };
     use crate::{auth::AppAuth, config_io, profile_manager::Profile};
     use std::collections::HashMap;

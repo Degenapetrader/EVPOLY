@@ -12,6 +12,7 @@ import {
   initializePassword,
   isAuthInitialized,
   listProfiles,
+  resetLocalAppData,
   setActiveProfile,
   verifyPassword,
 } from "../lib/tauri-commands";
@@ -95,6 +96,9 @@ export function Login() {
   const [showLegal, setShowLegal] = useState(false);
   const [geoStatus, setGeoStatus] = useState<GeoAccessStatus | null>(null);
   const [geoAcknowledged, setGeoAcknowledged] = useState(false);
+  const [resetArmed, setResetArmed] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [resetNotice, setResetNotice] = useState("");
 
   const resolveInit = async () => {
     setAuthInitError(null);
@@ -123,6 +127,11 @@ export function Login() {
   useEffect(() => {
     void resolveInit();
   }, []);
+
+  useEffect(() => {
+    setResetArmed(false);
+    setResetNotice("");
+  }, [initialized]);
 
   const ensureActiveProfile = async () => {
     const current = await getActiveProfileId();
@@ -186,6 +195,28 @@ export function Login() {
       setError(String(err));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResetLocalData = async () => {
+    setError("");
+    setResetNotice("");
+    setResetting(true);
+    try {
+      await resetLocalAppData();
+      setPasswordVal("");
+      setConfirm("");
+      setResetArmed(false);
+      setAuthenticated(false);
+      setActiveProfileId(null);
+      await resolveInit();
+      setResetNotice(
+        "Local EVPoly data on this machine was wiped. Create a new password and set the app up again.",
+      );
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -296,10 +327,11 @@ export function Login() {
             ) : null}
 
             {error ? <div className="inline-alert">{error}</div> : null}
+            {resetNotice ? <div className="inline-alert inline-alert--warning">{resetNotice}</div> : null}
 
             <button
               type="submit"
-              disabled={loading || !password}
+              disabled={loading || resetting || !password}
               className="ui-button ui-button--primary w-full justify-center"
             >
               {loading ? "Working..." : initialized ? "Unlock" : "Create and Continue"}
@@ -310,6 +342,57 @@ export function Login() {
                 ? "Your password never needs to be typed anywhere else in the app."
                 : "After this step, EVPoly will take you straight to setup or the dashboard."}
             </div>
+
+            {initialized ? (
+              <div className="rounded-[20px] border border-[rgba(240,109,100,0.24)] bg-[rgba(240,109,100,0.08)] px-4 py-4 text-sm text-[var(--text-secondary)]">
+                <div className="flex flex-wrap items-center gap-3">
+                  <InfoPill tone="danger">Forgot password?</InfoPill>
+                  <div className="text-sm font-medium text-[var(--text-primary)]">
+                    Reset local EVPoly data on this computer
+                  </div>
+                </div>
+                <p className="mt-3 leading-6">
+                  This wipes saved profiles, encrypted secrets, runtime files, logs, and local bot
+                  history for this Windows user. It cannot recover your old password. You will need
+                  to onboard again after the reset.
+                </p>
+                {resetArmed ? (
+                  <div className="mt-4 space-y-3">
+                    <div className="inline-alert">
+                      This action is destructive and only affects local EVPoly data on this machine.
+                      The installed app stays in place, but your saved setup does not.
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <button
+                        type="button"
+                        disabled={loading || resetting}
+                        onClick={() => void handleResetLocalData()}
+                        className="ui-button ui-button--danger w-full justify-center sm:flex-1"
+                      >
+                        {resetting ? "Wiping local data..." : "Yes, wipe this device"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={loading || resetting}
+                        onClick={() => setResetArmed(false)}
+                        className="ui-button w-full justify-center sm:flex-1"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={loading || resetting}
+                    onClick={() => setResetArmed(true)}
+                    className="ui-button ui-button--danger mt-4 w-full justify-center"
+                  >
+                    Reset local data
+                  </button>
+                )}
+              </div>
+            ) : null}
           </form>
         </SectionPanel>
       }

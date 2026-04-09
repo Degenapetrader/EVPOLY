@@ -112,6 +112,66 @@ export interface HomeActivityBatch {
   items: HomeActivityItem[];
 }
 
+export interface HomeApiActivityItem {
+  timestamp: string;
+  action: string | null;
+  message: string;
+  market_title: string | null;
+  title: string | null;
+  outcome: string | null;
+  quantity: number | null;
+  cashflow_usd: number | null;
+  thumbnail_url: string | null;
+  detail: string | null;
+  condition_id: string | null;
+  token_id: string | null;
+  activity_type: string | null;
+  side: string | null;
+  transaction_hash: string | null;
+}
+
+export interface HomeApiPositionItem {
+  condition_id: string | null;
+  token_id: string | null;
+  market_title: string | null;
+  market_slug: string | null;
+  thumbnail_url: string | null;
+  event_slug: string | null;
+  outcome: string | null;
+  opposite_outcome: string | null;
+  size: number | null;
+  avg_price: number | null;
+  current_price: number | null;
+  initial_value: number | null;
+  current_value: number | null;
+  cash_pnl: number | null;
+  percent_pnl: number | null;
+  realized_pnl: number | null;
+  total_bought: number | null;
+  redeemable: boolean | null;
+  mergeable: boolean | null;
+  end_date: string | null;
+}
+
+export interface HomeApiOpenOrderItem {
+  id: string;
+  status: string | null;
+  condition_id: string | null;
+  token_id: string | null;
+  market_title: string | null;
+  thumbnail_url: string | null;
+  outcome: string | null;
+  side: string | null;
+  price: number | null;
+  original_size: number | null;
+  size_matched: number | null;
+  remaining_size: number | null;
+  total_notional_usd: number | null;
+  created_at: string | null;
+  expiration: string | null;
+  order_type: string | null;
+}
+
 export interface UiStrategyState {
   strategy_id: string;
   slug: string;
@@ -410,6 +470,8 @@ export const isAuthInitialized = (): Promise<boolean> =>
 
 export const lockSession = (): Promise<void> => invoke("lock_session");
 
+export const resetLocalAppData = (): Promise<void> => invoke("reset_local_app_data");
+
 // Profiles
 export const listProfiles = (): Promise<Profile[]> =>
   invoke("list_profiles");
@@ -545,6 +607,21 @@ export const getHomeActivity = (
     limit,
     cursor: cursor ?? null,
   });
+
+export const getHomeActivityApi = (
+  limit: number
+): Promise<HomeApiActivityItem[]> =>
+  invoke("get_home_activity_api", { limit });
+
+export const getHomePositionsApi = (
+  limit: number
+): Promise<HomeApiPositionItem[]> =>
+  invoke("get_home_positions_api", { limit });
+
+export const getHomeOpenOrdersApi = (
+  limit: number
+): Promise<HomeApiOpenOrderItem[]> =>
+  invoke("get_home_open_orders_api", { limit });
 
 export const getWalletSyncStatus = (): Promise<WalletSyncStatus> =>
   invoke("get_wallet_sync_status");

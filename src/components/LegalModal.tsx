@@ -57,12 +57,6 @@ export function LegalModal({ onAccept }: { onAccept: () => void }) {
                 </p>
                 <ul className="space-y-3">
                   <li className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3">
-                    You may lose some or all of the capital you trade with.
-                  </li>
-                  <li className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3">
-                    Simulated results do not guarantee live results.
-                  </li>
-                  <li className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3">
                     You are solely responsible for your trading decisions and their consequences.
                   </li>
                   <li className="rounded-[18px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3">

@@ -4163,7 +4163,7 @@ async fn main() -> Result<()> {
         let prewarm_poll_sec = std::env::var("EVPOLY_MARKET_PREWARM_POLL_SEC")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(15)
+            .unwrap_or(30)
             .clamp(5, 120);
         let prewarm_backoff_ms = std::env::var("EVPOLY_MARKET_PREWARM_BACKOFF_MS")
             .ok()
@@ -13533,8 +13533,8 @@ async fn main() -> Result<()> {
                 String,
                 i64,
             > = std::collections::HashMap::new();
-            let evsnipe_selected_token_prewarm_cooldown_ms = 60_000_i64;
-            let evsnipe_selected_token_prewarm_max_tokens_per_refresh = 16_usize;
+            let evsnipe_selected_token_prewarm_cooldown_ms = 180_000_i64;
+            let evsnipe_selected_token_prewarm_max_tokens_per_refresh = 6_usize;
             let evsnipe_watchlist_max_specs = std::env::var("EVPOLY_EVSNIPE_WATCHLIST_MAX_SPECS")
                 .ok()
                 .and_then(|v| v.trim().parse::<usize>().ok())
@@ -19054,8 +19054,8 @@ async fn main() -> Result<()> {
                     String,
                     i64,
                 > = std::collections::HashMap::new();
-                let mm_selected_token_prewarm_cooldown_ms = 60_000_i64;
-                let mm_selected_token_prewarm_max_tokens_per_loop = 24_usize;
+                let mm_selected_token_prewarm_cooldown_ms = 180_000_i64;
+                let mm_selected_token_prewarm_max_tokens_per_loop = 8_usize;
 
                 loop {
                     let loop_now_ms = chrono::Utc::now().timestamp_millis();

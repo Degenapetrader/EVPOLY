@@ -3562,19 +3562,18 @@ impl PolymarketApi {
             .copied()
             .unwrap_or(0);
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let global_retry_after_ms = {
+        {
             let mut global_failures = self.tick_metadata_rl_failures_global.lock().await;
             let mut global_retry_after = self.tick_metadata_retry_after_ms_global.lock().await;
             if *global_retry_after <= now_ms {
                 *global_retry_after = 0;
                 *global_failures = 0;
-                0
-            } else {
-                *global_retry_after
             }
-        };
-        let retry_after_ms = token_retry_after_ms.max(global_retry_after_ms);
-        (retry_after_ms > now_ms).then_some(retry_after_ms)
+        }
+        // Keep token-level backoff as the active gate. The process-wide backoff state is
+        // still tracked for telemetry, but letting one token's /tick-size 429 block other
+        // tokens creates broad cross-strategy collateral damage under mixed runtime load.
+        (token_retry_after_ms > now_ms).then_some(token_retry_after_ms)
     }
 
     async fn set_tick_metadata_backoff(&self, token_id: &str) -> i64 {

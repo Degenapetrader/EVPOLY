@@ -4072,8 +4072,15 @@ async fn main() -> Result<()> {
     let mm_only_mode = !core_strategy_enabled && mm_strategy_enabled;
     let shared_signal_runtime_enabled =
         endgame_strategy_enabled || evcurve_strategy_enabled || sessionband_strategy_enabled;
+    let core_monitor_runtime_enabled = premarket_strategy_enabled
+        || endgame_strategy_enabled
+        || evcurve_strategy_enabled
+        || sessionband_strategy_enabled;
 
-    if !is_simulation && !mm_only_mode && env_bool_named("EVPOLY_MARKET_PREWARM_ENABLE", true) {
+    if !is_simulation
+        && core_monitor_runtime_enabled
+        && env_bool_named("EVPOLY_MARKET_PREWARM_ENABLE", true)
+    {
         let mut prewarm_symbols = vec!["BTC".to_string()];
         if config.trading.enable_eth_trading {
             prewarm_symbols.push("ETH".to_string());
@@ -4635,7 +4642,10 @@ async fn main() -> Result<()> {
         }
     });
 
-    if !is_simulation && !mm_only_mode && env_bool_named("EVPOLY_MARKET_PREWARM_ENABLE", true) {
+    if !is_simulation
+        && core_monitor_runtime_enabled
+        && env_bool_named("EVPOLY_MARKET_PREWARM_ENABLE", true)
+    {
         let mut current_tokens: Vec<(String, String)> = Vec::new();
         for (symbol, market) in [
             ("BTC", &btc_market_data),
@@ -4712,16 +4722,32 @@ async fn main() -> Result<()> {
     // }
 
     // Initialize components
-    let monitor = MarketMonitor::new(
-        api.clone(),
-        eth_market_data,
-        btc_market_data,
-        solana_market_data,
-        xrp_market_data,
-        config.trading.check_interval_ms,
-        is_simulation,
-    )?;
-    let monitor_arc = Arc::new(monitor);
+    let monitor_arc = if core_monitor_runtime_enabled {
+        Some(Arc::new(MarketMonitor::new(
+            api.clone(),
+            eth_market_data,
+            btc_market_data,
+            solana_market_data,
+            xrp_market_data,
+            config.trading.check_interval_ms,
+            is_simulation,
+        )?))
+    } else {
+        eprintln!("⏭️ Core market monitor skipped (no dependent strategies enabled)");
+        log_event(
+            "core_market_monitor_skipped",
+            json!({
+                "premarket_enabled": premarket_strategy_enabled,
+                "endgame_enabled": endgame_strategy_enabled,
+                "evcurve_enabled": evcurve_strategy_enabled,
+                "sessionband_enabled": sessionband_strategy_enabled,
+                "evsnipe_enabled": evsnipe_strategy_enabled,
+                "mm_rewards_enabled": mm_rewards_strategy_enabled,
+                "mm_sport_enabled": mm_sport_strategy_enabled
+            }),
+        );
+        None
+    };
     let tracking_db_for_premarket = tracking_db.clone();
     let tracking_db_for_entries = tracking_db.clone();
     let trader_for_premarket = trader_clone.clone();
@@ -29989,8 +30015,7 @@ async fn main() -> Result<()> {
     });
 
     // Start a background task to detect new 15-minute periods and discover new markets.
-    if !mm_only_mode {
-        let monitor_for_period_check = monitor_arc.clone();
+    if let Some(monitor_for_period_check) = monitor_arc.clone() {
         let api_for_period_check = api.clone();
         let trader_for_period_reset = trader_clone.clone();
         let detector_for_period_reset = detector_arc.clone();
@@ -30125,13 +30150,13 @@ async fn main() -> Result<()> {
                 }
             }
         });
-    } else {
-        eprintln!("⏭️ Core period-discovery worker skipped (MM-only mode)");
     }
 
-    monitor_arc
-        .start_monitoring(move |_snapshot| async move {})
-        .await;
+    if let Some(monitor_arc) = monitor_arc {
+        monitor_arc
+            .start_monitoring(move |_snapshot| async move {})
+            .await;
+    }
 
     Ok(())
 }

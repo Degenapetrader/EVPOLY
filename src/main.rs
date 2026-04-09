@@ -30333,6 +30333,20 @@ async fn main() -> Result<()> {
         monitor_arc
             .start_monitoring(move |_snapshot| async move {})
             .await;
+    } else {
+        log_event(
+            "runtime_parked_without_core_monitor",
+            json!({
+                "premarket_enabled": premarket_strategy_enabled,
+                "endgame_enabled": endgame_strategy_enabled,
+                "evcurve_enabled": evcurve_strategy_enabled,
+                "sessionband_enabled": sessionband_strategy_enabled,
+                "evsnipe_enabled": evsnipe_strategy_enabled,
+                "mm_rewards_enabled": mm_rewards_strategy_enabled,
+                "mm_sport_enabled": mm_sport_strategy_enabled
+            }),
+        );
+        std::future::pending::<()>().await;
     }
 
     Ok(())

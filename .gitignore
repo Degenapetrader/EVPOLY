@@ -13,6 +13,7 @@ dist-ssr
 *.local
 audit.md
 note.md
+plan2.md
 events.jsonl
 events.jsonl.*
 history/

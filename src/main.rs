@@ -75,7 +75,7 @@ use polymarket_arbitrage_bot::tracking_db::{
     MmSportHolderSnapshotRecord, MmSportMarketRiskRecord, MmSportWalletProfileRecord,
     PendingOrderRecord, StrategyFeatureSnapshotIntentRecord, TrackingDb, TradeEventRecord,
 };
-use polymarket_arbitrage_bot::trader::{EntryExecutionMode, Trader};
+use polymarket_arbitrage_bot::trader::{EntryExecutionMode, LimitBuyExecutionOptions, Trader};
 use polymarket_arbitrage_bot::weekend_policy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -167,6 +167,7 @@ struct ArbiterExecutionRequest {
     intent: StrategyIntent,
     opportunity: polymarket_arbitrage_bot::detector::BuyOpportunity,
     entry_mode: EntryExecutionMode,
+    limit_buy_options: LimitBuyExecutionOptions,
     rung_id: Option<String>,
     place_sell_orders: bool,
     source_timeframe: Option<String>,
@@ -5802,7 +5803,7 @@ async fn main() -> Result<()> {
                         }
 
                         if let Err(e) = trader_for_submit
-                            .execute_limit_buy(
+                            .execute_limit_buy_with_options(
                                 &request.opportunity,
                                 request.entry_mode,
                                 request.place_sell_orders,
@@ -5810,6 +5811,7 @@ async fn main() -> Result<()> {
                                 request.source_timeframe.as_deref(),
                                 Some(request.intent.strategy_id.as_str()),
                                 Some(request.request_id.as_str()),
+                                request.limit_buy_options,
                             )
                             .await
                         {
@@ -6796,6 +6798,8 @@ async fn main() -> Result<()> {
                 best_ask: Option<f64>,
                 asks_within_qmax: usize,
                 ask_level_count: usize,
+                min_order_size_usd: f64,
+                min_tick_size: f64,
             }
 
             loop {
@@ -7232,34 +7236,7 @@ async fn main() -> Result<()> {
                         }
                         let favored_direction = plan.direction.clone();
                         let min_entry_price = endgame_cfg_for_loop.min_entry_price;
-                        let (min_order_size_usd, min_tick_size) = match api_for_endgame
-                            .get_market_constraints(market.condition_id.as_str())
-                            .await
-                        {
-                            Ok(snapshot) => (
-                                f64::try_from(snapshot.minimum_order_size)
-                                    .unwrap_or(5.0)
-                                    .max(0.0),
-                                f64::try_from(snapshot.minimum_tick_size)
-                                    .unwrap_or(0.01)
-                                    .clamp(0.001, 0.10),
-                            ),
-                            Err(e) => {
-                                log_event(
-                                    "endgame_market_constraints_unavailable",
-                                    json!({
-                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                        "timeframe": timeframe.as_str(),
-                                        "market_open_ts": market_open_ts,
-                                        "condition_id": market.condition_id,
-                                        "error": e.to_string(),
-                                        "fallback_min_order_size_usd": 5.0,
-                                        "fallback_min_tick_size": 0.01
-                                    }),
-                                );
-                                (5.0, 0.01)
-                            }
-                        };
+                        let using_share_size = endgame_cfg_for_loop.uses_share_size();
                         let mut best_candidate: Option<EndgameSideCandidate> = None;
                         let mut side_eval_count = 0usize;
                         let sweep_fixed_limit_price = 0.99_f64;
@@ -7312,25 +7289,56 @@ async fn main() -> Result<()> {
                                 );
                                 continue;
                             }
-                            let orderbook =
-                                match api_for_endgame.get_orderbook(token_id.as_str()).await {
-                                    Ok(book) => book,
-                                    Err(e) => {
-                                        log_event(
-                                            "endgame_orderbook_unavailable",
-                                            json!({
-                                                "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                                "timeframe": timeframe.as_str(),
-                                                "market_open_ts": market_open_ts,
-                                                "condition_id": market.condition_id,
-                                                "token_id": token_id,
-                                                "direction": side_label,
-                                                "error": e.to_string()
-                                            }),
-                                        );
-                                        continue;
-                                    }
-                                };
+                            let (constraints_res, orderbook_res) = tokio::join!(
+                                api_for_endgame
+                                    .get_market_constraints(market.condition_id.as_str()),
+                                api_for_endgame.get_orderbook(token_id.as_str())
+                            );
+                            let (min_order_size_usd, min_tick_size) = match constraints_res {
+                                Ok(snapshot) => (
+                                    f64::try_from(snapshot.minimum_order_size)
+                                        .unwrap_or(5.0)
+                                        .max(0.0),
+                                    f64::try_from(snapshot.minimum_tick_size)
+                                        .unwrap_or(0.01)
+                                        .clamp(0.001, 0.10),
+                                ),
+                                Err(e) => {
+                                    log_event(
+                                        "endgame_market_constraints_unavailable",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                            "timeframe": timeframe.as_str(),
+                                            "market_open_ts": market_open_ts,
+                                            "condition_id": market.condition_id,
+                                            "token_id": token_id,
+                                            "direction": side_label,
+                                            "error": e.to_string(),
+                                            "fallback_min_order_size_usd": 5.0,
+                                            "fallback_min_tick_size": 0.01
+                                        }),
+                                    );
+                                    (5.0, 0.01)
+                                }
+                            };
+                            let orderbook = match orderbook_res {
+                                Ok(book) => book,
+                                Err(e) => {
+                                    log_event(
+                                        "endgame_orderbook_unavailable",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                            "timeframe": timeframe.as_str(),
+                                            "market_open_ts": market_open_ts,
+                                            "condition_id": market.condition_id,
+                                            "token_id": token_id,
+                                            "direction": side_label,
+                                            "error": e.to_string()
+                                        }),
+                                    );
+                                    continue;
+                                }
+                            };
                             let ask_levels = orderbook
                                 .asks
                                 .iter()
@@ -7440,7 +7448,12 @@ async fn main() -> Result<()> {
                                 .filter(|l| {
                                     l.price.is_finite()
                                         && l.price > 0.0
-                                        && l.price <= pricing.max_price
+                                        && l.price
+                                            <= if using_share_size {
+                                                sweep_fixed_limit_price
+                                            } else {
+                                                pricing.max_price
+                                            }
                                 })
                                 .count();
                             let target_notional_usd =
@@ -7448,14 +7461,33 @@ async fn main() -> Result<()> {
                             let divergence_target_notional_usd = target_notional_usd;
                             let divergence_reduced = false;
                             let divergence: Option<f64> = None;
-                            let sizing = if let Some(sizing) =
-                                endgame_sweep::ev_safe_execution_sizing(
-                                    pricing.execution_probability,
-                                    endgame_cfg_for_loop.edge_floor_bps,
-                                    pricing.max_price,
-                                    divergence_target_notional_usd,
-                                    ask_levels.as_slice(),
-                                ) {
+                            let sizing = if using_share_size {
+                                let fixed_limit_price = sweep_fixed_limit_price.clamp(0.01, 0.99);
+                                let target_shares = target_notional_usd / fixed_limit_price;
+                                if !target_shares.is_finite() || target_shares <= 0.0 {
+                                    continue;
+                                }
+                                let taker_fee_rate =
+                                    endgame_sweep::polymarket_taker_fee_rate(fixed_limit_price);
+                                let edge_bps_at_vwap = ((pricing.execution_probability
+                                    - fixed_limit_price
+                                    - taker_fee_rate)
+                                    * 10_000.0)
+                                    .max(0.0);
+                                endgame_sweep::EndgameExecutionSizing {
+                                    shares: target_shares,
+                                    notional_usd: target_shares * fixed_limit_price,
+                                    vwap_price: fixed_limit_price,
+                                    taker_fee_rate_at_vwap: taker_fee_rate,
+                                    edge_bps_at_vwap,
+                                }
+                            } else if let Some(sizing) = endgame_sweep::ev_safe_execution_sizing(
+                                pricing.execution_probability,
+                                endgame_cfg_for_loop.edge_floor_bps,
+                                pricing.max_price,
+                                divergence_target_notional_usd,
+                                ask_levels.as_slice(),
+                            ) {
                                 sizing
                             } else {
                                 // Explicit FADE override: when EV-safe depth is unavailable, still
@@ -7584,6 +7616,8 @@ async fn main() -> Result<()> {
                                 best_ask,
                                 asks_within_qmax,
                                 ask_level_count: ask_levels.len(),
+                                min_order_size_usd,
+                                min_tick_size,
                             };
                             let replace = best_candidate
                                 .as_ref()
@@ -7643,6 +7677,8 @@ async fn main() -> Result<()> {
                         let divergence_reduced = selected.divergence_reduced;
                         let divergence = selected.divergence;
                         let poly_mid_at_intent = selected.poly_mid_at_intent;
+                        let min_order_size_usd = selected.min_order_size_usd;
+                        let min_tick_size = selected.min_tick_size;
                         let selected_impulse_id = format!(
                             "endgame:{}:{}:{}:{}:tick{}",
                             timeframe.as_str(),
@@ -7706,6 +7742,14 @@ async fn main() -> Result<()> {
                             intent: strategy_intent,
                             opportunity,
                             entry_mode: EntryExecutionMode::Endgame,
+                            limit_buy_options: if using_share_size {
+                                LimitBuyExecutionOptions {
+                                    force_resting_limit: true,
+                                    expiration_ttl_seconds: Some(60),
+                                }
+                            } else {
+                                LimitBuyExecutionOptions::default()
+                            },
                             rung_id: Some(format!("tick{}", plan.tick_index)),
                             place_sell_orders: false,
                             source_timeframe: Some(timeframe.as_str().to_string()),
@@ -7740,6 +7784,10 @@ async fn main() -> Result<()> {
                         endgame_tick_payload.insert(
                             "alpha_source".to_string(),
                             json!(alpha_policy.source.as_str()),
+                        );
+                        endgame_tick_payload.insert(
+                            "execution_size_mode".to_string(),
+                            json!(if using_share_size { "shares" } else { "usd" }),
                         );
                         endgame_tick_payload.insert(
                             "alpha_reason".to_string(),
@@ -9623,6 +9671,7 @@ async fn main() -> Result<()> {
                                             intent: strategy_intent,
                                             opportunity,
                                             entry_mode: EntryExecutionMode::Evcurve,
+                                            limit_buy_options: LimitBuyExecutionOptions::default(),
                                             rung_id: Some(format!(
                                                 "tick{}_{}_immediate",
                                                 tick_idx, sub_strategy
@@ -10224,6 +10273,8 @@ async fn main() -> Result<()> {
                                                         intent: strategy_intent,
                                                         opportunity,
                                                         entry_mode: EntryExecutionMode::Evcurve,
+                                                        limit_buy_options:
+                                                            LimitBuyExecutionOptions::default(),
                                                         rung_id: Some(format!(
                                                             "tick{}_{}_d1chase_a{}",
                                                             tick_idx,
@@ -10821,6 +10872,8 @@ async fn main() -> Result<()> {
                                                     intent: strategy_intent,
                                                     opportunity,
                                                     entry_mode: EntryExecutionMode::Evcurve,
+                                                    limit_buy_options:
+                                                        LimitBuyExecutionOptions::default(),
                                                     rung_id: Some(format!(
                                                         "tick{}_{}_phase3_a{}",
                                                         tick_idx,
@@ -11792,6 +11845,8 @@ async fn main() -> Result<()> {
                                                         intent: strategy_intent,
                                                         opportunity,
                                                         entry_mode: EntryExecutionMode::Evcurve,
+                                                        limit_buy_options:
+                                                            LimitBuyExecutionOptions::default(),
                                                         rung_id: Some(format!(
                                                             "tick{}_{}_phase{}_r{}",
                                                             tick_idx,
@@ -12279,6 +12334,8 @@ async fn main() -> Result<()> {
                                                 intent: strategy_intent,
                                                 opportunity,
                                                 entry_mode: EntryExecutionMode::Evcurve,
+                                                limit_buy_options:
+                                                    LimitBuyExecutionOptions::default(),
                                                 rung_id: Some(format!(
                                                     "tick{}_{}_phase{}_a{}",
                                                     tick_idx,
@@ -13337,9 +13394,15 @@ async fn main() -> Result<()> {
                             if tau_size_mult <= 0.0 {
                                 continue;
                             }
-                            let desired_size_usd = sessionband_cfg_for_loop
-                                .size_usd_for_symbol(symbol.as_str())
-                                * tau_size_mult;
+                            let using_share_size = sessionband_cfg_for_loop.uses_share_size();
+                            let desired_size_usd = if using_share_size {
+                                sessionband_cfg_for_loop.size_shares_for_symbol(symbol.as_str())
+                                    * tau_size_mult
+                                    * 0.99
+                            } else {
+                                sessionband_cfg_for_loop.size_usd_for_symbol(symbol.as_str())
+                                    * tau_size_mult
+                            };
                             let target_size_usd = desired_size_usd
                                 .min(remaining_scope)
                                 .min(remaining_strategy);
@@ -13361,11 +13424,12 @@ async fn main() -> Result<()> {
                             }
 
                             let request_id = format!(
-                                "sessionband:{}:{}:{}:tau{}:fak",
+                                "sessionband:{}:{}:{}:tau{}:{}",
                                 symbol_key.to_ascii_lowercase(),
                                 timeframe.as_str(),
                                 market_open_ts,
-                                tau_sec
+                                tau_sec,
+                                if using_share_size { "limit60" } else { "fak" }
                             );
                             let strategy_intent = StrategyIntent {
                                 strategy_id: STRATEGY_ID_SESSIONBAND_V1.to_string(),
@@ -13373,7 +13437,11 @@ async fn main() -> Result<()> {
                                 market_open_ts,
                                 token_id: token_id.clone(),
                                 direction,
-                                max_price: band_price_max,
+                                max_price: if using_share_size {
+                                    0.99
+                                } else {
+                                    band_price_max
+                                },
                                 target_size_usd,
                                 score: edge_bps,
                             };
@@ -13387,7 +13455,7 @@ async fn main() -> Result<()> {
                                         symbol.as_str(),
                                         direction,
                                     ),
-                                    bid_price: best_ask,
+                                    bid_price: if using_share_size { 0.99 } else { best_ask },
                                     expected_edge_bps: edge_bps,
                                     expected_fill_prob: 0.95,
                                     period_timestamp: market_open_ts_u64,
@@ -13396,6 +13464,14 @@ async fn main() -> Result<()> {
                                     use_market_order: false,
                                 },
                                 entry_mode: EntryExecutionMode::SessionBand,
+                                limit_buy_options: if using_share_size {
+                                    LimitBuyExecutionOptions {
+                                        force_resting_limit: true,
+                                        expiration_ttl_seconds: Some(60),
+                                    }
+                                } else {
+                                    LimitBuyExecutionOptions::default()
+                                },
                                 rung_id: Some(format!("s{}_tau{}", session_index, tau_sec)),
                                 place_sell_orders: false,
                                 source_timeframe: Some(timeframe.as_str().to_string()),
@@ -13425,6 +13501,7 @@ async fn main() -> Result<()> {
                                     "band_price_max": band_price_max,
                                     "base_mid": base_mid,
                                     "proxy_mid": proxy,
+                                    "execution_size_mode": if using_share_size { "shares" } else { "usd" },
                                     "proxy_update_ts_ms": proxy_update_ts_ms,
                                     "proxy_age_ms": proxy_age_ms,
                                     "best_bid": best_bid,
@@ -14146,6 +14223,7 @@ async fn main() -> Result<()> {
                                 intent: strategy_intent,
                                 opportunity,
                                 entry_mode: EntryExecutionMode::Evsnipe,
+                                limit_buy_options: LimitBuyExecutionOptions::default(),
                                 rung_id: Some(format!(
                                     "hit_{}_l{}",
                                     hit_leg_for_task.as_str(),
@@ -26664,6 +26742,7 @@ async fn main() -> Result<()> {
                                     intent: strategy_intent,
                                     opportunity,
                                     entry_mode: EntryExecutionMode::MmRewards,
+                                    limit_buy_options: LimitBuyExecutionOptions::default(),
                                     rung_id: Some(format!(
                                         "{}:{}:{}:l{}",
                                         mode.as_str(),
@@ -29932,6 +30011,7 @@ async fn main() -> Result<()> {
                             intent: strategy_intent,
                             opportunity,
                             entry_mode: EntryExecutionMode::Ladder,
+                            limit_buy_options: LimitBuyExecutionOptions::default(),
                             rung_id: Some(rung_id.clone()),
                             place_sell_orders: false,
                             source_timeframe: Some(intent.timeframe.as_str().to_string()),

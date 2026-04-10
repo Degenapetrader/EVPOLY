@@ -222,8 +222,12 @@ fn env_nonnegative_f64(env_key: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+pub fn strategy_symbol_scaled_size(base_size: f64, symbol: &str) -> f64 {
+    (base_size.max(0.0) * symbol_size_multiplier(symbol)).max(0.0)
+}
+
 pub fn strategy_symbol_size_usd(base_size_usd: f64, symbol: &str) -> f64 {
-    (base_size_usd.max(0.0) * symbol_size_multiplier(symbol)).max(0.0)
+    strategy_symbol_scaled_size(base_size_usd, symbol)
 }
 
 pub fn strategy_symbol_timeframe_size_usd(

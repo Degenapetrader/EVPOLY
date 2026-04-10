@@ -267,6 +267,12 @@ impl EntryExecutionMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LimitBuyExecutionOptions {
+    pub force_resting_limit: bool,
+    pub expiration_ttl_seconds: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedemptionSweepTrigger {
     Scheduler,
@@ -1714,12 +1720,31 @@ impl Trader {
         strategy_id: &str,
         submit_price: f64,
     ) -> i64 {
+        self.limit_order_expiration_ts_with_ttl(
+            period_timestamp,
+            source_timeframe,
+            entry_mode,
+            strategy_id,
+            submit_price,
+            None,
+        )
+    }
+
+    fn limit_order_expiration_ts_with_ttl(
+        &self,
+        period_timestamp: u64,
+        source_timeframe: &str,
+        entry_mode: EntryExecutionMode,
+        strategy_id: &str,
+        submit_price: f64,
+        ttl_override_seconds: Option<u64>,
+    ) -> i64 {
         let now_ts = chrono::Utc::now().timestamp().max(0) as u64;
         Self::compute_limit_order_expiration_ts(
             now_ts,
             period_timestamp,
             source_timeframe,
-            self.configured_order_ttl_seconds(),
+            ttl_override_seconds.unwrap_or_else(|| self.configured_order_ttl_seconds()),
             entry_mode,
             strategy_id,
             submit_price,
@@ -5835,6 +5860,30 @@ impl Trader {
         strategy_id: Option<&str>,
         request_id: Option<&str>,
     ) -> Result<()> {
+        self.execute_limit_buy_with_options(
+            opportunity,
+            entry_mode,
+            place_sell_orders,
+            size_override,
+            source_timeframe,
+            strategy_id,
+            request_id,
+            LimitBuyExecutionOptions::default(),
+        )
+        .await
+    }
+
+    pub async fn execute_limit_buy_with_options(
+        &self,
+        opportunity: &BuyOpportunity,
+        entry_mode: EntryExecutionMode,
+        place_sell_orders: bool,
+        size_override: Option<f64>,
+        source_timeframe: Option<&str>,
+        strategy_id: Option<&str>,
+        request_id: Option<&str>,
+        options: LimitBuyExecutionOptions,
+    ) -> Result<()> {
         let hold_to_resolution = self.hold_to_resolution_for_mode(entry_mode);
         let place_sell_orders = place_sell_orders && !hold_to_resolution;
         let fixed_amount = self.config.fixed_trade_amount;
@@ -5887,12 +5936,13 @@ impl Trader {
                 normalized == "fak" || normalized.ends_with(":fak") || normalized.contains(":fak:")
             })
             .unwrap_or(false);
-        let use_fak_limit_entry = matches!(
+        let strategy_prefers_fak_limit = matches!(
             strategy_id.as_str(),
             crate::strategy::STRATEGY_ID_ENDGAME_SWEEP_V1
                 | crate::strategy::STRATEGY_ID_SESSIONBAND_V1
                 | crate::strategy::STRATEGY_ID_EVSNIPE_V1
         ) || request_force_fak;
+        let use_fak_limit_entry = strategy_prefers_fak_limit && !options.force_resting_limit;
         let cross_spread_used = opportunity.use_market_order;
         let post_only_default = Self::entry_post_only_enabled_for_strategy(strategy_id.as_str());
         let post_only_enabled = post_only_default && !cross_spread_used && !use_fak_limit_entry;
@@ -6302,12 +6352,13 @@ impl Trader {
             expiration_ts: if use_fak_limit_entry {
                 None
             } else {
-                Some(self.limit_order_expiration_ts(
+                Some(self.limit_order_expiration_ts_with_ttl(
                     opportunity.period_timestamp,
                     source_timeframe.as_str(),
                     entry_mode,
                     strategy_id.as_str(),
                     submit_price,
+                    options.expiration_ttl_seconds,
                 ))
             },
             post_only: if post_only_enabled { Some(true) } else { None },

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::config::StrategyExecutionSizeMode;
 use crate::size_policy;
 use crate::strategy::{Timeframe, STRATEGY_ID_SESSIONBAND_V1};
 
@@ -35,6 +36,8 @@ pub struct SessionBandExecutionConfig {
     pub single_attempt_per_period: bool,
     pub base_anchor_grace_sec: i64,
     pub strategy_cap_usd: f64,
+    pub execution_size_mode: StrategyExecutionSizeMode,
+    pub base_size_shares: f64,
     base_size_usd: f64,
     allowed_tau_sec: Option<HashSet<i64>>,
 }
@@ -70,6 +73,12 @@ impl SessionBandExecutionConfig {
             ),
             base_anchor_grace_sec: env_i64("EVPOLY_SESSIONBAND_BASE_ANCHOR_GRACE_SEC", 2).max(0),
             strategy_cap_usd: env_f64("EVPOLY_SESSIONBAND_STRATEGY_CAP_USD", 10_000.0).max(1.0),
+            execution_size_mode: StrategyExecutionSizeMode::from_env(
+                std::env::var("EVPOLY_SESSIONBAND_EXECUTION_SIZE_MODE")
+                    .ok()
+                    .as_deref(),
+            ),
+            base_size_shares: env_f64("EVPOLY_SESSIONBAND_BASE_SIZE_SHARES", 10.0).max(0.0),
             base_size_usd: size_policy::base_size_usd_from_env("EVPOLY_SESSIONBAND_BASE_SIZE_USD"),
             allowed_tau_sec: parse_tau_allowlist_env("EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC"),
         }
@@ -91,9 +100,25 @@ impl SessionBandExecutionConfig {
         size_policy::strategy_symbol_size_usd(self.base_size_usd, symbol).max(1.0)
     }
 
+    pub fn size_mode(&self) -> StrategyExecutionSizeMode {
+        self.execution_size_mode
+    }
+
+    pub fn uses_share_size(&self) -> bool {
+        self.execution_size_mode.uses_share_size()
+    }
+
+    pub fn size_shares_for_symbol(&self, symbol: &str) -> f64 {
+        size_policy::strategy_symbol_scaled_size(self.base_size_shares, symbol).max(0.0)
+    }
+
     pub fn scope_cap_usd(&self, symbol: &str, timeframe: Timeframe) -> f64 {
         let _ = timeframe;
-        self.size_usd_for_symbol(symbol)
+        if self.uses_share_size() {
+            (self.size_shares_for_symbol(symbol) * 0.99).max(0.0)
+        } else {
+            self.size_usd_for_symbol(symbol)
+        }
     }
 
     pub fn band_for_lead_pct(&self, lead_pct: f64) -> Option<LeadPriceBand> {
@@ -325,6 +350,22 @@ mod tests {
         assert!((cfg.scope_cap_usd("ETH", Timeframe::M5) - 80.0).abs() < 1e-9);
         assert!((cfg.scope_cap_usd("ETH", Timeframe::H4) - 80.0).abs() < 1e-9);
         unsafe { std::env::remove_var("EVPOLY_SESSIONBAND_BASE_SIZE_USD") };
+    }
+
+    #[test]
+    fn share_mode_uses_share_base_for_scope_cap() {
+        unsafe {
+            std::env::set_var("EVPOLY_SESSIONBAND_EXECUTION_SIZE_MODE", "shares");
+            std::env::set_var("EVPOLY_SESSIONBAND_BASE_SIZE_SHARES", "100");
+        };
+        let cfg = SessionBandExecutionConfig::from_env();
+        assert!(cfg.uses_share_size());
+        assert!((cfg.size_shares_for_symbol("ETH") - 80.0).abs() < 1e-9);
+        assert!((cfg.scope_cap_usd("ETH", Timeframe::M5) - 79.2).abs() < 1e-9);
+        unsafe {
+            std::env::remove_var("EVPOLY_SESSIONBAND_EXECUTION_SIZE_MODE");
+            std::env::remove_var("EVPOLY_SESSIONBAND_BASE_SIZE_SHARES");
+        };
     }
 
     #[test]

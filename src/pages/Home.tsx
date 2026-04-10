@@ -122,6 +122,17 @@ export function Home() {
   const [resumeLoading, setResumeLoading] = useState(false);
   const [portfolioFeedSeed, setPortfolioFeedSeed] = useState(0);
 
+  const refreshUpdateAvailability = useCallback(async () => {
+    try {
+      const update = await check();
+      setPendingUpdate(update ?? null);
+      setUpdateVersion(update?.version ?? null);
+    } catch {
+      setPendingUpdate(null);
+      setUpdateVersion(null);
+    }
+  }, []);
+
   const selectedStrategy = useMemo(
     () => strategyKeyFromRoute(strategySlug),
     [strategySlug]
@@ -163,17 +174,25 @@ export function Home() {
   }, [loadProfileConfig, setActiveProfileId]);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        const update = await check();
-        setPendingUpdate(update ?? null);
-        setUpdateVersion(update?.version ?? null);
-      } catch {
-        setPendingUpdate(null);
-        setUpdateVersion(null);
-      }
-    })();
-  }, []);
+    void refreshUpdateAvailability();
+  }, [refreshUpdateAvailability]);
+
+  useEffect(() => {
+    const refreshIfVisible = () => {
+      if (document.visibilityState === "hidden") return;
+      void refreshUpdateAvailability();
+    };
+    const intervalId = window.setInterval(() => {
+      void refreshUpdateAvailability();
+    }, 5 * 60 * 1000);
+    window.addEventListener("focus", refreshIfVisible);
+    document.addEventListener("visibilitychange", refreshIfVisible);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshIfVisible);
+      document.removeEventListener("visibilitychange", refreshIfVisible);
+    };
+  }, [refreshUpdateAvailability]);
 
   useEffect(() => {
     if (!configLoaded) return;

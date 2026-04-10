@@ -21,6 +21,10 @@ use crate::wallet_sync::{WalletSyncManager, WalletSyncRuntimeConfig};
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use ethers_signers::{LocalWallet, Signer};
 use fs2::FileExt;
+#[cfg(target_os = "linux")]
+use std::io::{Read, Write};
+#[cfg(target_os = "linux")]
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
@@ -32,6 +36,8 @@ use rusqlite::Connection;
 use serde_json::{Map, Value};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+#[cfg(target_os = "linux")]
+use tauri::LogicalPosition;
 use tauri::{AppHandle, Manager, State};
 
 struct AppDataDir(PathBuf);
@@ -64,6 +70,8 @@ const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
 const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
 const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
 const DESKTOP_INSTANCE_LOCK_NAME: &str = "desktop-instance.lock";
+#[cfg(target_os = "linux")]
+const DESKTOP_ACTIVATE_SOCKET_NAME: &str = "desktop-activate.sock";
 
 struct DesktopInstanceGuard {
     _file: std::fs::File,
@@ -2243,6 +2251,82 @@ fn acquire_desktop_instance_guard(data_dir: &Path) -> Result<DesktopInstanceGuar
         )
     })?;
     Ok(DesktopInstanceGuard { _file: file })
+}
+
+fn restore_main_window(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "main window not found".to_string())?;
+
+    let _ = window.unminimize();
+    let _ = window.show();
+    #[cfg(target_os = "linux")]
+    {
+        // XRDP/XFCE sessions can restore windows off-screen. Force a safe top-left anchor.
+        let _ = window.set_position(tauri::Position::Logical(LogicalPosition::new(64.0, 64.0)));
+    }
+    let _ = window.set_focus();
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn desktop_activate_socket_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(DESKTOP_ACTIVATE_SOCKET_NAME)
+}
+
+#[cfg(target_os = "linux")]
+fn signal_existing_desktop_instance(data_dir: &Path) -> Result<(), String> {
+    let socket_path = desktop_activate_socket_path(data_dir);
+    let mut stream = UnixStream::connect(&socket_path).map_err(|e| {
+        format!(
+            "connect activation socket {}: {e}",
+            socket_path.display()
+        )
+    })?;
+    stream
+        .write_all(b"restore")
+        .map_err(|e| format!("write activation signal: {e}"))?;
+    let mut ack = [0_u8; 16];
+    let _ = stream.read(&mut ack);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn start_desktop_activation_listener(app: AppHandle, data_dir: PathBuf) -> Result<(), String> {
+    let socket_path = desktop_activate_socket_path(&data_dir);
+    if socket_path.exists() {
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    let listener = UnixListener::bind(&socket_path)
+        .map_err(|e| format!("bind activation socket {}: {e}", socket_path.display()))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("set activation socket nonblocking: {e}"))?;
+
+    std::thread::spawn(move || loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let mut buf = [0_u8; 32];
+                let _ = stream.read(&mut buf);
+                let _ = restore_main_window(&app);
+                let _ = stream.write_all(b"ok");
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(err) => {
+                append_desktop_debug_line(
+                    &data_dir,
+                    "SYSTEM",
+                    &format!("desktop activation listener error: {err}"),
+                );
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+    });
+
+    Ok(())
 }
 
 fn count_enabled_strategies(profile: &Profile) -> usize {
@@ -4675,6 +4759,19 @@ pub fn run() {
         Ok(guard) => guard,
         Err(err) => {
             append_desktop_debug_line(&data_dir, "SYSTEM", err.as_str());
+            #[cfg(target_os = "linux")]
+            match signal_existing_desktop_instance(&data_dir) {
+                Ok(()) => append_desktop_debug_line(
+                    &data_dir,
+                    "SYSTEM",
+                    "forwarded restore request to existing desktop instance",
+                ),
+                Err(signal_err) => append_desktop_debug_line(
+                    &data_dir,
+                    "SYSTEM",
+                    &format!("failed to forward restore request: {signal_err}"),
+                ),
+            }
             return;
         }
     };
@@ -4696,6 +4793,20 @@ pub fn run() {
         .manage(MarketMetadataState::default())
         .manage(LiquidityRewardsState::default())
         .setup(|app| {
+            #[cfg(target_os = "linux")]
+            {
+                let data_dir = app.state::<AppDataDir>().0.clone();
+                if let Err(err) =
+                    start_desktop_activation_listener(app.handle().clone(), data_dir.clone())
+                {
+                    append_desktop_debug_line(
+                        &data_dir,
+                        "SYSTEM",
+                        &format!("failed to start desktop activation listener: {err}"),
+                    );
+                }
+            }
+
             let status_item =
                 MenuItem::with_id(app, "status", "EVPoly: Stopped", false, None::<&str>)?;
             let start_item = MenuItem::with_id(app, "start", "Start", true, None::<&str>)?;
@@ -4776,10 +4887,7 @@ pub fn run() {
                         }
                     }
                     "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
+                        let _ = restore_main_window(app.app_handle());
                     }
                     "quit" => {
                         if let Ok(manager) = app.state::<WalletSyncState>().lock() {
@@ -4802,10 +4910,7 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        if let Some(w) = tray.app_handle().get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
+                        let _ = restore_main_window(tray.app_handle());
                     }
                 })
                 .build(app)?;

@@ -1723,6 +1723,23 @@ fn mm_sport_condition_quote_expiration(
     (expiration_ts, expiration_ms, ttl_sec)
 }
 
+fn mm_sport_floor_order_shares(units: f64) -> f64 {
+    ((units.max(0.0) * 100.0) + 1e-9).floor() / 100.0
+}
+
+fn mm_sport_effective_exit_shares(
+    desired_exit_shares: f64,
+    live_balance_shares: Option<f64>,
+) -> (f64, f64) {
+    let desired = desired_exit_shares.max(0.0);
+    let effective = live_balance_shares
+        .map(|live| mm_sport_floor_order_shares(live).min(desired))
+        .unwrap_or(desired)
+        .max(0.0);
+    let reconciled = (desired - effective).max(0.0);
+    (effective, reconciled)
+}
+
 fn mm_sport_bid_depth_at_or_above(
     orderbook: &polymarket_arbitrage_bot::models::OrderBook,
     target_price: f64,
@@ -2225,10 +2242,14 @@ async fn mm_sport_place_order(
     post_only: bool,
 ) -> Result<Option<String>> {
     let price_precision = mm_sport_tick_price_precision(market.minimum_tick_size);
+    let submit_shares = mm_sport_floor_order_shares(size_shares);
+    if submit_shares <= 0.0 {
+        return Ok(None);
+    }
     let order = polymarket_arbitrage_bot::models::OrderRequest {
         token_id: token_id.to_string(),
         side: side.to_ascii_uppercase(),
-        size: format!("{:.2}", size_shares.max(0.0)),
+        size: format!("{:.2}", submit_shares),
         price: format!("{:.*}", price_precision, price),
         order_type: "GTD".to_string(),
         expiration_ts: Some(expiration_ts.max(1)),
@@ -2238,7 +2259,7 @@ async fn mm_sport_place_order(
     let Some(order_id) = response.order_id else {
         return Ok(None);
     };
-    let size_usd = (price * size_shares).max(0.0);
+    let size_usd = (price * submit_shares).max(0.0);
     let pending = polymarket_arbitrage_bot::tracking_db::PendingOrderRecord {
         order_id: order_id.clone(),
         trade_key: format!(
@@ -17383,7 +17404,7 @@ async fn main() -> Result<()> {
                                         .insert(buy_key.clone(), now_ms_local);
                                 }
 
-                                let desired_exit_shares = inventory_surplus.max(0.0);
+                                let mut desired_exit_shares = inventory_surplus.max(0.0);
                                 if desired_exit_shares <= 0.0 {
                                     if !sell_rows.is_empty() && can_sell_action_now {
                                         let _ = mm_sport_cancel_pending_rows(
@@ -17443,6 +17464,93 @@ async fn main() -> Result<()> {
                                             "submit_post_only": exit_order_plan.submit_post_only
                                         }),
                                     );
+                                }
+
+                                let live_balance_shares = match timeout(
+                                    Duration::from_millis(1_500),
+                                    api_for_mm_sport.check_balance_only(token_id.as_str()),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(balance)) => Some(shares_from_balance_decimal(balance)),
+                                    Ok(Err(_)) | Err(_) => None,
+                                };
+                                let (effective_exit_shares, reconcile_shares) =
+                                    mm_sport_effective_exit_shares(
+                                        desired_exit_shares,
+                                        live_balance_shares,
+                                    );
+                                if reconcile_shares > 1e-6 {
+                                    let live_balance_after = effective_exit_shares.max(0.0);
+                                    let consume_key = format!(
+                                        "mm_sport_live_balance_clamp:{}:{}:{}:{}:{:.6}:{:.6}",
+                                        STRATEGY_ID_MM_SPORT_V1,
+                                        market.condition_id,
+                                        token_id,
+                                        now_ms_local,
+                                        desired_exit_shares,
+                                        live_balance_after
+                                    );
+                                    let reconcile_reason = json!({
+                                        "mode": "mm_sport_inventory_exit_live_balance_clamp",
+                                        "db_inventory_shares_before": desired_exit_shares,
+                                        "wallet_inventory_shares_live": live_balance_shares,
+                                        "submit_exit_shares": live_balance_after,
+                                        "force_exit_mode": exit_order_plan.force_exit_mode,
+                                        "aggressive_mode": exit_order_plan.aggressive_mode
+                                    })
+                                    .to_string();
+                                    match tracking_db_for_mm_sport.consume_inventory_units(
+                                        consume_key.as_str(),
+                                        STRATEGY_ID_MM_SPORT_V1,
+                                        "1d",
+                                        market.period_timestamp,
+                                        market.condition_id.as_str(),
+                                        token_id.as_str(),
+                                        reconcile_shares,
+                                        Some(live_balance_after),
+                                        "mm_inventory_exit_live_balance",
+                                        Some(reconcile_reason.as_str()),
+                                    ) {
+                                        Ok(result) => {
+                                            inventory_by_token
+                                                .insert(token_id.to_string(), live_balance_after);
+                                            desired_exit_shares = live_balance_after;
+                                            log_event(
+                                                "mm_sport_inventory_exit_live_balance_clamp",
+                                                json!({
+                                                    "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                                    "condition_id": market.condition_id,
+                                                    "token_id": token_id,
+                                                    "db_inventory_shares_before": inventory_surplus,
+                                                    "wallet_inventory_shares_live": live_balance_shares,
+                                                    "submit_exit_shares": live_balance_after,
+                                                    "reconciled_shares": result.applied_units,
+                                                    "db_inventory_shares_after": result.db_units_after,
+                                                    "force_exit_mode": exit_order_plan.force_exit_mode,
+                                                    "aggressive_mode": exit_order_plan.aggressive_mode
+                                                }),
+                                            );
+                                        }
+                                        Err(reconcile_err) => {
+                                            desired_exit_shares = live_balance_after;
+                                            log_event(
+                                                "mm_sport_inventory_exit_live_balance_reconcile_failed",
+                                                json!({
+                                                    "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                                    "condition_id": market.condition_id,
+                                                    "token_id": token_id,
+                                                    "db_inventory_shares_before": inventory_surplus,
+                                                    "wallet_inventory_shares_live": live_balance_shares,
+                                                    "submit_exit_shares": live_balance_after,
+                                                    "reconciled_shares": reconcile_shares,
+                                                    "error": reconcile_err.to_string()
+                                                }),
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    desired_exit_shares = effective_exit_shares;
                                 }
 
                                 // Inventory exit must clear exposure before start:
@@ -36202,6 +36310,20 @@ mod tests {
             game_start_ts_ms,
             game_start_ts_ms
         ));
+    }
+
+    #[test]
+    fn mm_sport_effective_exit_shares_clamps_to_live_balance_and_floors() {
+        let (effective, reconciled) = mm_sport_effective_exit_shares(1_192.74, Some(1_159.089_212));
+        assert!((effective - 1_159.08).abs() < 1e-9);
+        assert!((reconciled - 33.66).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mm_sport_effective_exit_shares_keeps_db_inventory_without_live_balance() {
+        let (effective, reconciled) = mm_sport_effective_exit_shares(250.25, None);
+        assert!((effective - 250.25).abs() < 1e-9);
+        assert!(reconciled.abs() < 1e-9);
     }
 
     #[test]

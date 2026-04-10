@@ -36329,10 +36329,11 @@ mod tests {
     #[test]
     fn mm_sport_market_mode_flags_normal_matches_existing_behavior() {
         let game_start_ts_ms = 2_000_000_000_000_i64;
+        let outside_prestart_ts_ms = game_start_ts_ms - ((8 * 60 * 60 * 1_000) + 1);
 
         let fill_paused_inventory = mm_sport_market_mode_flags(
             mm::MmSportExitMode::Normal,
-            game_start_ts_ms - 3_600_001,
+            outside_prestart_ts_ms,
             game_start_ts_ms,
             8 * 60 * 60,
             true,
@@ -36349,7 +36350,7 @@ mod tests {
 
         let inventory_ready = mm_sport_market_mode_flags(
             mm::MmSportExitMode::Normal,
-            game_start_ts_ms - 3_600_001,
+            outside_prestart_ts_ms,
             game_start_ts_ms,
             8 * 60 * 60,
             true,
@@ -36385,9 +36386,10 @@ mod tests {
     #[test]
     fn mm_sport_market_mode_flags_aggressive_exits_with_inventory_during_fill_pause() {
         let game_start_ts_ms = 2_000_000_000_000_i64;
+        let outside_prestart_ts_ms = game_start_ts_ms - ((8 * 60 * 60 * 1_000) + 1);
         let flags = mm_sport_market_mode_flags(
             mm::MmSportExitMode::Aggressive,
-            game_start_ts_ms - 3_600_001,
+            outside_prestart_ts_ms,
             game_start_ts_ms,
             8 * 60 * 60,
             true,
@@ -36406,10 +36408,11 @@ mod tests {
     #[test]
     fn mm_sport_market_mode_flags_no_exit_holds_at_t60() {
         let game_start_ts_ms = 2_000_000_000_000_i64;
+        let outside_prestart_ts_ms = game_start_ts_ms - ((8 * 60 * 60 * 1_000) + 1);
 
         let before_hold = mm_sport_market_mode_flags(
             mm::MmSportExitMode::NoExit,
-            game_start_ts_ms - 3_600_001,
+            outside_prestart_ts_ms,
             game_start_ts_ms,
             8 * 60 * 60,
             true,

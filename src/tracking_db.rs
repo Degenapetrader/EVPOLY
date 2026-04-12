@@ -7472,6 +7472,94 @@ LIMIT ?2
         })
     }
 
+    pub fn list_mm_wallet_inventory_fallback_by_strategy(
+        &self,
+        strategy_id: &str,
+        limit: usize,
+    ) -> Result<Vec<MmWalletInventoryRow>> {
+        let strategy_id = normalize_strategy_id(strategy_id);
+        self.with_conn_read_profiled("wallet_inventory.list_fallback_by_strategy", Some(limit), |conn| {
+            if !table_exists(conn, "wallet_positions_live_latest_v1")? {
+                return Ok(Vec::new());
+            }
+            let mut stmt = conn.prepare(
+                r#"
+SELECT
+    w.condition_id,
+    w.token_id,
+    COALESCE(MAX(s.market_slug), MAX(w.slug)) AS market_slug,
+    MAX(s.timeframe) AS timeframe,
+    MAX(s.symbol) AS symbol,
+    MAX(s.mode) AS mode,
+    COALESCE(SUM(COALESCE(w.position_size, 0.0)), 0.0) AS wallet_shares,
+    CASE
+        WHEN COALESCE(SUM(COALESCE(w.position_size, 0.0)), 0.0) > 0.0
+        THEN COALESCE(SUM(COALESCE(w.avg_price, 0.0) * COALESCE(w.position_size, 0.0)), 0.0)
+            / SUM(COALESCE(w.position_size, 0.0))
+        ELSE NULL
+    END AS wallet_avg_price,
+    COALESCE(SUM(COALESCE(w.current_value, COALESCE(w.cur_price, 0.0) * COALESCE(w.position_size, 0.0))), 0.0) AS wallet_value_usd,
+    MAX(w.snapshot_ts_ms) AS snapshot_ts_ms
+FROM wallet_positions_live_latest_v1 w
+LEFT JOIN mm_market_states_v1 s
+  ON s.strategy_id=?1
+ AND s.condition_id = w.condition_id
+WHERE COALESCE(w.position_size, 0.0) > 1e-9
+  AND w.condition_id IS NOT NULL
+  AND TRIM(w.condition_id) <> ''
+  AND (
+      EXISTS (
+          SELECT 1
+          FROM mm_market_states_v1 scoped
+          WHERE scoped.strategy_id=?1
+            AND scoped.condition_id = w.condition_id
+            AND (
+                scoped.up_token_id = w.token_id
+                OR scoped.down_token_id = w.token_id
+            )
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM pending_orders po
+          WHERE po.strategy_id=?1
+            AND po.entry_mode='MM_SPORT'
+            AND po.condition_id = w.condition_id
+            AND po.token_id = w.token_id
+      )
+  )
+GROUP BY w.condition_id, w.token_id
+ORDER BY ABS(wallet_shares) DESC, w.condition_id ASC, w.token_id ASC
+LIMIT ?2
+"#,
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    strategy_id.as_str(),
+                    i64::try_from(limit.clamp(1, 20_000)).ok().unwrap_or(2_000),
+                ],
+                |row| {
+                    Ok(MmWalletInventoryRow {
+                        condition_id: row.get(0)?,
+                        token_id: row.get(1)?,
+                        market_slug: row.get(2)?,
+                        timeframe: row.get(3)?,
+                        symbol: row.get(4)?,
+                        mode: row.get(5)?,
+                        wallet_shares: row.get(6)?,
+                        wallet_avg_price: row.get(7)?,
+                        wallet_value_usd: row.get(8)?,
+                        snapshot_ts_ms: row.get(9)?,
+                    })
+                },
+            )?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
     pub fn latest_wallet_positions_snapshot_ts_ms(&self) -> Result<Option<i64>> {
         self.with_conn_read(|conn| {
             if !table_exists(conn, "wallet_positions_live_latest_v1")? {

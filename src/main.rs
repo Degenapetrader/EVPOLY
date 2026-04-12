@@ -1369,6 +1369,72 @@ fn mm_sport_market_mode_flags(
     }
 }
 
+fn mm_wallet_snapshot_address_from_env() -> Option<String> {
+    for key in ["EVPOLY_WALLET_SYNC_ADDRESS", "POLY_PROXY_WALLET_ADDRESS"] {
+        if let Ok(value) = std::env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn mm_wallet_positions_snapshot_refresh_interval_ms() -> i64 {
+    std::env::var("EVPOLY_WALLET_POSITIONS_SNAPSHOT_REFRESH_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(60_000)
+        .clamp(5_000, 30 * 60 * 1_000)
+}
+
+fn mm_wallet_positions_snapshot_timeout_ms() -> u64 {
+    std::env::var("EVPOLY_WALLET_POSITIONS_SNAPSHOT_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(8_000)
+        .clamp(1_000, 120_000)
+}
+
+async fn mm_sport_refresh_wallet_positions_snapshot(
+    api: &PolymarketApi,
+    db: &TrackingDb,
+    reason: &str,
+) -> Result<Option<usize>> {
+    let Some(wallet_address) = mm_wallet_snapshot_address_from_env() else {
+        return Ok(None);
+    };
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let rows = timeout(
+        Duration::from_millis(mm_wallet_positions_snapshot_timeout_ms()),
+        api.get_wallet_positions_live(Some(wallet_address.as_str())),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("wallet positions snapshot refresh timed out"))??;
+    let positions_inserted = db.replace_wallet_positions_live_snapshot(
+        wallet_address.as_str(),
+        rows.as_slice(),
+        now_ms,
+    )?;
+    log_event(
+        "wallet_positions_snapshot_refreshed",
+        json!({
+            "reason": reason,
+            "force": false,
+            "status": "ok",
+            "wallet_address": wallet_address,
+            "rows_fetched": rows.len(),
+            "rows_persisted": positions_inserted,
+            "activity_rows_fetched": 0,
+            "activity_rows_persisted": 0,
+            "activity_error": Value::Null,
+            "snapshot_ts_ms": now_ms
+        }),
+    );
+    Ok(Some(positions_inserted))
+}
+
 fn mm_sport_collect_pair_buy_rows(
     rows: &[PendingOrderRecord],
     up_token_id: &str,
@@ -14414,6 +14480,7 @@ async fn main() -> Result<()> {
                     i64,
                 > = std::collections::HashMap::new();
                 let mut last_exit_fallback_refresh_ms = 0_i64;
+                let mut last_wallet_positions_snapshot_refresh_attempt_ms = 0_i64;
                 let mut last_inventory_reconcile_attempt_ms = 0_i64;
                 let mut orphan_cancel_retry_after_ms_by_condition: std::collections::HashMap<
                     String,
@@ -15008,6 +15075,30 @@ async fn main() -> Result<()> {
                     ratio_recovery_streak_by_condition
                         .retain(|condition_id, _| ratio_blocked_conditions.contains(condition_id));
 
+                    let snapshot_refresh_interval_ms =
+                        mm_wallet_positions_snapshot_refresh_interval_ms();
+                    if now_ms.saturating_sub(last_wallet_positions_snapshot_refresh_attempt_ms)
+                        >= snapshot_refresh_interval_ms
+                    {
+                        last_wallet_positions_snapshot_refresh_attempt_ms = now_ms;
+                        if let Err(e) = mm_sport_refresh_wallet_positions_snapshot(
+                            &api_for_mm_sport,
+                            tracking_db_for_mm_sport.as_ref(),
+                            "mm_sport_inventory_exit",
+                        )
+                        .await
+                        {
+                            log_event(
+                                "wallet_positions_snapshot_refresh_failed",
+                                json!({
+                                    "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                    "reason": "mm_sport_inventory_exit",
+                                    "error": e.to_string()
+                                }),
+                            );
+                        }
+                    }
+
                     let mut inventory_by_token: std::collections::HashMap<String, f64> =
                         std::collections::HashMap::new();
                     let mut inventory_condition_ids: std::collections::HashSet<String> =
@@ -15033,6 +15124,49 @@ async fn main() -> Result<()> {
                                 .entry(token_id.to_string())
                                 .or_insert(0.0);
                             *entry += net_units;
+                        }
+                    }
+                    if let Ok(rows) = tracking_db_for_mm_sport
+                        .list_mm_wallet_inventory_fallback_by_strategy(
+                            STRATEGY_ID_MM_SPORT_V1,
+                            20_000,
+                        )
+                    {
+                        let mut fallback_condition_ids = std::collections::HashSet::new();
+                        let mut fallback_token_count = 0_u64;
+                        for row in rows {
+                            let condition_id = row.condition_id.trim();
+                            let token_id = row.token_id.trim();
+                            if condition_id.is_empty()
+                                || token_id.is_empty()
+                                || !row.wallet_shares.is_finite()
+                            {
+                                continue;
+                            }
+                            let wallet_shares = row.wallet_shares.max(0.0);
+                            if wallet_shares <= 0.0 {
+                                continue;
+                            }
+                            inventory_condition_ids.insert(condition_id.to_ascii_lowercase());
+                            let entry = inventory_by_token
+                                .entry(token_id.to_string())
+                                .or_insert(0.0);
+                            if wallet_shares > *entry + 1e-9 {
+                                *entry = wallet_shares;
+                                fallback_condition_ids.insert(condition_id.to_ascii_lowercase());
+                                fallback_token_count = fallback_token_count.saturating_add(1);
+                            }
+                        }
+                        if fallback_token_count > 0 {
+                            log_event(
+                                "mm_sport_wallet_inventory_fallback_applied",
+                                json!({
+                                    "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                    "condition_count": fallback_condition_ids.len(),
+                                    "token_count": fallback_token_count,
+                                    "condition_ids": fallback_condition_ids.into_iter().take(10).collect::<Vec<_>>()
+                                }),
+                            );
                         }
                     }
                     let discovered_condition_ids = discovered_markets

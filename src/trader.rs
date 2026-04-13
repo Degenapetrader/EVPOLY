@@ -9970,7 +9970,7 @@ impl Trader {
         std::env::var("EVPOLY_REDEMPTION_AUTO_TRIGGER_PENDING_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(10)
+            .unwrap_or(5)
             .clamp(1, 10_000)
     }
 
@@ -9978,7 +9978,7 @@ impl Trader {
         std::env::var("EVPOLY_REDEMPTION_AUTO_TRIGGER_AVAILABLE_RATIO_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(0.20)
+            .unwrap_or(0.50)
             .clamp(0.01, 0.99)
     }
 
@@ -10094,7 +10094,7 @@ impl Trader {
         std::env::var("EVPOLY_MERGE_AUTO_TRIGGER_PENDING_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(10)
+            .unwrap_or(5)
             .clamp(1, 10_000)
     }
 
@@ -10102,7 +10102,7 @@ impl Trader {
         std::env::var("EVPOLY_MERGE_AUTO_TRIGGER_AVAILABLE_RATIO_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(0.20)
+            .unwrap_or(0.50)
             .clamp(0.01, 0.99)
     }
 

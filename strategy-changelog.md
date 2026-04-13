@@ -9,6 +9,25 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-04-13
+- `endgame_sweep_v1` and `sessionband_v1`: added share-sized execution mode alongside existing USD sizing (`src/config.rs`, `src/endgame_sweep.rs`, `src/sessionband.rs`, `src/trader.rs`, `.env.example`, `.env.full.example`).
+  - new execution-size env keys:
+    - `EVPOLY_ENDGAME_EXECUTION_SIZE_MODE`
+    - `EVPOLY_ENDGAME_BASE_SIZE_SHARES`
+    - `EVPOLY_SESSIONBAND_EXECUTION_SIZE_MODE`
+    - `EVPOLY_SESSIONBAND_BASE_SIZE_SHARES`
+  - share mode sizes late-window entries by target shares instead of USD notionals while preserving existing symbol scaling.
+- settlement automation and MM inventory sync hardening (`src/trader.rs`, `src/tracking_db.rs`, `src/main.rs`):
+  - merge sweeps now refresh live wallet position snapshots before candidate selection.
+  - MM Sport exit inventory can fall back to wallet snapshot balances when local tracked inventory lags the wallet.
+  - new wallet-sidecar snapshot tables persist live wallet positions, activity, and sync-run status in `tracking.db`.
+- redeem/merge sweep auto-trigger defaults are now more aggressive (`src/trader.rs`):
+  - redemption auto-trigger pending threshold default `10 -> 5`
+  - redemption available-ratio threshold default `0.20 -> 0.50`
+  - merge auto-trigger pending threshold default `10 -> 5`
+  - merge available-ratio threshold default `0.20 -> 0.50`
+  - both auto-trigger cooldown defaults remain `900s`
+
 ### 2026-04-05
 - `mm_sport_v1`: passive quote depth now follows the real two-level passive band instead of top-of-book only.
   - BUY depth/ratio checks now aggregate visible bid depth from `best bid` through the passive quote price (`best bid - 1 tick`).

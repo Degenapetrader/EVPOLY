@@ -16,8 +16,8 @@ use crate::tracking_db::{
 };
 use anyhow::{anyhow, Result};
 use log::{debug, warn};
-use polymarket_client_sdk::clob::types::response::OpenOrderResponse;
-use polymarket_client_sdk::clob::types::OrderStatusType;
+use polymarket_client_sdk_v2::clob::types::response::OpenOrderResponse;
+use polymarket_client_sdk_v2::clob::types::OrderStatusType;
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -15126,7 +15126,7 @@ mod tests {
 
     #[test]
     fn terminal_status_maps_unknown_invalid_to_stale() {
-        use polymarket_client_sdk::clob::types::OrderStatusType;
+        use polymarket_client_sdk_v2::clob::types::OrderStatusType;
 
         assert_eq!(
             Trader::terminal_status_for_order(OrderStatusType::Unknown("INVALID".to_string())),
@@ -15136,7 +15136,7 @@ mod tests {
 
     #[test]
     fn terminal_status_keeps_unknown_non_terminal_open() {
-        use polymarket_client_sdk::clob::types::OrderStatusType;
+        use polymarket_client_sdk_v2::clob::types::OrderStatusType;
 
         assert_eq!(
             Trader::terminal_status_for_order(OrderStatusType::Unknown("LIVE_PENDING".to_string())),

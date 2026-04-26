@@ -3,13 +3,13 @@ use crate::event_log::log_event;
 use crate::models::{OrderBook, OrderBookEntry, TokenPrice};
 
 use futures_util::StreamExt;
-use polymarket_client_sdk::clob::types::{OrderStatusType, Side};
-use polymarket_client_sdk::clob::ws;
-use polymarket_client_sdk::clob::ws::types::response::{
+use polymarket_client_sdk_v2::clob::types::{OrderStatusType, Side};
+use polymarket_client_sdk_v2::clob::ws;
+use polymarket_client_sdk_v2::clob::ws::types::response::{
     BookUpdate, LastTradePrice, OrderMessage, OrderMessageType, TradeMessage, WsMessage,
 };
-use polymarket_client_sdk::types::{B256, U256};
-use polymarket_client_sdk::ws::config::Config as WsConnectionConfig;
+use polymarket_client_sdk_v2::types::{B256, U256};
+use polymarket_client_sdk_v2::ws::config::Config as WsConnectionConfig;
 use rust_decimal::Decimal;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};

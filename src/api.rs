@@ -22,16 +22,15 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer as _;
 use alloy::sol_types::SolCall;
 use chrono::{TimeZone, Utc};
-use polymarket_client_sdk::auth::builder::{Builder as BuilderAuth, Config as BuilderConfig};
-use polymarket_client_sdk::auth::state::Authenticated;
-use polymarket_client_sdk::auth::{Credentials, LocalSigner, Normal};
-use polymarket_client_sdk::clob::types::request::CancelMarketOrderRequest;
-use polymarket_client_sdk::clob::types::response::{CancelOrdersResponse, OpenOrderResponse};
-use polymarket_client_sdk::clob::types::{
+use polymarket_client_sdk_v2::auth::state::Authenticated;
+use polymarket_client_sdk_v2::auth::{Credentials, LocalSigner, Normal};
+use polymarket_client_sdk_v2::clob::types::request::CancelMarketOrderRequest;
+use polymarket_client_sdk_v2::clob::types::response::{CancelOrdersResponse, OpenOrderResponse};
+use polymarket_client_sdk_v2::clob::types::{
     Amount, OrderType, Side, SignatureType, SignedOrder as ClobSignedOrder,
 };
-use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
-use polymarket_client_sdk::{contract_config, derive_safe_wallet, POLYGON};
+use polymarket_client_sdk_v2::clob::{Client as ClobClient, Config as ClobConfig};
+use polymarket_client_sdk_v2::{contract_config, derive_safe_wallet, POLYGON};
 
 // CTF (Conditional Token Framework) imports for redemption
 // Based on docs: https://docs.polymarket.com/developers/builders/relayer-client#redeem-positions
@@ -40,7 +39,7 @@ use alloy::providers::ProviderBuilder;
 
 // Contract interfaces for direct RPC calls (like SDK example)
 use alloy::sol;
-use polymarket_client_sdk::types::Address;
+use polymarket_client_sdk_v2::types::Address;
 
 sol! {
     #[sol(rpc)]
@@ -88,36 +87,67 @@ struct ActiveMarketsEventRow {
     markets: Vec<Market>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum ActiveMarketsEnvelope {
-    EventArray(Vec<ActiveMarketsEventRow>),
-    DataArray { data: Vec<ActiveMarketsEventRow> },
+fn active_markets_from_value(value: &Value) -> Result<Vec<Market>> {
+    fn parse_events(events: &[Value]) -> Result<Vec<Market>> {
+        let mut markets = Vec::new();
+        for event_value in events {
+            let event: ActiveMarketsEventRow = serde_json::from_value(event_value.clone())
+                .context("Failed to parse active markets event row")?;
+            markets.extend(event.markets);
+        }
+        Ok(markets)
+    }
+
+    fn parse_markets(markets: &[Value]) -> Result<Vec<Market>> {
+        markets
+            .iter()
+            .cloned()
+            .map(|row| {
+                serde_json::from_value::<Market>(row).context("Failed to parse active market row")
+            })
+            .collect()
+    }
+
+    if let Some(events) = value.get("events").and_then(Value::as_array) {
+        return parse_events(events);
+    }
+    if let Some(markets) = value.get("markets").and_then(Value::as_array) {
+        return parse_markets(markets);
+    }
+    if let Some(data) = value.get("data").and_then(Value::as_array) {
+        if data.first().and_then(|row| row.get("markets")).is_some() {
+            return parse_events(data);
+        }
+        return parse_markets(data);
+    }
+    if let Some(rows) = value.as_array() {
+        if rows.first().and_then(|row| row.get("markets")).is_some() {
+            return parse_events(rows);
+        }
+        return parse_markets(rows);
+    }
+    anyhow::bail!("active markets payload did not contain events, markets, data, or an array")
 }
 
+#[cfg(test)]
 fn parse_active_markets_payload(bytes: &[u8]) -> Result<Vec<Market>> {
-    let parsed: ActiveMarketsEnvelope =
+    let value: Value =
         serde_json::from_slice(bytes).context("Failed to parse active markets payload")?;
-    let mut markets = Vec::new();
-    match parsed {
-        ActiveMarketsEnvelope::EventArray(events) => {
-            for event in events {
-                markets.extend(event.markets);
-            }
-        }
-        ActiveMarketsEnvelope::DataArray { data } => {
-            for event in data {
-                markets.extend(event.markets);
-            }
-        }
-    }
-    Ok(markets)
+    active_markets_from_value(&value)
+}
+
+fn next_cursor_from_value(value: &Value) -> Option<String> {
+    value
+        .get("next_cursor")
+        .or_else(|| value.get("nextCursor"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|cursor| !cursor.is_empty() && *cursor != "null" && *cursor != "LTE=")
+        .map(str::to_string)
 }
 
 pub struct ClobClientHandle {
     pub client: ClobClient<Authenticated<Normal>>,
-    pub builder_client_primary: ClobClient<Authenticated<BuilderAuth>>,
-    pub builder_client_fallback: ClobClient<Authenticated<BuilderAuth>>,
     pub signer: PrivateKeySigner,
 }
 
@@ -184,6 +214,7 @@ struct PlaceOrderHandleTiming {
     order_signer_final_route: Option<OrderSignerRoute>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OrderSignerRoute {
     Primary,
@@ -756,19 +787,27 @@ impl PolymarketApi {
             .unwrap_or_else(|| SUBMIT_SIGNER_AWS_URL_DEFAULT.to_string())
     }
 
-    fn order_primary_builder_config(&self) -> Result<BuilderConfig> {
-        self.ensure_no_local_builder_secrets()?;
-        let signer_url = self.order_primary_signer_url();
-        let signer_token = self.order_primary_signer_token();
-        BuilderConfig::remote(signer_url.as_str(), signer_token)
-            .context("Invalid order primary signer URL (EVPOLY_ORDER_SIGNER_PRIMARY_URL)")
+    fn v2_builder_code(&self) -> Result<Option<B256>> {
+        let Some(raw) = Self::env_nonempty("POLY_BUILDER_CODE")
+            .or_else(|| Self::env_nonempty("POLYMARKET_BUILDER_CODE"))
+        else {
+            return Ok(None);
+        };
+        let code = B256::from_str(raw.trim()).with_context(|| {
+            format!(
+                "Invalid POLY_BUILDER_CODE / POLYMARKET_BUILDER_CODE: {}",
+                raw
+            )
+        })?;
+        Ok(Some(code))
     }
 
-    fn order_fallback_builder_config(&self) -> Result<BuilderConfig> {
-        self.ensure_no_local_builder_secrets()?;
-        let fallback_url = self.order_fallback_signer_url();
-        BuilderConfig::remote(fallback_url.as_str(), None)
-            .context("Invalid order fallback signer URL (EVPOLY_ORDER_SIGNER_FALLBACK_URL)")
+    fn clob_client_config(&self) -> Result<ClobConfig> {
+        if let Some(builder_code) = self.v2_builder_code()? {
+            Ok(ClobConfig::builder().builder_code(builder_code).build())
+        } else {
+            Ok(ClobConfig::default())
+        }
     }
 
     async fn should_force_aws_order_signer(&self) -> bool {
@@ -963,17 +1002,6 @@ impl PolymarketApi {
             }
             _ => anyhow::bail!("Unsupported remote signer path: {}", path),
         }
-    }
-
-    fn order_attribution_builder_config(&self) -> Result<BuilderConfig> {
-        self.order_primary_builder_config().context(
-            "Builder attribution requires configured order signer endpoints on poly-remote.",
-        )
-    }
-
-    fn order_attribution_builder_fallback_config(&self) -> Result<BuilderConfig> {
-        self.order_fallback_builder_config()
-            .context("Failed to build fallback builder attribution config")
     }
 
     fn parse_hex_address(address: &str) -> Result<AlloyAddress> {
@@ -1835,7 +1863,7 @@ impl PolymarketApi {
         &self,
         signer: &PrivateKeySigner,
     ) -> Result<ClobClient<Authenticated<Normal>>> {
-        let mut auth_builder = ClobClient::new(&self.clob_url, ClobConfig::default())
+        let mut auth_builder = ClobClient::new(&self.clob_url, self.clob_client_config()?)
             .context("Failed to create CLOB client")?
             .authentication_builder(signer);
         self.prewarming_order_metadata.lock().await.clear();
@@ -1917,19 +1945,6 @@ impl PolymarketApi {
         }
     }
 
-    async fn build_attributed_order_client_with_config(
-        &self,
-        signer: &PrivateKeySigner,
-        builder_config: BuilderConfig,
-    ) -> Result<ClobClient<Authenticated<BuilderAuth>>> {
-        let base_client = self.authenticate_clob_client(signer).await?;
-        let builder_client = base_client
-            .promote_to_builder(builder_config)
-            .await
-            .context("Failed to promote CLOB client to builder attribution mode")?;
-        Ok(builder_client)
-    }
-
     async fn build_authenticated_client(&self) -> Result<ClobClientHandle> {
         let private_key = self.private_key.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
@@ -1942,25 +1957,8 @@ impl PolymarketApi {
             .with_chain_id(Some(POLYGON));
 
         let client = self.authenticate_clob_client(&signer).await?;
-        let builder_client_primary = self
-            .build_attributed_order_client_with_config(
-                &signer,
-                self.order_attribution_builder_config()?,
-            )
-            .await?;
-        let builder_client_fallback = self
-            .build_attributed_order_client_with_config(
-                &signer,
-                self.order_attribution_builder_fallback_config()?,
-            )
-            .await?;
 
-        Ok(ClobClientHandle {
-            client,
-            builder_client_primary,
-            builder_client_fallback,
-            signer,
-        })
+        Ok(ClobClientHandle { client, signer })
     }
 
     async fn get_or_create_clob_client(&self) -> Result<Arc<ClobClientHandle>> {
@@ -2044,12 +2042,12 @@ impl PolymarketApi {
         self.ws_state.lock().await.clone()
     }
 
-    /// Get all active markets (using events endpoint)
+    /// Get all active markets (using events keyset endpoint)
     pub async fn get_all_active_markets(&self, limit: u32) -> Result<Vec<Market>> {
         self.get_all_active_markets_page(limit, 0).await
     }
 
-    /// Get active markets page from events endpoint with offset pagination.
+    /// Get active markets page through events keyset pagination.
     pub async fn get_all_active_markets_page(
         &self,
         limit: u32,
@@ -2059,61 +2057,107 @@ impl PolymarketApi {
             .await
     }
 
-    /// Get active markets page from events endpoint with optional Gamma tag filtering.
+    /// Get active markets page from events keyset endpoint with optional Gamma tag filtering.
+    ///
+    /// The public API no longer accepts offset on the keyset endpoints, so the legacy
+    /// `offset` argument is emulated by walking opaque cursors and skipping rows locally.
     pub async fn get_all_active_markets_page_tagged(
         &self,
         limit: u32,
         offset: u32,
         tag_slug: Option<&str>,
     ) -> Result<Vec<Market>> {
-        let url = format!("{}/events", self.gamma_url);
-        let limit_str = limit.to_string();
-        let offset_str = offset.to_string();
-        let mut params = HashMap::new();
-        params.insert("active", "true");
-        params.insert("closed", "false");
-        params.insert("limit", &limit_str);
-        params.insert("offset", &offset_str);
-        let tag_slug = tag_slug.map(str::trim).filter(|value| !value.is_empty());
-        if let Some(tag_slug) = tag_slug {
-            params.insert("tag_slug", tag_slug);
-        }
+        let url = format!("{}/events/keyset", self.gamma_url);
+        let page_limit = limit.clamp(1, 500);
+        let requested_limit = usize::try_from(limit).ok().unwrap_or(usize::MAX);
+        let mut rows_to_skip = usize::try_from(offset).ok().unwrap_or(0);
+        let mut all_markets = Vec::new();
+        let mut after_cursor: Option<String> = None;
+        let mut seen_cursors: HashSet<String> = HashSet::new();
+        let tag_slug = tag_slug
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
 
-        let response = self
-            .client
-            .get(&url)
-            .query(&params)
-            .send()
-            .await
-            .context("Failed to fetch all active markets")?;
+        for page_idx in 0..200u32 {
+            let mut query: Vec<(String, String)> = vec![
+                ("active".to_string(), "true".to_string()),
+                ("closed".to_string(), "false".to_string()),
+                ("limit".to_string(), page_limit.to_string()),
+            ];
+            if let Some(tag_slug) = tag_slug.as_ref() {
+                query.push(("tag_slug".to_string(), tag_slug.clone()));
+            }
+            if let Some(cursor) = after_cursor.as_ref() {
+                query.push(("after_cursor".to_string(), cursor.clone()));
+            }
 
-        let status = response.status();
-        let body = response
-            .bytes()
-            .await
-            .context("Failed to read active markets response body")?;
-        if body.len() > ACTIVE_MARKETS_MAX_RESPONSE_BYTES {
-            anyhow::bail!(
-                "active markets payload too large: {} bytes (max {})",
-                body.len(),
-                ACTIVE_MARKETS_MAX_RESPONSE_BYTES
-            );
-        }
+            let response = self
+                .client
+                .get(&url)
+                .query(&query)
+                .send()
+                .await
+                .context("Failed to fetch all active markets via keyset")?;
 
-        if !status.is_success() {
-            let response_text = String::from_utf8_lossy(&body);
-            let truncated = response_text.chars().take(512).collect::<String>();
-            log::warn!(
-                "Get all active markets API returned error status {}: {}",
-                status,
-                truncated
-            );
-            anyhow::bail!("API returned error status {}: {}", status, truncated);
+            let status = response.status();
+            let body = response
+                .bytes()
+                .await
+                .context("Failed to read active markets keyset response body")?;
+            if body.len() > ACTIVE_MARKETS_MAX_RESPONSE_BYTES {
+                anyhow::bail!(
+                    "active markets payload too large: {} bytes (max {})",
+                    body.len(),
+                    ACTIVE_MARKETS_MAX_RESPONSE_BYTES
+                );
+            }
+
+            if !status.is_success() {
+                let response_text = String::from_utf8_lossy(&body);
+                let truncated = response_text.chars().take(512).collect::<String>();
+                log::warn!(
+                    "Get all active markets keyset API returned error status {}: {}",
+                    status,
+                    truncated
+                );
+                anyhow::bail!("API returned error status {}: {}", status, truncated);
+            }
+
+            let payload: Value = serde_json::from_slice(&body)
+                .context("Failed to parse active markets keyset payload")?;
+            let page_markets = active_markets_from_value(&payload)?;
+            if page_markets.is_empty() {
+                break;
+            }
+            for market in page_markets {
+                if rows_to_skip > 0 {
+                    rows_to_skip = rows_to_skip.saturating_sub(1);
+                    continue;
+                }
+                if all_markets.len() < requested_limit {
+                    all_markets.push(market);
+                }
+            }
+
+            if all_markets.len() >= requested_limit {
+                break;
+            }
+            let Some(next) = next_cursor_from_value(&payload) else {
+                break;
+            };
+            if !seen_cursors.insert(next.clone()) {
+                warn!(
+                    "Gamma events keyset returned duplicate cursor on page {}; stopping",
+                    page_idx
+                );
+                break;
+            }
+            after_cursor = Some(next);
         }
-        let all_markets = parse_active_markets_payload(&body)?;
 
         log::debug!(
-            "Fetched {} active markets from events endpoint (limit={}, offset={})",
+            "Fetched {} active markets from events/keyset endpoint (limit={}, legacy_offset={})",
             all_markets.len(),
             limit,
             offset
@@ -2409,57 +2453,64 @@ impl PolymarketApi {
         anyhow::bail!("Rewards payload did not contain market rows")
     }
 
-    /// Load reward-eligible markets from Gamma `/markets` using high-volume ordering.
+    /// Load reward-eligible markets from Gamma `/markets/keyset` using high-volume ordering.
     /// This captures reward markets that may be absent from rewards-page top rows.
     pub async fn get_rewards_markets_gamma(
         &self,
         page_limit: u32,
         max_pages: u32,
     ) -> Result<Vec<RewardsMarketEntry>> {
-        let url = format!("{}/markets", self.gamma_url);
+        let url = format!("{}/markets/keyset", self.gamma_url);
         let effective_limit = page_limit.clamp(100, 500);
         let effective_pages = max_pages.max(1);
-        let mut offset = 0_u32;
+        let mut after_cursor: Option<String> = None;
+        let mut seen_cursors: HashSet<String> = HashSet::new();
         let mut out: HashMap<String, GammaRewardAccumulator> = HashMap::new();
 
-        for _ in 0..effective_pages {
-            let limit_str = effective_limit.to_string();
-            let offset_str = offset.to_string();
-            let mut params = HashMap::new();
-            params.insert("active", "true");
-            params.insert("closed", "false");
-            params.insert("acceptingOrders", "true");
-            params.insert("order", "volumeNum");
-            params.insert("ascending", "false");
-            params.insert("limit", limit_str.as_str());
-            params.insert("offset", offset_str.as_str());
+        for page_idx in 0..effective_pages {
+            let mut params: Vec<(String, String)> = vec![
+                ("active".to_string(), "true".to_string()),
+                ("closed".to_string(), "false".to_string()),
+                ("acceptingOrders".to_string(), "true".to_string()),
+                ("order".to_string(), "volumeNum".to_string()),
+                ("ascending".to_string(), "false".to_string()),
+                ("limit".to_string(), effective_limit.to_string()),
+            ];
+            if let Some(cursor) = after_cursor.as_ref() {
+                params.push(("after_cursor".to_string(), cursor.clone()));
+            }
 
             let response = self
                 .send_readonly_get_with_proxy_fallback(|client| client.get(&url).query(&params))
                 .await
-                .context("Failed to fetch Gamma reward markets")?;
+                .context("Failed to fetch Gamma reward markets via keyset")?;
             let status = response.status();
             let body = response
                 .text()
                 .await
-                .context("Failed to read Gamma reward markets response body")?;
+                .context("Failed to read Gamma reward markets keyset response body")?;
             if !status.is_success() {
                 anyhow::bail!(
-                    "Failed to fetch Gamma reward markets (status {}): {}",
+                    "Failed to fetch Gamma reward markets keyset (status {}): {}",
                     status,
                     body
                 );
             }
-            let rows: Value = serde_json::from_str(&body)
-                .with_context(|| format!("Failed to parse Gamma reward markets body: {}", body))?;
-            let Some(markets) = rows.as_array() else {
-                break;
-            };
+            let rows: Value = serde_json::from_str(&body).with_context(|| {
+                format!("Failed to parse Gamma reward markets keyset body: {}", body)
+            })?;
+            let markets = rows
+                .get("markets")
+                .or_else(|| rows.get("data"))
+                .and_then(Value::as_array)
+                .or_else(|| rows.as_array())
+                .cloned()
+                .unwrap_or_default();
             if markets.is_empty() {
                 break;
             }
 
-            for row in markets {
+            for row in markets.iter() {
                 let condition_id = value_string(row, &["conditionId", "condition_id"]);
                 let market_slug = value_string(row, &["slug", "market_slug"]);
                 if condition_id.trim().is_empty() || market_slug.trim().is_empty() {
@@ -2508,10 +2559,17 @@ impl PolymarketApi {
                 }
             }
 
-            if markets.len() < usize::try_from(effective_limit).ok().unwrap_or(500) {
+            let Some(cursor) = next_cursor_from_value(&rows) else {
+                break;
+            };
+            if !seen_cursors.insert(cursor.clone()) {
+                warn!(
+                    "Gamma markets keyset returned duplicate cursor on page {}; stopping",
+                    page_idx
+                );
                 break;
             }
-            offset = offset.saturating_add(effective_limit);
+            after_cursor = Some(cursor);
         }
 
         let mut rows = out
@@ -2537,26 +2595,23 @@ impl PolymarketApi {
     /// Get market by slug (e.g., "btc-updown-15m-1767726000")
     /// The API returns an event object with a markets array
     pub async fn get_market_by_slug(&self, slug: &str) -> Result<Market> {
-        let direct_url = format!("{}/markets", self.gamma_url);
+        let direct_url = format!("{}/markets/keyset", self.gamma_url);
         if let Ok(response) = self
             .client
             .get(&direct_url)
-            .query(&[("slug", slug)])
+            .query(&[("slug", slug), ("limit", "1")])
             .send()
             .await
         {
             if response.status().is_success() {
                 if let Ok(json) = response.json::<Value>().await {
-                    if let Some(market_json) = json.as_array().and_then(|arr| arr.first()) {
-                        if let Ok(market) = Self::parse_market_from_gamma_value(market_json.clone())
-                        {
-                            return Ok(market);
-                        }
-                    } else if let Some(market_json) = json
-                        .get("data")
+                    let first_market = json
+                        .get("markets")
+                        .or_else(|| json.get("data"))
                         .and_then(|d| d.as_array())
                         .and_then(|arr| arr.first())
-                    {
+                        .or_else(|| json.as_array().and_then(|arr| arr.first()));
+                    if let Some(market_json) = first_market {
                         if let Ok(market) = Self::parse_market_from_gamma_value(market_json.clone())
                         {
                             return Ok(market);
@@ -3249,7 +3304,7 @@ impl PolymarketApi {
 
     /// Place an order using the official SDK with proper private key signing
     ///
-    /// This method uses the official polymarket-client-sdk to:
+    /// This method uses the official polymarket_client_sdk_v2 to:
     /// 1. Create signer from private key
     /// 2. Authenticate with the CLOB API
     /// 3. Create and sign the order
@@ -3673,7 +3728,7 @@ impl PolymarketApi {
         let rate_limit_retry_attempts = Self::order_signer_rate_limit_retry_attempts();
         let rate_limit_retry_base_ms = Self::order_signer_rate_limit_retry_base_ms();
         let mut primary_response: Option<
-            polymarket_client_sdk::clob::types::response::PostOrderResponse,
+            polymarket_client_sdk_v2::clob::types::response::PostOrderResponse,
         > = None;
         let mut primary_error: Option<anyhow::Error> = None;
 
@@ -3865,7 +3920,7 @@ impl PolymarketApi {
         let rate_limit_retry_attempts = Self::order_signer_rate_limit_retry_attempts();
         let rate_limit_retry_base_ms = Self::order_signer_rate_limit_retry_base_ms();
         let mut primary_responses: Option<
-            Vec<polymarket_client_sdk::clob::types::response::PostOrderResponse>,
+            Vec<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse>,
         > = None;
         let mut primary_error: Option<anyhow::Error> = None;
 
@@ -4055,63 +4110,20 @@ impl PolymarketApi {
         &self,
         handle: &ClobClientHandle,
         signed_order: ClobSignedOrder,
-        use_fallback_signer: bool,
+        _use_fallback_signer: bool,
         signer_post_stats: &mut OrderSignerPostStats,
-    ) -> Result<polymarket_client_sdk::clob::types::response::PostOrderResponse> {
-        let route = if use_fallback_signer || self.should_force_aws_order_signer().await {
-            OrderSignerRoute::Fallback
-        } else {
-            OrderSignerRoute::Primary
-        };
+    ) -> Result<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse> {
+        let route = OrderSignerRoute::Primary;
         let post_started = Instant::now();
-        match route {
-            OrderSignerRoute::Fallback => {
-                let result = handle
-                    .builder_client_fallback
-                    .post_order(signed_order)
-                    .await;
-                let post_ms = post_started.elapsed().as_millis() as i64;
-                signer_post_stats.record_attempt(route, post_ms);
-                match result {
-                    Ok(resp) => {
-                        signer_post_stats.record_success(route);
-                        Ok(resp)
-                    }
-                    Err(e) => Err(anyhow::anyhow!(
-                        "Failed to post order with fallback builder attribution: {}",
-                        e
-                    )),
-                }
+        let result = handle.client.post_order(signed_order).await;
+        let post_ms = post_started.elapsed().as_millis() as i64;
+        signer_post_stats.record_attempt(route, post_ms);
+        match result {
+            Ok(resp) => {
+                signer_post_stats.record_success(route);
+                Ok(resp)
             }
-            OrderSignerRoute::Primary => {
-                let result = tokio::time::timeout(
-                    tokio::time::Duration::from_millis(ORDER_SIGNER_PRIMARY_FALLBACK_TIMEOUT_MS),
-                    handle.builder_client_primary.post_order(signed_order),
-                )
-                .await;
-                let post_ms = post_started.elapsed().as_millis() as i64;
-                signer_post_stats.record_attempt(route, post_ms);
-                match result {
-                    Ok(result) => match result {
-                        Ok(resp) => {
-                            self.note_primary_order_signer_success().await;
-                            signer_post_stats.record_success(route);
-                            Ok(resp)
-                        }
-                        Err(e) => Err(anyhow::anyhow!(
-                            "Failed to post order with primary builder attribution: {}",
-                            e
-                        )),
-                    },
-                    Err(_) => {
-                        self.note_primary_order_signer_timeout().await;
-                        anyhow::bail!(
-                            "Primary builder signer post timed out after {}ms",
-                            ORDER_SIGNER_PRIMARY_FALLBACK_TIMEOUT_MS
-                        )
-                    }
-                }
-            }
+            Err(e) => Err(anyhow::anyhow!("Failed to post V2 order: {}", e)),
         }
     }
 
@@ -4119,63 +4131,20 @@ impl PolymarketApi {
         &self,
         handle: &ClobClientHandle,
         signed_orders: Vec<ClobSignedOrder>,
-        use_fallback_signer: bool,
+        _use_fallback_signer: bool,
         signer_post_stats: &mut OrderSignerPostStats,
-    ) -> Result<Vec<polymarket_client_sdk::clob::types::response::PostOrderResponse>> {
-        let route = if use_fallback_signer || self.should_force_aws_order_signer().await {
-            OrderSignerRoute::Fallback
-        } else {
-            OrderSignerRoute::Primary
-        };
+    ) -> Result<Vec<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse>> {
+        let route = OrderSignerRoute::Primary;
         let post_started = Instant::now();
-        match route {
-            OrderSignerRoute::Fallback => {
-                let result = handle
-                    .builder_client_fallback
-                    .post_orders(signed_orders)
-                    .await;
-                let post_ms = post_started.elapsed().as_millis() as i64;
-                signer_post_stats.record_attempt(route, post_ms);
-                match result {
-                    Ok(resp) => {
-                        signer_post_stats.record_success(route);
-                        Ok(resp)
-                    }
-                    Err(e) => Err(anyhow::anyhow!(
-                        "Failed to post batch orders with fallback builder attribution: {}",
-                        e
-                    )),
-                }
+        let result = handle.client.post_orders(signed_orders).await;
+        let post_ms = post_started.elapsed().as_millis() as i64;
+        signer_post_stats.record_attempt(route, post_ms);
+        match result {
+            Ok(resp) => {
+                signer_post_stats.record_success(route);
+                Ok(resp)
             }
-            OrderSignerRoute::Primary => {
-                let result = tokio::time::timeout(
-                    tokio::time::Duration::from_millis(ORDER_SIGNER_PRIMARY_FALLBACK_TIMEOUT_MS),
-                    handle.builder_client_primary.post_orders(signed_orders),
-                )
-                .await;
-                let post_ms = post_started.elapsed().as_millis() as i64;
-                signer_post_stats.record_attempt(route, post_ms);
-                match result {
-                    Ok(result) => match result {
-                        Ok(resp) => {
-                            self.note_primary_order_signer_success().await;
-                            signer_post_stats.record_success(route);
-                            Ok(resp)
-                        }
-                        Err(e) => Err(anyhow::anyhow!(
-                            "Failed to post batch orders with primary builder attribution: {}",
-                            e
-                        )),
-                    },
-                    Err(_) => {
-                        self.note_primary_order_signer_timeout().await;
-                        anyhow::bail!(
-                            "Primary builder batch post timed out after {}ms",
-                            ORDER_SIGNER_PRIMARY_FALLBACK_TIMEOUT_MS
-                        )
-                    }
-                }
-            }
+            Err(e) => Err(anyhow::anyhow!("Failed to post V2 batch orders: {}", e)),
         }
     }
 
@@ -4630,8 +4599,8 @@ impl PolymarketApi {
         OpenOrderResponse::builder()
             .id(snapshot.order_id)
             .status(snapshot.status)
-            .owner(polymarket_client_sdk::auth::ApiKey::default())
-            .maker_address(polymarket_client_sdk::types::Address::ZERO)
+            .owner(polymarket_client_sdk_v2::auth::ApiKey::default())
+            .maker_address(polymarket_client_sdk_v2::types::Address::ZERO)
             .market(snapshot.market)
             .asset_id(snapshot.asset_id)
             .side(snapshot.side)
@@ -5261,8 +5230,8 @@ impl PolymarketApi {
     ) -> Result<(rust_decimal::Decimal, rust_decimal::Decimal)> {
         // Use shared authenticated client and retry once to tolerate transient CLOB errors.
         // This avoids per-request re-auth churn on manual/open checks.
-        use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
-        use polymarket_client_sdk::clob::types::AssetType;
+        use polymarket_client_sdk_v2::clob::types::request::BalanceAllowanceRequest;
+        use polymarket_client_sdk_v2::clob::types::AssetType;
         let build_request = || {
             // For collateral (USDC), the API expects *no token_id/assetId*.
             // Setting token_id to the USDC ERC20 address triggers a 400 (assetId must be empty).
@@ -5357,7 +5326,7 @@ impl PolymarketApi {
         // Get allowance for the Exchange contract
         let config = contract_config(POLYGON, false)
             .ok_or_else(|| anyhow::anyhow!("Failed to get contract config"))?;
-        let exchange_address = config.exchange;
+        let exchange_address = config.exchange_v2.unwrap_or(config.exchange);
 
         // Allowances is a HashMap<Address, String> - prefer the configured exchange key.
         // Some signer/account modes can return the allowance under a different key, so
@@ -5402,8 +5371,8 @@ impl PolymarketApi {
     /// This is faster than check_balance_allowance since it doesn't check allowances
     pub async fn check_balance_only(&self, token_id: &str) -> Result<rust_decimal::Decimal> {
         // Get balance using SDK (only balance, not allowance), using cached authenticated client.
-        use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
-        use polymarket_client_sdk::clob::types::AssetType;
+        use polymarket_client_sdk_v2::clob::types::request::BalanceAllowanceRequest;
+        use polymarket_client_sdk_v2::clob::types::AssetType;
         let token_u256 = Self::parse_u256_id(token_id, "token_id")?;
         let build_request = || {
             BalanceAllowanceRequest::builder()
@@ -5459,8 +5428,8 @@ impl PolymarketApi {
         token_id: &str,
     ) -> Result<(rust_decimal::Decimal, rust_decimal::Decimal)> {
         // Get balance and allowance using SDK, using cached authenticated client.
-        use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
-        use polymarket_client_sdk::clob::types::AssetType;
+        use polymarket_client_sdk_v2::clob::types::request::BalanceAllowanceRequest;
+        use polymarket_client_sdk_v2::clob::types::AssetType;
         let token_u256 = Self::parse_u256_id(token_id, "token_id")?;
         let build_request = || {
             BalanceAllowanceRequest::builder()
@@ -5610,7 +5579,7 @@ impl PolymarketApi {
             .context("Failed to create signer from private key")?
             .with_chain_id(Some(POLYGON));
 
-        let mut auth_builder = ClobClient::new(&self.clob_url, ClobConfig::default())
+        let mut auth_builder = ClobClient::new(&self.clob_url, self.clob_client_config()?)
             .context("Failed to create CLOB client")?
             .authentication_builder(&signer);
 
@@ -5644,8 +5613,8 @@ impl PolymarketApi {
             .await
             .context("Failed to authenticate for update_balance_allowance")?;
 
-        use polymarket_client_sdk::clob::types::request::UpdateBalanceAllowanceRequest;
-        use polymarket_client_sdk::clob::types::AssetType;
+        use polymarket_client_sdk_v2::clob::types::request::UpdateBalanceAllowanceRequest;
+        use polymarket_client_sdk_v2::clob::types::AssetType;
 
         // Outcome tokens (conditional tokens) need AssetType::Conditional
         let request = UpdateBalanceAllowanceRequest::builder()
@@ -5802,11 +5771,11 @@ impl PolymarketApi {
     }
 
     /// Check all approvals for all contracts (like SDK's check_approvals example)
-    /// Returns a vector of (contract_name, usdc_approved, ctf_approved) tuples
+    /// Returns a vector of (contract_name, collateral_approved, ctf_approved) tuples
     pub async fn check_all_approvals(&self) -> Result<Vec<(String, bool, bool)>> {
-        use polymarket_client_sdk::types::address;
+        use polymarket_client_sdk_v2::types::address;
 
-        const USDC_ADDRESS: Address = address!("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174");
+        const PUSD_ADDRESS: Address = address!("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB");
 
         let config = contract_config(POLYGON, false)
             .ok_or_else(|| anyhow::anyhow!("Failed to get contract config from SDK"))?;
@@ -5852,22 +5821,20 @@ impl PolymarketApi {
             })
         })?;
 
-        let usdc = IERC20::new(USDC_ADDRESS, provider.clone());
+        let usdc = IERC20::new(PUSD_ADDRESS, provider.clone());
         let ctf = IERC1155::new(config.conditional_tokens, provider.clone());
-
-        // Collect all contracts that need approval
-        let mut targets: Vec<(&str, Address)> = vec![
-            ("CTF Exchange", config.exchange),
-            ("Neg Risk CTF Exchange", neg_risk_config.exchange),
-        ];
-
-        if let Some(adapter) = neg_risk_config.neg_risk_adapter {
-            targets.push(("Neg Risk Adapter", adapter));
-        }
+        let (_collateral_targets, operator_targets) = Self::trading_approval_targets(
+            config.conditional_tokens,
+            config.exchange_v2.unwrap_or(config.exchange),
+            neg_risk_config
+                .exchange_v2
+                .unwrap_or(neg_risk_config.exchange),
+            neg_risk_config.neg_risk_adapter,
+        );
 
         let mut results = Vec::new();
 
-        for (name, target) in &targets {
+        for (name, target) in &operator_targets {
             let usdc_approved = usdc
                 .allowance(account_to_check, *target)
                 .call()
@@ -5887,16 +5854,41 @@ impl PolymarketApi {
         Ok(results)
     }
 
-    /// Set both USDC (ERC-20) and CTF (ERC-1155) approvals for all trading contracts:
+    fn trading_approval_targets(
+        ctf_contract_address: Address,
+        exchange_address: Address,
+        neg_risk_exchange_address: Address,
+        neg_risk_adapter: Option<Address>,
+    ) -> (Vec<(&'static str, Address)>, Vec<(&'static str, Address)>) {
+        let mut collateral_targets: Vec<(&'static str, Address)> = vec![
+            ("Conditional Tokens", ctf_contract_address),
+            ("CTF Exchange", exchange_address),
+            ("Neg Risk CTF Exchange", neg_risk_exchange_address),
+        ];
+        let mut operator_targets: Vec<(&'static str, Address)> = vec![
+            ("CTF Exchange", exchange_address),
+            ("Neg Risk CTF Exchange", neg_risk_exchange_address),
+        ];
+
+        if let Some(adapter) = neg_risk_adapter {
+            collateral_targets.push(("Neg Risk Adapter", adapter));
+            operator_targets.push(("Neg Risk Adapter", adapter));
+        }
+
+        (collateral_targets, operator_targets)
+    }
+
+    /// Set both pUSD collateral (ERC-20) and CTF (ERC-1155) approvals for all trading contracts:
+    /// - Conditional Tokens contract (pUSD approval only)
     /// - CTF Exchange
     /// - Neg Risk CTF Exchange
     /// - Neg Risk Adapter (if present)
     ///
     /// Proxy wallets use relayer submit flow (gasless); EOAs use direct RPC transactions.
     pub async fn set_all_trading_approvals(&self) -> Result<()> {
-        use polymarket_client_sdk::types::address;
+        use polymarket_client_sdk_v2::types::address;
 
-        const USDC_ADDRESS: Address = address!("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174");
+        const PUSD_ADDRESS: Address = address!("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB");
 
         let config = contract_config(POLYGON, false)
             .ok_or_else(|| anyhow::anyhow!("Failed to get contract config from SDK"))?;
@@ -5904,27 +5896,35 @@ impl PolymarketApi {
             .ok_or_else(|| anyhow::anyhow!("Failed to get neg risk contract config from SDK"))?;
 
         let ctf_contract_address = config.conditional_tokens;
-        let mut targets: Vec<(&str, Address)> = vec![
-            ("CTF Exchange", config.exchange),
-            ("Neg Risk CTF Exchange", neg_risk_config.exchange),
-        ];
-        if let Some(adapter) = neg_risk_config.neg_risk_adapter {
-            targets.push(("Neg Risk Adapter", adapter));
-        }
+        let (collateral_targets, operator_targets) = Self::trading_approval_targets(
+            ctf_contract_address,
+            config.exchange_v2.unwrap_or(config.exchange),
+            neg_risk_config
+                .exchange_v2
+                .unwrap_or(neg_risk_config.exchange),
+            neg_risk_config.neg_risk_adapter,
+        );
 
-        eprintln!("🔐 Setting approvals for {} contract(s)", targets.len());
-        eprintln!("   USDC contract: {:#x}", USDC_ADDRESS);
+        eprintln!(
+            "🔐 Setting approvals for {} collateral target(s) and {} operator target(s)",
+            collateral_targets.len(),
+            operator_targets.len()
+        );
+        eprintln!("   pUSD contract: {:#x}", PUSD_ADDRESS);
         eprintln!("   CTF contract:  {:#x}", ctf_contract_address);
 
         if self.proxy_wallet_address.is_some() {
             // Single relayer submit with all approvals batched as proxy calls.
-            let mut calls: Vec<(AlloyAddress, String)> = Vec::with_capacity(targets.len() * 2);
-            for (name, target) in &targets {
+            let mut calls: Vec<(AlloyAddress, String)> =
+                Vec::with_capacity(collateral_targets.len() + operator_targets.len());
+            for (name, target) in &collateral_targets {
                 eprintln!("   - {} ({:#x})", name, target);
                 calls.push((
-                    USDC_ADDRESS,
+                    PUSD_ADDRESS,
                     Self::encode_erc20_approve_call_data(*target, U256::MAX),
                 ));
+            }
+            for (_name, target) in &operator_targets {
                 calls.push((
                     ctf_contract_address,
                     Self::encode_set_approval_for_all_call_data(*target, true),
@@ -5932,8 +5932,9 @@ impl PolymarketApi {
             }
 
             let metadata = format!(
-                "Set USDC+CTF approvals for {} trading contracts",
-                targets.len()
+                "Set pUSD+CTF approvals for {} collateral targets and {} operator targets",
+                collateral_targets.len(),
+                operator_targets.len()
             );
             let relayer_request = self
                 .build_relayer_request_for_calls(calls, metadata.as_str())
@@ -5979,21 +5980,23 @@ impl PolymarketApi {
             })
         })?;
 
-        let usdc = IERC20::new(USDC_ADDRESS, provider.clone());
+        let usdc = IERC20::new(PUSD_ADDRESS, provider.clone());
         let ctf = IERC1155::new(ctf_contract_address, provider.clone());
 
-        for (name, target) in &targets {
+        for (name, target) in &collateral_targets {
             eprintln!("   - {} ({:#x})", name, target);
             let usdc_tx = usdc
                 .approve(*target, U256::MAX)
                 .send()
                 .await
-                .with_context(|| format!("USDC approve send failed for {}", name))?
+                .with_context(|| format!("pUSD approve send failed for {}", name))?
                 .watch()
                 .await
-                .with_context(|| format!("USDC approve confirm failed for {}", name))?;
-            eprintln!("     ✅ USDC approved tx={:#x}", usdc_tx);
+                .with_context(|| format!("pUSD approve confirm failed for {}", name))?;
+            eprintln!("     ✅ pUSD approved tx={:#x}", usdc_tx);
+        }
 
+        for (name, target) in &operator_targets {
             let ctf_tx = ctf
                 .setApprovalForAll(*target, true)
                 .send()
@@ -6053,12 +6056,12 @@ impl PolymarketApi {
         // Get addresses from SDK's contract_config
         // Based on SDK example: https://github.com/Polymarket/rs-clob-client/blob/main/examples/approvals.rs
         // - config.conditional_tokens = CTF contract (where we call setApprovalForAll)
-        // - config.exchange = CTF Exchange (the operator we approve)
+        // - config.exchange_v2 = CTF Exchange V2 (the operator we approve)
         let config = contract_config(POLYGON, false)
             .ok_or_else(|| anyhow::anyhow!("Failed to get contract config from SDK"))?;
 
         let ctf_contract_address = config.conditional_tokens;
-        let exchange_address = config.exchange;
+        let exchange_address = config.exchange_v2.unwrap_or(config.exchange);
 
         eprintln!("🔐 Setting approval for all tokens using CTF contract's setApprovalForAll()");
         eprintln!(
@@ -6600,7 +6603,7 @@ impl PolymarketApi {
             .with_chain_id(Some(POLYGON));
 
         // Build authentication builder with proxy wallet support
-        let mut auth_builder = ClobClient::new(&self.clob_url, ClobConfig::default())
+        let mut auth_builder = ClobClient::new(&self.clob_url, self.clob_client_config()?)
             .context("Failed to create CLOB client")?
             .authentication_builder(&signer);
 
@@ -6659,22 +6662,6 @@ impl PolymarketApi {
             .authenticate()
             .await
             .context("Failed to authenticate with CLOB API. Check your API credentials.")?;
-        let builder_client_primary = self
-            .build_attributed_order_client_with_config(
-                &signer,
-                self.order_attribution_builder_config()?,
-            )
-            .await
-            .context("Failed to initialize primary builder attribution client for market orders")?;
-        let builder_client_fallback = self
-            .build_attributed_order_client_with_config(
-                &signer,
-                self.order_attribution_builder_fallback_config()?,
-            )
-            .await
-            .context(
-                "Failed to initialize fallback builder attribution client for market orders",
-            )?;
 
         // Convert order side string to SDK Side enum
         let side_enum = match side {
@@ -6835,7 +6822,6 @@ impl PolymarketApi {
             1
         }; // Increased to 3 retries for SELL orders
         let token_id_u256 = Self::parse_u256_id(token_id, "token_id")?;
-        let mut use_fallback_signer = self.should_force_aws_order_signer().await;
 
         let response = loop {
             // Rebuild order builder for each retry (since it's moved when building)
@@ -6853,55 +6839,20 @@ impl PolymarketApi {
                 .await
                 .context("Failed to sign market order")?;
 
-            let result = if use_fallback_signer {
-                builder_client_fallback.post_order(signed_order).await
-            } else {
-                match tokio::time::timeout(
-                    tokio::time::Duration::from_millis(ORDER_SIGNER_PRIMARY_FALLBACK_TIMEOUT_MS),
-                    builder_client_primary.post_order(signed_order),
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => {
-                        self.note_primary_order_signer_timeout().await;
-                        warn!(
-                            "Primary market-order signer timed out after {}ms; switching to AWS fallback signer",
-                            ORDER_SIGNER_PRIMARY_FALLBACK_TIMEOUT_MS
-                        );
-                        use_fallback_signer = true;
-                        continue;
-                    }
-                }
-            };
+            let result = client.post_order(signed_order).await;
 
             match result {
                 Ok(resp) => {
-                    if !use_fallback_signer {
-                        self.note_primary_order_signer_success().await;
-                    }
                     // Success - break out of retry loop
                     break resp;
                 }
                 Err(e) => {
                     let primary_err = anyhow::anyhow!("{:?}", e);
-                    if !use_fallback_signer {
-                        if Self::is_timeout_error(&primary_err) {
-                            self.note_primary_order_signer_timeout().await;
-                        }
-                        if Self::should_fallback_to_aws_signer(&primary_err) {
-                            warn!(
-                                "Primary market-order signer transient failure; switching to AWS fallback signer: {}",
-                                e
-                            );
-                            use_fallback_signer = true;
-                            continue;
-                        } else if Self::is_non_retryable_primary_post_error(&primary_err) {
-                            info!(
-                                "Primary market-order signer rejected FAK/FOK without a match; skipping AWS fallback: {}",
-                                e
-                            );
-                        }
+                    if Self::is_non_retryable_primary_post_error(&primary_err) {
+                        info!(
+                            "V2 market-order post rejected FAK/FOK without a match: {}",
+                            e
+                        );
                     }
                     let error_str = format!("{:?}", e);
                     // Separate balance errors from allowance errors
@@ -7235,10 +7186,10 @@ impl PolymarketApi {
     }
 
     fn encode_redeem_positions_call_data(condition_id: &str) -> Result<String> {
-        // USDC collateral token address on Polygon.
+        // pUSD collateral token address on Polygon.
         let collateral_token =
-            AlloyAddress::parse_checksummed("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", None)
-                .context("Failed to parse USDC address")?;
+            AlloyAddress::parse_checksummed("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", None)
+                .context("Failed to parse pUSD address")?;
         let condition_id_clean = condition_id.strip_prefix("0x").unwrap_or(condition_id);
         let condition_id_b256 = B256::from_str(condition_id_clean).context(format!(
             "Failed to parse condition_id to B256: {}",
@@ -7274,10 +7225,10 @@ impl PolymarketApi {
         condition_id: &str,
         pair_amount_shares: f64,
     ) -> Result<String> {
-        // USDC collateral token address on Polygon.
+        // pUSD collateral token address on Polygon.
         let collateral_token =
-            AlloyAddress::parse_checksummed("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174", None)
-                .context("Failed to parse USDC address")?;
+            AlloyAddress::parse_checksummed("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", None)
+                .context("Failed to parse pUSD address")?;
         let condition_id_clean = condition_id.strip_prefix("0x").unwrap_or(condition_id);
         let condition_id_b256 = B256::from_str(condition_id_clean).context(format!(
             "Failed to parse condition_id to B256: {}",
@@ -7871,8 +7822,8 @@ mod tests {
     use alloy::dyn_abi::Eip712Domain;
     use alloy::primitives::Signature;
     use alloy::sol_types::SolStruct as _;
-    use polymarket_client_sdk::auth::Uuid;
-    use polymarket_client_sdk::clob::types::Order as ClobOrder;
+    use polymarket_client_sdk_v2::auth::Uuid;
+    use polymarket_client_sdk_v2::clob::types::Order as ClobOrder;
     use std::borrow::Cow;
 
     #[test]
@@ -8004,12 +7955,11 @@ mod tests {
     }
 
     fn test_order_domain() -> Eip712Domain {
-        let exchange = contract_config(POLYGON, false)
-            .expect("contract config for polygon")
-            .exchange;
+        let config = contract_config(POLYGON, false).expect("contract config for polygon");
+        let exchange = config.exchange_v2.unwrap_or(config.exchange);
         Eip712Domain {
             name: Some(Cow::Borrowed("Polymarket CTF Exchange")),
-            version: Some(Cow::Borrowed("1")),
+            version: Some(Cow::Borrowed("2")),
             chain_id: Some(U256::from(POLYGON)),
             verifying_contract: Some(exchange),
             ..Eip712Domain::default()
@@ -8019,20 +7969,17 @@ mod tests {
     fn fallback_test_order_with_salt(salt: u64) -> ClobOrder {
         let maker = AlloyAddress::from_str("0x1111111111111111111111111111111111111111")
             .expect("maker address");
-        let taker = AlloyAddress::from_str("0x0000000000000000000000000000000000000000")
-            .expect("taker address");
 
         let mut order = ClobOrder::default();
         order.salt = U256::from(salt);
         order.maker = maker;
         order.signer = maker;
-        order.taker = taker;
         order.tokenId = U256::from(1_u64);
         order.makerAmount = U256::from(10_000_000_u64);
         order.takerAmount = U256::from(5_000_000_u64);
-        order.expiration = U256::from(2_000_000_000_u64);
-        order.nonce = U256::from(1_u64);
-        order.feeRateBps = U256::from(0_u64);
+        order.timestamp = U256::from(1_700_000_000_000_u64);
+        order.metadata = B256::ZERO;
+        order.builder = B256::ZERO;
         order.side = Side::Buy as u8;
         order.signatureType = SignatureType::Proxy as u8;
         order
@@ -8053,13 +8000,19 @@ mod tests {
 
         let signature = Signature::new(U256::from(1_u64), U256::from(2_u64), false);
         let signed_a = ClobSignedOrder::builder()
-            .order(order_a)
+            .payload(polymarket_client_sdk_v2::clob::types::OrderPayload::new(
+                order_a,
+                U256::ZERO,
+            ))
             .signature(signature)
             .order_type(OrderType::GTC)
             .owner(Uuid::nil())
             .build();
         let signed_b = ClobSignedOrder::builder()
-            .order(order_b)
+            .payload(polymarket_client_sdk_v2::clob::types::OrderPayload::new(
+                order_b,
+                U256::ZERO,
+            ))
             .signature(signature)
             .order_type(OrderType::GTC)
             .owner(Uuid::nil())
@@ -8100,6 +8053,6 @@ mod tests {
         let malformed = br#"{"data":[{"markets":"bad-shape"}]}"#;
         let err = parse_active_markets_payload(malformed).expect_err("must fail");
         let text = err.to_string();
-        assert!(text.contains("Failed to parse active markets payload"));
+        assert!(text.contains("Failed to parse active markets event row"));
     }
 }

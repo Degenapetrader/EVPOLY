@@ -3,7 +3,7 @@ use alloy::signers::Signer as _;
 use anyhow::{Context, Result};
 use clap::Parser;
 use polymarket_arbitrage_bot::{Config, PolymarketApi};
-use polymarket_client_sdk::POLYGON;
+use polymarket_client_sdk_v2::POLYGON;
 use rust_decimal::Decimal;
 use std::str::FromStr;
 

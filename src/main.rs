@@ -35405,16 +35405,16 @@ fn mm_unknown_order_status_terminal_bucket(raw: &str) -> Option<&'static str> {
 }
 
 fn mm_order_status_is_terminal(
-    status: &polymarket_client_sdk::clob::types::OrderStatusType,
+    status: &polymarket_client_sdk_v2::clob::types::OrderStatusType,
 ) -> bool {
     matches!(
         status,
-        polymarket_client_sdk::clob::types::OrderStatusType::Matched
-            | polymarket_client_sdk::clob::types::OrderStatusType::Canceled
-            | polymarket_client_sdk::clob::types::OrderStatusType::Unmatched
+        polymarket_client_sdk_v2::clob::types::OrderStatusType::Matched
+            | polymarket_client_sdk_v2::clob::types::OrderStatusType::Canceled
+            | polymarket_client_sdk_v2::clob::types::OrderStatusType::Unmatched
     ) || matches!(
         status,
-        polymarket_client_sdk::clob::types::OrderStatusType::Unknown(raw)
+        polymarket_client_sdk_v2::clob::types::OrderStatusType::Unknown(raw)
             if mm_unknown_order_status_terminal_bucket(raw.as_str()).is_some()
     )
 }
@@ -35428,13 +35428,13 @@ fn mm_order_lookup_error_is_terminal(error_text: &str) -> bool {
 }
 
 fn mm_pending_terminal_status(
-    status: &polymarket_client_sdk::clob::types::OrderStatusType,
+    status: &polymarket_client_sdk_v2::clob::types::OrderStatusType,
 ) -> Option<&'static str> {
     match status {
-        polymarket_client_sdk::clob::types::OrderStatusType::Matched => Some("FILLED"),
-        polymarket_client_sdk::clob::types::OrderStatusType::Canceled
-        | polymarket_client_sdk::clob::types::OrderStatusType::Unmatched => Some("CANCELED"),
-        polymarket_client_sdk::clob::types::OrderStatusType::Unknown(raw) => {
+        polymarket_client_sdk_v2::clob::types::OrderStatusType::Matched => Some("FILLED"),
+        polymarket_client_sdk_v2::clob::types::OrderStatusType::Canceled
+        | polymarket_client_sdk_v2::clob::types::OrderStatusType::Unmatched => Some("CANCELED"),
+        polymarket_client_sdk_v2::clob::types::OrderStatusType::Unknown(raw) => {
             mm_unknown_order_status_terminal_bucket(raw.as_str())
         }
         _ => None,
@@ -36005,12 +36005,12 @@ mod tests {
 
     #[test]
     fn premarket_side_budget_uses_base_and_timeframe_policy() {
-        unsafe { std::env::set_var("EVPOLY_PREMARKET_BASE_SIZE_USD", "200") };
-        assert!((premarket_side_budget_usd(Timeframe::M5) - 150.0).abs() < 1e-9);
-        assert!((premarket_side_budget_usd(Timeframe::M15) - 200.0).abs() < 1e-9);
-        assert!((premarket_side_budget_usd(Timeframe::H1) - 250.0).abs() < 1e-9);
-        assert!((premarket_side_budget_usd(Timeframe::H4) - 250.0).abs() < 1e-9);
-        unsafe { std::env::remove_var("EVPOLY_PREMARKET_BASE_SIZE_USD") };
+        with_admin_env(&[("EVPOLY_PREMARKET_BASE_SIZE_USD", Some("200"))], || {
+            assert!((premarket_side_budget_usd(Timeframe::M5) - 150.0).abs() < 1e-9);
+            assert!((premarket_side_budget_usd(Timeframe::M15) - 200.0).abs() < 1e-9);
+            assert!((premarket_side_budget_usd(Timeframe::H1) - 250.0).abs() < 1e-9);
+            assert!((premarket_side_budget_usd(Timeframe::H4) - 250.0).abs() < 1e-9);
+        });
     }
 
     #[test]
@@ -36027,7 +36027,7 @@ mod tests {
 
     #[test]
     fn premarket_side_budget_scales_by_asset_multiplier() {
-        with_admin_env(&[], || {
+        with_admin_env(&[("EVPOLY_PREMARKET_BASE_SIZE_USD", None)], || {
             let base = premarket_side_budget_usd(Timeframe::M5);
             let eth_multiplier = premarket_side_budget_multiplier("ETH");
             let eth_budget = premarket_side_budget_usd_for_asset(Timeframe::M5, "ETH");
@@ -37156,7 +37156,7 @@ mod tests {
 
     #[test]
     fn mm_status_helpers_treat_invalid_as_terminal_stale() {
-        use polymarket_client_sdk::clob::types::OrderStatusType;
+        use polymarket_client_sdk_v2::clob::types::OrderStatusType;
 
         let status = OrderStatusType::Unknown("INVALID".to_string());
         assert!(mm_order_status_is_terminal(&status));
@@ -37165,7 +37165,7 @@ mod tests {
 
     #[test]
     fn mm_status_helpers_keep_unknown_non_terminal_open() {
-        use polymarket_client_sdk::clob::types::OrderStatusType;
+        use polymarket_client_sdk_v2::clob::types::OrderStatusType;
 
         let status = OrderStatusType::Unknown("LIVE_PENDING".to_string());
         assert!(!mm_order_status_is_terminal(&status));

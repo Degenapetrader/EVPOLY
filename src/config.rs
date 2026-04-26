@@ -625,7 +625,7 @@ impl Default for Config {
         Self {
             polymarket: PolymarketConfig {
                 gamma_api_url: "https://gamma-api.polymarket.com".to_string(),
-                clob_api_url: "https://clob.polymarket.com".to_string(),
+                clob_api_url: "https://clob-v2.polymarket.com".to_string(),
                 private_key: None,
                 proxy_wallet_address: None,
                 signature_type: None,

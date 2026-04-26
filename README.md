@@ -96,8 +96,14 @@ Validate env coverage:
 bash scripts/verify_env_coverage.sh --env-file .env
 ```
 
-## Remote Alpha/Discovery Defaults
-By default runtime resolves remote endpoints to `https://alpha.evplus.ai/...` and retries to `https://alpha2.evplus.ai/...` on transport/timeout/429/5xx failure classes.
+## Signer and Discovery Defaults
+- Order posting now uses local CLOB V2 SDK signing. Set `POLY_BUILDER_CODE` only when builder attribution is required.
+- Legacy `POLY_BUILDER_*` HMAC credentials are retained only for relayer submit compatibility, not normal CLOB order posting.
+- Shared timeframe discovery and EVSnipe discovery are local-first.
+- If local discovery returns no usable result, runtime falls back to the configured remote discovery endpoints.
+
+## Remote Alpha/Discovery Fallbacks
+Remote endpoints still default to `https://alpha.evplus.ai/...` and retry to `https://alpha2.evplus.ai/...` on transport/timeout/429/5xx failure classes.
 
 Timeout policy currently hardcoded in runtime:
 - Premarket alpha: `1000ms`
@@ -207,3 +213,25 @@ cargo test --all-targets --quiet
 
 ## Strategy Change Rule
 If strategy logic/risk/sizing/defaults change, update `strategy-changelog.md` in the same task/PR.
+
+## Polymarket CLOB V2 migration notes
+
+This local branch has been migrated for Polymarket CLOB V2 while preserving the seven EVPOLY strategy decision paths.
+
+Runtime-level changes in this branch:
+
+- Uses `polymarket_client_sdk_v2` with CLOB, CTF, WebSocket, Gamma, and Bridge features.
+- Pins the Rust toolchain to `1.88.0` for the V2 Rust SDK requirement.
+- Defaults `POLY_CLOB_API_URL` to `https://clob-v2.polymarket.com` for pre-cutover testing.
+- Uses CLOB V2 order signing through the SDK; V2 signed orders carry `timestamp`, `metadata`, and `builder` through the SDK instead of legacy `nonce`, `feeRateBps`, and `taker` fields.
+- Uses `POLY_BUILDER_CODE` for V2 builder attribution. Legacy `POLY_BUILDER_*` HMAC credentials are retained only for relayer submit compatibility where still required.
+- Moves direct collateral contract checks to the pUSD collateral token address and uses the SDK V2 exchange addresses through `exchange_v2` where present.
+- Replaces Gamma offset discovery with `/events/keyset` and `/markets/keyset`, using `after_cursor` / `next_cursor` and local skipping only for callers that still pass a legacy `offset` argument.
+
+Operational cutover guidance:
+
+1. Run read-only and dry-run tests against `https://clob-v2.polymarket.com`.
+2. Confirm pUSD balance and allowances before enabling live BUY orders.
+3. Confirm `POLY_BUILDER_CODE` is set if builder attribution is required.
+4. Stop live trading and cancel resting orders before the Polymarket V2 cutover window.
+5. After cutover, production can use `https://clob.polymarket.com` once it reports V2.

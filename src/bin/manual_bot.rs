@@ -34,8 +34,8 @@ use polymarket_arbitrage_bot::ui_contracts::{
     build_ui_market, manual_mode_label, manual_run_kind_label, manual_run_status_label,
     manual_side_label, UiManualHealth, UiManualPosition, UiManualRun, UiMarket,
 };
-use polymarket_client_sdk::clob::types::response::OpenOrderResponse;
-use polymarket_client_sdk::clob::types::OrderStatusType;
+use polymarket_client_sdk_v2::clob::types::response::OpenOrderResponse;
+use polymarket_client_sdk_v2::clob::types::OrderStatusType;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

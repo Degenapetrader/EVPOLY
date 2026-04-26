@@ -1,59 +1,41 @@
 # Strategy Combo Guide
 
 ## Hard Rules
-- `mm_rewards_v1` should run alone, except it may run with `mm_sport_v1`.
-- `endgame_sweep_v1` and `sessionband_v1` should not run together.
-
-## Why
-- MM rewards is inventory/market-making logic; combining it with directional loops increases inventory conflict and order churn.
-- Endgame and SessionBand both concentrate exposure near close checkpoints; combining them stacks late-window risk.
+- `mm_sport_v1` should not be combined with high-frequency directional profiles until sizing and inventory risk are reviewed.
+- `endgame_sweep_v1` is the only late-window close strategy in the active runtime.
 
 ## Recommended Profiles
 
-### Profile A: Premarket Only (Lowest Complexity)
+### Profile A: Premarket Only
 - Enable: `premarket_v1`
-- Disable: `endgame_sweep_v1`, `evcurve_v1`, `sessionband_v1`, `evsnipe_v1`, `mm_rewards_v1`
+- Disable: `endgame_sweep_v1`, `evcurve_v1`, `evsnipe_v1`, `mm_sport_v1`
 
 ### Profile B: Premarket + EVcurve
 - Enable: `premarket_v1`, `evcurve_v1`
-- Disable: `endgame_sweep_v1`, `sessionband_v1`, `evsnipe_v1`, `mm_rewards_v1`
+- Disable: `endgame_sweep_v1`, `evsnipe_v1`, `mm_sport_v1`
 
-### Profile C: Endgame Stack (No SessionBand)
+### Profile C: Directional Stack
 - Enable: `premarket_v1`, `endgame_sweep_v1`, optional `evcurve_v1`, optional `evsnipe_v1`
-- Disable: `sessionband_v1`, `mm_rewards_v1`
+- Disable: `mm_sport_v1`
 
-### Profile D: SessionBand Stack (No Endgame)
-- Enable: `premarket_v1`, `sessionband_v1`, optional `evcurve_v1`, optional `evsnipe_v1`
-- Disable: `endgame_sweep_v1`, `mm_rewards_v1`
+### Profile D: MM Sport
+- Enable: `mm_sport_v1`
+- Disable or review sizing for: `premarket_v1`, `endgame_sweep_v1`, `evcurve_v1`, `evsnipe_v1`
 
-### Profile E: Directional All-In (Higher Ops Load)
-- Enable: `premarket_v1`, `endgame_sweep_v1` or `sessionband_v1` (choose one), `evcurve_v1`, `evsnipe_v1`
-- Disable: `mm_rewards_v1`
-
-### Profile F: MM Rewards Solo
-- Enable: `mm_rewards_v1`
-- Disable: `premarket_v1`, `endgame_sweep_v1`, `evcurve_v1`, `sessionband_v1`, `evsnipe_v1`
-
-### Profile G: MM Rewards + MM Sport
-- Enable: `mm_rewards_v1`, `mm_sport_v1`
-- Disable (recommended): `premarket_v1`, `endgame_sweep_v1`, `evcurve_v1`, `sessionband_v1`, `evsnipe_v1`
-
-## Example Toggle Set (MM Solo)
-```bash
-EVPOLY_STRATEGY_PREMARKET_ENABLE=false
-EVPOLY_STRATEGY_ENDGAME_ENABLE=false
-EVPOLY_STRATEGY_EVCURVE_ENABLE=false
-EVPOLY_STRATEGY_SESSIONBAND_ENABLE=false
-EVPOLY_STRATEGY_EVSNIPE_ENABLE=false
-EVPOLY_STRATEGY_MM_REWARDS_ENABLE=true
-```
-
-## Example Toggle Set (Directional, No MM)
+## Example Toggle Set (Directional)
 ```bash
 EVPOLY_STRATEGY_PREMARKET_ENABLE=true
 EVPOLY_STRATEGY_ENDGAME_ENABLE=true
 EVPOLY_STRATEGY_EVCURVE_ENABLE=true
-EVPOLY_STRATEGY_SESSIONBAND_ENABLE=false
 EVPOLY_STRATEGY_EVSNIPE_ENABLE=true
-EVPOLY_STRATEGY_MM_REWARDS_ENABLE=false
+EVPOLY_STRATEGY_MM_SPORT_ENABLE=false
+```
+
+## Example Toggle Set (MM Sport)
+```bash
+EVPOLY_STRATEGY_PREMARKET_ENABLE=false
+EVPOLY_STRATEGY_ENDGAME_ENABLE=false
+EVPOLY_STRATEGY_EVCURVE_ENABLE=false
+EVPOLY_STRATEGY_EVSNIPE_ENABLE=false
+EVPOLY_STRATEGY_MM_SPORT_ENABLE=true
 ```

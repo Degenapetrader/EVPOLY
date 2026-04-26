@@ -2,7 +2,6 @@ use chrono::{DateTime, Datelike, Utc, Weekday};
 
 use crate::strategy::{
     STRATEGY_ID_ENDGAME_SWEEP_V1, STRATEGY_ID_EVCURVE_V1, STRATEGY_ID_PREMARKET_V1,
-    STRATEGY_ID_SESSIONBAND_V1,
 };
 
 pub const WEEKEND_POLICY_ENV_KEY: &str = "EVPOLY_WEEKEND_POLICY";
@@ -59,10 +58,7 @@ pub fn weekend_policy_from_env() -> WeekendPolicy {
 pub fn strategy_uses_weekend_pause(strategy_id: &str) -> bool {
     matches!(
         strategy_id,
-        STRATEGY_ID_PREMARKET_V1
-            | STRATEGY_ID_ENDGAME_SWEEP_V1
-            | STRATEGY_ID_EVCURVE_V1
-            | STRATEGY_ID_SESSIONBAND_V1
+        STRATEGY_ID_PREMARKET_V1 | STRATEGY_ID_ENDGAME_SWEEP_V1 | STRATEGY_ID_EVCURVE_V1
     )
 }
 
@@ -96,7 +92,7 @@ mod tests {
     };
     use crate::strategy::{
         STRATEGY_ID_ENDGAME_SWEEP_V1, STRATEGY_ID_EVCURVE_V1, STRATEGY_ID_EVSNIPE_V1,
-        STRATEGY_ID_MM_REWARDS_V1, STRATEGY_ID_PREMARKET_V1, STRATEGY_ID_SESSIONBAND_V1,
+        STRATEGY_ID_MM_SPORT_V1, STRATEGY_ID_PREMARKET_V1,
     };
     use chrono::{TimeZone, Utc};
 
@@ -132,13 +128,12 @@ mod tests {
     }
 
     #[test]
-    fn strategy_filter_only_targets_four_core_entry_strategies() {
+    fn strategy_filter_only_targets_core_entry_strategies() {
         assert!(strategy_uses_weekend_pause(STRATEGY_ID_PREMARKET_V1));
         assert!(strategy_uses_weekend_pause(STRATEGY_ID_ENDGAME_SWEEP_V1));
         assert!(strategy_uses_weekend_pause(STRATEGY_ID_EVCURVE_V1));
-        assert!(strategy_uses_weekend_pause(STRATEGY_ID_SESSIONBAND_V1));
         assert!(!strategy_uses_weekend_pause(STRATEGY_ID_EVSNIPE_V1));
-        assert!(!strategy_uses_weekend_pause(STRATEGY_ID_MM_REWARDS_V1));
+        assert!(!strategy_uses_weekend_pause(STRATEGY_ID_MM_SPORT_V1));
     }
 
     #[test]

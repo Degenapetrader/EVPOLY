@@ -5725,7 +5725,7 @@ WHERE strategy_id = ?1
         let active_buy_orders = self
             .list_open_pending_orders_for_strategy_scope(
                 timeframe.as_str(),
-                "mm_rewards",
+                "MM_SPORT",
                 strategy_id.as_str(),
                 period_timestamp,
                 token_id.as_str(),
@@ -5735,7 +5735,7 @@ WHERE strategy_id = ?1
         let active_sell_orders = self
             .list_open_pending_orders_for_strategy_scope(
                 timeframe.as_str(),
-                "mm_rewards",
+                "MM_SPORT",
                 strategy_id.as_str(),
                 period_timestamp,
                 token_id.as_str(),
@@ -13618,7 +13618,7 @@ mod tests {
     use crate::signal_state::SignalState;
     use crate::strategy::{
         fallback_strategy, DecisionTelemetry, STRATEGY_ID_ENDGAME_SWEEP_V1, STRATEGY_ID_EVCURVE_V1,
-        STRATEGY_ID_MM_REWARDS_V1, STRATEGY_ID_PREMARKET_V1,
+        STRATEGY_ID_MM_SPORT_V1, STRATEGY_ID_PREMARKET_V1,
     };
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -14533,7 +14533,7 @@ WHERE strategy_id=?1 AND timeframe='5m' AND period_timestamp=?2 AND token_id='to
         let path = temp_db_path("entry_fill_avg_deduped");
         let db = TrackingDb::new(&path)?;
         let period = 1_700_000_105_u64;
-        let strategy = STRATEGY_ID_MM_REWARDS_V1;
+        let strategy = STRATEGY_ID_MM_SPORT_V1;
         let condition = "cond-fill-avg-dedupe";
         let token = "token-fill-avg-dedupe";
         let order_id = "ord-fill-avg-dedupe-1";
@@ -15061,7 +15061,7 @@ WHERE strategy_id=?1 AND timeframe='5m' AND period_timestamp=?2 AND token_id='to
         let db = TrackingDb::new(&path)?;
         let period_a = 1_700_020_000_u64;
         let period_b = 1_700_020_300_u64;
-        let strategy = "mm_rewards_v1";
+        let strategy = "mm_sport_v1";
         let condition = "cond-mm-scope";
         let token = "token-mm-scope";
 
@@ -15146,7 +15146,7 @@ WHERE strategy_id=?1 AND timeframe='5m' AND period_timestamp=?2 AND token_id='to
                 ts_ms: 101_000,
                 period_timestamp,
                 timeframe: "mm".to_string(),
-                strategy_id: STRATEGY_ID_MM_REWARDS_V1.to_string(),
+                strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
                 asset_symbol: Some("BTC".to_string()),
                 condition_id: Some(condition_id.to_string()),
                 token_id: Some(token_id.to_string()),
@@ -15162,7 +15162,7 @@ WHERE strategy_id=?1 AND timeframe='5m' AND period_timestamp=?2 AND token_id='to
         }
 
         let results = db.consume_mm_merge_inventory(
-            STRATEGY_ID_MM_REWARDS_V1,
+            STRATEGY_ID_MM_SPORT_V1,
             "mm",
             period_timestamp,
             condition_id,
@@ -15191,7 +15191,7 @@ WHERE strategy_id=?1
 ORDER BY token_id ASC
 "#,
             )?;
-            let rows = stmt.query_map(params![STRATEGY_ID_MM_REWARDS_V1, condition_id], |row| {
+            let rows = stmt.query_map(params![STRATEGY_ID_MM_SPORT_V1, condition_id], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, f64>(1)?,
@@ -15213,7 +15213,7 @@ ORDER BY token_id ASC
         }
 
         let inventory_rows =
-            db.list_open_position_inventory_by_strategy(STRATEGY_ID_MM_REWARDS_V1, 10)?;
+            db.list_open_position_inventory_by_strategy(STRATEGY_ID_MM_SPORT_V1, 10)?;
         assert_eq!(inventory_rows.len(), 2);
         for row in inventory_rows {
             assert!((row.net_units - 60.0).abs() < 1e-9);
@@ -15245,7 +15245,7 @@ ORDER BY token_id ASC
         let period_timestamp = 1_700_333_000_u64;
 
         db.upsert_mm_market_state(&MmMarketStateUpsertRecord {
-            strategy_id: STRATEGY_ID_MM_REWARDS_V1.to_string(),
+            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
             condition_id: condition_id.to_string(),
             market_slug: Some("market-mm-reconcile".to_string()),
             timeframe: "mm".to_string(),
@@ -15296,7 +15296,7 @@ ORDER BY token_id ASC
                 ts_ms: 112_000,
                 period_timestamp,
                 timeframe: "mm".to_string(),
-                strategy_id: STRATEGY_ID_MM_REWARDS_V1.to_string(),
+                strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
                 asset_symbol: Some("BTC".to_string()),
                 condition_id: Some(condition_id.to_string()),
                 token_id: Some(token_id.to_string()),
@@ -15364,9 +15364,9 @@ INSERT OR REPLACE INTO positions_unrealized_mid_latest_v1 (
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
 "#,
                 params![
-                    format!("{}:{}:{}:{}", STRATEGY_ID_MM_REWARDS_V1, "mm", period_timestamp, up_token_id),
+                    format!("{}:{}:{}:{}", STRATEGY_ID_MM_SPORT_V1, "mm", period_timestamp, up_token_id),
                     122_000_i64,
-                    STRATEGY_ID_MM_REWARDS_V1,
+                    STRATEGY_ID_MM_SPORT_V1,
                     "mm",
                     period_timestamp as i64,
                     condition_id,
@@ -15391,9 +15391,9 @@ INSERT OR REPLACE INTO positions_unrealized_mid_latest_v1 (
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
 "#,
                 params![
-                    format!("{}:{}:{}:{}", STRATEGY_ID_MM_REWARDS_V1, "mm", period_timestamp, down_token_id),
+                    format!("{}:{}:{}:{}", STRATEGY_ID_MM_SPORT_V1, "mm", period_timestamp, down_token_id),
                     122_000_i64,
-                    STRATEGY_ID_MM_REWARDS_V1,
+                    STRATEGY_ID_MM_SPORT_V1,
                     "mm",
                     period_timestamp as i64,
                     condition_id,
@@ -15413,7 +15413,7 @@ INSERT OR REPLACE INTO positions_unrealized_mid_latest_v1 (
         })?;
 
         let repairs =
-            db.reconcile_mm_inventory_drift_from_wallet_tables(STRATEGY_ID_MM_REWARDS_V1, 1.0, 10)?;
+            db.reconcile_mm_inventory_drift_from_wallet_tables(STRATEGY_ID_MM_SPORT_V1, 1.0, 10)?;
         assert_eq!(repairs.len(), 2);
         let consume = repairs
             .iter()
@@ -15437,7 +15437,7 @@ INSERT OR REPLACE INTO positions_unrealized_mid_latest_v1 (
         assert!((add.db_inventory_shares_after - 140.0).abs() < 1e-9);
 
         let per_token_inventory =
-            db.list_open_position_inventory_by_strategy(STRATEGY_ID_MM_REWARDS_V1, 10)?;
+            db.list_open_position_inventory_by_strategy(STRATEGY_ID_MM_SPORT_V1, 10)?;
         let up_row = per_token_inventory
             .iter()
             .find(|row| row.token_id == up_token_id)
@@ -15449,7 +15449,7 @@ INSERT OR REPLACE INTO positions_unrealized_mid_latest_v1 (
         assert!((up_row.net_units - 30.0).abs() < 1e-9);
         assert!((down_row.net_units - 140.0).abs() < 1e-9);
 
-        let attribution = db.summarize_mm_market_attribution(STRATEGY_ID_MM_REWARDS_V1, None)?;
+        let attribution = db.summarize_mm_market_attribution(STRATEGY_ID_MM_SPORT_V1, None)?;
         let row = attribution
             .iter()
             .find(|row| row.condition_id == condition_id)
@@ -15548,13 +15548,13 @@ INSERT OR REPLACE INTO wallet_positions_live_latest_v1 (
         })?;
 
         let scoped_rows_empty =
-            db.list_mm_wallet_inventory_by_strategy(STRATEGY_ID_MM_REWARDS_V1, 10)?;
+            db.list_mm_wallet_inventory_by_strategy(STRATEGY_ID_MM_SPORT_V1, 10)?;
         assert!(
             scoped_rows_empty.is_empty(),
             "wallet-only rows must not appear without strategy open attribution"
         );
         let repairs_empty =
-            db.reconcile_mm_inventory_drift_from_wallet_tables(STRATEGY_ID_MM_REWARDS_V1, 1.0, 10)?;
+            db.reconcile_mm_inventory_drift_from_wallet_tables(STRATEGY_ID_MM_SPORT_V1, 1.0, 10)?;
         assert!(
             repairs_empty.is_empty(),
             "wallet-only rows must not be reconciled without strategy open attribution"
@@ -15565,7 +15565,7 @@ INSERT OR REPLACE INTO wallet_positions_live_latest_v1 (
             ts_ms: 334_000,
             period_timestamp: 1_700_500_000,
             timeframe: "1d".to_string(),
-            strategy_id: STRATEGY_ID_MM_REWARDS_V1.to_string(),
+            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
             asset_symbol: Some("BTC".to_string()),
             condition_id: Some(condition_id.to_string()),
             token_id: Some(token_id.to_string()),
@@ -15579,7 +15579,7 @@ INSERT OR REPLACE INTO wallet_positions_live_latest_v1 (
             reason: Some("unit_test_wallet_scope".to_string()),
         })?;
 
-        let scoped_rows = db.list_mm_wallet_inventory_by_strategy(STRATEGY_ID_MM_REWARDS_V1, 10)?;
+        let scoped_rows = db.list_mm_wallet_inventory_by_strategy(STRATEGY_ID_MM_SPORT_V1, 10)?;
         assert_eq!(scoped_rows.len(), 1);
         assert_eq!(scoped_rows[0].condition_id, condition_id);
         assert_eq!(scoped_rows[0].token_id, token_id);
@@ -17875,9 +17875,9 @@ WHERE lifecycle_key=?1
                 token_id: "tok".to_string(),
                 condition_id: Some("cond".to_string()),
                 timeframe: "5m".to_string(),
-                strategy_id: "mm_rewards_v1".to_string(),
+                strategy_id: "mm_sport_v1".to_string(),
                 asset_symbol: Some("BTC".to_string()),
-                entry_mode: "MM_REWARDS".to_string(),
+                entry_mode: "MM_SPORT".to_string(),
                 period_timestamp: 1_771_000_000,
                 price: 0.5,
                 size_usd: 10.0,

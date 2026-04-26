@@ -10,6 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-26
+- `sessionband_v1` and `mm_rewards_v1` were retired from main2 active runtime/code/docs/env (`src/main.rs`, `src/trader.rs`, `src/bin/alpha_service.rs`, `src/mm/mod.rs`, `.env.example`, `.env.full.example`, `README.md`, `docs/strategy_combos.md`).
+  - removed SessionBand and MM Rewards strategy constants, runtime loops, alpha-service endpoints, admin metadata, env/onboarding keys, per-strategy docs, and MM Rewards helper modules.
+  - MM Sport remains active as the only MM strategy; shared MM inventory/status/reconcile code now scopes to `mm_sport_v1`.
+  - affects all symbols/timeframes/markets previously owned by `sessionband_v1` and `mm_rewards_v1`; no remote deploy or push was performed.
 - `mm_sport_v1`: moved the hard `$1,000` low-depth market skip into remote alpha (`src/main.rs`, `src/bin/alpha_service.rs`, `.env.example`, `.env.full.example`).
   - after each local MM Sport discovery cycle, runtime sends the candidate sports reward markets to `/v1/alpha/mm-sport/depth-skip` and caches the returned skip list until the next discovery refresh.
   - alpha checks both outcome orderbooks at the passive entry price and returns conditions whose pair depth is below `MM_SPORT_LOW_DEPTH_FLOOR_USD`; failed or missing alpha responses fail closed for new MM Sport entry quotes.
@@ -81,7 +85,7 @@ Older entries may reference env keys that were removed in later commits.
 ### `premarket_v1`
 - Places pre-open ladder orders per timeframe/rung schedule.
 - Uses configured price ladder + weight ladder + expiry/cancel schedules.
-- Uses remote premarket alpha gate with local 50/50 fallback on transport-class alpha failures.
+- Uses remote premarket ladder selection; unavailable or invalid alpha responses skip that asset intent.
 - Includes delayed TP worker for `15m/1h/4h` fills.
 
 ### `endgame_sweep_v1`
@@ -95,26 +99,11 @@ Older entries may reference env keys that were removed in later commits.
 - Supports `15m/1h/4h/1d` (`5m` removed from EVcurve runtime path).
 - 1d uses dedicated zero-flip and EV-gap sub-rules.
 
-### `sessionband_v1`
-- Uses plan4b session watch-starts + lead% price bands.
-- Uses two late checkpoints (`tau=2`, `tau=1`) with remote alpha decisioning.
-- Single-attempt-per-period option + fixed symbol sizing.
-
 ### `evsnipe_v1`
 - Binance price-rule strategy for hit markets (`High >= strike` / `Low <= strike`) only.
 - Uses Binance trade stream for hit triggers.
 - Discovery is remote-first with local fallback.
 - Executes fast FAK cross-spread buy on the winning token side.
-
-### `mm_rewards_v1`
-- Liquidity-rewards market-making strategy with four modes:
-  - `quiet_stack`
-  - `tail_biased`
-  - `spike`
-  - `sports_pregame`
-- Uses local market discovery/ranking and remote alpha selection.
-- Uses local preflight gate before quote submission.
-- Uses quote refresh + scoped cancel/replace + refill-on-fill loop through arbiter/trader.
 
 ### `mm_sport_v1`
 - Sports rewards market-making strategy (default disabled).

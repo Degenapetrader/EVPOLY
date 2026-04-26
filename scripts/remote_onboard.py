@@ -105,20 +105,12 @@ def _resolve_runtime_config(finish_res: Dict[str, Any]) -> Dict[str, Any]:
     evcurve_alpha_url = _nonempty(runtime.get("remote_evcurve_alpha_url"))
     if not evcurve_alpha_url:
         evcurve_alpha_url = f"{alpha_base}/v1/alpha/evcurve"
-    sessionband_alpha_url = _nonempty(runtime.get("remote_sessionband_alpha_url"))
-    if not sessionband_alpha_url:
-        sessionband_alpha_url = f"{alpha_base}/v1/alpha/sessionband"
     premarket_alpha_url = _nonempty(runtime.get("remote_premarket_alpha_url"))
     if not premarket_alpha_url:
-        premarket_alpha_url = f"{alpha_base}/v1/alpha/premarket/should-trade"
+        premarket_alpha_url = f"{alpha_base}/v1/alpha/premarket/ladder"
     endgame_alpha_url = _nonempty(runtime.get("remote_endgame_alpha_url"))
     if not endgame_alpha_url:
         endgame_alpha_url = f"{alpha_base}/v1/alpha/endgame/policy"
-    mm_rewards_selection_alpha_url = _nonempty(
-        runtime.get("remote_mm_rewards_selection_alpha_url")
-    )
-    if not mm_rewards_selection_alpha_url:
-        mm_rewards_selection_alpha_url = f"{alpha_base}/v1/alpha/mm-rewards/selection"
     shared_alpha_token = (
         _nonempty(runtime.get("remote_alpha_token"))
         or _nonempty(runtime.get("remote_discovery_token"))
@@ -129,10 +121,8 @@ def _resolve_runtime_config(finish_res: Dict[str, Any]) -> Dict[str, Any]:
         "market_discovery_url": market_discovery_url,
         "evsnipe_discovery_url": evsnipe_discovery_url,
         "evcurve_alpha_url": evcurve_alpha_url,
-        "sessionband_alpha_url": sessionband_alpha_url,
         "premarket_alpha_url": premarket_alpha_url,
         "endgame_alpha_url": endgame_alpha_url,
-        "mm_rewards_selection_alpha_url": mm_rewards_selection_alpha_url,
         "discovery_token": _nonempty(runtime.get("remote_discovery_token")),
         "shared_alpha_token": shared_alpha_token,
         "evsnipe_discovery_timeout_ms": _coerce_int(
@@ -196,7 +186,6 @@ def _print_base_size_warning(env_file: str) -> None:
         "EVPOLY_PREMARKET_BASE_SIZE_USD",
         "EVPOLY_ENDGAME_BASE_SIZE_USD",
         "EVPOLY_EVCURVE_BASE_SIZE_USD",
-        "EVPOLY_SESSIONBAND_BASE_SIZE_USD",
     ]
     print(
         "IMPORTANT: set strategy base sizes in your env. If left blank, each defaults to 100 USD."
@@ -508,12 +497,6 @@ def main() -> int:
     wrote_keys.append("EVPOLY_REMOTE_EVCURVE_ALPHA_URL")
     _upsert_env_value(
         env_file,
-        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
-        runtime_cfg["sessionband_alpha_url"],
-    )
-    wrote_keys.append("EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL")
-    _upsert_env_value(
-        env_file,
         "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
         runtime_cfg["premarket_alpha_url"],
     )
@@ -524,12 +507,6 @@ def main() -> int:
         runtime_cfg["endgame_alpha_url"],
     )
     wrote_keys.append("EVPOLY_REMOTE_ENDGAME_ALPHA_URL")
-    _upsert_env_value(
-        env_file,
-        "EVPOLY_REMOTE_MM_REWARDS_SELECTION_ALPHA_URL",
-        runtime_cfg["mm_rewards_selection_alpha_url"],
-    )
-    wrote_keys.append("EVPOLY_REMOTE_MM_REWARDS_SELECTION_ALPHA_URL")
     _upsert_env_value(
         env_file,
         "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TIMEOUT_MS",
@@ -562,11 +539,6 @@ def main() -> int:
         )
         _upsert_env_value(
             env_file,
-            "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
-            runtime_cfg["shared_alpha_token"],
-        )
-        _upsert_env_value(
-            env_file,
             "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
             runtime_cfg["shared_alpha_token"],
         )
@@ -575,16 +547,9 @@ def main() -> int:
             "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
             runtime_cfg["shared_alpha_token"],
         )
-        _upsert_env_value(
-            env_file,
-            "EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN",
-            runtime_cfg["shared_alpha_token"],
-        )
         wrote_keys.append("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN")
-        wrote_keys.append("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN")
         wrote_keys.append("EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN")
         wrote_keys.append("EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN")
-        wrote_keys.append("EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN")
     else:
         print(
             "warning: runtime alpha token not provided by onboarding API; "

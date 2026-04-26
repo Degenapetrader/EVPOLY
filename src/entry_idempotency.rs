@@ -87,7 +87,6 @@ impl EntryScopeKey {
 pub struct EntryIdempotencyConfig {
     pub enqueue_dedupe_cooldown_ms: i64,
     pub recent_done_ttl_ms: i64,
-    pub recent_done_ttl_mm_rewards_ms: i64,
     pub failure_cooldown_ms: i64,
     pub retryable_failure_cooldown_ms: i64,
     pub parameter_invalid_cooldown_ms: i64,
@@ -110,11 +109,6 @@ impl EntryIdempotencyConfig {
         Self {
             enqueue_dedupe_cooldown_ms: env_i64("EVPOLY_ENTRY_DEDUPE_COOLDOWN_MS", 1_500, 100),
             recent_done_ttl_ms: env_i64("EVPOLY_ENTRY_RECENT_DONE_TTL_MS", 10_000, 250),
-            recent_done_ttl_mm_rewards_ms: env_i64(
-                "EVPOLY_ENTRY_RECENT_DONE_TTL_MM_REWARDS_MS",
-                750,
-                100,
-            ),
             failure_cooldown_ms: env_i64("EVPOLY_ENTRY_FAILURE_COOLDOWN_MS", 8_000, 250),
             retryable_failure_cooldown_ms: env_i64(
                 "EVPOLY_ENTRY_RETRYABLE_COOLDOWN_MS",
@@ -498,11 +492,8 @@ impl WorkerIdempotency {
     }
 
     fn recent_done_ttl_for_key(&self, key: &EntryLogicalKey) -> i64 {
-        if key.strategy_id == "mm_rewards_v1" {
-            self.cfg.recent_done_ttl_mm_rewards_ms
-        } else {
-            self.cfg.recent_done_ttl_ms
-        }
+        let _ = key;
+        self.cfg.recent_done_ttl_ms
     }
 
     fn prune(&mut self, now_ms: i64) {
@@ -594,7 +585,6 @@ mod tests {
         let cfg = EntryIdempotencyConfig {
             enqueue_dedupe_cooldown_ms: 100,
             recent_done_ttl_ms: 500,
-            recent_done_ttl_mm_rewards_ms: 500,
             failure_cooldown_ms: 250,
             retryable_failure_cooldown_ms: 100,
             parameter_invalid_cooldown_ms: 250,
@@ -631,7 +621,6 @@ mod tests {
         let cfg = EntryIdempotencyConfig {
             enqueue_dedupe_cooldown_ms: 100,
             recent_done_ttl_ms: 500,
-            recent_done_ttl_mm_rewards_ms: 500,
             failure_cooldown_ms: 250,
             retryable_failure_cooldown_ms: 100,
             parameter_invalid_cooldown_ms: 250,
@@ -667,7 +656,6 @@ mod tests {
         let cfg = EntryIdempotencyConfig {
             enqueue_dedupe_cooldown_ms: 1_500,
             recent_done_ttl_ms: 10_000,
-            recent_done_ttl_mm_rewards_ms: 10_000,
             failure_cooldown_ms: 8_000,
             retryable_failure_cooldown_ms: 3_000,
             parameter_invalid_cooldown_ms: 20_000,
@@ -744,7 +732,6 @@ mod tests {
         let cfg = EntryIdempotencyConfig {
             enqueue_dedupe_cooldown_ms: 1_500,
             recent_done_ttl_ms: 10_000,
-            recent_done_ttl_mm_rewards_ms: 10_000,
             failure_cooldown_ms: 8_000,
             retryable_failure_cooldown_ms: 3_000,
             parameter_invalid_cooldown_ms: 20_000,
@@ -766,7 +753,6 @@ mod tests {
         let cfg = EntryIdempotencyConfig {
             enqueue_dedupe_cooldown_ms: 1_500,
             recent_done_ttl_ms: 10_000,
-            recent_done_ttl_mm_rewards_ms: 10_000,
             failure_cooldown_ms: 8_000,
             retryable_failure_cooldown_ms: 3_000,
             parameter_invalid_cooldown_ms: 20_000,
@@ -817,7 +803,6 @@ mod tests {
         let cfg = EntryIdempotencyConfig {
             enqueue_dedupe_cooldown_ms: 100,
             recent_done_ttl_ms: 10,
-            recent_done_ttl_mm_rewards_ms: 10,
             failure_cooldown_ms: 10,
             retryable_failure_cooldown_ms: 10,
             parameter_invalid_cooldown_ms: 10,

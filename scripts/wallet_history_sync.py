@@ -38,7 +38,7 @@ MM_RECONCILE_MIN_DRIFT_SHARES = float(
 )
 MM_RECONCILE_LIMIT = int(os.getenv("EVPOLY_MM_INVENTORY_RECONCILE_LIMIT", "256"))
 MM_RECONCILE_TIMEOUT_SEC = 30.0
-MM_RECONCILE_STRATEGIES: Tuple[str, ...] = ("mm_rewards_v1", "mm_sport_v1")
+MM_RECONCILE_STRATEGIES: Tuple[str, ...] = ("mm_sport_v1",)
 MM_DUST_SELL_ENABLE = os.getenv("EVPOLY_MM_DUST_SELL_ENABLE", "1").strip().lower() not in {
     "0",
     "false",

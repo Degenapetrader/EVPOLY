@@ -1,6 +1,6 @@
 use crate::strategy::{
     STRATEGY_ID_ENDGAME_SWEEP_V1, STRATEGY_ID_EVCURVE_V1, STRATEGY_ID_EVSNIPE_V1,
-    STRATEGY_ID_MM_REWARDS_V1, STRATEGY_ID_PREMARKET_V1, STRATEGY_ID_SESSIONBAND_V1,
+    STRATEGY_ID_PREMARKET_V1,
 };
 
 const SPECIAL_SYMBOLS: [&str; 3] = ["DOGE", "BNB", "HYPE"];
@@ -78,10 +78,7 @@ pub fn parse_symbols_csv_for_strategy(strategy_id: &str, raw: &str) -> Vec<Strin
 pub fn strategy_uses_core_symbols_only(strategy_id: &str) -> bool {
     matches!(
         strategy_id,
-        STRATEGY_ID_PREMARKET_V1
-            | STRATEGY_ID_EVCURVE_V1
-            | STRATEGY_ID_SESSIONBAND_V1
-            | STRATEGY_ID_MM_REWARDS_V1
+        STRATEGY_ID_PREMARKET_V1 | STRATEGY_ID_EVCURVE_V1
     )
 }
 
@@ -99,8 +96,6 @@ mod tests {
             assert!(strategy_allows_symbol(STRATEGY_ID_EVSNIPE_V1, special));
             assert!(!strategy_allows_symbol(STRATEGY_ID_PREMARKET_V1, special));
             assert!(!strategy_allows_symbol(STRATEGY_ID_EVCURVE_V1, special));
-            assert!(!strategy_allows_symbol(STRATEGY_ID_SESSIONBAND_V1, special));
-            assert!(!strategy_allows_symbol(STRATEGY_ID_MM_REWARDS_V1, special));
         }
     }
 

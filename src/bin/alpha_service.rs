@@ -21,12 +21,9 @@ use polymarket_arbitrage_bot::api::PolymarketApi;
 use polymarket_arbitrage_bot::builder_attribution;
 use polymarket_arbitrage_bot::evcurve;
 use polymarket_arbitrage_bot::evsnipe;
-use polymarket_arbitrage_bot::mm::{self, MmMode};
 use polymarket_arbitrage_bot::models::Market;
 use polymarket_arbitrage_bot::plan3_tables::Plan3Tables;
-use polymarket_arbitrage_bot::plan4b_tables::{Plan4bTables, SessionWatchKey, SessionWatchStart};
 use polymarket_arbitrage_bot::plandaily_tables::PlanDailyTables;
-use polymarket_arbitrage_bot::sessionband;
 use polymarket_arbitrage_bot::strategy::Timeframe;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -38,7 +35,6 @@ const DEFAULT_BIND: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8790;
 const DEFAULT_MAX_BODY_BYTES: usize = 524_288;
 const DEFAULT_PLAN3_PATH: &str = "/opt/evpoly-alpha-service/alpha/plan3.md";
-const DEFAULT_PLAN4B_PATH: &str = "/opt/evpoly-alpha-service/alpha/plan4b.md";
 const DEFAULT_PLANDAILY_PATH: &str = "/opt/evpoly-alpha-service/alpha/plandaily.md";
 const DEFAULT_GAMMA_URL: &str = "https://gamma-api.polymarket.com";
 const DEFAULT_CLOB_URL: &str = "https://clob.polymarket.com";
@@ -74,7 +70,6 @@ struct Settings {
     rate_limit_global_rps: u32,
     rate_limit_global_burst: u32,
     plan3_path: String,
-    plan4b_path: String,
     plandaily_path: String,
     gamma_url: String,
     clob_url: String,
@@ -252,12 +247,10 @@ struct AppState {
     rate_limiter: Arc<RateLimiter>,
     api: Arc<PolymarketApi>,
     evcurve_cfg: evcurve::EvcurveExecutionConfig,
-    sessionband_cfg: sessionband::SessionBandExecutionConfig,
     evsnipe_cfg: evsnipe::EvsnipeConfig,
     evsnipe_spot_anchors: Arc<RwLock<HashMap<String, evsnipe::EvsnipeSpotAnchor>>>,
     plan3_tables: Arc<Plan3Tables>,
     plandaily_tables: Option<Arc<PlanDailyTables>>,
-    watch_starts: Arc<HashMap<SessionWatchKey, SessionWatchStart>>,
     discovery_cache: Arc<DiscoveryCache>,
 }
 
@@ -411,40 +404,6 @@ struct EvcurveRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct SessionbandRequest {
-    symbol: String,
-    timeframe: String,
-    period_open_ts: i64,
-    tau_sec: i64,
-    base_mid: f64,
-    current_mid: f64,
-    ask_up: Option<f64>,
-    ask_down: Option<f64>,
-    #[serde(default)]
-    builder_code: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct SessionbandResponse {
-    symbol: String,
-    timeframe: String,
-    period_open_ts: i64,
-    tau_sec: i64,
-    lead_pct: f64,
-    direction: String,
-    session_index: Option<u8>,
-    watch_start_sec: Option<i64>,
-    tau_trigger_sec: Option<i64>,
-    trigger_rate_pct: Option<f64>,
-    should_buy: bool,
-    skip_reason: Option<String>,
-    chosen_ask: Option<f64>,
-    band_price_min: Option<f64>,
-    band_price_max: Option<f64>,
-    score_bps: Option<f64>,
-}
-
-#[derive(Debug, Deserialize)]
 struct PremarketAlphaLadderRequest {
     strategy_id: String,
     decision_id: String,
@@ -535,114 +494,6 @@ struct MmSportDepthSkipResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct MmRewardsSelectionRequest {
-    enabled_modes: Vec<String>,
-    selection_pool: usize,
-    #[serde(default)]
-    auto_force_top_reward: bool,
-    #[serde(default)]
-    auto_force_include_reward_min: f64,
-    #[serde(default)]
-    builder_code: Option<String>,
-    candidates: Vec<MmRewardsSelectionCandidateInput>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MmRewardsSelectionCandidateInput {
-    condition_id: String,
-    slug: String,
-    reward_daily_rate: f64,
-    #[serde(default)]
-    reward_midpoint: Option<f64>,
-    #[serde(default)]
-    best_bid_up: Option<f64>,
-    #[serde(default)]
-    best_ask_up: Option<f64>,
-    #[serde(default)]
-    best_bid_down: Option<f64>,
-    #[serde(default)]
-    best_ask_down: Option<f64>,
-    score: f64,
-    expected_reward_day_est: f64,
-    #[serde(default)]
-    rv_short_bps: Option<f64>,
-    #[serde(default)]
-    competition_score_api: Option<f64>,
-}
-
-#[derive(Debug, Serialize)]
-struct MmRewardsSelectionModeResponse {
-    mode: String,
-    condition_ids: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct MmRewardsSelectionResponse {
-    ok: bool,
-    selected_by_mode: Vec<MmRewardsSelectionModeResponse>,
-    force_include_by_mode: Vec<MmRewardsSelectionModeResponse>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MmRewardsPreflightRequest {
-    side: String,
-    #[serde(default)]
-    builder_code: Option<String>,
-    #[serde(default)]
-    scoring_guard_enable: bool,
-    #[serde(default)]
-    scoring_guard_require_qmin: bool,
-    #[serde(default)]
-    normal_full_ladder_required: bool,
-    required_ladder_levels_market: usize,
-    effective_ladder_levels: usize,
-    feasible_levels_up_market: usize,
-    feasible_levels_down_market: usize,
-    feasible_pair_levels_market: usize,
-    detail_min_size: f64,
-    reward_min_size_unit: String,
-    scoring_spread_extend_cents: f64,
-    rungs: Vec<MmRewardsPreflightRungInput>,
-}
-
-#[derive(Debug, Deserialize)]
-struct MmRewardsPreflightRungInput {
-    #[serde(default)]
-    scoring_required: bool,
-    rung_bucket: String,
-    submit_price: f64,
-    counterpart_price: f64,
-    counterpart_source: String,
-    counterpart_size_shares: f64,
-    side_size_shares: f64,
-    #[serde(default)]
-    scoring_midpoint: Option<f64>,
-    scoring_max_spread: f64,
-    up_quote_price: f64,
-    down_quote_price: f64,
-    up_quote_size_shares: f64,
-    down_quote_size_shares: f64,
-    up_quote_min_size_shares: f64,
-    down_quote_min_size_shares: f64,
-    #[serde(default)]
-    up_anchor_price: Option<f64>,
-    #[serde(default)]
-    down_anchor_price: Option<f64>,
-    #[serde(default)]
-    opposite_blocked_by_skew: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct MmRewardsPreflightResponse {
-    ok: bool,
-    covered_levels: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    block_reason: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    block_detail: Option<Value>,
-}
-
-#[derive(Debug, Deserialize)]
 struct AlphaOnboardRequest {
     wallet: String,
     builder_code: String,
@@ -697,24 +548,8 @@ async fn main() -> Result<()> {
         }
     };
 
-    let plan4b_tables =
-        Plan4bTables::load_from_path(settings.plan4b_path.as_str()).with_context(|| {
-            format!(
-                "failed to load plan4b tables from {}",
-                settings.plan4b_path.as_str()
-            )
-        })?;
-
     let evcurve_cfg = evcurve::EvcurveExecutionConfig::from_env();
-    let sessionband_cfg = sessionband::SessionBandExecutionConfig::from_env();
     let evsnipe_cfg = evsnipe::EvsnipeConfig::from_env();
-
-    let watch_starts = Arc::new(plan4b_tables.derive_watch_starts(
-        sessionband_cfg.enabled_symbols().as_slice(),
-        sessionband_cfg.enabled_timeframes().as_slice(),
-        sessionband_cfg.flip_threshold_pct,
-        sessionband_cfg.prewatch_sec,
-    ));
 
     let rate_limiter = Arc::new(RateLimiter::new(
         settings.rate_limit_per_ip_rps,
@@ -730,12 +565,10 @@ async fn main() -> Result<()> {
         rate_limiter,
         api,
         evcurve_cfg,
-        sessionband_cfg,
         evsnipe_cfg,
         evsnipe_spot_anchors,
         plan3_tables,
         plandaily_tables,
-        watch_starts,
         discovery_cache,
     };
 
@@ -756,19 +589,10 @@ async fn main() -> Result<()> {
         .route("/v1/discovery/timeframe", post(discovery_timeframe_handler))
         .route("/v1/discovery/evsnipe", post(discovery_evsnipe_handler))
         .route(
-            "/v1/alpha/mm-rewards/selection",
-            post(alpha_mm_rewards_selection_handler),
-        )
-        .route(
-            "/v1/alpha/mm-rewards/preflight",
-            post(alpha_mm_rewards_preflight_handler),
-        )
-        .route(
             "/v1/alpha/mm-sport/depth-skip",
             post(alpha_mm_sport_depth_skip_handler),
         )
         .route("/v1/alpha/evcurve", post(alpha_evcurve_handler))
-        .route("/v1/alpha/sessionband", post(alpha_sessionband_handler))
         .route(
             "/v1/alpha/premarket/ladder",
             post(alpha_premarket_ladder_handler),
@@ -785,7 +609,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to bind {}", addr.as_str()))?;
 
     eprintln!(
-        "evpoly alpha service listening on {} with routes: /health, /v1/onboard, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-rewards/selection, /v1/alpha/mm-rewards/preflight, /v1/alpha/mm-sport/depth-skip, /v1/alpha/evcurve, /v1/alpha/sessionband, /v1/alpha/premarket/ladder, /v1/alpha/endgame/policy",
+        "evpoly alpha service listening on {} with routes: /health, /v1/onboard, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-sport/depth-skip, /v1/alpha/evcurve, /v1/alpha/premarket/ladder, /v1/alpha/endgame/policy",
         addr.as_str()
     );
 
@@ -1326,302 +1150,6 @@ async fn alpha_mm_sport_depth_skip_handler(
     }))
 }
 
-async fn alpha_mm_rewards_selection_handler(
-    State(state): State<AppState>,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<impl IntoResponse, ApiError> {
-    let payload: MmRewardsSelectionRequest =
-        parse_json_request(&state, remote.ip(), &headers, &body)?;
-    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
-
-    let mut enabled_modes: Vec<MmMode> = Vec::new();
-    for raw_mode in payload.enabled_modes.iter() {
-        let mode = parse_mm_mode(raw_mode.as_str()).ok_or_else(|| {
-            ApiError::new(
-                StatusCode::BAD_REQUEST,
-                format!("invalid mm mode: {}", raw_mode),
-            )
-        })?;
-        if !enabled_modes.contains(&mode) {
-            enabled_modes.push(mode);
-        }
-    }
-    if enabled_modes.is_empty() {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "enabled_modes must be non-empty",
-        ));
-    }
-    if payload.candidates.is_empty() {
-        return Ok(Json(MmRewardsSelectionResponse {
-            ok: true,
-            selected_by_mode: Vec::new(),
-            force_include_by_mode: Vec::new(),
-        }));
-    }
-
-    let ranked = payload
-        .candidates
-        .iter()
-        .filter_map(mm_selection_candidate_to_auto_candidate)
-        .collect::<Vec<_>>();
-    if ranked.is_empty() {
-        return Ok(Json(MmRewardsSelectionResponse {
-            ok: true,
-            selected_by_mode: Vec::new(),
-            force_include_by_mode: Vec::new(),
-        }));
-    }
-
-    let mut selected = mm::reward_scanner::select_top_candidates_by_reward(
-        ranked.as_slice(),
-        enabled_modes.as_slice(),
-        payload.selection_pool.max(1),
-    );
-    if payload.auto_force_top_reward {
-        let top_reward_candidate = ranked
-            .iter()
-            .max_by(|a, b| {
-                a.reward_snapshot
-                    .reward_daily_rate
-                    .total_cmp(&b.reward_snapshot.reward_daily_rate)
-            })
-            .cloned();
-        if let (Some(candidate), Some(first_mode)) = (top_reward_candidate, enabled_modes.first()) {
-            let already_selected = selected.values().any(|rows| {
-                rows.iter().any(|row| {
-                    row.market
-                        .condition_id
-                        .eq_ignore_ascii_case(candidate.market.condition_id.as_str())
-                })
-            });
-            if !already_selected {
-                selected
-                    .entry(*first_mode)
-                    .or_default()
-                    .insert(0, candidate);
-            }
-        }
-    }
-
-    let mut force_include: std::collections::HashMap<
-        MmMode,
-        Vec<mm::reward_scanner::AutoMarketCandidate>,
-    > = std::collections::HashMap::new();
-    if payload.auto_force_include_reward_min > 0.0 {
-        let reward_p75 = mm::reward_scanner::reward_p75_estimate(ranked.as_slice());
-        let mut already_selected_conditions = selected
-            .values()
-            .flat_map(|rows| {
-                rows.iter()
-                    .map(|row| row.market.condition_id.to_ascii_lowercase())
-            })
-            .collect::<HashSet<_>>();
-        for candidate in ranked.iter().cloned() {
-            if candidate.reward_snapshot.reward_daily_rate < payload.auto_force_include_reward_min {
-                continue;
-            }
-            let condition_key = candidate.market.condition_id.to_ascii_lowercase();
-            if already_selected_conditions.contains(condition_key.as_str()) {
-                continue;
-            }
-            if let Some(mode) = mm::reward_scanner::preferred_mode_for_candidate(
-                &candidate,
-                enabled_modes.as_slice(),
-                reward_p75,
-            ) {
-                force_include.entry(mode).or_default().push(candidate);
-                already_selected_conditions.insert(condition_key);
-            }
-        }
-    }
-
-    let selected_by_mode = enabled_modes
-        .iter()
-        .filter_map(|mode| {
-            let ids = selected
-                .remove(mode)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|candidate| candidate.market.condition_id)
-                .collect::<Vec<_>>();
-            (!ids.is_empty()).then_some(MmRewardsSelectionModeResponse {
-                mode: mode.as_str().to_string(),
-                condition_ids: ids,
-            })
-        })
-        .collect::<Vec<_>>();
-    let force_include_by_mode = enabled_modes
-        .iter()
-        .filter_map(|mode| {
-            let ids = force_include
-                .remove(mode)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|candidate| candidate.market.condition_id)
-                .collect::<Vec<_>>();
-            (!ids.is_empty()).then_some(MmRewardsSelectionModeResponse {
-                mode: mode.as_str().to_string(),
-                condition_ids: ids,
-            })
-        })
-        .collect::<Vec<_>>();
-
-    Ok(Json(MmRewardsSelectionResponse {
-        ok: true,
-        selected_by_mode,
-        force_include_by_mode,
-    }))
-}
-
-async fn alpha_mm_rewards_preflight_handler(
-    State(state): State<AppState>,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<impl IntoResponse, ApiError> {
-    let payload: MmRewardsPreflightRequest =
-        parse_json_request(&state, remote.ip(), &headers, &body)?;
-    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
-
-    let side_up = match payload.side.trim().to_ascii_lowercase().as_str() {
-        "up" | "yes" => true,
-        "down" | "no" => false,
-        _ => {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "side must be up/down",
-            ));
-        }
-    };
-
-    let mut covered_levels = 0usize;
-    let mut block_reason: Option<String> = None;
-    let mut block_detail: Option<Value> = None;
-
-    for rung in payload.rungs.iter() {
-        let scoring_enabled = payload.scoring_guard_enable && rung.scoring_required;
-        if scoring_enabled {
-            let score_check = mm::scoring_guard::check_local_scoring(
-                rung.scoring_midpoint,
-                rung.scoring_max_spread,
-                rung.up_quote_min_size_shares,
-                rung.down_quote_min_size_shares,
-                rung.up_quote_price,
-                rung.down_quote_price,
-                rung.up_quote_size_shares,
-                rung.down_quote_size_shares,
-                rung.up_anchor_price,
-                rung.down_anchor_price,
-            );
-            let side_scoring_ok = if side_up {
-                score_check.up_scoring
-            } else {
-                score_check.down_scoring
-            };
-            let opposite_side_scoring_ok = if side_up {
-                score_check.down_scoring
-            } else {
-                score_check.up_scoring
-            };
-            let qmin_bypass_reason =
-                if payload.scoring_guard_require_qmin && rung.opposite_blocked_by_skew {
-                    Some("opposite_blocked_by_skew")
-                } else if payload.scoring_guard_require_qmin
-                    && side_scoring_ok
-                    && !score_check.q_min_ready
-                    && (!opposite_side_scoring_ok
-                        || rung.counterpart_source.eq_ignore_ascii_case("none")
-                        || rung.counterpart_size_shares <= 0.0
-                        || payload.feasible_pair_levels_market == 0)
-                {
-                    Some("one_sided_quoteable")
-                } else {
-                    None
-                };
-            let qmin_ok = if payload.scoring_guard_require_qmin {
-                qmin_bypass_reason.is_some() || score_check.q_min_ready
-            } else {
-                true
-            };
-            if !side_scoring_ok || !qmin_ok {
-                let mut scoring_fail_reasons: Vec<&'static str> = Vec::new();
-                if !score_check.midpoint_valid {
-                    scoring_fail_reasons.push("midpoint_invalid");
-                }
-                if !score_check.up_spread_ok {
-                    scoring_fail_reasons.push("up_spread_fail");
-                }
-                if !score_check.down_spread_ok {
-                    scoring_fail_reasons.push("down_spread_fail");
-                }
-                if !score_check.up_size_ok {
-                    scoring_fail_reasons.push("up_size_fail");
-                }
-                if !score_check.down_size_ok {
-                    scoring_fail_reasons.push("down_size_fail");
-                }
-                block_reason = Some("non_scoring".to_string());
-                block_detail = Some(json!({
-                    "submit_price": rung.submit_price,
-                    "counterpart_price": rung.counterpart_price,
-                    "counterpart_source": rung.counterpart_source,
-                    "counterpart_size_shares": rung.counterpart_size_shares,
-                    "size_shares": rung.side_size_shares,
-                    "rung_bucket": rung.rung_bucket,
-                    "midpoint": rung.scoring_midpoint,
-                    "max_spread": rung.scoring_max_spread,
-                    "max_spread_effective": rung.scoring_max_spread,
-                    "scoring_spread_extend_cents": payload.scoring_spread_extend_cents,
-                    "min_size": payload.detail_min_size,
-                    "reward_min_size_unit": payload.reward_min_size_unit,
-                    "up_min_size_shares": score_check.up_min_size_shares,
-                    "down_min_size_shares": score_check.down_min_size_shares,
-                    "spread_cap_effective": score_check.spread_cap,
-                    "midpoint_valid": score_check.midpoint_valid,
-                    "up_spread_ok": score_check.up_spread_ok,
-                    "down_spread_ok": score_check.down_spread_ok,
-                    "up_size_ok": score_check.up_size_ok,
-                    "down_size_ok": score_check.down_size_ok,
-                    "up_scoring": score_check.up_scoring,
-                    "down_scoring": score_check.down_scoring,
-                    "q_min_ready": score_check.q_min_ready,
-                    "scoring_fail_reasons": scoring_fail_reasons,
-                    "scoring_guard_require_qmin": payload.scoring_guard_require_qmin,
-                    "qmin_bypass_reason": qmin_bypass_reason
-                }));
-                break;
-            }
-        }
-        covered_levels = covered_levels.saturating_add(1);
-    }
-
-    if block_reason.is_none()
-        && payload.normal_full_ladder_required
-        && covered_levels < payload.required_ladder_levels_market
-    {
-        block_reason = Some("full_ladder_required".to_string());
-        block_detail = Some(json!({
-            "covered_levels": covered_levels,
-            "required_levels": payload.required_ladder_levels_market,
-            "effective_ladder_levels": payload.effective_ladder_levels,
-            "normal_full_ladder_required": payload.normal_full_ladder_required,
-            "feasible_levels_up_market": payload.feasible_levels_up_market,
-            "feasible_levels_down_market": payload.feasible_levels_down_market,
-            "feasible_pair_levels_market": payload.feasible_pair_levels_market
-        }));
-    }
-
-    Ok(Json(MmRewardsPreflightResponse {
-        ok: true,
-        covered_levels,
-        block_reason,
-        block_detail,
-    }))
-}
-
 async fn alpha_evcurve_handler(
     State(state): State<AppState>,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
@@ -1710,121 +1238,6 @@ async fn alpha_evcurve_handler(
         "timeframe": timeframe.as_str(),
         "decision": evcurve_decision_to_json(&decision),
     })))
-}
-
-async fn alpha_sessionband_handler(
-    State(state): State<AppState>,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Result<impl IntoResponse, ApiError> {
-    let payload: SessionbandRequest = parse_json_request(&state, remote.ip(), &headers, &body)?;
-    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
-
-    let timeframe = parse_timeframe(payload.timeframe.as_str()).ok_or_else(|| {
-        ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "timeframe must be one of 5m,15m,1h,4h",
-        )
-    })?;
-
-    if timeframe == Timeframe::D1 {
-        return Err(ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "sessionband does not support 1d timeframe",
-        ));
-    }
-
-    validate_mids_and_asks(
-        payload.base_mid,
-        payload.current_mid,
-        payload.ask_up,
-        payload.ask_down,
-    )?;
-
-    let symbol = normalize_symbol(payload.symbol.as_str());
-    let direction_up = payload.current_mid >= payload.base_mid;
-    let direction = if direction_up { "UP" } else { "DOWN" };
-    let lead_pct = ((payload.current_mid - payload.base_mid).abs()
-        / payload.base_mid.max(f64::EPSILON)
-        * 100.0)
-        .max(0.0);
-
-    let session_index = Plan4bTables::session_index_for_period_open_utc(payload.period_open_ts);
-    let watch = session_index.and_then(|idx| {
-        let key = SessionWatchKey {
-            symbol: symbol.clone(),
-            timeframe,
-            session_index: idx,
-        };
-        state
-            .watch_starts
-            .get(&key)
-            .copied()
-            .map(|watch_start| (idx, watch_start))
-    });
-
-    let chosen_ask = if direction_up {
-        payload.ask_up
-    } else {
-        payload.ask_down
-    }
-    .filter(|value| value.is_finite() && *value > 0.0);
-
-    let band = state.sessionband_cfg.band_for_lead_pct(lead_pct);
-
-    let mut should_buy = false;
-    let mut skip_reason: Option<String> = None;
-    let mut score_bps: Option<f64> = None;
-
-    if payload.tau_sec <= 0 {
-        skip_reason = Some("tau_non_positive".to_string());
-    } else if watch.is_none() {
-        skip_reason = Some("no_watch_start".to_string());
-    } else if payload.tau_sec
-        > watch
-            .map(|(_, watch_start)| watch_start.watch_start_sec)
-            .unwrap_or(i64::MAX)
-    {
-        skip_reason = Some("prewatch_not_started".to_string());
-    } else if !state.sessionband_cfg.tau_allowed(payload.tau_sec) {
-        skip_reason = Some("tau_not_allowed".to_string());
-    } else if band.is_none() {
-        skip_reason = Some("lead_out_of_range".to_string());
-    } else if chosen_ask.is_none() {
-        skip_reason = Some("book_empty".to_string());
-    } else if !band
-        .map(|b| b.contains_price(chosen_ask.unwrap_or_default()))
-        .unwrap_or(false)
-    {
-        skip_reason = Some("ask_out_of_band".to_string());
-    } else {
-        should_buy = true;
-        if let (Some(valid_band), Some(ask)) = (band, chosen_ask) {
-            score_bps = Some(((valid_band.price_max - ask) * 10_000.0).max(0.0));
-        }
-    }
-
-    let response = SessionbandResponse {
-        symbol,
-        timeframe: timeframe.as_str().to_string(),
-        period_open_ts: payload.period_open_ts,
-        tau_sec: payload.tau_sec,
-        lead_pct,
-        direction: direction.to_string(),
-        session_index: watch.map(|(idx, _)| idx),
-        watch_start_sec: watch.map(|(_, watch_start)| watch_start.watch_start_sec),
-        tau_trigger_sec: watch.map(|(_, watch_start)| watch_start.tau_trigger_sec),
-        trigger_rate_pct: watch.map(|(_, watch_start)| watch_start.trigger_rate_pct),
-        should_buy,
-        skip_reason,
-        chosen_ask,
-        band_price_min: band.map(|item| item.price_min),
-        band_price_max: band.map(|item| item.price_max),
-        score_bps,
-    };
-
-    Ok(Json(json!({ "ok": true, "result": response })))
 }
 
 async fn alpha_premarket_ladder_handler(
@@ -2397,80 +1810,6 @@ fn parse_timeframe(value: &str) -> Option<Timeframe> {
     }
 }
 
-fn parse_mm_mode(value: &str) -> Option<MmMode> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "quiet_stack" => Some(MmMode::QuietStack),
-        "tail_biased" => Some(MmMode::TailBiased),
-        "spike" => Some(MmMode::Spike),
-        "sports_pregame" => Some(MmMode::SportsPregame),
-        _ => None,
-    }
-}
-
-fn mm_selection_candidate_to_auto_candidate(
-    input: &MmRewardsSelectionCandidateInput,
-) -> Option<mm::reward_scanner::AutoMarketCandidate> {
-    let condition_id = input.condition_id.trim().to_string();
-    let slug = input.slug.trim().to_string();
-    if condition_id.is_empty() || slug.is_empty() {
-        return None;
-    }
-    Some(mm::reward_scanner::AutoMarketCandidate {
-        market: Market {
-            condition_id,
-            market_id: None,
-            question: slug.clone(),
-            slug,
-            description: None,
-            resolution_source: None,
-            end_date: None,
-            end_date_iso: None,
-            end_date_iso_alt: None,
-            game_start_time: None,
-            start_date: None,
-            active: true,
-            closed: false,
-            tokens: None,
-            clob_token_ids: None,
-            outcomes: None,
-            competitive: None,
-        },
-        symbol: "MM".to_string(),
-        timeframe: Timeframe::D1,
-        timeframe_inferred: false,
-        reward_snapshot: mm::reward_scanner::MarketRewardSnapshot {
-            reward_daily_rate: input.reward_daily_rate.max(0.0),
-            midpoint: input.reward_midpoint,
-            max_spread: 0.0,
-            min_size: 0.0,
-        },
-        best_bid_up: input.best_bid_up,
-        best_ask_up: input.best_ask_up,
-        best_bid_down: input.best_bid_down,
-        best_ask_down: input.best_ask_down,
-        tick_size_est: 0.01,
-        feasible_levels_up_est: 0,
-        feasible_levels_down_est: 0,
-        feasible_pair_levels_est: 0,
-        avg_spread: None,
-        rv_short_bps: input.rv_short_bps,
-        rv_mid_bps: None,
-        rv_long_bps: None,
-        inventory_risk: 0.0,
-        competition_raw_api: None,
-        competition_score_api: input.competition_score_api,
-        competition_level_api: "unknown".to_string(),
-        competition_source_api: "remote_payload".to_string(),
-        competition_qmin_est: 0.0,
-        our_qmin_est: 0.0,
-        our_share_est: 0.0,
-        expected_reward_day_est: input.expected_reward_day_est,
-        reward_efficiency_est: 0.0,
-        capital_locked_est: 0.0,
-        score: input.score,
-    })
-}
-
 fn normalize_symbol(symbol: &str) -> String {
     match symbol.trim().to_ascii_uppercase().as_str() {
         "SOLANA" => "SOL".to_string(),
@@ -2803,12 +2142,6 @@ fn load_settings() -> Result<Settings> {
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_PLAN3_PATH.to_string());
 
-    let plan4b_path = std::env::var("ALPHA_PLAN4B_PATH")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| DEFAULT_PLAN4B_PATH.to_string());
-
     let plandaily_path = std::env::var("ALPHA_PLANDAILY_PATH")
         .ok()
         .map(|v| v.trim().to_string())
@@ -2956,7 +2289,6 @@ fn load_settings() -> Result<Settings> {
         rate_limit_global_rps,
         rate_limit_global_burst,
         plan3_path,
-        plan4b_path,
         plandaily_path,
         gamma_url,
         clob_url,

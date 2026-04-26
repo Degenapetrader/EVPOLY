@@ -14,9 +14,7 @@ Strategies include (minimum):
 - `premarket_v1`
 - `endgame_sweep_v1`
 - `evcurve_v1`
-- `sessionband_v1`
 - `evsnipe_v1`
-- `mm_rewards_v1`
 - `mm_sport_v1`
 
 ## Details: Low-Level AI Operating Guide
@@ -32,7 +30,6 @@ Strategies include (minimum):
 - Strategy configs:
   - `src/config.rs` (endgame/global)
   - `src/evcurve.rs`
-  - `src/sessionband.rs`
   - `src/evsnipe.rs`
   - `src/mm/mod.rs`
 - Shared sizing policy: `src/size_policy.rs`
@@ -43,16 +40,15 @@ Strategies include (minimum):
 
 ### 3) Current Runtime Defaults
 - Strategy toggles:
-  - ON: premarket, endgame, evcurve, sessionband, evsnipe
-  - OFF: mm_rewards, mm_sport
+  - ON: premarket, endgame, evcurve, evsnipe
+  - OFF: mm_sport
 - Default symbols:
-  - premarket/sessionband: `BTC, ETH, SOL, XRP`
+  - premarket: `BTC, ETH, SOL, XRP`
   - endgame/evcurve/evsnipe: `BTC, ETH, SOL, XRP, DOGE, BNB, HYPE`
 - MM mode default: `auto`
 
 ### 4) Known Combo Constraints
-- `mm_rewards_v1` should run alone, except optional pairing with `mm_sport_v1`.
-- `endgame_sweep_v1` and `sessionband_v1` should not run together.
+- `mm_sport_v1` should not be combined with heavy directional profiles until risk sizing is reviewed.
 - See `docs/strategy_combos.md`.
 
 ### Runtime Control Rule
@@ -65,13 +61,12 @@ Strategies include (minimum):
   - remote ladder selection at scheduled pre-open intent time,
   - local bot sends base ladder prices and alpha returns an aligned shifted ladder,
   - unavailable/invalid alpha ladder fail-closed skips that asset intent.
-- Endgame/EVcurve/SessionBand alpha:
+- Endgame/EVcurve alpha:
   - remote decision path,
   - unavailable/invalid responses skip decision (strategy-specific skip behavior).
-- MM rewards:
-  - remote alpha for selection only,
-  - preflight is local in bot runtime,
-  - market discovery path is local.
+- MM Sport:
+  - remote alpha owns low-depth skip decisions,
+  - local runtime owns quote placement and inventory handling.
 - Setup Doctor:
   - command: `python3 scripts/setup_doctor.py --env-file .env`
   - checks missing baseline setup fields only

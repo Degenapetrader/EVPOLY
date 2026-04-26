@@ -40,11 +40,6 @@ BASELINE_GENERATED = [
         "Endgame remote alpha token.",
     ),
     (
-        "EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN",
-        "MM Rewards Remote Token",
-        "MM Rewards remote alpha token.",
-    ),
-    (
         "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
         "EVSnipe Discovery Token",
         "EVSnipe discovery token.",
@@ -53,11 +48,6 @@ BASELINE_GENERATED = [
         "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
         "EVcurve Remote Token",
         "EVcurve remote alpha token.",
-    ),
-    (
-        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
-        "SessionBand Remote Token",
-        "SessionBand remote alpha token.",
     ),
 ]
 

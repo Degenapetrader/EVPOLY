@@ -21,9 +21,6 @@ use polymarket_client_sdk_v2::clob::types::OrderStatusType;
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::sync::Mutex;
@@ -62,14 +59,6 @@ fn entry_ack_empty_order_id_windows(
     WINDOWS.get_or_init(|| StdMutex::new(HashMap::new()))
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct MmWeakExitEventCounts {
-    probe_24h: u64,
-    stale_skip_24h: u64,
-    probe_3h: u64,
-    stale_skip_3h: u64,
-}
-
 #[derive(Debug, Clone, Default)]
 struct MmGlobalStatusAccumulator {
     market_slug: Option<String>,
@@ -99,86 +88,6 @@ fn overwrite_if_missing(slot: &mut Option<String>, candidate: Option<String>) {
             *slot = Some(trimmed.to_string());
         }
     }
-}
-
-fn mm_event_log_paths(base_path: &Path) -> Vec<PathBuf> {
-    let parent = base_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let base_name = base_path
-        .file_name()
-        .and_then(|v| v.to_str())
-        .unwrap_or("events.jsonl")
-        .to_string();
-    let rotated_prefix = format!("{base_name}.");
-    let mut paths = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(parent) {
-        for entry in entries.flatten() {
-            let name_matches = entry
-                .file_name()
-                .to_str()
-                .map(|name| name == base_name || name.starts_with(rotated_prefix.as_str()))
-                .unwrap_or(false);
-            if name_matches {
-                paths.push(entry.path());
-            }
-        }
-    }
-    if paths.is_empty() {
-        paths.push(base_path.to_path_buf());
-    }
-    paths.sort();
-    paths
-}
-
-fn summarize_mm_weak_exit_event_counts(now_ms: i64) -> MmWeakExitEventCounts {
-    let from_24h = now_ms.saturating_sub(24 * 3_600_000);
-    let from_3h = now_ms.saturating_sub(3 * 3_600_000);
-    let base_path = std::env::var("EVPOLY_EVENT_LOG_PATH")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("events.jsonl"));
-    let mut out = MmWeakExitEventCounts::default();
-    for path in mm_event_log_paths(base_path.as_path()) {
-        let Ok(file) = File::open(path) else {
-            continue;
-        };
-        for line in BufReader::new(file)
-            .lines()
-            .map_while(std::result::Result::ok)
-        {
-            let Ok(value) = serde_json::from_str::<Value>(line.as_str()) else {
-                continue;
-            };
-            let Some(ts_ms) = value.get("ts_ms").and_then(|v| v.as_i64()) else {
-                continue;
-            };
-            if ts_ms < from_24h {
-                continue;
-            }
-            let Some(kind) = value.get("kind").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            match kind {
-                "mm_rewards_weak_exit_probe" => {
-                    out.probe_24h = out.probe_24h.saturating_add(1);
-                    if ts_ms >= from_3h {
-                        out.probe_3h = out.probe_3h.saturating_add(1);
-                    }
-                }
-                "mm_rewards_weak_exit_skip_stale_live_balance" => {
-                    out.stale_skip_24h = out.stale_skip_24h.saturating_add(1);
-                    if ts_ms >= from_3h {
-                        out.stale_skip_3h = out.stale_skip_3h.saturating_add(1);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    out
 }
 
 pub struct Trader {
@@ -224,9 +133,7 @@ pub enum EntryExecutionMode {
     Ladder,
     Endgame,
     Evcurve,
-    SessionBand,
     Evsnipe,
-    MmRewards,
     Restored,
     Legacy,
 }
@@ -237,9 +144,7 @@ impl EntryExecutionMode {
             EntryExecutionMode::Ladder => "ladder",
             EntryExecutionMode::Endgame => "endgame",
             EntryExecutionMode::Evcurve => "evcurve",
-            EntryExecutionMode::SessionBand => "sessionband",
             EntryExecutionMode::Evsnipe => "evsnipe",
-            EntryExecutionMode::MmRewards => "mm_rewards",
             EntryExecutionMode::Restored => "restored",
             EntryExecutionMode::Legacy => "legacy",
         }
@@ -250,9 +155,7 @@ impl EntryExecutionMode {
             "ladder" => EntryExecutionMode::Ladder,
             "endgame" => EntryExecutionMode::Endgame,
             "evcurve" => EntryExecutionMode::Evcurve,
-            "sessionband" => EntryExecutionMode::SessionBand,
             "evsnipe" => EntryExecutionMode::Evsnipe,
-            "mm_rewards" => EntryExecutionMode::MmRewards,
             "restored" => EntryExecutionMode::Restored,
             _ => EntryExecutionMode::Legacy,
         }
@@ -615,13 +518,8 @@ impl Trader {
     }
 
     fn should_route_via_batch_place(strategy_id: &str, entry_mode: EntryExecutionMode) -> bool {
-        (strategy_id == crate::strategy::STRATEGY_ID_PREMARKET_V1
-            && matches!(entry_mode, EntryExecutionMode::Ladder))
-            || (strategy_id == crate::strategy::STRATEGY_ID_MM_REWARDS_V1
-                && matches!(
-                    entry_mode,
-                    EntryExecutionMode::MmRewards | EntryExecutionMode::Ladder
-                ))
+        strategy_id == crate::strategy::STRATEGY_ID_PREMARKET_V1
+            && matches!(entry_mode, EntryExecutionMode::Ladder)
     }
 
     async fn submit_order_with_optional_batch(
@@ -693,15 +591,7 @@ impl Trader {
                 .config
                 .hold_to_resolution_ladder
                 .unwrap_or(self.config.hold_to_resolution),
-            EntryExecutionMode::SessionBand => self
-                .config
-                .hold_to_resolution_ladder
-                .unwrap_or(self.config.hold_to_resolution),
             EntryExecutionMode::Evsnipe => self
-                .config
-                .hold_to_resolution_ladder
-                .unwrap_or(self.config.hold_to_resolution),
-            EntryExecutionMode::MmRewards => self
                 .config
                 .hold_to_resolution_ladder
                 .unwrap_or(self.config.hold_to_resolution),
@@ -1445,11 +1335,8 @@ impl Trader {
         constraints: Option<MarketOrderConstraints>,
     ) -> Option<MarketOrderConstraints> {
         constraints.map(|mut constraints| {
-            let uses_reward_share_floor = matches!(
-                strategy_id,
-                crate::strategy::STRATEGY_ID_MM_REWARDS_V1
-                    | crate::strategy::STRATEGY_ID_MM_SPORT_V1
-            );
+            let uses_reward_share_floor =
+                matches!(strategy_id, crate::strategy::STRATEGY_ID_MM_SPORT_V1);
             if !uses_reward_share_floor {
                 constraints.min_size_shares = 0.0;
             }
@@ -1771,14 +1658,6 @@ impl Trader {
             .clamp(500, 120_000)
     }
 
-    fn mm_rewards_cancel_after_ms() -> u64 {
-        std::env::var("EVPOLY_MM_QUOTE_TTL_MS")
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(20_000)
-            .clamp(500, 300_000)
-    }
-
     fn endgame_order_cancel_due(
         trade: &PendingTrade,
         now: std::time::Instant,
@@ -2039,7 +1918,6 @@ impl Trader {
         request_id: Option<&str>,
     ) -> String {
         let price_cents = (price * 100.0).round() as i64;
-        let price_mills = (price * 1000.0).round() as i64;
         let timeframe = source_timeframe.trim().to_ascii_lowercase();
         let strategy = strategy_id.trim().to_ascii_lowercase();
         let request_suffix_for = |prefix: &str| -> Option<String> {
@@ -2062,7 +1940,6 @@ impl Trader {
             })
         };
         let request_tick_suffix = request_suffix_for("tick");
-        let request_ladder_suffix = request_suffix_for("l");
         match entry_mode {
             EntryExecutionMode::Ladder => {
                 format!(
@@ -2096,30 +1973,11 @@ impl Trader {
                     )
                 }
             }
-            EntryExecutionMode::SessionBand => {
-                format!(
-                    "{}_{}_sessionband_{}_{}_{}",
-                    period_timestamp, token_id, price_cents, timeframe, strategy
-                )
-            }
             EntryExecutionMode::Evsnipe => {
                 format!(
                     "{}_{}_evsnipe_{}_{}_{}",
                     period_timestamp, token_id, price_cents, timeframe, strategy
                 )
-            }
-            EntryExecutionMode::MmRewards => {
-                if let Some(ladder_suffix) = request_ladder_suffix.as_deref() {
-                    format!(
-                        "{}_{}_mm_rewards_{}_{}_{}_{}",
-                        period_timestamp, token_id, price_mills, timeframe, strategy, ladder_suffix
-                    )
-                } else {
-                    format!(
-                        "{}_{}_mm_rewards_{}_{}_{}",
-                        period_timestamp, token_id, price_mills, timeframe, strategy
-                    )
-                }
             }
             EntryExecutionMode::Restored | EntryExecutionMode::Legacy => {
                 format!(
@@ -2136,7 +1994,6 @@ impl Trader {
             || key.contains("_endgame_")
             || key.contains("_evcurve_")
             || key.contains("_evsnipe_")
-            || key.contains("_mm_rewards_")
     }
 
     fn should_run_exchange_reconcile() -> bool {
@@ -3182,59 +3039,18 @@ impl Trader {
             .await
     }
 
-    async fn cancel_expired_mm_rewards_orders(&self) -> Result<()> {
-        if self.simulation_mode {
-            return Ok(());
-        }
-
-        let now = std::time::Instant::now();
-        let cancel_after_ms = Self::mm_rewards_cancel_after_ms();
-
-        let cancel_candidates: Vec<(String, String)> = {
-            let pending = self.pending_trades.lock().await;
-            pending
-                .iter()
-                .filter(|(key, trade)| {
-                    EntryExecutionMode::parse(trade.entry_mode.as_str())
-                        == EntryExecutionMode::MmRewards
-                        && key.contains("_mm_rewards_")
-                })
-                .filter(|(_, trade)| {
-                    !trade.sold
-                        && !trade.buy_order_confirmed
-                        && !trade.redemption_abandoned
-                        && trade.order_id.as_ref().is_some()
-                })
-                .filter_map(|(key, trade)| {
-                    let order_id = trade.order_id.as_ref()?;
-                    if Self::endgame_order_cancel_due(trade, now, cancel_after_ms) {
-                        Some((key.clone(), order_id.clone()))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-
-        self.apply_cancel_candidates(cancel_candidates, "mm_rewards_ttl_cancel_reconcile")
-            .await
-    }
-
     pub async fn run_ladder_cancel_maintenance(&self) -> Result<()> {
         if !Self::env_bool_named("EVPOLY_PARALLEL_CANCEL_MAINTENANCE_ENABLE", true) {
             self.cancel_expired_ladder_orders().await?;
             self.cancel_expired_endgame_orders().await?;
-            self.cancel_expired_mm_rewards_orders().await?;
             return Ok(());
         }
-        let (ladder_res, endgame_res, mm_res) = tokio::join!(
+        let (ladder_res, endgame_res) = tokio::join!(
             self.cancel_expired_ladder_orders(),
             self.cancel_expired_endgame_orders(),
-            self.cancel_expired_mm_rewards_orders(),
         );
         ladder_res?;
         endgame_res?;
-        mm_res?;
         Ok(())
     }
 
@@ -5889,9 +5705,7 @@ impl Trader {
             .unwrap_or(false);
         let use_fak_limit_entry = matches!(
             strategy_id.as_str(),
-            crate::strategy::STRATEGY_ID_ENDGAME_SWEEP_V1
-                | crate::strategy::STRATEGY_ID_SESSIONBAND_V1
-                | crate::strategy::STRATEGY_ID_EVSNIPE_V1
+            crate::strategy::STRATEGY_ID_ENDGAME_SWEEP_V1 | crate::strategy::STRATEGY_ID_EVSNIPE_V1
         ) || request_force_fak;
         let cross_spread_used = opportunity.use_market_order;
         let post_only_default = Self::entry_post_only_enabled_for_strategy(strategy_id.as_str());
@@ -6042,51 +5856,6 @@ impl Trader {
                     "adjusted_notional_usd": investment_amount
                 }),
             );
-        }
-        if entry_mode == EntryExecutionMode::MmRewards {
-            let requested_notional_usd = requested_units.max(0.0) * submit_price.max(0.0);
-            let base_notional_usd = if requested_notional_usd > 0.0 {
-                requested_notional_usd
-            } else {
-                fixed_amount.max(0.0)
-            };
-            let mm_notional_hard_cap = (base_notional_usd * 1.05)
-                .max(base_notional_usd + 0.50)
-                .max(20.0);
-            if investment_amount > mm_notional_hard_cap {
-                let reason = format!(
-                    "mm_rewards_notional_floor_exceeds_budget: target={:.6} adjusted={:.6} cap={:.6}",
-                    base_notional_usd, investment_amount, mm_notional_hard_cap
-                );
-                self.record_entry_precheck_failure(
-                    strategy_id.as_str(),
-                    source_timeframe.as_str(),
-                    entry_mode,
-                    opportunity,
-                    Some(submit_price),
-                    Some(requested_units),
-                    Some(investment_amount),
-                    reason.clone(),
-                );
-                log_event(
-                    "mm_rewards_skip_notional_floor_budget",
-                    json!({
-                        "strategy_id": strategy_id.as_str(),
-                        "timeframe": source_timeframe.as_str(),
-                        "entry_mode": entry_mode.as_str(),
-                        "period_timestamp": opportunity.period_timestamp,
-                        "condition_id": opportunity.condition_id,
-                        "token_id": opportunity.token_id,
-                        "submit_price": submit_price,
-                        "requested_units": requested_units,
-                        "adjusted_units": units,
-                        "target_notional_usd": base_notional_usd,
-                        "adjusted_notional_usd": investment_amount,
-                        "hard_cap_usd": mm_notional_hard_cap
-                    }),
-                );
-                return Ok(());
-            }
         }
         let trade_key = Self::limit_trade_key(
             entry_mode,
@@ -9689,11 +9458,7 @@ impl Trader {
             }
             crate::strategy::STRATEGY_ID_ENDGAME_SWEEP_V1 => Some("EVPOLY_ENTRY_POST_ONLY_ENDGAME"),
             crate::strategy::STRATEGY_ID_EVCURVE_V1 => Some("EVPOLY_ENTRY_POST_ONLY_EVCURVE"),
-            crate::strategy::STRATEGY_ID_SESSIONBAND_V1 => {
-                Some("EVPOLY_ENTRY_POST_ONLY_SESSIONBAND")
-            }
             crate::strategy::STRATEGY_ID_EVSNIPE_V1 => Some("EVPOLY_ENTRY_POST_ONLY_EVSNIPE"),
-            crate::strategy::STRATEGY_ID_MM_REWARDS_V1 => Some("EVPOLY_ENTRY_POST_ONLY_MM_REWARDS"),
             crate::strategy::STRATEGY_ID_MM_SPORT_V1 => Some("EVPOLY_ENTRY_POST_ONLY_MM_SPORT"),
             STRATEGY_ID_MANUAL_CHASE_LIMIT_V1 => Some("EVPOLY_ENTRY_POST_ONLY_MANUAL_CHASE"),
             STRATEGY_ID_MANUAL_CHASE_LIMIT_TAKER_V1 => {
@@ -9705,9 +9470,7 @@ impl Trader {
 
     fn strategy_post_only_default_override(strategy_id: &str) -> Option<bool> {
         match strategy_id {
-            // MM rewards defaults to maker-only unless explicitly overridden by env.
-            crate::strategy::STRATEGY_ID_MM_REWARDS_V1
-            | crate::strategy::STRATEGY_ID_MM_SPORT_V1 => Some(true),
+            crate::strategy::STRATEGY_ID_MM_SPORT_V1 => Some(true),
             STRATEGY_ID_MANUAL_PREMARKET_V1 | STRATEGY_ID_MANUAL_CHASE_LIMIT_V1 => Some(true),
             STRATEGY_ID_MANUAL_PREMARKET_TAKER_V1 | STRATEGY_ID_MANUAL_CHASE_LIMIT_TAKER_V1 => {
                 Some(false)
@@ -10806,13 +10569,13 @@ impl Trader {
             return Err(anyhow!("tracking_db_unavailable"));
         };
         let strategy_id_normalized = strategy_id.trim().to_ascii_lowercase();
-        if strategy_id_normalized != crate::strategy::STRATEGY_ID_MM_REWARDS_V1
+        if strategy_id_normalized != crate::strategy::STRATEGY_ID_MM_SPORT_V1
             && strategy_id_normalized != crate::strategy::STRATEGY_ID_MM_SPORT_V1
         {
             return Err(anyhow!(
                 "unsupported_strategy_id: {} (allowed: {}, {})",
                 strategy_id,
-                crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                 crate::strategy::STRATEGY_ID_MM_SPORT_V1
             ));
         }
@@ -10862,7 +10625,7 @@ impl Trader {
         limit: Option<usize>,
     ) -> Result<Value> {
         self.reconcile_strategy_inventory_from_wallet_tables(
-            crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+            crate::strategy::STRATEGY_ID_MM_SPORT_V1,
             min_drift_shares,
             limit,
         )
@@ -10909,14 +10672,14 @@ impl Trader {
                 "mm_dust_sell_auth_failed",
                 json!({
                     "error": error_text,
-                    "strategy_id": crate::strategy::STRATEGY_ID_MM_REWARDS_V1
+                    "strategy_id": crate::strategy::STRATEGY_ID_MM_SPORT_V1
                 }),
             );
             return Ok(json!({
                 "ok": false,
                 "enabled": true,
                 "error": error_text,
-                "strategy_id": crate::strategy::STRATEGY_ID_MM_REWARDS_V1
+                "strategy_id": crate::strategy::STRATEGY_ID_MM_SPORT_V1
             }));
         }
 
@@ -10933,7 +10696,7 @@ impl Trader {
 
         let scanned_rows = db
             .list_mm_wallet_inventory_by_strategy(
-                crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                 scan_limit,
             )?
             .into_iter()
@@ -11216,7 +10979,7 @@ impl Trader {
         log_event(
             "mm_dust_sell_summary",
             json!({
-                "strategy_id": crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                "strategy_id": crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                 "max_notional_usd": max_notional_usd,
                 "max_shares": max_shares,
                 "scan_limit": scan_limit,
@@ -11241,7 +11004,7 @@ impl Trader {
         Ok(json!({
             "ok": true,
             "enabled": true,
-            "strategy_id": crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+            "strategy_id": crate::strategy::STRATEGY_ID_MM_SPORT_V1,
             "max_notional_usd": max_notional_usd,
             "max_shares": max_shares,
             "scan_limit": scan_limit,
@@ -11261,7 +11024,7 @@ impl Trader {
         }))
     }
 
-    pub fn mm_rewards_status(&self) -> Value {
+    pub fn mm_status(&self, _strategy_id: &str) -> Value {
         let Some(db) = self.tracking_db.as_ref() else {
             return json!({
                 "ok": false,
@@ -11271,42 +11034,42 @@ impl Trader {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let cashflow_24h = db
             .summarize_wallet_cashflow_by_event(
-                crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                 Some(now_ms.saturating_sub(24 * 3600 * 1000)),
             )
             .ok()
             .unwrap_or_default();
         let cashflow_all = db
-            .summarize_wallet_cashflow_by_event(crate::strategy::STRATEGY_ID_MM_REWARDS_V1, None)
+            .summarize_wallet_cashflow_by_event(crate::strategy::STRATEGY_ID_MM_SPORT_V1, None)
             .ok()
             .unwrap_or_default();
         let unattributed_cashflow_24h = db
             .summarize_wallet_cashflow_unattributed_by_event(
-                crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                 Some(now_ms.saturating_sub(24 * 3600 * 1000)),
             )
             .ok()
             .unwrap_or_default();
         let unattributed_cashflow_all = db
             .summarize_wallet_cashflow_unattributed_by_event(
-                crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                 None,
             )
             .ok()
             .unwrap_or_default();
         let attribution_24h = db
             .summarize_mm_market_attribution(
-                crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                 Some(now_ms.saturating_sub(24 * 3600 * 1000)),
             )
             .ok()
             .unwrap_or_default();
         let attribution_all = db
-            .summarize_mm_market_attribution(crate::strategy::STRATEGY_ID_MM_REWARDS_V1, None)
+            .summarize_mm_market_attribution(crate::strategy::STRATEGY_ID_MM_SPORT_V1, None)
             .ok()
             .unwrap_or_default();
         let inventory_snapshot = db
-            .get_mm_inventory_drift_snapshot(crate::strategy::STRATEGY_ID_MM_REWARDS_V1, 256)
+            .get_mm_inventory_drift_snapshot(crate::strategy::STRATEGY_ID_MM_SPORT_V1, 256)
             .ok();
         let cashflow_rows_to_json = |rows: Vec<crate::tracking_db::WalletCashflowSummaryRow>| {
             rows.into_iter()
@@ -11462,7 +11225,7 @@ impl Trader {
         });
         let filled_side_24h = db
             .summarize_pending_filled_side_for_strategy(
-                crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                 Some(now_ms.saturating_sub(24 * 3_600_000)),
                 Some(now_ms),
             )
@@ -11471,19 +11234,6 @@ impl Trader {
         let sell_to_buy_fill_usd_pct_24h = if filled_side_24h.buy_notional_usd > 0.0 {
             (filled_side_24h.sell_notional_usd / filled_side_24h.buy_notional_usd * 100.0)
                 .clamp(0.0, 10_000.0)
-        } else {
-            0.0
-        };
-        let weak_exit_events = summarize_mm_weak_exit_event_counts(now_ms);
-        let weak_exit_stale_skip_rate_24h = if weak_exit_events.probe_24h > 0 {
-            (weak_exit_events.stale_skip_24h as f64 / weak_exit_events.probe_24h as f64)
-                .clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let weak_exit_stale_skip_rate_3h = if weak_exit_events.probe_3h > 0 {
-            (weak_exit_events.stale_skip_3h as f64 / weak_exit_events.probe_3h as f64)
-                .clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -11518,12 +11268,12 @@ impl Trader {
             "markets_scope": "status_scope_active_mm_market_states",
             "markets_table": "mm_market_states_v1",
             "markets_scope_warning": "The `markets` array is a status_scope subset and can exclude markets that still have OPEN pending_orders or wallet inventory.",
-            "global_open_orders_reference": "Use pending_orders WHERE strategy_id='mm_rewards_v1' AND status='OPEN' for global open-order counts.",
+            "global_open_orders_reference": "Use pending_orders WHERE strategy_id='mm_sport_v1' AND status='OPEN' for global open-order counts.",
             "global_inventory_reference": "Use wallet_positions_live_latest_v1 for global wallet inventory counts/values.",
             "global_status_endpoint": "/admin/mm/status/global",
             "global_status_note": "Use /admin/mm/status/global for token-aware classification of active_quote / inventory_exit / idle."
         });
-        match db.list_mm_market_states(crate::strategy::STRATEGY_ID_MM_REWARDS_V1) {
+        match db.list_mm_market_states(crate::strategy::STRATEGY_ID_MM_SPORT_V1) {
             Ok(rows) => {
                 let mut markets_with_weak_inventory = 0_u64;
                 let mut markets_with_open_sells_when_weak_inventory = 0_u64;
@@ -11535,7 +11285,7 @@ impl Trader {
                             .as_deref()
                             .and_then(|token_id| {
                                 db.get_mm_live_token_state(
-                                    crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                                    crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                                     row.condition_id.as_str(),
                                     row.timeframe.as_str(),
                                     row.period_timestamp,
@@ -11549,7 +11299,7 @@ impl Trader {
                             .as_deref()
                             .and_then(|token_id| {
                                 db.get_mm_live_token_state(
-                                    crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                                    crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                                     row.condition_id.as_str(),
                                     row.timeframe.as_str(),
                                     row.period_timestamp,
@@ -11655,13 +11405,7 @@ impl Trader {
                         "sell_to_buy_fill_usd_pct_24h": sell_to_buy_fill_usd_pct_24h,
                         "markets_with_weak_inventory": markets_with_weak_inventory,
                         "markets_with_open_sells_when_weak_inventory_gt0": markets_with_open_sells_when_weak_inventory,
-                        "open_sell_coverage_when_weak_inventory_pct": open_sell_coverage_when_weak_inventory_pct,
-                        "weak_exit_probe_events_24h": weak_exit_events.probe_24h,
-                        "weak_exit_stale_live_balance_skips_24h": weak_exit_events.stale_skip_24h,
-                        "weak_exit_stale_skip_rate_24h": weak_exit_stale_skip_rate_24h,
-                        "weak_exit_probe_events_3h": weak_exit_events.probe_3h,
-                        "weak_exit_stale_live_balance_skips_3h": weak_exit_events.stale_skip_3h,
-                        "weak_exit_stale_skip_rate_3h": weak_exit_stale_skip_rate_3h
+                        "open_sell_coverage_when_weak_inventory_pct": open_sell_coverage_when_weak_inventory_pct
                     }
                 })
             }
@@ -11691,26 +11435,20 @@ impl Trader {
                     "sell_to_buy_fill_usd_pct_24h": sell_to_buy_fill_usd_pct_24h,
                     "markets_with_weak_inventory": 0,
                     "markets_with_open_sells_when_weak_inventory_gt0": 0,
-                    "open_sell_coverage_when_weak_inventory_pct": 0.0,
-                    "weak_exit_probe_events_24h": weak_exit_events.probe_24h,
-                    "weak_exit_stale_live_balance_skips_24h": weak_exit_events.stale_skip_24h,
-                    "weak_exit_stale_skip_rate_24h": weak_exit_stale_skip_rate_24h,
-                    "weak_exit_probe_events_3h": weak_exit_events.probe_3h,
-                    "weak_exit_stale_live_balance_skips_3h": weak_exit_events.stale_skip_3h,
-                    "weak_exit_stale_skip_rate_3h": weak_exit_stale_skip_rate_3h
+                    "open_sell_coverage_when_weak_inventory_pct": 0.0
                 }
             }),
         }
     }
 
-    pub fn mm_rewards_status_global(&self) -> Value {
+    pub fn mm_status_global(&self, _strategy_id: &str) -> Value {
         let Some(db) = self.tracking_db.as_ref() else {
             return json!({
                 "ok": false,
                 "error": "tracking_db_unavailable"
             });
         };
-        let strategy_id = crate::strategy::STRATEGY_ID_MM_REWARDS_V1;
+        let strategy_id = crate::strategy::STRATEGY_ID_MM_SPORT_V1;
         let now_ms = chrono::Utc::now().timestamp_millis();
         let stale_threshold_sec = std::env::var("EVPOLY_MM_GLOBAL_STATUS_STALE_SNAPSHOT_SEC")
             .ok()
@@ -11940,7 +11678,7 @@ impl Trader {
             "ok": true,
             "scope": "global_orders_inventory_union",
             "scope_notes": {
-                "classification_source": "pending_orders(status='OPEN', strategy_id='mm_rewards_v1') UNION wallet_positions_live_latest_v1(position_size>0)",
+                "classification_source": "pending_orders(status='OPEN', strategy_id='mm_sport_v1') UNION wallet_positions_live_latest_v1(position_size>0)",
                 "classification_precedence": [
                     "inventory_exit: wallet_inventory_shares>0 && open_sell_orders>0",
                     "active_quote: open orders on both outcome tokens (token-aware, not BUY/SELL-side only)",
@@ -12092,7 +11830,7 @@ impl Trader {
                         .unwrap_or(0);
                     let merge_reason = "manual_condition_merge";
                     self.consume_mm_merge_inventory(
-                        crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                        crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                         "mm",
                         now_period,
                         normalized,
@@ -12104,7 +11842,7 @@ impl Trader {
                         "merge_manual",
                     );
                     self.record_merge_cashflow(
-                        crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                        crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                         "mm",
                         now_period,
                         normalized,
@@ -14281,7 +14019,7 @@ impl Trader {
                 );
             }
             if let Ok(wallet_rows) = db.list_mm_wallet_inventory_by_strategy(
-                crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                 20_000,
             ) {
                 Self::seed_merge_condition_tokens_from_wallet_rows(
@@ -14400,7 +14138,7 @@ impl Trader {
                         successful_merges = successful_merges.saturating_add(chunk.len());
                         for candidate in chunk.iter() {
                             self.consume_mm_merge_inventory(
-                                crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                                crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                                 "mm",
                                 started_ts,
                                 candidate.condition_id.as_str(),
@@ -14412,7 +14150,7 @@ impl Trader {
                                 "merge_sweep",
                             );
                             self.record_merge_cashflow(
-                                crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                                crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                                 "mm",
                                 started_ts,
                                 candidate.condition_id.as_str(),
@@ -14497,7 +14235,7 @@ impl Trader {
                                 chunk_single_success = chunk_single_success.saturating_add(1);
                                 successful_merges = successful_merges.saturating_add(1);
                                 self.consume_mm_merge_inventory(
-                                    crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                                    crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                                     "mm",
                                     started_ts,
                                     candidate.condition_id.as_str(),
@@ -14509,7 +14247,7 @@ impl Trader {
                                     "merge_sweep",
                                 );
                                 self.record_merge_cashflow(
-                                    crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
+                                    crate::strategy::STRATEGY_ID_MM_SPORT_V1,
                                     "mm",
                                     started_ts,
                                     candidate.condition_id.as_str(),
@@ -15531,23 +15269,6 @@ mod tests {
     }
 
     #[test]
-    fn sessionband_constraints_ignore_reward_share_floor() {
-        let adjusted = Trader::effective_market_order_constraints(
-            crate::strategy::STRATEGY_ID_SESSIONBAND_V1,
-            EntryExecutionMode::SessionBand,
-            Some(MarketOrderConstraints {
-                min_notional_usd: 5.0,
-                min_size_shares: 50.0,
-                tick_size: 0.01,
-            }),
-        )
-        .expect("constraints");
-
-        assert_eq!(adjusted.min_notional_usd, 5.0);
-        assert_eq!(adjusted.min_size_shares, 0.0);
-    }
-
-    #[test]
     fn evsnipe_constraints_ignore_reward_share_floor() {
         let adjusted = Trader::effective_market_order_constraints(
             crate::strategy::STRATEGY_ID_EVSNIPE_V1,
@@ -15565,27 +15286,10 @@ mod tests {
     }
 
     #[test]
-    fn mm_rewards_constraints_keep_reward_share_floor() {
-        let adjusted = Trader::effective_market_order_constraints(
-            crate::strategy::STRATEGY_ID_MM_REWARDS_V1,
-            EntryExecutionMode::MmRewards,
-            Some(MarketOrderConstraints {
-                min_notional_usd: 5.0,
-                min_size_shares: 50.0,
-                tick_size: 0.01,
-            }),
-        )
-        .expect("constraints");
-
-        assert_eq!(adjusted.min_notional_usd, 5.0);
-        assert_eq!(adjusted.min_size_shares, 50.0);
-    }
-
-    #[test]
     fn mm_sport_constraints_keep_reward_share_floor() {
         let adjusted = Trader::effective_market_order_constraints(
             crate::strategy::STRATEGY_ID_MM_SPORT_V1,
-            EntryExecutionMode::MmRewards,
+            EntryExecutionMode::Ladder,
             Some(MarketOrderConstraints {
                 min_notional_usd: 5.0,
                 min_size_shares: 50.0,

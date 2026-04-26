@@ -10,6 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-26
+- `evsnipe_v1`: aligned the remote discovery path with the alpha/builder-attribution model while preserving main2 remote-first behavior (`src/evsnipe.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/evsnipe_v1.md`).
+  - EVSnipe remote discovery now falls back from `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN` to `EVPOLY_ALPHA_KEY`, sends `x-wallet-address` from `POLY_PROXY_WALLET_ADDRESS`, and includes the configured official builder code in the remote payload.
+  - retained main2's remote-first discovery with local fallback and retained the fixed internal EVSnipe in-loop cap; UPDATE's local-first discovery and user-editable `EVPOLY_EVSNIPE_STRATEGY_CAP_USD` were intentionally not ported.
+  - ported UPDATE's effective end timestamp helper for close-rule compatibility and kept close-rule specs out of strike-window pruning if they are ever allowed into the EVSnipe watchlist.
 - `evcurve_v1`: aligned EVcurve decision thresholds with UPDATE/main_v2 (`src/evcurve.rs`, `.env.full.example`, `docs/evcurve_v1.md`).
   - max `p_flip` is now fixed in code at `0.11`, and `EVPOLY_EVCURVE_MAX_FLIP_PROB` env overrides are ignored.
   - D1 EV-gap threshold is now fixed in code at `0.12`, and `EVPOLY_EVCURVE_D1_EV_GAP` env overrides are ignored.

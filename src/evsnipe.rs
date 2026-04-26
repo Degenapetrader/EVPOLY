@@ -75,6 +75,16 @@ impl EvsnipeMarketSpec {
         )
     }
 
+    pub fn effective_end_ts(&self) -> Option<i64> {
+        self.end_ts.map(|end_ts| {
+            if self.is_close_rule() {
+                end_ts.saturating_add(1)
+            } else {
+                end_ts
+            }
+        })
+    }
+
     pub fn hit_by_trade(&self, price: f64) -> bool {
         if !price.is_finite() || price <= 0.0 {
             return false;
@@ -235,6 +245,7 @@ struct EvsnipeRemoteDiscoveryRequest {
     symbols: Vec<String>,
     discovery_limit: u32,
     max_days_to_expiry: u64,
+    builder_code: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -323,6 +334,9 @@ async fn send_remote_json_post_once<T: Serialize + ?Sized>(
     if let Some(token) = token {
         request = request.bearer_auth(token);
     }
+    if let Some(wallet) = env_nonempty("POLY_PROXY_WALLET_ADDRESS") {
+        request = request.header("x-wallet-address", wallet);
+    }
     let response = request
         .send()
         .await
@@ -403,7 +417,8 @@ fn evsnipe_remote_discovery_config() -> Option<&'static EvsnipeRemoteDiscoveryCo
                 .unwrap_or_else(|| REMOTE_EVSNIPE_DISCOVERY_URL_DEFAULT.to_string());
             Some(EvsnipeRemoteDiscoveryConfig {
                 url,
-                token: env_nonempty("EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN"),
+                token: env_nonempty("EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN")
+                    .or_else(|| env_nonempty("EVPOLY_ALPHA_KEY")),
                 timeout_ms: 2_000_u64,
             })
         })
@@ -466,6 +481,7 @@ async fn refresh_hit_market_specs_remote(
         symbols: cfg.symbols.clone(),
         discovery_limit: cfg.discovery_limit,
         max_days_to_expiry: cfg.max_days_to_expiry,
+        builder_code: crate::builder_attribution::configured_builder_code(),
     };
     let (status, body) = send_remote_json_post_with_alpha_failover(
         client,
@@ -865,6 +881,9 @@ pub fn filter_specs_by_spot_anchor(
     specs
         .iter()
         .filter(|spec| {
+            if spec.is_close_rule() {
+                return true;
+            }
             let Some(anchor) = anchors.get(spec.symbol.as_str()) else {
                 return false;
             };
@@ -1826,6 +1845,18 @@ mod tests {
     }
 
     #[test]
+    fn evsnipe_remote_discovery_payload_includes_builder_code() {
+        let payload = EvsnipeRemoteDiscoveryRequest {
+            symbols: vec!["BTC".to_string()],
+            discovery_limit: 500,
+            max_days_to_expiry: 30,
+            builder_code: "0xabc".to_string(),
+        };
+        let serialized = serde_json::to_value(&payload).unwrap();
+        assert_eq!(serialized["builder_code"], "0xabc");
+    }
+
+    #[test]
     fn parse_market_rule_high_gte() {
         let market = Market {
             condition_id: "cond-hit".to_string(),
@@ -1948,6 +1979,29 @@ mod tests {
     }
 
     #[test]
+    fn effective_end_ts_shifts_close_rules_by_one_second() {
+        let close_spec = EvsnipeMarketSpec {
+            condition_id: "cond-close".to_string(),
+            slug: "slug-close".to_string(),
+            question: "Will BTC close above 100k?".to_string(),
+            symbol: "BTC".to_string(),
+            strike_price: 100_000.0,
+            strike_price_upper: None,
+            rule: EvsnipeRule::CloseAbove,
+            yes_token_id: "yes".to_string(),
+            no_token_id: Some("no".to_string()),
+            end_ts: Some(1_776_441_660),
+        };
+        let hit_spec = EvsnipeMarketSpec {
+            rule: EvsnipeRule::HitUpHighGte,
+            ..close_spec.clone()
+        };
+
+        assert_eq!(close_spec.effective_end_ts(), Some(1_776_441_661));
+        assert_eq!(hit_spec.effective_end_ts(), Some(1_776_441_660));
+    }
+
+    #[test]
     fn strike_filter_keeps_only_near_anchor() {
         let specs = vec![
             EvsnipeMarketSpec {
@@ -1986,6 +2040,61 @@ mod tests {
         let filtered = filter_specs_by_spot_anchor(specs.as_slice(), &anchors, 0.10);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].slug, "btc-near");
+    }
+
+    #[test]
+    fn strike_filter_keeps_close_rules_even_when_far_from_anchor() {
+        let specs = vec![
+            EvsnipeMarketSpec {
+                condition_id: "close-near".to_string(),
+                slug: "sol-80-90".to_string(),
+                question: "Will the price of Solana be between $80 and $90?".to_string(),
+                symbol: "SOL".to_string(),
+                strike_price: 80.0,
+                strike_price_upper: Some(90.0),
+                rule: EvsnipeRule::CloseBetween,
+                yes_token_id: "yes-close-near".to_string(),
+                no_token_id: Some("no-close-near".to_string()),
+                end_ts: Some(2_000_000_000),
+            },
+            EvsnipeMarketSpec {
+                condition_id: "close-far".to_string(),
+                slug: "sol-160-180".to_string(),
+                question: "Will the price of Solana be between $160 and $180?".to_string(),
+                symbol: "SOL".to_string(),
+                strike_price: 160.0,
+                strike_price_upper: Some(180.0),
+                rule: EvsnipeRule::CloseBetween,
+                yes_token_id: "yes-close-far".to_string(),
+                no_token_id: Some("no-close-far".to_string()),
+                end_ts: Some(2_000_000_000),
+            },
+            EvsnipeMarketSpec {
+                condition_id: "hit-far".to_string(),
+                slug: "sol-hit-160".to_string(),
+                question: "Will Solana hit $160?".to_string(),
+                symbol: "SOL".to_string(),
+                strike_price: 160.0,
+                strike_price_upper: None,
+                rule: EvsnipeRule::HitUpHighGte,
+                yes_token_id: "yes-hit-far".to_string(),
+                no_token_id: None,
+                end_ts: Some(2_000_000_000),
+            },
+        ];
+        let mut anchors = HashMap::new();
+        anchors.insert(
+            "SOL".to_string(),
+            EvsnipeSpotAnchor {
+                price: 100.0,
+                updated_at_ms: 1_000,
+            },
+        );
+        let filtered = filter_specs_by_spot_anchor(specs.as_slice(), &anchors, 0.10);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().any(|spec| spec.slug == "sol-80-90"));
+        assert!(filtered.iter().any(|spec| spec.slug == "sol-160-180"));
+        assert!(!filtered.iter().any(|spec| spec.slug == "sol-hit-160"));
     }
 
     #[test]

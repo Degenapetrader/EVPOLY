@@ -12,9 +12,10 @@ EVSnipe discovery is remote-first with local fallback.
 
 Remote config:
 - `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL`
-- `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN`
+- `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN` (blank uses `EVPOLY_ALPHA_KEY`)
 
 Runtime behavior:
+- Remote EVSnipe discovery sends the official builder code and the proxy wallet header for auto-generated alpha keys.
 - Remote timeout is hardcoded to `2000ms` (no env timeout knob).
 - Remote host failover is supported (`alpha.evplus.ai` -> `alpha2.evplus.ai`) for transport/timeout/429/5xx classes.
 - If remote is missing/unavailable/empty, runtime falls back to local Gamma discovery.
@@ -31,8 +32,9 @@ Local and remote discovery are aligned to the same EVSnipe filtering model (Poly
 7. Dedupe/prune prevents duplicate fire for same condition/leg.
 
 ## Sizing and Caps
-- `EVPOLY_EVSNIPE_SIZE_USD` default `100`
+- `EVPOLY_EVSNIPE_SIZE_USD` default `10`
 - `EVPOLY_EVSNIPE_PRE_LEG_RATIO` default `0.30`
+- `EVPOLY_EVSNIPE_STRATEGY_CAP_USD` is ignored by runtime; shared arbiter caps still apply.
 
 ## Key Env Knobs
 - `EVPOLY_STRATEGY_EVSNIPE_ENABLE`

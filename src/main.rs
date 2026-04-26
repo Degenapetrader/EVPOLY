@@ -14276,10 +14276,11 @@ async fn main() -> Result<()> {
                                 _ => Direction::Up,
                             };
                             let now_ts = now_ms.saturating_div(1_000);
-                            let period_ts_i64 = spec_for_task.end_ts.unwrap_or(now_ts).max(1);
+                            let period_ts_i64 =
+                                spec_for_task.effective_end_ts().unwrap_or(now_ts).max(1);
                             let period_timestamp = u64::try_from(period_ts_i64).ok().unwrap_or(1);
                             let time_remaining_seconds = spec_for_task
-                                .end_ts
+                                .effective_end_ts()
                                 .map(|end_ts| end_ts.saturating_sub(now_ts).max(0) as u64)
                                 .unwrap_or(3_600);
                             let request_id = format!(

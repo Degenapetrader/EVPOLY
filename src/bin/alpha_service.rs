@@ -15,6 +15,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{Datelike, Timelike, Utc};
 use chrono_tz::America::New_York;
+use futures_util::stream::{self, StreamExt};
 use hmac::{Hmac, Mac};
 use polymarket_arbitrage_bot::api::PolymarketApi;
 use polymarket_arbitrage_bot::builder_attribution;
@@ -54,6 +55,8 @@ const DEFAULT_ENDGAME_BASE_OFFSETS_MS: &[u64] = &[2000, 1000, 100];
 const DEFAULT_ENDGAME_NEAR_T_RANDOM_MAX_BPS: u32 = 2500;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_BASE_MS: i64 = 400;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_JITTER_MS: i64 = 100;
+const MM_SPORT_DEPTH_SKIP_MAX_MARKETS: usize = 200;
+const MM_SPORT_DEPTH_SKIP_CONCURRENCY: usize = 8;
 const AUTO_ALPHA_KEY_PREFIX: &str = "evp_auto";
 
 #[derive(Debug, Clone)]
@@ -489,6 +492,49 @@ struct EndgameAlphaPolicyResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct MmSportDepthSkipRequest {
+    strategy_id: String,
+    request_ts_ms: i64,
+    depth_floor_usd: f64,
+    #[serde(default)]
+    builder_code: Option<String>,
+    markets: Vec<MmSportDepthSkipMarketInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct MmSportDepthSkipMarketInput {
+    condition_id: String,
+    market_slug: String,
+    up_token_id: String,
+    down_token_id: String,
+    minimum_tick_size: f64,
+}
+
+#[derive(Debug, Serialize)]
+struct MmSportDepthSkipMarketResponse {
+    condition_id: String,
+    market_slug: String,
+    skipped: bool,
+    reason: String,
+    up_submit_bid_price: Option<f64>,
+    down_submit_bid_price: Option<f64>,
+    up_ext_top_bid_usd: Option<f64>,
+    down_ext_top_bid_usd: Option<f64>,
+    pair_min_top_depth_usd: Option<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct MmSportDepthSkipResponse {
+    ok: bool,
+    kind: String,
+    request_ts_ms: i64,
+    depth_floor_usd: f64,
+    checked_count: usize,
+    skipped_condition_ids: Vec<String>,
+    markets: Vec<MmSportDepthSkipMarketResponse>,
+}
+
+#[derive(Debug, Deserialize)]
 struct MmRewardsSelectionRequest {
     enabled_modes: Vec<String>,
     selection_pool: usize,
@@ -717,6 +763,10 @@ async fn main() -> Result<()> {
             "/v1/alpha/mm-rewards/preflight",
             post(alpha_mm_rewards_preflight_handler),
         )
+        .route(
+            "/v1/alpha/mm-sport/depth-skip",
+            post(alpha_mm_sport_depth_skip_handler),
+        )
         .route("/v1/alpha/evcurve", post(alpha_evcurve_handler))
         .route("/v1/alpha/sessionband", post(alpha_sessionband_handler))
         .route(
@@ -735,7 +785,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to bind {}", addr.as_str()))?;
 
     eprintln!(
-        "evpoly alpha service listening on {} with routes: /health, /v1/onboard, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-rewards/selection, /v1/alpha/mm-rewards/preflight, /v1/alpha/evcurve, /v1/alpha/sessionband, /v1/alpha/premarket/ladder, /v1/alpha/endgame/policy",
+        "evpoly alpha service listening on {} with routes: /health, /v1/onboard, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-rewards/selection, /v1/alpha/mm-rewards/preflight, /v1/alpha/mm-sport/depth-skip, /v1/alpha/evcurve, /v1/alpha/sessionband, /v1/alpha/premarket/ladder, /v1/alpha/endgame/policy",
         addr.as_str()
     );
 
@@ -1060,6 +1110,220 @@ async fn discovery_evsnipe_handler(
     }
 
     Ok(Json(EvsnipeDiscoveryResponse { specs }))
+}
+
+fn mm_sport_alpha_one_tick(tick_size: f64) -> f64 {
+    tick_size.max(0.000_001)
+}
+
+fn mm_sport_alpha_passive_entry_price(best_bid: f64, tick_size: f64) -> f64 {
+    let tick = mm_sport_alpha_one_tick(tick_size);
+    (best_bid - tick).clamp(tick, 1.0 - tick)
+}
+
+fn mm_sport_alpha_best_bid(orderbook: &polymarket_arbitrage_bot::models::OrderBook) -> Option<f64> {
+    orderbook
+        .bids
+        .iter()
+        .filter_map(|entry| f64::try_from(entry.price).ok())
+        .filter(|price| price.is_finite() && *price > 0.0)
+        .max_by(|a, b| a.total_cmp(b))
+}
+
+fn mm_sport_alpha_bid_depth_at_or_above(
+    orderbook: &polymarket_arbitrage_bot::models::OrderBook,
+    target_price: f64,
+    tick_size: f64,
+) -> (f64, f64) {
+    let tolerance = if tick_size.is_finite() && tick_size > 0.0 {
+        tick_size * 0.5
+    } else {
+        1e-9
+    };
+    orderbook
+        .bids
+        .iter()
+        .filter_map(|entry| {
+            let price = f64::try_from(entry.price).ok()?;
+            let size = f64::try_from(entry.size).ok()?;
+            if !price.is_finite()
+                || !size.is_finite()
+                || price <= 0.0
+                || size <= 0.0
+                || price + tolerance < target_price
+            {
+                return None;
+            }
+            Some((size, price * size))
+        })
+        .fold((0.0, 0.0), |(shares_acc, usd_acc), (shares, usd)| {
+            (shares_acc + shares, usd_acc + usd)
+        })
+}
+
+fn finite_json_number(value: f64) -> Option<f64> {
+    value.is_finite().then_some(value)
+}
+
+async fn evaluate_mm_sport_depth_skip_market(
+    api: Arc<PolymarketApi>,
+    market: MmSportDepthSkipMarketInput,
+    depth_floor_usd: f64,
+) -> MmSportDepthSkipMarketResponse {
+    let condition_id = market.condition_id.trim().to_string();
+    let market_slug = market.market_slug.trim().to_string();
+    let up_token_id = market.up_token_id.trim().to_string();
+    let down_token_id = market.down_token_id.trim().to_string();
+    let tick_size = market.minimum_tick_size.max(0.000_001);
+    if condition_id.is_empty()
+        || up_token_id.is_empty()
+        || down_token_id.is_empty()
+        || !tick_size.is_finite()
+        || tick_size <= 0.0
+    {
+        return MmSportDepthSkipMarketResponse {
+            condition_id,
+            market_slug,
+            skipped: true,
+            reason: "invalid_market_payload".to_string(),
+            up_submit_bid_price: None,
+            down_submit_bid_price: None,
+            up_ext_top_bid_usd: None,
+            down_ext_top_bid_usd: None,
+            pair_min_top_depth_usd: None,
+        };
+    }
+
+    let (up_book_res, down_book_res) = tokio::join!(
+        api.get_orderbook(up_token_id.as_str()),
+        api.get_orderbook(down_token_id.as_str()),
+    );
+    let (up_book, down_book) = match (up_book_res, down_book_res) {
+        (Ok(up_book), Ok(down_book)) => (up_book, down_book),
+        _ => {
+            return MmSportDepthSkipMarketResponse {
+                condition_id,
+                market_slug,
+                skipped: true,
+                reason: "orderbook_unavailable".to_string(),
+                up_submit_bid_price: None,
+                down_submit_bid_price: None,
+                up_ext_top_bid_usd: None,
+                down_ext_top_bid_usd: None,
+                pair_min_top_depth_usd: None,
+            };
+        }
+    };
+    let Some(up_best_bid) = mm_sport_alpha_best_bid(&up_book) else {
+        return MmSportDepthSkipMarketResponse {
+            condition_id,
+            market_slug,
+            skipped: true,
+            reason: "up_book_missing_bid".to_string(),
+            up_submit_bid_price: None,
+            down_submit_bid_price: None,
+            up_ext_top_bid_usd: None,
+            down_ext_top_bid_usd: None,
+            pair_min_top_depth_usd: None,
+        };
+    };
+    let Some(down_best_bid) = mm_sport_alpha_best_bid(&down_book) else {
+        return MmSportDepthSkipMarketResponse {
+            condition_id,
+            market_slug,
+            skipped: true,
+            reason: "down_book_missing_bid".to_string(),
+            up_submit_bid_price: None,
+            down_submit_bid_price: None,
+            up_ext_top_bid_usd: None,
+            down_ext_top_bid_usd: None,
+            pair_min_top_depth_usd: None,
+        };
+    };
+    let up_submit_bid_price = mm_sport_alpha_passive_entry_price(up_best_bid, tick_size);
+    let down_submit_bid_price = mm_sport_alpha_passive_entry_price(down_best_bid, tick_size);
+    let (_, up_ext_top_bid_usd) =
+        mm_sport_alpha_bid_depth_at_or_above(&up_book, up_submit_bid_price, tick_size);
+    let (_, down_ext_top_bid_usd) =
+        mm_sport_alpha_bid_depth_at_or_above(&down_book, down_submit_bid_price, tick_size);
+    let pair_min_top_depth_usd = up_ext_top_bid_usd.min(down_ext_top_bid_usd);
+    let skipped = !pair_min_top_depth_usd.is_finite() || pair_min_top_depth_usd < depth_floor_usd;
+    MmSportDepthSkipMarketResponse {
+        condition_id,
+        market_slug,
+        skipped,
+        reason: if skipped {
+            "pair_depth_below_floor".to_string()
+        } else {
+            "ok".to_string()
+        },
+        up_submit_bid_price: finite_json_number(up_submit_bid_price),
+        down_submit_bid_price: finite_json_number(down_submit_bid_price),
+        up_ext_top_bid_usd: finite_json_number(up_ext_top_bid_usd),
+        down_ext_top_bid_usd: finite_json_number(down_ext_top_bid_usd),
+        pair_min_top_depth_usd: finite_json_number(pair_min_top_depth_usd),
+    }
+}
+
+async fn alpha_mm_sport_depth_skip_handler(
+    State(state): State<AppState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let payload: MmSportDepthSkipRequest =
+        parse_json_request(&state, remote.ip(), &headers, &body)?;
+    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
+
+    if payload.strategy_id.trim() != "mm_sport_v1" {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "strategy_id must be mm_sport_v1",
+        ));
+    }
+    if payload.markets.len() > MM_SPORT_DEPTH_SKIP_MAX_MARKETS {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "markets exceeds maximum {}",
+                MM_SPORT_DEPTH_SKIP_MAX_MARKETS
+            ),
+        ));
+    }
+    let depth_floor_usd = if payload.depth_floor_usd.is_finite() && payload.depth_floor_usd >= 0.0 {
+        payload.depth_floor_usd
+    } else {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "depth_floor_usd must be finite and non-negative",
+        ));
+    };
+
+    let api = state.api.clone();
+    let mut markets = stream::iter(payload.markets.into_iter())
+        .map(|market| {
+            let api = api.clone();
+            async move { evaluate_mm_sport_depth_skip_market(api, market, depth_floor_usd).await }
+        })
+        .buffer_unordered(MM_SPORT_DEPTH_SKIP_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+    markets.sort_by(|a, b| a.condition_id.cmp(&b.condition_id));
+    let skipped_condition_ids = markets
+        .iter()
+        .filter(|market| market.skipped)
+        .map(|market| market.condition_id.clone())
+        .collect::<Vec<_>>();
+
+    Ok(Json(MmSportDepthSkipResponse {
+        ok: true,
+        kind: "depth_skip".to_string(),
+        request_ts_ms: payload.request_ts_ms,
+        depth_floor_usd,
+        checked_count: markets.len(),
+        skipped_condition_ids,
+        markets,
+    }))
 }
 
 async fn alpha_mm_rewards_selection_handler(

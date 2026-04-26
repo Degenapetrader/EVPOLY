@@ -10,6 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-26
+- `mm_sport_v1`: moved the hard `$1,000` low-depth market skip into remote alpha (`src/main.rs`, `src/bin/alpha_service.rs`, `.env.example`, `.env.full.example`).
+  - after each local MM Sport discovery cycle, runtime sends the candidate sports reward markets to `/v1/alpha/mm-sport/depth-skip` and caches the returned skip list until the next discovery refresh.
+  - alpha checks both outcome orderbooks at the passive entry price and returns conditions whose pair depth is below `MM_SPORT_LOW_DEPTH_FLOOR_USD`; failed or missing alpha responses fail closed for new MM Sport entry quotes.
+  - local cancel, inventory exit, and invalid-book safety remain local; `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_*` env keys expose the endpoint/token with blank-token fallback to `EVPOLY_ALPHA_KEY`.
 - `evsnipe_v1`: aligned the remote discovery path with the alpha/builder-attribution model while preserving main2 remote-first behavior (`src/evsnipe.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/evsnipe_v1.md`).
   - EVSnipe remote discovery now falls back from `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN` to `EVPOLY_ALPHA_KEY`, sends `x-wallet-address` from `POLY_PROXY_WALLET_ADDRESS`, and includes the configured official builder code in the remote payload.
   - retained main2's remote-first discovery with local fallback and retained the fixed internal EVSnipe in-loop cap; UPDATE's local-first discovery and user-editable `EVPOLY_EVSNIPE_STRATEGY_CAP_USD` were intentionally not ported.

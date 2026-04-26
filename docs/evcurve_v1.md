@@ -17,10 +17,12 @@
 
 ## Alpha + Discovery Behavior
 - Remote alpha endpoint: `EVPOLY_REMOTE_EVCURVE_ALPHA_URL`
-- Token: `EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN`
+- Token: `EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN` (blank uses `EVPOLY_ALPHA_KEY`)
 - Runtime alpha timeout is hardcoded `1000ms`
 
 Behavior:
+- Alpha owns Plan3/PlanDaily lookup, `p_flip`, hold-side selection, D1 sub-strategy selection, and max-buy decisioning.
+- Runtime keeps checkpoint scheduling, base anchoring, near-base skip, market discovery, PM quote freshness, sizing/caps, and chase/FAK execution local.
 - Alpha unavailable/invalid -> checkpoint skip (no local alpha fallback model).
 - Market discovery path is remote-first with local fallback.
 
@@ -30,7 +32,7 @@ Behavior:
 3. Apply near-base skip gate.
 4. Resolve market (remote-first discovery, local fallback).
 5. Fetch PM quotes/orderbook and apply freshness checks.
-6. Call remote EVcurve alpha for checkpoint decision.
+6. Call remote EVcurve alpha for Plan3/PlanDaily checkpoint decision.
 7. If trade allowed, compute size and cap checks.
 8. Submit through chase-limit lifecycle.
 9. Cancel/reprice loop manages working order until completion/stop.

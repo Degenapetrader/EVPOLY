@@ -10,6 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-26
+- `evcurve_v1`: clarified and cleaned the remote-alpha-only decision path (`src/main.rs`, `.env.example`, `.env.full.example`, `docs/evcurve_v1.md`).
+  - runtime no longer carries placeholder local Plan3/PlanDaily table handles through EVcurve decision calls; non-D1 and D1 candidates are explicitly fetched from `/v1/alpha/evcurve`.
+  - alpha owns Plan3/PlanDaily lookup, `p_flip`, hold-side selection, D1 sub-strategy selection, and max-buy decisioning; checkpoint scheduling, base anchoring, market discovery, sizing/caps, and chase/FAK execution remain local.
+  - env templates now expose `EVPOLY_REMOTE_EVCURVE_ALPHA_URL` and `EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN` with blank-token fallback to `EVPOLY_ALPHA_KEY`.
 - `endgame_sweep_v1`: moved the active `t0/t1/t2` checkpoint policy fully to remote alpha timing (`src/main.rs`, `src/config.rs`, `src/bin/alpha_service.rs`, `.env.example`, `.env.full.example`, `docs/endgame_sweep_v1.md`).
   - runtime now requests `/v1/alpha/endgame/policy` at `T-3m` before current period close / next period open; market discovery, proxy feeds, direction logic, sizing, caps, and order placement remain local.
   - alpha defaults to base offsets `2000,1000,100` ms and randomizes each returned offset up to `25%` closer to `T` only, never farther from close.

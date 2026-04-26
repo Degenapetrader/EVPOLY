@@ -8378,8 +8378,6 @@ async fn main() -> Result<()> {
     }
     let evcurve_cfg = Arc::new(evcurve::EvcurveExecutionConfig::from_env());
     if evcurve_cfg.enable {
-        let plan3_tables = Arc::new(Plan3Tables::empty_for_remote());
-        let d1_tables: Option<Arc<PlanDailyTables>> = None;
         {
             let evcurve_symbols = symbol_ownership::filter_symbols_for_strategy(
                 STRATEGY_ID_EVCURVE_V1,
@@ -8487,8 +8485,6 @@ async fn main() -> Result<()> {
 
             let evcurve_cfg_for_loop = evcurve_cfg.clone();
             let adaptive_chase_cfg = Arc::new(AdaptiveChaseConfig::from_env());
-            let evcurve_tables_for_loop = plan3_tables.clone();
-            let d1_tables_for_loop = d1_tables.clone();
             let evcurve_symbols_for_loop = evcurve_symbols.clone();
             let evcurve_coinbase_states_for_loop = Arc::new(evcurve_coinbase_states_by_symbol);
             let evcurve_coinbase_notifies_for_loop = Arc::new(evcurve_coinbase_notifies_by_symbol);
@@ -9313,9 +9309,7 @@ async fn main() -> Result<()> {
 
                                 let decision_candidates: Vec<evcurve::EvcurveDecisionCandidate> =
                                     if timeframe == Timeframe::D1 {
-                                        evaluate_evcurve_d1_candidates_remote_or_local(
-                                            evcurve_cfg_for_loop.as_ref(),
-                                            d1_tables_for_loop.as_deref(),
+                                        evaluate_evcurve_d1_candidates_remote(
                                             symbol.as_str(),
                                             market_open_ts,
                                             tau_sec,
@@ -9333,9 +9327,7 @@ async fn main() -> Result<()> {
                                             score: 0.0,
                                             p_flip_market: None,
                                             gap_abs: None,
-                                            decision: evaluate_evcurve_decision_remote_or_local(
-                                                evcurve_cfg_for_loop.as_ref(),
-                                                evcurve_tables_for_loop.as_ref(),
+                                            decision: evaluate_evcurve_decision_remote(
                                                 timeframe,
                                                 symbol.as_str(),
                                                 market_open_ts,
@@ -9921,8 +9913,6 @@ async fn main() -> Result<()> {
                                     let dedupe_task = enqueue_dedupe_for_evcurve.clone();
                                     let cfg_task = evcurve_cfg_for_loop.clone();
                                     let adaptive_cfg_task = adaptive_chase_cfg.clone();
-                                    let tables_task = evcurve_tables_for_loop.clone();
-                                    let d1_tables_task = d1_tables_for_loop.clone();
                                     let d1_active_signal_state_task =
                                         d1_active_signal_state.clone();
                                     let d1_blocked_after_fill_state_task =
@@ -10249,11 +10239,7 @@ async fn main() -> Result<()> {
                                                 let tau_now =
                                                     close_ts.saturating_sub(now_ts).max(0);
                                                 let recheck_candidates =
-                                                    evaluate_evcurve_d1_candidates_remote_or_local(
-                                                        cfg_task.as_ref(),
-                                                        d1_tables_task
-                                                            .as_ref()
-                                                            .map(|tables| tables.as_ref()),
+                                                    evaluate_evcurve_d1_candidates_remote(
                                                         symbol_task.as_str(),
                                                         market_open_ts,
                                                         tau_now,
@@ -10813,9 +10799,7 @@ async fn main() -> Result<()> {
                                                         let tau_now =
                                                             close_ts.saturating_sub(now_ts).max(0);
                                                         let recheck =
-                                                            evaluate_evcurve_decision_remote_or_local(
-                                                                cfg_task.as_ref(),
-                                                                tables_task.as_ref(),
+                                                            evaluate_evcurve_decision_remote(
                                                                 timeframe,
                                                                 symbol_task.as_str(),
                                                                 market_open_ts,
@@ -11365,20 +11349,17 @@ async fn main() -> Result<()> {
                                             }
 
                                             let tau_now = close_ts.saturating_sub(now_ts).max(0);
-                                            let live_decision =
-                                                evaluate_evcurve_decision_remote_or_local(
-                                                    cfg_task.as_ref(),
-                                                    tables_task.as_ref(),
-                                                    timeframe,
-                                                    symbol_task.as_str(),
-                                                    market_open_ts,
-                                                    tau_now,
-                                                    base_mid_task,
-                                                    proxy_snapshot.mid,
-                                                    up_ask,
-                                                    down_ask,
-                                                )
-                                                .await;
+                                            let live_decision = evaluate_evcurve_decision_remote(
+                                                timeframe,
+                                                symbol_task.as_str(),
+                                                market_open_ts,
+                                                tau_now,
+                                                base_mid_task,
+                                                proxy_snapshot.mid,
+                                                up_ask,
+                                                down_ask,
+                                            )
+                                            .await;
                                             if live_decision.hold_side.direction() != direction_task
                                             {
                                                 fallback_failures =
@@ -33215,9 +33196,7 @@ async fn fetch_remote_evcurve_d1_candidates(
     Ok(out)
 }
 
-async fn evaluate_evcurve_decision_remote_or_local(
-    _evcurve_cfg: &evcurve::EvcurveExecutionConfig,
-    _evcurve_tables: &Plan3Tables,
+async fn evaluate_evcurve_decision_remote(
     timeframe: Timeframe,
     symbol: &str,
     period_open_ts: i64,
@@ -33292,9 +33271,7 @@ async fn evaluate_evcurve_decision_remote_or_local(
     }
 }
 
-async fn evaluate_evcurve_d1_candidates_remote_or_local(
-    _evcurve_cfg: &evcurve::EvcurveExecutionConfig,
-    _d1_tables: Option<&PlanDailyTables>,
+async fn evaluate_evcurve_d1_candidates_remote(
     symbol: &str,
     period_open_ts: i64,
     tau_sec: i64,

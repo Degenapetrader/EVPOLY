@@ -62,9 +62,9 @@ Strategies include (minimum):
 - Shared timeframe discovery: remote-first with local fallback.
 - EVSnipe discovery: remote-first (alpha host failover) with local fallback.
 - Premarket alpha:
-  - remote-first,
-  - transport/timeout/connect errors fallback to local 50/50,
-  - other alpha errors fail-closed.
+  - remote ladder selection at scheduled pre-open intent time,
+  - local bot sends base ladder prices and alpha returns an aligned shifted ladder,
+  - unavailable/invalid alpha ladder fail-closed skips that asset intent.
 - Endgame/EVcurve/SessionBand alpha:
   - remote decision path,
   - unavailable/invalid responses skip decision (strategy-specific skip behavior).

@@ -106,7 +106,7 @@ bash scripts/verify_env_coverage.sh --env-file .env
 Remote endpoints still default to `https://alpha.evplus.ai/...` and retry to `https://alpha2.evplus.ai/...` on transport/timeout/429/5xx failure classes.
 
 Timeout policy currently hardcoded in runtime:
-- Premarket alpha: `1000ms`
+- Premarket ladder alpha: `1000ms`
 - Endgame alpha: `1000ms`
 - EVcurve alpha: `1000ms`
 - SessionBand alpha: `1000ms`

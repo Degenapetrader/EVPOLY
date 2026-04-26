@@ -10,6 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-26
+- `premarket_v1`: replaced the remote `should_trade` alpha gate with remote alpha ladder selection (`src/main.rs`, `src/bin/alpha_service.rs`, `.env.example`, `.env.full.example`, `docs/premarket_v1.md`).
+  - scheduler, market discovery, sizing, caps, cancel scheduling, and order placement remain local.
+  - at the scheduled pre-open intent (`T-4m` path), runtime sends base ladder prices to `/v1/alpha/premarket/ladder`.
+  - alpha returns one aligned random price shift across all rungs, bounded to about `+/-10%`; unavailable or invalid alpha ladder now fail-closed skips that asset intent.
 - `premarket_v1`, `endgame_sweep_v1`, `evcurve_v1`, `sessionband_v1`, `evsnipe_v1`, `mm_rewards_v1`, `mm_sport_v1`: added self-serve EVPOLY alpha access and official builder-attribution gating (`src/main.rs`, `src/api.rs`, `src/bin/alpha_service.rs`, `src/builder_attribution.rs`, `.env.example`, `.env.full.example`).
   - official `POLY_BUILDER_CODE` now has a compiled fallback for normal CLOB V2 order posting.
   - runtime auto-registers `EVPOLY_ALPHA_KEY` from wallet + official builder code when the key is blank.

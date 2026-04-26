@@ -50,8 +50,6 @@ const DEFAULT_DISCOVERY_HORIZON_15M: u64 = 2;
 const DEFAULT_DISCOVERY_HORIZON_1H: u64 = 1;
 const DEFAULT_DISCOVERY_HORIZON_4H: u64 = 1;
 const DEFAULT_DISCOVERY_HORIZON_1D: u64 = 1;
-const DEFAULT_PREMARKET_YES_MIN: f64 = 0.70;
-const DEFAULT_PREMARKET_YES_MAX: f64 = 0.90;
 const DEFAULT_ENDGAME_BASE_OFFSETS_MS: &[u64] = &[3000, 1000, 100];
 const DEFAULT_ENDGAME_OFFSET_JITTER_MS: i64 = 50;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_BASE_MS: i64 = 400;
@@ -88,8 +86,6 @@ struct Settings {
     discovery_horizon_1h: u64,
     discovery_horizon_4h: u64,
     discovery_horizon_1d: u64,
-    premarket_yes_min: f64,
-    premarket_yes_max: f64,
     endgame_base_offsets_ms: Vec<u64>,
     endgame_offset_jitter_ms: i64,
     endgame_submit_proxy_max_age_base_ms: i64,
@@ -446,7 +442,7 @@ struct SessionbandResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct PremarketAlphaShouldTradeRequest {
+struct PremarketAlphaLadderRequest {
     strategy_id: String,
     decision_id: String,
     symbol: String,
@@ -457,15 +453,16 @@ struct PremarketAlphaShouldTradeRequest {
     nonce: String,
     #[serde(default)]
     builder_code: Option<String>,
+    base_prices: Vec<f64>,
 }
 
 #[derive(Debug, Serialize)]
-struct PremarketAlphaShouldTradeResponse {
+struct PremarketAlphaLadderResponse {
     ok: bool,
-    should_trade: bool,
     source: String,
     reason: String,
-    yes_prob: f64,
+    shift_pct: f64,
+    prices: Vec<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -723,8 +720,8 @@ async fn main() -> Result<()> {
         .route("/v1/alpha/evcurve", post(alpha_evcurve_handler))
         .route("/v1/alpha/sessionband", post(alpha_sessionband_handler))
         .route(
-            "/v1/alpha/premarket/should-trade",
-            post(alpha_premarket_should_trade_handler),
+            "/v1/alpha/premarket/ladder",
+            post(alpha_premarket_ladder_handler),
         )
         .route(
             "/v1/alpha/endgame/policy",
@@ -738,7 +735,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to bind {}", addr.as_str()))?;
 
     eprintln!(
-        "evpoly alpha service listening on {} with routes: /health, /v1/onboard, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-rewards/selection, /v1/alpha/mm-rewards/preflight, /v1/alpha/evcurve, /v1/alpha/sessionband, /v1/alpha/premarket/should-trade, /v1/alpha/endgame/policy",
+        "evpoly alpha service listening on {} with routes: /health, /v1/onboard, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-rewards/selection, /v1/alpha/mm-rewards/preflight, /v1/alpha/evcurve, /v1/alpha/sessionband, /v1/alpha/premarket/ladder, /v1/alpha/endgame/policy",
         addr.as_str()
     );
 
@@ -1566,13 +1563,13 @@ async fn alpha_sessionband_handler(
     Ok(Json(json!({ "ok": true, "result": response })))
 }
 
-async fn alpha_premarket_should_trade_handler(
+async fn alpha_premarket_ladder_handler(
     State(state): State<AppState>,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
-    let payload: PremarketAlphaShouldTradeRequest =
+    let payload: PremarketAlphaLadderRequest =
         parse_json_request(&state, remote.ip(), &headers, &body)?;
     ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
     let timeframe = parse_timeframe(payload.timeframe.as_str()).ok_or_else(|| {
@@ -1619,43 +1616,58 @@ async fn alpha_premarket_should_trade_handler(
     let proxy_wallet =
         ensure_proxy_wallet_authorized(&state.settings, &headers, payload.proxy_wallet.as_str())?;
     let symbol = normalize_symbol(payload.symbol.as_str());
-    let yes_min = state
-        .settings
-        .premarket_yes_min
-        .min(state.settings.premarket_yes_max)
-        .clamp(0.0, 1.0);
-    let yes_max = state
-        .settings
-        .premarket_yes_min
-        .max(state.settings.premarket_yes_max)
-        .clamp(0.0, 1.0);
 
-    let yes_prob_seed = format!(
-        "premarket:prob:{}:{}:{}:{}:{}",
+    if payload.base_prices.is_empty() || payload.base_prices.len() > 16 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "base_prices must contain 1..16 rungs",
+        ));
+    }
+    let mut previous = f64::INFINITY;
+    for (idx, price) in payload.base_prices.iter().enumerate() {
+        if !price.is_finite() || *price < 0.01 || *price > 0.99 {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                format!("base_prices[{idx}] must be within 0.01..0.99"),
+            ));
+        }
+        if *price > previous + 1e-9 {
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "base_prices must be descending",
+            ));
+        }
+        previous = *price;
+    }
+
+    let shift_seed = format!(
+        "premarket:ladder:{}:{}:{}:{}:{}:{}",
         payload.decision_id,
+        payload.nonce,
+        proxy_wallet,
         symbol,
         timeframe.as_str(),
-        payload.market_open_ts,
-        payload.ts_ms
+        payload.market_open_ts
     );
-    let yes_seed = format!(
-        "premarket:yes:{}:{}:{}:{}:{}",
-        payload.decision_id, payload.nonce, proxy_wallet, symbol, now_ms
-    );
-    let yes_prob = yes_min + (yes_max - yes_min) * seeded_unit(yes_prob_seed.as_str());
-    let should_trade = seeded_unit(yes_seed.as_str()) < yes_prob;
-    let reason = if should_trade {
-        "random_gate_yes"
-    } else {
-        "random_gate_no"
-    };
+    let shift_pct = (seeded_unit(shift_seed.as_str()) * 0.20) - 0.10;
+    let shift_factor = 1.0 + shift_pct;
+    let mut shifted = Vec::with_capacity(payload.base_prices.len());
+    let mut previous_shifted = f64::INFINITY;
+    for base_price in payload.base_prices.iter().copied() {
+        let mut price = round_price_to_cent(base_price * shift_factor).clamp(0.01, 0.99);
+        if price > previous_shifted {
+            price = (previous_shifted - 0.01).max(0.01);
+        }
+        shifted.push(price);
+        previous_shifted = price;
+    }
 
-    Ok(Json(PremarketAlphaShouldTradeResponse {
+    Ok(Json(PremarketAlphaLadderResponse {
         ok: true,
-        should_trade,
         source: "remote".to_string(),
-        reason: reason.to_string(),
-        yes_prob,
+        reason: "aligned_price_shift".to_string(),
+        shift_pct,
+        prices: shifted,
     }))
 }
 
@@ -2015,6 +2027,10 @@ fn seeded_unit(seed: &str) -> f64 {
     seed.hash(&mut hasher);
     let raw = hasher.finish();
     (raw as f64) / (u64::MAX as f64)
+}
+
+fn round_price_to_cent(value: f64) -> f64 {
+    ((value * 100.0).round() / 100.0).clamp(0.01, 0.99)
 }
 
 fn seeded_jitter_ms(base: i64, max_abs_jitter_ms: i64, seed: &str) -> i64 {
@@ -2611,17 +2627,6 @@ fn load_settings() -> Result<Settings> {
         .unwrap_or(DEFAULT_DISCOVERY_HORIZON_1D)
         .clamp(0, 7);
 
-    let premarket_yes_min = std::env::var("ALPHA_PREMARKET_YES_MIN")
-        .ok()
-        .and_then(|v| v.trim().parse::<f64>().ok())
-        .unwrap_or(DEFAULT_PREMARKET_YES_MIN)
-        .clamp(0.0, 1.0);
-    let premarket_yes_max = std::env::var("ALPHA_PREMARKET_YES_MAX")
-        .ok()
-        .and_then(|v| v.trim().parse::<f64>().ok())
-        .unwrap_or(DEFAULT_PREMARKET_YES_MAX)
-        .clamp(0.0, 1.0);
-
     let mut endgame_base_offsets_ms = std::env::var("ALPHA_ENDGAME_BASE_OFFSETS_MS")
         .ok()
         .map(|raw| {
@@ -2692,8 +2697,6 @@ fn load_settings() -> Result<Settings> {
         discovery_horizon_1h,
         discovery_horizon_4h,
         discovery_horizon_1d,
-        premarket_yes_min,
-        premarket_yes_max,
         endgame_base_offsets_ms,
         endgame_offset_jitter_ms,
         endgame_submit_proxy_max_age_base_ms,

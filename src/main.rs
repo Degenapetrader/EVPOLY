@@ -760,7 +760,7 @@ fn mm_rewards_gamma_timeout_ms(scan_pages: u32) -> u64 {
 fn remote_url_default_named(name: &str) -> Option<&'static str> {
     match name {
         "EVPOLY_REMOTE_PREMARKET_ALPHA_URL" => {
-            Some("https://alpha.evplus.ai/v1/alpha/premarket/should-trade")
+            Some("https://alpha.evplus.ai/v1/alpha/premarket/ladder")
         }
         "EVPOLY_REMOTE_ENDGAME_ALPHA_URL" => {
             Some("https://alpha.evplus.ai/v1/alpha/endgame/policy")
@@ -29659,131 +29659,72 @@ async fn main() -> Result<()> {
                     "{}:{}:{}",
                     intent.decision_id, asset.market_key, market_open_ts
                 );
+                let base_ladder_prices = premarket_fixed_ladder_prices(intent.timeframe);
                 let alpha_result = if let Some(proxy_wallet) = premarket_alpha_wallet.as_deref() {
-                    evaluate_premarket_alpha_remote_or_local(
+                    evaluate_premarket_ladder_remote(
                         intent.timeframe,
                         asset.asset_symbol,
                         alpha_decision_id.as_str(),
                         intent.market_open_ts,
                         proxy_wallet,
+                        base_ladder_prices.as_slice(),
                     )
                     .await
                 } else {
                     Err(anyhow::anyhow!(
-                        "remote premarket alpha requires configured proxy wallet address"
+                        "remote premarket ladder alpha requires configured proxy wallet address"
                     ))
                 };
-                let alpha_outcome = match alpha_result {
-                    Ok(alpha_outcome) => alpha_outcome,
+                let alpha_ladder = match alpha_result {
+                    Ok(alpha_ladder) => alpha_ladder,
                     Err(err) => {
-                        if should_fallback_local_premarket_alpha_error(&err) {
-                            let fallback = local_premarket_alpha_fallback_outcome(
-                                intent.timeframe,
+                        log_event(
+                            "premarket_ladder_alpha_error",
+                            json!({
+                                "strategy_id": STRATEGY_ID_PREMARKET_V1,
+                                "timeframe": intent.timeframe.as_str(),
+                                "asset_symbol": asset.asset_symbol,
+                                "market_key": asset.market_key,
+                                "market_open_ts": market_open_ts,
+                                "decision_id": alpha_decision_id,
+                                "fallback_applied": false,
+                                "base_prices": base_ladder_prices,
+                                "error": err.to_string()
+                            }),
+                        );
+                        if let Err(skip_err) = tracking_db_for_premarket.record_skip_market(
+                            canonical_period_ts,
+                            intent.timeframe,
+                            asset_decision.strategy_id.as_str(),
+                            Some(asset_decision.market_key.as_str()),
+                            Some(asset_decision.asset_symbol.as_str()),
+                            "premarket_ladder_alpha_unavailable",
+                            "runtime",
+                            asset_decision.confidence,
+                        ) {
+                            warn!(
+                                "Failed to persist premarket ladder-alpha-unavailable skip tf={} asset={} period={}: {}",
+                                intent.timeframe.as_str(),
                                 asset.asset_symbol,
-                                alpha_decision_id.as_str(),
-                                intent.market_open_ts,
-                            );
-                            log_event(
-                                "premarket_alpha_fallback_local",
-                                json!({
-                                    "strategy_id": STRATEGY_ID_PREMARKET_V1,
-                                    "timeframe": intent.timeframe.as_str(),
-                                    "asset_symbol": asset.asset_symbol,
-                                    "market_key": asset.market_key,
-                                    "market_open_ts": market_open_ts,
-                                    "decision_id": alpha_decision_id,
-                                    "fallback_should_trade": fallback.should_trade,
-                                    "fallback_yes_prob": fallback.yes_prob,
-                                    "fallback_reason": fallback.reason.clone(),
-                                    "error": err.to_string()
-                                }),
-                            );
-                            fallback
-                        } else {
-                            log_event(
-                                "premarket_alpha_error",
-                                json!({
-                                    "strategy_id": STRATEGY_ID_PREMARKET_V1,
-                                    "timeframe": intent.timeframe.as_str(),
-                                    "asset_symbol": asset.asset_symbol,
-                                    "market_key": asset.market_key,
-                                    "market_open_ts": market_open_ts,
-                                    "decision_id": alpha_decision_id,
-                                    "fallback_applied": false,
-                                    "error": err.to_string()
-                                }),
-                            );
-                            if let Err(skip_err) = tracking_db_for_premarket.record_skip_market(
                                 canonical_period_ts,
-                                intent.timeframe,
-                                asset_decision.strategy_id.as_str(),
-                                Some(asset_decision.market_key.as_str()),
-                                Some(asset_decision.asset_symbol.as_str()),
-                                "premarket_alpha_unavailable",
-                                "runtime",
-                                asset_decision.confidence,
-                            ) {
-                                warn!(
-                                    "Failed to persist premarket alpha-unavailable skip tf={} asset={} period={}: {}",
-                                    intent.timeframe.as_str(),
-                                    asset.asset_symbol,
-                                    canonical_period_ts,
-                                    skip_err
-                                );
-                            }
-                            log_event(
-                                "premarket_alpha_skip",
-                                json!({
-                                    "strategy_id": STRATEGY_ID_PREMARKET_V1,
-                                    "timeframe": intent.timeframe.as_str(),
-                                    "asset_symbol": asset.asset_symbol,
-                                    "market_key": asset.market_key,
-                                    "market_open_ts": market_open_ts,
-                                    "decision_id": alpha_decision_id,
-                                    "reason": "premarket_alpha_unavailable"
-                                }),
+                                skip_err
                             );
-                            continue;
                         }
+                        log_event(
+                            "premarket_alpha_skip",
+                            json!({
+                                "strategy_id": STRATEGY_ID_PREMARKET_V1,
+                                "timeframe": intent.timeframe.as_str(),
+                                "asset_symbol": asset.asset_symbol,
+                                "market_key": asset.market_key,
+                                "market_open_ts": market_open_ts,
+                                "decision_id": alpha_decision_id,
+                                "reason": "premarket_ladder_alpha_unavailable"
+                            }),
+                        );
+                        continue;
                     }
                 };
-                if !alpha_outcome.should_trade {
-                    let alpha_reason = alpha_outcome.reason.clone();
-                    let skip_reason = format!("premarket_alpha_no_trade:{}", alpha_reason);
-                    log_event(
-                        "premarket_alpha_skip",
-                        json!({
-                            "strategy_id": STRATEGY_ID_PREMARKET_V1,
-                            "timeframe": intent.timeframe.as_str(),
-                            "asset_symbol": asset.asset_symbol,
-                            "market_key": asset.market_key,
-                            "market_open_ts": market_open_ts,
-                            "decision_id": alpha_decision_id,
-                            "source": alpha_outcome.source,
-                            "reason": alpha_reason,
-                            "yes_prob": alpha_outcome.yes_prob
-                        }),
-                    );
-                    if let Err(skip_err) = tracking_db_for_premarket.record_skip_market(
-                        canonical_period_ts,
-                        intent.timeframe,
-                        asset_decision.strategy_id.as_str(),
-                        Some(asset_decision.market_key.as_str()),
-                        Some(asset_decision.asset_symbol.as_str()),
-                        skip_reason.as_str(),
-                        alpha_outcome.source,
-                        asset_decision.confidence,
-                    ) {
-                        warn!(
-                            "Failed to persist premarket alpha-no-trade skip tf={} asset={} period={}: {}",
-                            intent.timeframe.as_str(),
-                            asset.asset_symbol,
-                            canonical_period_ts,
-                            skip_err
-                        );
-                    }
-                    continue;
-                }
 
                 let discovered_market = match discover_market_for_timeframe(
                     &api_for_premarket,
@@ -30049,8 +29990,11 @@ async fn main() -> Result<()> {
                         PremarketOrderFloor::fallback_default()
                     }
                 };
-                let sized_rungs =
-                    build_premarket_fixed_rungs(intent.timeframe, target_size_usd, order_floor);
+                let sized_rungs = build_premarket_fixed_rungs_from_prices(
+                    alpha_ladder.prices.as_slice(),
+                    target_size_usd,
+                    order_floor,
+                );
                 if sized_rungs.is_empty() {
                     continue;
                 }
@@ -30169,12 +30113,15 @@ async fn main() -> Result<()> {
                                 settled_pnl_usd: None,
                                 hold_ms: None,
                                 feature_json: to_json_string(json!({
-                                    "mode": "deterministic_dual_ladder_v1",
-                                    "side": side_label,
+                                     "mode": "deterministic_dual_ladder_v1",
+                                     "side": side_label,
                                     "rung_index": rung_index,
                                     "rung_price": rung_price,
                                     "rung_size_usd": rung_size_usd,
                                     "weight_pct": rung.size_pct,
+                                    "alpha_ladder_source": alpha_ladder.source.as_str(),
+                                    "alpha_ladder_reason": alpha_ladder.reason.as_str(),
+                                    "alpha_ladder_shift_pct": alpha_ladder.shift_pct,
                                     "fixed_min_rung_usd": 5.0,
                                     "reward_min_size_bypassed": true,
                                     "min_notional_usd": order_floor.min_notional_usd,
@@ -30202,6 +30149,11 @@ async fn main() -> Result<()> {
                         "market_key": asset.market_key,
                         "asset_symbol": asset.asset_symbol,
                         "mode": "deterministic_dual_ladder_v1",
+                        "alpha_ladder_source": alpha_ladder.source.as_str(),
+                        "alpha_ladder_reason": alpha_ladder.reason.as_str(),
+                        "alpha_ladder_shift_pct": alpha_ladder.shift_pct,
+                        "base_ladder_prices": base_ladder_prices,
+                        "effective_ladder_prices": alpha_ladder.prices,
                         "db_contention_factor": premarket_db_factor,
                         "target_size_per_side_usd": target_size_usd,
                         "target_size_multiplier": premarket_side_budget_multiplier(asset.asset_symbol),
@@ -32150,6 +32102,10 @@ fn round_up_price_to_cent(value: f64) -> f64 {
     (((value * 100.0) - 1e-9).ceil() / 100.0).clamp(0.01, 0.99)
 }
 
+fn round_nearest_price_to_cent(value: f64) -> f64 {
+    ((value * 100.0).round() / 100.0).clamp(0.01, 0.99)
+}
+
 fn premarket_fixed_ladder_prices_for_mode(timeframe: Timeframe, mode: &str) -> Vec<f64> {
     let factor = match mode {
         PREMARKET_LADDER_MODE_SAFE => 0.90,
@@ -32169,8 +32125,18 @@ fn premarket_fixed_ladder_prices(timeframe: Timeframe) -> Vec<f64> {
     )
 }
 
+#[cfg(test)]
 fn build_premarket_fixed_rungs(
     timeframe: Timeframe,
+    target_size_usd: f64,
+    floor: PremarketOrderFloor,
+) -> Vec<PremarketSizedRung> {
+    let prices = premarket_fixed_ladder_prices(timeframe);
+    build_premarket_fixed_rungs_from_prices(prices.as_slice(), target_size_usd, floor)
+}
+
+fn build_premarket_fixed_rungs_from_prices(
+    prices: &[f64],
     target_size_usd: f64,
     floor: PremarketOrderFloor,
 ) -> Vec<PremarketSizedRung> {
@@ -32178,7 +32144,6 @@ fn build_premarket_fixed_rungs(
         return Vec::new();
     }
 
-    let prices = premarket_fixed_ladder_prices(timeframe);
     let weights = premarket_fixed_ladder_weights();
     let rung_count = prices.len().min(weights.len());
     let mut rungs = Vec::with_capacity(rung_count);
@@ -32581,7 +32546,7 @@ struct RemoteSessionbandAlphaResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct RemotePremarketAlphaRequest {
+struct RemotePremarketLadderRequest {
     strategy_id: String,
     decision_id: String,
     symbol: String,
@@ -32591,16 +32556,18 @@ struct RemotePremarketAlphaRequest {
     ts_ms: i64,
     nonce: String,
     builder_code: String,
+    base_prices: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct RemotePremarketAlphaResponse {
+struct RemotePremarketLadderResponse {
     ok: bool,
-    should_trade: bool,
+    prices: Vec<f64>,
     #[serde(default)]
     reason: Option<String>,
     #[serde(default)]
-    yes_prob: Option<f64>,
+    source: Option<String>,
+    shift_pct: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -32730,11 +32697,11 @@ struct SessionbandDecisionOutcome {
 }
 
 #[derive(Debug, Clone)]
-struct PremarketAlphaOutcome {
-    source: &'static str,
-    should_trade: bool,
+struct PremarketLadderOutcome {
+    source: String,
     reason: String,
-    yes_prob: Option<f64>,
+    prices: Vec<f64>,
+    shift_pct: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -33620,53 +33587,82 @@ async fn evaluate_sessionband_decision_remote_or_local(
     }
 }
 
-fn should_fallback_local_premarket_alpha_error(err: &anyhow::Error) -> bool {
-    should_failover_remote_alpha_error(err)
-}
-
-fn local_premarket_alpha_fallback_outcome(
-    timeframe: Timeframe,
-    symbol: &str,
-    decision_id: &str,
-    market_open_ts: i64,
-) -> PremarketAlphaOutcome {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    format!(
-        "premarket_local_fallback:{}:{}:{}:{}:{}",
-        decision_id,
-        normalize_market_symbol(symbol),
-        timeframe.as_str(),
-        market_open_ts,
-        now_ms
-    )
-    .hash(&mut hasher);
-    let should_trade = (hasher.finish() & 1) == 0;
-    PremarketAlphaOutcome {
-        source: "local_fallback",
-        should_trade,
-        reason: if should_trade {
-            "local_50_yes".to_string()
-        } else {
-            "local_50_no".to_string()
-        },
-        yes_prob: Some(0.5),
+fn validate_remote_premarket_ladder_prices(
+    base_prices: &[f64],
+    remote_prices: Vec<f64>,
+    shift_pct: f64,
+) -> Result<Vec<f64>> {
+    if base_prices.is_empty() {
+        anyhow::bail!("premarket ladder base prices are empty");
     }
+    if remote_prices.len() != base_prices.len() {
+        anyhow::bail!(
+            "remote premarket ladder rung count mismatch response={} expected={}",
+            remote_prices.len(),
+            base_prices.len()
+        );
+    }
+    if !shift_pct.is_finite() || !(-0.100_001..=0.100_001).contains(&shift_pct) {
+        anyhow::bail!("remote premarket ladder shift_pct out of +/-10% band");
+    }
+
+    let mut validated = Vec::with_capacity(remote_prices.len());
+    let mut previous = f64::INFINITY;
+    for (idx, (base_price, remote_price)) in base_prices
+        .iter()
+        .zip(remote_prices.into_iter())
+        .enumerate()
+    {
+        if !base_price.is_finite() || *base_price <= 0.0 {
+            anyhow::bail!("invalid premarket base ladder price at rung {}", idx);
+        }
+        if !remote_price.is_finite() {
+            anyhow::bail!(
+                "remote premarket ladder price is not finite at rung {}",
+                idx
+            );
+        }
+        let price = remote_price.clamp(0.01, 0.99);
+        let expected = round_nearest_price_to_cent(*base_price * (1.0 + shift_pct));
+        if (price - expected).abs() > 1e-9 {
+            anyhow::bail!(
+                "remote premarket ladder price is not aligned at rung {} price={} expected={} base={} shift_pct={}",
+                idx,
+                price,
+                expected,
+                base_price,
+                shift_pct
+            );
+        }
+        if price > previous + 1e-9 {
+            anyhow::bail!(
+                "remote premarket ladder must stay aligned descending at rung {} price={} previous={}",
+                idx,
+                price,
+                previous
+            );
+        }
+        previous = price;
+        validated.push(price);
+    }
+
+    Ok(validated)
 }
 
-async fn fetch_remote_premarket_should_trade(
+async fn fetch_remote_premarket_ladder(
     cfg: &RemotePremarketAlphaConfig,
     timeframe: Timeframe,
     symbol: &str,
     decision_id: &str,
     market_open_ts: i64,
     proxy_wallet: &str,
-) -> Result<PremarketAlphaOutcome> {
+    base_prices: &[f64],
+) -> Result<PremarketLadderOutcome> {
     if !is_valid_wallet_address(proxy_wallet) {
         anyhow::bail!("invalid proxy wallet address for remote premarket alpha");
     }
     let now_ms = chrono::Utc::now().timestamp_millis();
-    let payload = RemotePremarketAlphaRequest {
+    let payload = RemotePremarketLadderRequest {
         strategy_id: STRATEGY_ID_PREMARKET_V1.to_string(),
         decision_id: decision_id.to_string(),
         symbol: normalize_market_symbol(symbol),
@@ -33676,6 +33672,7 @@ async fn fetch_remote_premarket_should_trade(
         ts_ms: now_ms,
         nonce: remote_alpha_nonce("premarket"),
         builder_code: official_builder_code_for_alpha(),
+        base_prices: base_prices.to_vec(),
     };
     let (status, body) = send_remote_json_post_with_alpha_failover(
         cfg.url.as_str(),
@@ -33694,7 +33691,7 @@ async fn fetch_remote_premarket_should_trade(
             truncate_for_log(body.as_str(), 300)
         );
     }
-    let parsed: RemotePremarketAlphaResponse =
+    let parsed: RemotePremarketLadderResponse =
         serde_json::from_str(body.as_str()).with_context(|| {
             format!(
                 "failed to parse remote premarket alpha response: {}",
@@ -33704,27 +33701,26 @@ async fn fetch_remote_premarket_should_trade(
     if !parsed.ok {
         anyhow::bail!("remote premarket alpha returned ok=false");
     }
-    Ok(PremarketAlphaOutcome {
-        source: "remote",
-        should_trade: parsed.should_trade,
-        reason: parsed.reason.unwrap_or_else(|| {
-            if parsed.should_trade {
-                "remote_yes".to_string()
-            } else {
-                "remote_no".to_string()
-            }
-        }),
-        yes_prob: parsed.yes_prob,
+    let prices =
+        validate_remote_premarket_ladder_prices(base_prices, parsed.prices, parsed.shift_pct)?;
+    Ok(PremarketLadderOutcome {
+        source: parsed.source.unwrap_or_else(|| "remote".to_string()),
+        reason: parsed
+            .reason
+            .unwrap_or_else(|| "remote_ladder_aligned_shift".to_string()),
+        prices,
+        shift_pct: parsed.shift_pct,
     })
 }
 
-async fn evaluate_premarket_alpha_remote_or_local(
+async fn evaluate_premarket_ladder_remote(
     timeframe: Timeframe,
     symbol: &str,
     decision_id: &str,
     market_open_ts: i64,
     proxy_wallet: &str,
-) -> Result<PremarketAlphaOutcome> {
+    base_prices: &[f64],
+) -> Result<PremarketLadderOutcome> {
     let Some(cfg) = remote_premarket_alpha_config() else {
         warn_remote_alpha_missing_runtime(
             STRATEGY_ID_PREMARKET_V1,
@@ -33736,27 +33732,29 @@ async fn evaluate_premarket_alpha_remote_or_local(
         );
         anyhow::bail!("remote_premarket_alpha_not_configured");
     };
-    let outcome = fetch_remote_premarket_should_trade(
+    let outcome = fetch_remote_premarket_ladder(
         cfg,
         timeframe,
         symbol,
         decision_id,
         market_open_ts,
         proxy_wallet,
+        base_prices,
     )
     .await?;
     log_event(
-        "remote_premarket_alpha_hit",
+        "remote_premarket_ladder_hit",
         json!({
             "strategy_id": STRATEGY_ID_PREMARKET_V1,
             "symbol": symbol,
             "timeframe": timeframe.as_str(),
             "market_open_ts": market_open_ts,
             "decision_id": decision_id,
-            "should_trade": outcome.should_trade,
-            "source": outcome.source,
+            "source": outcome.source.as_str(),
             "reason": outcome.reason.as_str(),
-            "yes_prob": outcome.yes_prob
+            "shift_pct": outcome.shift_pct,
+            "base_prices": base_prices,
+            "remote_prices": outcome.prices.as_slice()
         }),
     );
     Ok(outcome)
@@ -36296,6 +36294,35 @@ mod tests {
         assert!((sum_weights - 1.0).abs() < 1e-9);
         assert!((weights[0] - 0.23).abs() < 1e-9);
         assert!((weights[5] - 0.11).abs() < 1e-9);
+    }
+
+    #[test]
+    fn remote_premarket_ladder_validation_preserves_aligned_bounds() {
+        let base = vec![0.31, 0.26, 0.22, 0.16, 0.09, 0.03];
+        let valid = validate_remote_premarket_ladder_prices(
+            base.as_slice(),
+            vec![0.29, 0.24, 0.21, 0.15, 0.08, 0.03],
+            -0.06,
+        )
+        .expect("aligned ladder should validate");
+        assert_eq!(valid, vec![0.29, 0.24, 0.21, 0.15, 0.08, 0.03]);
+
+        assert!(
+            validate_remote_premarket_ladder_prices(base.as_slice(), vec![0.50, 0.24], -0.06)
+                .is_err()
+        );
+        assert!(validate_remote_premarket_ladder_prices(
+            base.as_slice(),
+            vec![0.29, 0.30, 0.21, 0.15, 0.08, 0.03],
+            -0.06
+        )
+        .is_err());
+        assert!(validate_remote_premarket_ladder_prices(
+            base.as_slice(),
+            vec![0.29, 0.24, 0.21, 0.15, 0.08, 0.03],
+            -0.20
+        )
+        .is_err());
     }
 
     #[test]

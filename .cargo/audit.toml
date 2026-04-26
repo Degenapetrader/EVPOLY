@@ -8,7 +8,7 @@
 [advisories]
 informational_warnings = ["unmaintained", "unsound", "notice"]
 ignore = [
-  # expires: 2026-04-15 id: RUSTSEC-2026-0037 reason: quinn-proto is present in Cargo.lock but has no active dependency path for current target/features.
+  # expires: 2026-06-30 id: RUSTSEC-2026-0037 reason: quinn-proto is present in Cargo.lock; cargo tree -i quinn-proto --target all reports no active dependency path.
   "RUSTSEC-2026-0037",
   # expires: 2026-05-31 id: RUSTSEC-2025-0134 reason: direct reqwest 0.11 path still pulls rustls-pemfile; planned reqwest upgrade window.
   "RUSTSEC-2025-0134",

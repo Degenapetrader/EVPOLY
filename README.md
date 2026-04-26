@@ -222,7 +222,7 @@ This local branch has been migrated for Polymarket CLOB V2 while preserving the 
 Runtime-level changes in this branch:
 
 - Uses `polymarket_client_sdk_v2` with CLOB, CTF, WebSocket, Gamma, and Bridge features.
-- Pins the Rust toolchain to `1.88.0` for the V2 Rust SDK requirement.
+- Pins the Rust toolchain to `1.91.0` for the current Alloy/Rust SDK dependency floor.
 - Defaults `POLY_CLOB_API_URL` to `https://clob-v2.polymarket.com` for pre-cutover testing.
 - Uses CLOB V2 order signing through the SDK; V2 signed orders carry `timestamp`, `metadata`, and `builder` through the SDK instead of legacy `nonce`, `feeRateBps`, and `taker` fields.
 - Uses `POLY_BUILDER_CODE` for V2 builder attribution. Remote submit signing is restricted to non-order relayer flows.

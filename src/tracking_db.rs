@@ -12054,6 +12054,32 @@ WHERE rowid IN (
         })
     }
 
+    pub fn archive_and_prune_pending_orders_batched(
+        &self,
+        older_than_ms: i64,
+        batch_size: usize,
+        max_rows: usize,
+    ) -> Result<u64> {
+        if batch_size == 0 || max_rows == 0 {
+            return Ok(0);
+        }
+
+        let mut total = 0_u64;
+        while total < max_rows as u64 {
+            let remaining = max_rows.saturating_sub(total as usize);
+            if remaining == 0 {
+                break;
+            }
+            let limit = batch_size.min(remaining);
+            let deleted = self.archive_and_prune_pending_orders(older_than_ms, limit)?;
+            total = total.saturating_add(deleted);
+            if deleted == 0 || deleted < limit as u64 {
+                break;
+            }
+        }
+        Ok(total)
+    }
+
     pub fn clear_mm_market_states_for_strategy(&self, strategy_id: &str) -> Result<u64> {
         let strategy_id = normalize_strategy_id(strategy_id);
         self.with_conn(|conn| {
@@ -17898,6 +17924,89 @@ WHERE lifecycle_key=?1
             .map_err(Into::into)
         })?;
         assert_eq!(active_remaining, 1);
+
+        drop(db);
+        cleanup_db(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn batched_pending_order_prune_obeys_max_rows() -> Result<()> {
+        let path = temp_db_path("pending_prune_batched_cap");
+        let db = TrackingDb::new(&path)?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let old_ms = now_ms.saturating_sub(86_400_000);
+
+        for idx in 0..5 {
+            let order_id = format!("ord-old-terminal-{idx}");
+            db.upsert_pending_order(&PendingOrderRecord {
+                order_id: order_id.clone(),
+                trade_key: order_id,
+                token_id: "tok".to_string(),
+                condition_id: Some("cond".to_string()),
+                timeframe: "5m".to_string(),
+                strategy_id: "mm_sport_v1".to_string(),
+                asset_symbol: Some("BTC".to_string()),
+                entry_mode: "MM_SPORT".to_string(),
+                period_timestamp: 1_771_000_000,
+                price: 0.5,
+                size_usd: 10.0,
+                side: "BUY".to_string(),
+                status: "CANCELED".to_string(),
+            })?;
+        }
+
+        db.upsert_pending_order(&PendingOrderRecord {
+            order_id: "ord-active-open".to_string(),
+            trade_key: "ord-active-open".to_string(),
+            token_id: "tok".to_string(),
+            condition_id: Some("cond".to_string()),
+            timeframe: "5m".to_string(),
+            strategy_id: "mm_sport_v1".to_string(),
+            asset_symbol: Some("BTC".to_string()),
+            entry_mode: "MM_SPORT".to_string(),
+            period_timestamp: 1_771_000_000,
+            price: 0.5,
+            size_usd: 10.0,
+            side: "BUY".to_string(),
+            status: "OPEN".to_string(),
+        })?;
+
+        db.with_conn_mut(|conn| {
+            conn.execute(
+                "UPDATE pending_orders SET updated_at_ms=?1",
+                params![old_ms],
+            )?;
+            Ok(())
+        })?;
+
+        let deleted =
+            db.archive_and_prune_pending_orders_batched(now_ms.saturating_sub(1_000), 2, 3)?;
+        assert_eq!(deleted, 3);
+
+        let terminal_remaining: i64 = db.with_conn_read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM pending_orders WHERE status NOT IN ('OPEN','PENDING','PLACED','LIVE')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(terminal_remaining, 2);
+
+        let active_remaining: i64 = db.with_conn_read(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM pending_orders WHERE status IN ('OPEN','PENDING','PLACED','LIVE')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(active_remaining, 1);
+
+        let deleted =
+            db.archive_and_prune_pending_orders_batched(now_ms.saturating_sub(1_000), 2, 100)?;
+        assert_eq!(deleted, 2);
 
         drop(db);
         cleanup_db(&path);

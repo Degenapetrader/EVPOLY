@@ -1099,6 +1099,27 @@ fn env_f64_named(name: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+fn env_i64_named(name: &str, default: i64) -> i64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_u64_named(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_usize_named(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(default)
+}
+
 fn contention_warn_ms() -> i64 {
     static CONTENTION_WARN_MS: OnceLock<i64> = OnceLock::new();
     *CONTENTION_WARN_MS.get_or_init(|| {
@@ -4848,40 +4869,65 @@ async fn main() -> Result<()> {
         }
     });
 
-    const PENDING_ORDERS_PRUNE_INTERVAL_SEC: u64 = 900;
-    const PENDING_ORDERS_PRUNE_TTL_HOURS: i64 = 48;
-    const PENDING_ORDERS_PRUNE_BATCH_SIZE: usize = 1_000;
-    let tracking_db_for_pending_prune = tracking_db.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
-            PENDING_ORDERS_PRUNE_INTERVAL_SEC,
-        ));
-        loop {
-            interval.tick().await;
-            let cutoff_ms = chrono::Utc::now()
-                .timestamp_millis()
-                .saturating_sub(PENDING_ORDERS_PRUNE_TTL_HOURS.saturating_mul(3_600_000));
-            match tracking_db_for_pending_prune
-                .archive_and_prune_pending_orders(cutoff_ms, PENDING_ORDERS_PRUNE_BATCH_SIZE)
-            {
-                Ok(removed) => {
-                    if removed > 0 {
-                        log_event(
-                            "pending_orders_pruned",
-                            json!({
-                                "removed_rows": removed,
-                                "cutoff_ms": cutoff_ms,
-                                "ttl_hours": PENDING_ORDERS_PRUNE_TTL_HOURS,
-                                "batch_size": PENDING_ORDERS_PRUNE_BATCH_SIZE,
-                                "interval_sec": PENDING_ORDERS_PRUNE_INTERVAL_SEC
-                            }),
-                        );
+    if env_bool_named("EVPOLY_PENDING_ORDER_PRUNE_ENABLE", true) {
+        let pending_orders_prune_interval_sec =
+            env_u64_named("EVPOLY_PENDING_ORDER_PRUNE_INTERVAL_SEC", 300).clamp(30, 86_400);
+        let pending_orders_prune_ttl_minutes =
+            env_i64_named("EVPOLY_PENDING_ORDER_PRUNE_TTL_MINUTES", 60).clamp(1, 10_080);
+        let pending_orders_prune_batch_size =
+            env_usize_named("EVPOLY_PENDING_ORDER_PRUNE_BATCH_SIZE", 50_000).clamp(100, 250_000);
+        let pending_orders_prune_startup_max_rows =
+            env_usize_named("EVPOLY_PENDING_ORDER_PRUNE_STARTUP_MAX_ROWS", 500_000)
+                .clamp(pending_orders_prune_batch_size, 5_000_000);
+        let pending_orders_prune_runtime_max_rows = env_usize_named(
+            "EVPOLY_PENDING_ORDER_PRUNE_RUNTIME_MAX_ROWS",
+            pending_orders_prune_batch_size,
+        )
+        .clamp(pending_orders_prune_batch_size, 1_000_000);
+
+        let tracking_db_for_pending_prune = tracking_db.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+                pending_orders_prune_interval_sec,
+            ));
+            let mut is_startup_prune = true;
+            loop {
+                interval.tick().await;
+                let cutoff_ms = chrono::Utc::now()
+                    .timestamp_millis()
+                    .saturating_sub(pending_orders_prune_ttl_minutes.saturating_mul(60_000));
+                let max_rows = if is_startup_prune {
+                    pending_orders_prune_startup_max_rows
+                } else {
+                    pending_orders_prune_runtime_max_rows
+                };
+                match tracking_db_for_pending_prune.archive_and_prune_pending_orders_batched(
+                    cutoff_ms,
+                    pending_orders_prune_batch_size,
+                    max_rows,
+                ) {
+                    Ok(removed) => {
+                        if removed > 0 {
+                            log_event(
+                                "pending_orders_pruned",
+                                json!({
+                                    "removed_rows": removed,
+                                    "cutoff_ms": cutoff_ms,
+                                    "ttl_minutes": pending_orders_prune_ttl_minutes,
+                                    "batch_size": pending_orders_prune_batch_size,
+                                    "max_rows": max_rows,
+                                    "interval_sec": pending_orders_prune_interval_sec,
+                                    "startup": is_startup_prune
+                                }),
+                            );
+                        }
                     }
+                    Err(e) => warn!("pending_orders prune failed: {}", e),
                 }
-                Err(e) => warn!("pending_orders prune failed: {}", e),
+                is_startup_prune = false;
             }
-        }
-    });
+        });
+    }
 
     if !is_simulation
         && core_monitor_runtime_enabled

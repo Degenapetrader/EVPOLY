@@ -15,6 +15,9 @@ Older entries may reference env keys that were removed in later commits.
   - runtime auto-registers `EVPOLY_ALPHA_KEY` from wallet + official builder code when the key is blank.
   - remote alpha/discovery requests include builder attribution and can use `EVPOLY_ALPHA_KEY` when per-endpoint alpha tokens are blank.
   - alpha server accepts backwards-compatible shared tokens while enforcing official builder code for auto-generated alpha keys.
+- `premarket_v1`, `mm_sport_v1`, and all strategies writing `pending_orders`: strengthened terminal pending-order retention so local desktop/UI SQLite scans do not accumulate millions of closed rows (`src/main.rs`, `src/tracking_db.rs`, `.env.example`, `.env.full.example`).
+  - active rows (`OPEN`, `PENDING`, `PLACED`, `LIVE`) remain preserved.
+  - terminal rows default to 60-minute retention, 50k-row chunks, and a bounded startup burst via `EVPOLY_PENDING_ORDER_PRUNE_*` env keys.
 
 ### 2026-04-05
 - `mm_sport_v1`: passive quote depth now follows the real two-level passive band instead of top-of-book only.

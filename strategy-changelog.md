@@ -10,6 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-26
+- `evcurve_v1`: aligned EVcurve decision thresholds with UPDATE/main_v2 (`src/evcurve.rs`, `.env.full.example`, `docs/evcurve_v1.md`).
+  - max `p_flip` is now fixed in code at `0.11`, and `EVPOLY_EVCURVE_MAX_FLIP_PROB` env overrides are ignored.
+  - D1 EV-gap threshold is now fixed in code at `0.12`, and `EVPOLY_EVCURVE_D1_EV_GAP` env overrides are ignored.
+  - alpha owns the EVcurve decision path, so alpha service binaries must be rebuilt/deployed for this threshold change to take effect remotely.
 - `evcurve_v1`: clarified and cleaned the remote-alpha-only decision path (`src/main.rs`, `.env.example`, `.env.full.example`, `docs/evcurve_v1.md`).
   - runtime no longer carries placeholder local Plan3/PlanDaily table handles through EVcurve decision calls; non-D1 and D1 candidates are explicitly fetched from `/v1/alpha/evcurve`.
   - alpha owns Plan3/PlanDaily lookup, `p_flip`, hold-side selection, D1 sub-strategy selection, and max-buy decisioning; checkpoint scheduling, base anchoring, market discovery, sizing/caps, and chase/FAK execution remain local.

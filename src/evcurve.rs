@@ -5,6 +5,9 @@ use crate::plandaily_tables::{PlanDailyLookupResult, PlanDailyTables};
 use crate::size_policy;
 use crate::strategy::{Direction, Timeframe, STRATEGY_ID_EVCURVE_V1};
 
+const EVCURVE_MAX_FLIP_PROB_FIXED: f64 = 0.11;
+const EVCURVE_D1_EV_GAP_FIXED: f64 = 0.12;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoldSide {
     Up,
@@ -193,7 +196,7 @@ impl EvcurveExecutionConfig {
             }
         }
 
-        let max_flip_prob = env_f64("EVPOLY_EVCURVE_MAX_FLIP_PROB", 0.15).clamp(0.0, 1.0);
+        let max_flip_prob = EVCURVE_MAX_FLIP_PROB_FIXED;
         let min_buy_price = env_f64("EVPOLY_EVCURVE_MIN_BUY_PRICE", 0.60).clamp(0.0, 1.0);
 
         Self {
@@ -219,7 +222,7 @@ impl EvcurveExecutionConfig {
             d1_strategy_cap_usd: env_f64("EVPOLY_EVCURVE_D1_STRATEGY_CAP_USD", 10_000.0).max(1.0),
             d1_zero_min_n: env_u64("EVPOLY_EVCURVE_D1_ZERO_MIN_N", 10) as u32,
             d1_ev_min_n: env_u64("EVPOLY_EVCURVE_D1_EV_MIN_N", 150) as u32,
-            d1_ev_gap: env_f64("EVPOLY_EVCURVE_D1_EV_GAP", 0.08).clamp(0.0, 1.0),
+            d1_ev_gap: EVCURVE_D1_EV_GAP_FIXED,
             base_size_usd,
             per_market_caps,
         }

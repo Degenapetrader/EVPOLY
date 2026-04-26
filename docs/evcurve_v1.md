@@ -25,6 +25,7 @@ Behavior:
 - Runtime keeps checkpoint scheduling, base anchoring, near-base skip, market discovery, PM quote freshness, sizing/caps, and chase/FAK execution local.
 - Alpha unavailable/invalid -> checkpoint skip (no local alpha fallback model).
 - Market discovery path is remote-first with local fallback.
+- Decision thresholds are fixed in code: `p_flip` cap is `0.11`, D1 EV-gap threshold is `0.12`; `EVPOLY_EVCURVE_MAX_FLIP_PROB` and `EVPOLY_EVCURVE_D1_EV_GAP` env overrides are ignored.
 
 ## End-to-End Flow
 1. Poll active symbol/timeframe periods.
@@ -55,5 +56,7 @@ With current hardcoded 15m checkpoints (`300/240/180`), default 15m flow is non-
 - `EVPOLY_EVCURVE_BASE_SIZE_USD`
 - `EVPOLY_EVCURVE_STRATEGY_CAP_USD`
 - `EVPOLY_EVCURVE_D1_STRATEGY_CAP_USD`
+- `EVPOLY_EVCURVE_MAX_FLIP_PROB` (ignored; fixed `0.11`)
+- `EVPOLY_EVCURVE_D1_EV_GAP` (ignored; fixed `0.12`)
 - `EVPOLY_REMOTE_EVCURVE_ALPHA_URL`
 - `EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN`

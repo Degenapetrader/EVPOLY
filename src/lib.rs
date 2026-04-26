@@ -3,6 +3,7 @@ pub mod api;
 pub mod arbiter;
 pub mod binance_wss;
 pub mod bot_admin;
+pub mod builder_attribution;
 pub mod coinbase_ws;
 pub mod config;
 pub mod detector;

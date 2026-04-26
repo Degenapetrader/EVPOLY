@@ -9,6 +9,13 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-04-26
+- `premarket_v1`, `endgame_sweep_v1`, `evcurve_v1`, `sessionband_v1`, `evsnipe_v1`, `mm_rewards_v1`, `mm_sport_v1`: added self-serve EVPOLY alpha access and official builder-attribution gating (`src/main.rs`, `src/api.rs`, `src/bin/alpha_service.rs`, `src/builder_attribution.rs`, `.env.example`, `.env.full.example`).
+  - official `POLY_BUILDER_CODE` now has a compiled fallback for normal CLOB V2 order posting.
+  - runtime auto-registers `EVPOLY_ALPHA_KEY` from wallet + official builder code when the key is blank.
+  - remote alpha/discovery requests include builder attribution and can use `EVPOLY_ALPHA_KEY` when per-endpoint alpha tokens are blank.
+  - alpha server accepts backwards-compatible shared tokens while enforcing official builder code for auto-generated alpha keys.
+
 ### 2026-04-05
 - `mm_sport_v1`: passive quote depth now follows the real two-level passive band instead of top-of-book only.
   - BUY depth/ratio checks now aggregate visible bid depth from `best bid` through the passive quote price (`best bid - 1 tick`).

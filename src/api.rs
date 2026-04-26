@@ -733,9 +733,7 @@ impl PolymarketApi {
     }
 
     fn v2_builder_code(&self) -> Result<Option<B256>> {
-        let Some(raw) = Self::env_nonempty("POLY_BUILDER_CODE") else {
-            return Ok(None);
-        };
+        let raw = crate::builder_attribution::configured_builder_code();
         let code = B256::from_str(raw.trim())
             .with_context(|| format!("Invalid POLY_BUILDER_CODE: {}", raw))?;
         Ok(Some(code))

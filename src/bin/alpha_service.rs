@@ -15,7 +15,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{Datelike, Timelike, Utc};
 use chrono_tz::America::New_York;
+use hmac::{Hmac, Mac};
 use polymarket_arbitrage_bot::api::PolymarketApi;
+use polymarket_arbitrage_bot::builder_attribution;
 use polymarket_arbitrage_bot::evcurve;
 use polymarket_arbitrage_bot::evsnipe;
 use polymarket_arbitrage_bot::mm::{self, MmMode};
@@ -27,6 +29,7 @@ use polymarket_arbitrage_bot::sessionband;
 use polymarket_arbitrage_bot::strategy::Timeframe;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::Sha256;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
 
@@ -53,12 +56,16 @@ const DEFAULT_ENDGAME_BASE_OFFSETS_MS: &[u64] = &[3000, 1000, 100];
 const DEFAULT_ENDGAME_OFFSET_JITTER_MS: i64 = 50;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_BASE_MS: i64 = 400;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_JITTER_MS: i64 = 100;
+const AUTO_ALPHA_KEY_PREFIX: &str = "evp_auto";
 
 #[derive(Debug, Clone)]
 struct Settings {
     bind: String,
     port: u16,
     token: Option<String>,
+    auto_onboard_enabled: bool,
+    auto_key_secret: Option<String>,
+    require_builder_code: bool,
     require_wallet_header: bool,
     max_body_bytes: usize,
     rate_limit_per_ip_rps: u32,
@@ -342,6 +349,8 @@ struct TimeframeDiscoveryRequest {
     symbol: String,
     timeframe: String,
     target_open_ts: u64,
+    #[serde(default)]
+    builder_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -375,6 +384,8 @@ struct EvsnipeDiscoveryRequest {
     discovery_limit: Option<u32>,
     #[serde(default)]
     max_days_to_expiry: Option<u64>,
+    #[serde(default)]
+    builder_code: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -396,6 +407,8 @@ struct EvcurveRequest {
     d1_zero_rule_already_fired: bool,
     #[serde(default)]
     d1_ev_rule_already_fired: bool,
+    #[serde(default)]
+    builder_code: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -408,6 +421,8 @@ struct SessionbandRequest {
     current_mid: f64,
     ask_up: Option<f64>,
     ask_down: Option<f64>,
+    #[serde(default)]
+    builder_code: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -440,6 +455,8 @@ struct PremarketAlphaShouldTradeRequest {
     proxy_wallet: String,
     ts_ms: i64,
     nonce: String,
+    #[serde(default)]
+    builder_code: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -461,6 +478,8 @@ struct EndgameAlphaPolicyRequest {
     request_ts_ms: i64,
     proxy_wallet: String,
     nonce: String,
+    #[serde(default)]
+    builder_code: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -480,6 +499,8 @@ struct MmRewardsSelectionRequest {
     auto_force_top_reward: bool,
     #[serde(default)]
     auto_force_include_reward_min: f64,
+    #[serde(default)]
+    builder_code: Option<String>,
     candidates: Vec<MmRewardsSelectionCandidateInput>,
 }
 
@@ -522,6 +543,8 @@ struct MmRewardsSelectionResponse {
 #[derive(Debug, Deserialize)]
 struct MmRewardsPreflightRequest {
     side: String,
+    #[serde(default)]
+    builder_code: Option<String>,
     #[serde(default)]
     scoring_guard_enable: bool,
     #[serde(default)]
@@ -574,6 +597,24 @@ struct MmRewardsPreflightResponse {
     block_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     block_detail: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AlphaOnboardRequest {
+    wallet: String,
+    builder_code: String,
+    #[serde(default)]
+    client_version: Option<String>,
+    #[serde(default)]
+    install_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AlphaOnboardResponse {
+    ok: bool,
+    alpha_key: String,
+    required_builder_code: String,
+    alpha_base_url: String,
 }
 
 #[tokio::main]
@@ -668,6 +709,7 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/health", get(health_handler))
+        .route("/v1/onboard", post(alpha_onboard_handler))
         .route("/v1/discovery/timeframe", post(discovery_timeframe_handler))
         .route("/v1/discovery/evsnipe", post(discovery_evsnipe_handler))
         .route(
@@ -696,7 +738,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to bind {}", addr.as_str()))?;
 
     eprintln!(
-        "evpoly alpha service listening on {} with routes: /health, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-rewards/selection, /v1/alpha/mm-rewards/preflight, /v1/alpha/evcurve, /v1/alpha/sessionband, /v1/alpha/premarket/should-trade, /v1/alpha/endgame/policy",
+        "evpoly alpha service listening on {} with routes: /health, /v1/onboard, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-rewards/selection, /v1/alpha/mm-rewards/preflight, /v1/alpha/evcurve, /v1/alpha/sessionband, /v1/alpha/premarket/should-trade, /v1/alpha/endgame/policy",
         addr.as_str()
     );
 
@@ -712,6 +754,45 @@ async fn main() -> Result<()> {
 
 async fn health_handler() -> Json<Value> {
     Json(json!({ "ok": true }))
+}
+
+async fn alpha_onboard_handler(
+    State(state): State<AppState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    guard_onboard_request(&state, remote.ip(), body.len())?;
+    if !state.settings.auto_onboard_enabled {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "alpha auto-onboard disabled",
+        ));
+    }
+    let payload: AlphaOnboardRequest = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))?;
+    let wallet = normalize_wallet(payload.wallet.as_str());
+    if !is_valid_wallet(wallet.as_str()) {
+        return Err(ApiError::new(StatusCode::BAD_REQUEST, "wallet is invalid"));
+    }
+    if !builder_code_matches_official(Some(payload.builder_code.as_str())) {
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "official builder code required",
+        ));
+    }
+    eprintln!(
+        "alpha_auto_onboard wallet={} client_version={} install_id={}",
+        wallet,
+        payload.client_version.as_deref().unwrap_or(""),
+        payload.install_id.as_deref().unwrap_or("")
+    );
+    let alpha_key = auto_alpha_key_for_wallet(&state.settings, wallet.as_str())?;
+    Ok(Json(AlphaOnboardResponse {
+        ok: true,
+        alpha_key,
+        required_builder_code: builder_attribution::official_builder_code().to_string(),
+        alpha_base_url: "https://alpha.evplus.ai".to_string(),
+    }))
 }
 
 fn timeframe_horizon(settings: &Settings, timeframe: Timeframe) -> u64 {
@@ -910,6 +991,7 @@ async fn discovery_timeframe_handler(
 ) -> Result<impl IntoResponse, ApiError> {
     let payload: TimeframeDiscoveryRequest =
         parse_json_request(&state, remote.ip(), &headers, &body)?;
+    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
 
     let timeframe = parse_timeframe(payload.timeframe.as_str()).ok_or_else(|| {
         ApiError::new(
@@ -938,6 +1020,7 @@ async fn discovery_evsnipe_handler(
 ) -> Result<impl IntoResponse, ApiError> {
     let payload: EvsnipeDiscoveryRequest =
         parse_json_request(&state, remote.ip(), &headers, &body)?;
+    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
 
     let (_updated_at_ms, mut specs) = state.discovery_cache.get_evsnipe_specs().await;
     if specs.is_empty() {
@@ -990,6 +1073,7 @@ async fn alpha_mm_rewards_selection_handler(
 ) -> Result<impl IntoResponse, ApiError> {
     let payload: MmRewardsSelectionRequest =
         parse_json_request(&state, remote.ip(), &headers, &body)?;
+    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
 
     let mut enabled_modes: Vec<MmMode> = Vec::new();
     for raw_mode in payload.enabled_modes.iter() {
@@ -1139,6 +1223,7 @@ async fn alpha_mm_rewards_preflight_handler(
 ) -> Result<impl IntoResponse, ApiError> {
     let payload: MmRewardsPreflightRequest =
         parse_json_request(&state, remote.ip(), &headers, &body)?;
+    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
 
     let side_up = match payload.side.trim().to_ascii_lowercase().as_str() {
         "up" | "yes" => true,
@@ -1283,6 +1368,7 @@ async fn alpha_evcurve_handler(
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     let payload: EvcurveRequest = parse_json_request(&state, remote.ip(), &headers, &body)?;
+    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
 
     let timeframe = parse_timeframe(payload.timeframe.as_str()).ok_or_else(|| {
         ApiError::new(
@@ -1372,6 +1458,7 @@ async fn alpha_sessionband_handler(
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
     let payload: SessionbandRequest = parse_json_request(&state, remote.ip(), &headers, &body)?;
+    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
 
     let timeframe = parse_timeframe(payload.timeframe.as_str()).ok_or_else(|| {
         ApiError::new(
@@ -1487,6 +1574,7 @@ async fn alpha_premarket_should_trade_handler(
 ) -> Result<impl IntoResponse, ApiError> {
     let payload: PremarketAlphaShouldTradeRequest =
         parse_json_request(&state, remote.ip(), &headers, &body)?;
+    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
     let timeframe = parse_timeframe(payload.timeframe.as_str()).ok_or_else(|| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -1579,6 +1667,7 @@ async fn alpha_endgame_policy_handler(
 ) -> Result<impl IntoResponse, ApiError> {
     let payload: EndgameAlphaPolicyRequest =
         parse_json_request(&state, remote.ip(), &headers, &body)?;
+    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
     let timeframe = parse_timeframe(payload.timeframe.as_str()).ok_or_else(|| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -1692,6 +1781,23 @@ fn parse_json_request<T: for<'de> Deserialize<'de>>(
         .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "invalid JSON request body"))
 }
 
+fn guard_onboard_request(state: &AppState, ip: IpAddr, body_len: usize) -> Result<(), ApiError> {
+    if body_len > state.settings.max_body_bytes {
+        return Err(ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "request body too large",
+        ));
+    }
+    let client_ip = ip;
+    if !state.rate_limiter.allow(client_ip) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate limit exceeded",
+        ));
+    }
+    Ok(())
+}
+
 fn guard_request(
     state: &AppState,
     ip: IpAddr,
@@ -1711,7 +1817,7 @@ fn guard_request(
             .and_then(|value| value.to_str().ok())
             .unwrap_or("");
         let expected_header = format!("Bearer {}", expected_token);
-        if provided != expected_header {
+        if provided != expected_header && !auto_alpha_authorized(&state.settings, headers) {
             return Err(ApiError::new(
                 StatusCode::UNAUTHORIZED,
                 "missing or invalid bearer token",
@@ -1742,6 +1848,114 @@ fn guard_request(
     }
 
     Ok(())
+}
+
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(format!("{:02x}", byte).as_str());
+    }
+    out
+}
+
+fn alpha_auto_key_secret(settings: &Settings) -> Result<&str, ApiError> {
+    settings
+        .auto_key_secret
+        .as_deref()
+        .or(settings.token.as_deref())
+        .ok_or_else(|| ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "alpha key secret missing"))
+}
+
+fn auto_alpha_signature(settings: &Settings, wallet: &str) -> Result<String, ApiError> {
+    let mut mac =
+        HmacSha256::new_from_slice(alpha_auto_key_secret(settings)?.as_bytes()).map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid alpha key secret",
+            )
+        })?;
+    mac.update(b"evpoly:auto-alpha:v1:");
+    mac.update(wallet.as_bytes());
+    mac.update(b":");
+    mac.update(builder_attribution::official_builder_code().as_bytes());
+    let digest = mac.finalize().into_bytes();
+    Ok(hex_lower(&digest[..16]))
+}
+
+fn auto_alpha_key_for_wallet(settings: &Settings, wallet: &str) -> Result<String, ApiError> {
+    let normalized = normalize_wallet(wallet);
+    let wallet_part = normalized.trim_start_matches("0x");
+    let sig = auto_alpha_signature(settings, normalized.as_str())?;
+    Ok(format!("{}_{}_{}", AUTO_ALPHA_KEY_PREFIX, wallet_part, sig))
+}
+
+fn auto_alpha_authorized(settings: &Settings, headers: &HeaderMap) -> bool {
+    let Some(token) = bearer_token(headers) else {
+        return false;
+    };
+    if !token.starts_with(AUTO_ALPHA_KEY_PREFIX) {
+        return false;
+    }
+    let Some(wallet) = wallet_header_value(headers) else {
+        return false;
+    };
+    auto_alpha_key_for_wallet(settings, wallet.as_str())
+        .map(|expected| constant_time_eq(expected.as_bytes(), token.as_bytes()))
+        .unwrap_or(false)
+}
+
+fn request_uses_auto_alpha(headers: &HeaderMap) -> bool {
+    bearer_token(headers)
+        .map(|token| token.starts_with(AUTO_ALPHA_KEY_PREFIX))
+        .unwrap_or(false)
+}
+
+fn builder_code_matches_official(builder_code: Option<&str>) -> bool {
+    builder_code
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.eq_ignore_ascii_case(builder_attribution::official_builder_code()))
+        .unwrap_or(false)
+}
+
+fn ensure_builder_code_authorized(
+    settings: &Settings,
+    headers: &HeaderMap,
+    builder_code: Option<&str>,
+) -> Result<(), ApiError> {
+    if settings.require_builder_code || request_uses_auto_alpha(headers) {
+        if !builder_code_matches_official(builder_code) {
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "official builder code required",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (left, right) in a.iter().zip(b.iter()) {
+        diff |= left ^ right;
+    }
+    diff == 0
 }
 
 fn is_valid_wallet(value: &str) -> bool {
@@ -2249,6 +2463,18 @@ fn load_settings() -> Result<Settings> {
             "warning: ALPHA_ALLOW_UNAUTH=true set with empty ALPHA_SERVICE_TOKEN; alpha service is unauthenticated"
         );
     }
+    let auto_onboard_enabled = std::env::var("ALPHA_AUTO_ONBOARD_ENABLE")
+        .ok()
+        .and_then(|v| parse_bool(v.as_str()))
+        .unwrap_or(true);
+    let auto_key_secret = std::env::var("ALPHA_AUTO_KEY_SECRET")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let require_builder_code = std::env::var("ALPHA_REQUIRE_BUILDER_CODE")
+        .ok()
+        .and_then(|v| parse_bool(v.as_str()))
+        .unwrap_or(false);
 
     let max_body_bytes = DEFAULT_MAX_BODY_BYTES.max(1024);
 
@@ -2441,6 +2667,9 @@ fn load_settings() -> Result<Settings> {
         bind,
         port,
         token,
+        auto_onboard_enabled,
+        auto_key_secret,
+        require_builder_code,
         require_wallet_header,
         max_body_bytes,
         rate_limit_per_ip_rps,

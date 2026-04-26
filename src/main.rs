@@ -786,8 +786,155 @@ fn env_nonempty_or_default_named(name: &str) -> Option<String> {
     env_nonempty_named(name).or_else(|| remote_url_default_named(name).map(str::to_string))
 }
 
+fn alpha_bearer_token_named(name: &str) -> Option<String> {
+    env_nonempty_named(name).or_else(|| env_nonempty_named("EVPOLY_ALPHA_KEY"))
+}
+
+fn alpha_setup_value_present(name: &str) -> bool {
+    if name.ends_with("_TOKEN") {
+        env_nonempty_named(name).is_some() || env_nonempty_named("EVPOLY_ALPHA_KEY").is_some()
+    } else {
+        env_nonempty_or_default_named(name).is_some()
+    }
+}
+
 fn env_effectively_missing_named(name: &str) -> bool {
-    env_nonempty_or_default_named(name).is_none()
+    !alpha_setup_value_present(name)
+}
+
+fn official_builder_code_for_alpha() -> String {
+    polymarket_arbitrage_bot::builder_attribution::configured_builder_code()
+}
+
+#[derive(Debug, Serialize)]
+struct AlphaOnboardRequest {
+    wallet: String,
+    builder_code: String,
+    client_version: String,
+    install_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AlphaOnboardResponse {
+    ok: bool,
+    alpha_key: String,
+}
+
+fn alpha_onboard_url() -> String {
+    env_nonempty_named("EVPOLY_ALPHA_ONBOARD_URL")
+        .unwrap_or_else(|| "https://alpha.evplus.ai/v1/onboard".to_string())
+}
+
+fn alpha_install_id() -> String {
+    if let Some(value) = env_nonempty_named("EVPOLY_INSTALL_ID") {
+        return value;
+    }
+    let wallet_hint = env_nonempty_named("POLY_PROXY_WALLET_ADDRESS")
+        .or_else(|| env_nonempty_named("POLY_WALLET_ADDRESS"))
+        .unwrap_or_else(|| "unknown_wallet".to_string());
+    format!("evpoly-local-{}", wallet_hint.trim().to_ascii_lowercase())
+}
+
+fn persist_generated_alpha_key(alpha_key: &str) {
+    let path = std::path::Path::new(".env");
+    if !path.exists() {
+        return;
+    }
+    let Ok(existing) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if existing
+        .lines()
+        .any(|line| line.trim_start().starts_with("EVPOLY_ALPHA_KEY="))
+    {
+        return;
+    }
+    if let Ok(mut file) = OpenOptions::new().append(true).open(path) {
+        let _ = writeln!(file, "\nEVPOLY_ALPHA_KEY={}", alpha_key.trim());
+    }
+}
+
+async fn ensure_alpha_key_auto_onboard(proxy_wallet: Option<&str>) {
+    if env_nonempty_named("EVPOLY_ALPHA_KEY").is_some()
+        || !env_bool_named("EVPOLY_ALPHA_AUTO_ONBOARD", true)
+    {
+        return;
+    }
+    let Some(wallet) = proxy_wallet
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        warn!("EVPOLY alpha auto-onboard skipped: POLY_PROXY_WALLET_ADDRESS is missing");
+        return;
+    };
+    if !polymarket_arbitrage_bot::builder_attribution::configured_builder_code_is_official() {
+        warn!("EVPOLY alpha auto-onboard skipped: POLY_BUILDER_CODE does not match official builder code");
+        return;
+    }
+
+    let payload = AlphaOnboardRequest {
+        wallet: wallet.to_string(),
+        builder_code: official_builder_code_for_alpha(),
+        client_version: env!("CARGO_PKG_VERSION").to_string(),
+        install_id: alpha_install_id(),
+    };
+    let url = alpha_onboard_url();
+    let response = match remote_alpha_http_client()
+        .post(url.as_str())
+        .timeout(Duration::from_millis(2_000))
+        .json(&payload)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(err) => {
+            warn!("EVPOLY alpha auto-onboard failed url={} err={}", url, err);
+            return;
+        }
+    };
+    let status = response.status();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(err) => {
+            warn!("EVPOLY alpha auto-onboard failed to read response: {}", err);
+            return;
+        }
+    };
+    if !status.is_success() {
+        warn!(
+            "EVPOLY alpha auto-onboard rejected status={} body={}",
+            status.as_u16(),
+            truncate_for_log(body.as_str(), 240)
+        );
+        return;
+    }
+    let parsed: AlphaOnboardResponse = match serde_json::from_str(body.as_str()) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            warn!(
+                "EVPOLY alpha auto-onboard returned invalid response: {} body={}",
+                err,
+                truncate_for_log(body.as_str(), 240)
+            );
+            return;
+        }
+    };
+    if !parsed.ok || parsed.alpha_key.trim().is_empty() {
+        warn!("EVPOLY alpha auto-onboard returned no alpha key");
+        return;
+    }
+    unsafe {
+        std::env::set_var("EVPOLY_ALPHA_KEY", parsed.alpha_key.trim());
+    }
+    persist_generated_alpha_key(parsed.alpha_key.trim());
+    log_event(
+        "alpha_auto_onboard_ready",
+        json!({
+            "wallet": wallet,
+            "builder_code_configured": true
+        }),
+    );
+    eprintln!("EVPOLY alpha access ready for wallet {}", wallet);
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -4853,6 +5000,7 @@ async fn main() -> Result<()> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
+    ensure_alpha_key_auto_onboard(remote_alpha_proxy_wallet.as_deref()).await;
     let arbiter = Arc::new(Arbiter::new(ArbiterConfig::from_env()));
     let arbiter_budget_ledger = Arc::new(StdMutex::new(ArbiterBudgetLedger::default()));
     let entry_submit_scope_count_cache: Arc<
@@ -26457,6 +26605,7 @@ async fn main() -> Result<()> {
                             if preflight_block_reason.is_none() {
                                 let local_preflight_payload = RemoteMmRewardsPreflightRequest {
                                     side: side_label.to_ascii_lowercase(),
+                                    builder_code: official_builder_code_for_alpha(),
                                     scoring_guard_enable: mm_cfg_for_loop.scoring_guard_enable,
                                     scoring_guard_require_qmin: mm_cfg_for_loop
                                         .scoring_guard_require_qmin,
@@ -32212,6 +32361,7 @@ struct RemoteMarketDiscoveryRequest {
     symbol: String,
     timeframe: String,
     target_open_ts: u64,
+    builder_code: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32276,6 +32426,7 @@ struct RemoteEvcurveAlphaRequest {
     ask_down: Option<f64>,
     d1_zero_rule_already_fired: bool,
     d1_ev_rule_already_fired: bool,
+    builder_code: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32344,6 +32495,7 @@ struct RemoteSessionbandAlphaRequest {
     current_mid: f64,
     ask_up: Option<f64>,
     ask_down: Option<f64>,
+    builder_code: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32392,6 +32544,7 @@ struct RemotePremarketAlphaRequest {
     proxy_wallet: String,
     ts_ms: i64,
     nonce: String,
+    builder_code: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32414,6 +32567,7 @@ struct RemoteEndgameAlphaRequest {
     request_ts_ms: i64,
     proxy_wallet: String,
     nonce: String,
+    builder_code: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -32449,6 +32603,7 @@ struct RemoteMmRewardsSelectionRequest {
     selection_pool: usize,
     auto_force_top_reward: bool,
     auto_force_include_reward_min: f64,
+    builder_code: String,
     candidates: Vec<RemoteMmRewardsSelectionCandidatePayload>,
 }
 
@@ -32490,6 +32645,7 @@ struct RemoteMmRewardsPreflightRungPayload {
 #[derive(Debug, Clone, Serialize)]
 struct RemoteMmRewardsPreflightRequest {
     side: String,
+    builder_code: String,
     scoring_guard_enable: bool,
     scoring_guard_require_qmin: bool,
     normal_full_ladder_required: bool,
@@ -32562,7 +32718,7 @@ fn remote_market_discovery_config() -> Option<&'static RemoteMarketDiscoveryConf
             let timeout_ms = 2_000_u64;
             Some(RemoteMarketDiscoveryConfig {
                 url,
-                token: env_nonempty_named("EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN"),
+                token: alpha_bearer_token_named("EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN"),
                 timeout_ms,
                 allow_local_fallback: true,
             })
@@ -32578,7 +32734,7 @@ fn remote_evcurve_alpha_config() -> Option<&'static RemoteEvcurveAlphaConfig> {
             let timeout_ms = 1_000_u64;
             Some(RemoteEvcurveAlphaConfig {
                 url,
-                token: env_nonempty_named("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN"),
+                token: alpha_bearer_token_named("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN"),
                 timeout_ms,
             })
         })
@@ -32593,7 +32749,7 @@ fn remote_sessionband_alpha_config() -> Option<&'static RemoteSessionbandAlphaCo
             let timeout_ms = 1_000_u64;
             Some(RemoteSessionbandAlphaConfig {
                 url,
-                token: env_nonempty_named("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN"),
+                token: alpha_bearer_token_named("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN"),
                 timeout_ms,
             })
         })
@@ -32608,7 +32764,7 @@ fn remote_premarket_alpha_config() -> Option<&'static RemotePremarketAlphaConfig
             let timeout_ms = 1_000_u64;
             Some(RemotePremarketAlphaConfig {
                 url,
-                token: env_nonempty_named("EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN"),
+                token: alpha_bearer_token_named("EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN"),
                 timeout_ms,
             })
         })
@@ -32623,7 +32779,7 @@ fn remote_endgame_alpha_config() -> Option<&'static RemoteEndgameAlphaConfig> {
             let timeout_ms = 1_000_u64;
             Some(RemoteEndgameAlphaConfig {
                 url,
-                token: env_nonempty_named("EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN"),
+                token: alpha_bearer_token_named("EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN"),
                 timeout_ms,
             })
         })
@@ -32643,7 +32799,7 @@ fn remote_mm_rewards_alpha_config() -> Option<&'static RemoteMmRewardsAlphaConfi
                 .clamp(100, 10_000);
             Some(RemoteMmRewardsAlphaConfig {
                 selection_url,
-                token: env_nonempty_named("EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN"),
+                token: alpha_bearer_token_named("EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN"),
                 timeout_ms,
             })
         })
@@ -32725,7 +32881,10 @@ async fn send_remote_json_post_once<T: Serialize + ?Sized>(
     if let Some(token) = token {
         request = request.bearer_auth(token);
     }
-    if let Some(wallet) = wallet_header {
+    let wallet_header_value = wallet_header
+        .map(str::to_string)
+        .or_else(|| env_nonempty_named("POLY_PROXY_WALLET_ADDRESS"));
+    if let Some(wallet) = wallet_header_value.as_deref() {
         request = request.header("x-wallet-address", wallet);
     }
     let response = request
@@ -32930,6 +33089,7 @@ async fn fetch_remote_evcurve_decision(
         ask_down,
         d1_zero_rule_already_fired: false,
         d1_ev_rule_already_fired: false,
+        builder_code: official_builder_code_for_alpha(),
     };
     let (status, body) = send_remote_json_post_with_alpha_failover(
         cfg.url.as_str(),
@@ -32993,6 +33153,7 @@ async fn fetch_remote_evcurve_d1_candidates(
         ask_down,
         d1_zero_rule_already_fired,
         d1_ev_rule_already_fired,
+        builder_code: official_builder_code_for_alpha(),
     };
     let (status, body) = send_remote_json_post_with_alpha_failover(
         cfg.url.as_str(),
@@ -33250,6 +33411,7 @@ async fn fetch_remote_sessionband_decision(
         current_mid,
         ask_up,
         ask_down,
+        builder_code: official_builder_code_for_alpha(),
     };
     let (status, body) = send_remote_json_post_with_alpha_failover(
         cfg.url.as_str(),
@@ -33467,6 +33629,7 @@ async fn fetch_remote_premarket_should_trade(
         proxy_wallet: proxy_wallet.to_string(),
         ts_ms: now_ms,
         nonce: remote_alpha_nonce("premarket"),
+        builder_code: official_builder_code_for_alpha(),
     };
     let (status, body) = send_remote_json_post_with_alpha_failover(
         cfg.url.as_str(),
@@ -33573,6 +33736,7 @@ async fn fetch_remote_endgame_policy(
         request_ts_ms: chrono::Utc::now().timestamp_millis(),
         proxy_wallet: proxy_wallet.to_string(),
         nonce: remote_alpha_nonce("endgame"),
+        builder_code: official_builder_code_for_alpha(),
     };
     let (status, body) = send_remote_json_post_with_alpha_failover(
         cfg.url.as_str(),
@@ -33691,6 +33855,7 @@ async fn fetch_remote_mm_rewards_selection(
         selection_pool: selection_pool.max(1),
         auto_force_top_reward,
         auto_force_include_reward_min: auto_force_include_reward_min.max(0.0),
+        builder_code: official_builder_code_for_alpha(),
         candidates: eligible_ranked
             .iter()
             .map(mm_rewards_selection_candidate_payload)
@@ -34063,6 +34228,7 @@ async fn discover_market_for_timeframe_once_remote(
         symbol: symbol.to_string(),
         timeframe: timeframe.as_str().to_string(),
         target_open_ts,
+        builder_code: official_builder_code_for_alpha(),
     };
     let (status, body) = send_remote_json_post_with_alpha_failover(
         cfg.url.as_str(),

@@ -10,6 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-26
+- `endgame_sweep_v1`: moved the active `t0/t1/t2` checkpoint policy fully to remote alpha timing (`src/main.rs`, `src/config.rs`, `src/bin/alpha_service.rs`, `.env.example`, `.env.full.example`, `docs/endgame_sweep_v1.md`).
+  - runtime now requests `/v1/alpha/endgame/policy` at `T-3m` before current period close / next period open; market discovery, proxy feeds, direction logic, sizing, caps, and order placement remain local.
+  - alpha defaults to base offsets `2000,1000,100` ms and randomizes each returned offset up to `25%` closer to `T` only, never farther from close.
+  - local `EVPOLY_ENDGAME_TICK_OFFSETS_MS` is now a label/capacity default of `2000,1000,100`, and `EVPOLY_ENDGAME_SAFETY_STOP_SEC` now defaults to `0` so the `t-100ms` alpha tick can fire.
 - `premarket_v1`: replaced the remote `should_trade` alpha gate with remote alpha ladder selection (`src/main.rs`, `src/bin/alpha_service.rs`, `.env.example`, `.env.full.example`, `docs/premarket_v1.md`).
   - scheduler, market discovery, sizing, caps, cancel scheduling, and order placement remain local.
   - at the scheduled pre-open intent (`T-4m` path), runtime sends base ladder prices to `/v1/alpha/premarket/ladder`.

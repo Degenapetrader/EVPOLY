@@ -50,8 +50,8 @@ const DEFAULT_DISCOVERY_HORIZON_15M: u64 = 2;
 const DEFAULT_DISCOVERY_HORIZON_1H: u64 = 1;
 const DEFAULT_DISCOVERY_HORIZON_4H: u64 = 1;
 const DEFAULT_DISCOVERY_HORIZON_1D: u64 = 1;
-const DEFAULT_ENDGAME_BASE_OFFSETS_MS: &[u64] = &[3000, 1000, 100];
-const DEFAULT_ENDGAME_OFFSET_JITTER_MS: i64 = 50;
+const DEFAULT_ENDGAME_BASE_OFFSETS_MS: &[u64] = &[2000, 1000, 100];
+const DEFAULT_ENDGAME_NEAR_T_RANDOM_MAX_BPS: u32 = 2500;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_BASE_MS: i64 = 400;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_JITTER_MS: i64 = 100;
 const AUTO_ALPHA_KEY_PREFIX: &str = "evp_auto";
@@ -87,7 +87,7 @@ struct Settings {
     discovery_horizon_4h: u64,
     discovery_horizon_1d: u64,
     endgame_base_offsets_ms: Vec<u64>,
-    endgame_offset_jitter_ms: i64,
+    endgame_near_t_random_max_bps: u32,
     endgame_submit_proxy_max_age_base_ms: i64,
     endgame_submit_proxy_max_age_jitter_ms: i64,
     allowed_proxy_wallets: HashSet<String>,
@@ -1738,14 +1738,11 @@ async fn alpha_endgame_policy_handler(
                 payload.nonce,
                 idx
             );
-            let base_i64 = i64::try_from(*base).ok()?;
-            let jittered = seeded_jitter_ms(
-                base_i64,
-                state.settings.endgame_offset_jitter_ms,
+            Some(seeded_near_t_offset_ms(
+                *base,
+                state.settings.endgame_near_t_random_max_bps,
                 seed.as_str(),
-            )
-            .clamp(50, 120_000);
-            u64::try_from(jittered).ok()
+            ))
         })
         .collect::<Vec<_>>();
     tick_offsets_ms.sort_by(|a, b| b.cmp(a));
@@ -1778,7 +1775,7 @@ async fn alpha_endgame_policy_handler(
         tick_offsets_ms,
         submit_proxy_max_age_ms,
         source: "remote".to_string(),
-        reason: "randomized_policy".to_string(),
+        reason: "near_t_randomized_policy".to_string(),
     }))
 }
 
@@ -2043,6 +2040,19 @@ fn seeded_jitter_ms(base: i64, max_abs_jitter_ms: i64, seed: &str) -> i64 {
     let span = u64::try_from(max_abs_jitter_ms.saturating_mul(2).saturating_add(1)).unwrap_or(1);
     let slot = i64::try_from(raw % span).unwrap_or(0) - max_abs_jitter_ms;
     base.saturating_add(slot)
+}
+
+fn seeded_near_t_offset_ms(base_ms: u64, max_near_t_bps: u32, seed: &str) -> u64 {
+    let base_ms = base_ms.clamp(50, 120_000);
+    let max_shift_ms = ((base_ms as u128) * u128::from(max_near_t_bps.min(10_000)) / 10_000)
+        .min(u128::from(base_ms.saturating_sub(50))) as u64;
+    if max_shift_ms == 0 {
+        return base_ms;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    seed.hash(&mut hasher);
+    let shift_ms = hasher.finish() % max_shift_ms.saturating_add(1);
+    base_ms.saturating_sub(shift_ms).clamp(50, 120_000)
 }
 
 fn validate_mids_and_asks(
@@ -2640,11 +2650,11 @@ fn load_settings() -> Result<Settings> {
     endgame_base_offsets_ms.sort_by(|a, b| b.cmp(a));
     endgame_base_offsets_ms.dedup();
 
-    let endgame_offset_jitter_ms = std::env::var("ALPHA_ENDGAME_OFFSET_JITTER_MS")
+    let endgame_near_t_random_max_bps = std::env::var("ALPHA_ENDGAME_NEAR_T_RANDOM_MAX_BPS")
         .ok()
-        .and_then(|v| v.trim().parse::<i64>().ok())
-        .unwrap_or(DEFAULT_ENDGAME_OFFSET_JITTER_MS)
-        .clamp(0, 1_000);
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(DEFAULT_ENDGAME_NEAR_T_RANDOM_MAX_BPS)
+        .clamp(0, 10_000);
     let endgame_submit_proxy_max_age_base_ms =
         std::env::var("ALPHA_ENDGAME_SUBMIT_PROXY_MAX_AGE_BASE_MS")
             .ok()
@@ -2698,7 +2708,7 @@ fn load_settings() -> Result<Settings> {
         discovery_horizon_4h,
         discovery_horizon_1d,
         endgame_base_offsets_ms,
-        endgame_offset_jitter_ms,
+        endgame_near_t_random_max_bps,
         endgame_submit_proxy_max_age_base_ms,
         endgame_submit_proxy_max_age_jitter_ms,
         allowed_proxy_wallets,
@@ -2710,5 +2720,37 @@ fn parse_bool(value: &str) -> Option<bool> {
         "1" | "true" | "yes" | "on" => Some(true),
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn endgame_near_t_offsets_only_move_toward_close() {
+        for base_ms in [2_000_u64, 1_000, 100] {
+            for idx in 0..200 {
+                let offset = seeded_near_t_offset_ms(
+                    base_ms,
+                    DEFAULT_ENDGAME_NEAR_T_RANDOM_MAX_BPS,
+                    format!("seed-{base_ms}-{idx}").as_str(),
+                );
+                let min_offset = base_ms - ((base_ms as u128 * 2500 / 10_000) as u64);
+                assert!(
+                    offset >= min_offset,
+                    "offset {offset} moved more than 25% from base {base_ms}"
+                );
+                assert!(
+                    offset <= base_ms,
+                    "offset {offset} moved away from T beyond base {base_ms}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn endgame_default_offsets_are_t0_t1_t2() {
+        assert_eq!(DEFAULT_ENDGAME_BASE_OFFSETS_MS, &[2_000, 1_000, 100]);
     }
 }

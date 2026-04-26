@@ -15,10 +15,11 @@
 - Alpha `submit_proxy_max_age_ms` is multiplied by `3x` for `DOGE/BNB/HYPE`.
 
 ## Alpha-Driven Timing
-At runtime the bot requests one alpha policy per symbol/timeframe/period near `T-60s`.
+At runtime the bot requests one alpha policy per symbol/timeframe/period at `T-3m` before the current period close / next period open.
 
 Policy includes:
-- `tick_offsets_ms` (typically around `3000,1000,100` with jitter)
+- `tick_offsets_ms` (`t0/t1/t2` based on `2000,1000,100` ms before close)
+- Alpha may move each offset up to `25%` closer to `T` only, so `2000ms` can become `1700ms` but not `2300ms`.
 - `submit_proxy_max_age_ms` (submit-time stale guard)
 
 Config:
@@ -32,7 +33,7 @@ If required policy is unavailable, the period is skipped (fail-closed).
 ## End-to-End Flow
 1. Build symbol proxy feeds (Coinbase/Binance/Hyperliquid by symbol+timeframe path).
 2. Compute/restore period base anchor.
-3. Request alpha policy around `T-60s`.
+3. Request alpha policy at `T-3m` before close / next period open.
 4. If no valid policy and required mode is enabled, skip period.
 5. For each due alpha tick, build direction/probability plan.
 6. Apply mandatory near-base skip gate.
@@ -54,6 +55,7 @@ Multipliers:
 - Mandatory near-base skip gate (`EVPOLY_NEAR_BASE_SKIP_BPS`, default `1.0`)
 - Quote/proxy freshness gates
 - Submit-time stale guard (policy-aware)
+- Safety stop defaults to `0s` so alpha-owned millisecond ticks, including `t-100ms`, can fire.
 - Min entry / price-band gates
 - Per-period and strategy cap gates
 
@@ -67,3 +69,5 @@ Multipliers:
 - `EVPOLY_ENDGAME_ALPHA_REQUIRED`
 - `EVPOLY_REMOTE_ENDGAME_ALPHA_URL`
 - `EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN`
+- `EVPOLY_ENDGAME_TICK_OFFSETS_MS` (local labels/capacity only; alpha owns actual policy)
+- `EVPOLY_ENDGAME_SAFETY_STOP_SEC` (default `0`)

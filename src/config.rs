@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 
+const DEFAULT_ENDGAME_TICK_OFFSETS_MS: &[u64] = &[2_000, 1_000, 100];
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 pub struct Args {
@@ -187,21 +189,20 @@ impl EndgameExecutionConfig {
         let tick_offsets_ms_raw = env_nonempty(&["EVPOLY_ENDGAME_TICK_OFFSETS_MS".to_string()]);
         let (offset_scale_ms, mut tick_offsets_sec) = if let Some(raw_ms) = tick_offsets_ms_raw {
             (1_u64, parse_endgame_offsets(raw_ms.as_str()))
-        } else {
+        } else if let Some(raw_sec) = env_nonempty(&["EVPOLY_ENDGAME_TICK_OFFSETS_SEC".to_string()])
+        {
             (
                 1_000_u64,
-                parse_endgame_offsets(
-                    env_nonempty(&["EVPOLY_ENDGAME_TICK_OFFSETS_SEC".to_string()])
-                        .unwrap_or_else(|| "65,50,35,20,5".to_string())
-                        .as_str(),
-                )
-                .into_iter()
-                .map(|offset_sec| offset_sec.saturating_mul(1_000))
-                .collect::<Vec<_>>(),
+                parse_endgame_offsets(raw_sec.as_str())
+                    .into_iter()
+                    .map(|offset_sec| offset_sec.saturating_mul(1_000))
+                    .collect::<Vec<_>>(),
             )
+        } else {
+            (1_u64, DEFAULT_ENDGAME_TICK_OFFSETS_MS.to_vec())
         };
         if tick_offsets_sec.is_empty() {
-            tick_offsets_sec = vec![65_000, 50_000, 35_000, 20_000, 5_000];
+            tick_offsets_sec = DEFAULT_ENDGAME_TICK_OFFSETS_MS.to_vec();
         }
         tick_offsets_sec.sort_by(|a, b| b.cmp(a));
         tick_offsets_sec.dedup();
@@ -260,7 +261,7 @@ impl EndgameExecutionConfig {
                 .unwrap_or(60_000)
                 .max(5_000),
             safety_stop_s: env_u64_any(&["EVPOLY_ENDGAME_SAFETY_STOP_SEC".to_string()])
-                .unwrap_or(2)
+                .unwrap_or(0)
                 .min(20),
             book_freshness_ms: env_i64_any(&["EVPOLY_ENDGAME_BOOK_FRESHNESS_MS".to_string()])
                 .unwrap_or(1_500)

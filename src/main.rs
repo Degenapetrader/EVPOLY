@@ -80,6 +80,8 @@ use polymarket_arbitrage_bot::weekend_policy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+const ENDGAME_ALPHA_POLICY_FETCH_BEFORE_CLOSE_MS: i64 = 180_000;
+
 /// A writer that writes to both stderr (terminal) and shared history sink.
 struct DualWriter {
     stderr: io::Stderr,
@@ -7046,9 +7048,8 @@ async fn main() -> Result<()> {
                             if endgame_alpha_policy_missing_periods.contains(&period_key) {
                                 continue;
                             }
-                            let policy_fetch_ms = market_close_ms
-                                .saturating_sub(60_000)
-                                .max(market_open_ms.saturating_add(1));
+                            let policy_fetch_ms =
+                                endgame_alpha_policy_fetch_ms(market_open_ms, market_close_ms);
                             if now_ms < policy_fetch_ms {
                                 next_tick_deadline_ms = Some(
                                     next_tick_deadline_ms
@@ -32799,6 +32800,12 @@ fn remote_endgame_alpha_config() -> Option<&'static RemoteEndgameAlphaConfig> {
         .as_ref()
 }
 
+fn endgame_alpha_policy_fetch_ms(market_open_ms: i64, market_close_ms: i64) -> i64 {
+    market_close_ms
+        .saturating_sub(ENDGAME_ALPHA_POLICY_FETCH_BEFORE_CLOSE_MS)
+        .max(market_open_ms.saturating_add(1))
+}
+
 fn remote_mm_rewards_alpha_config() -> Option<&'static RemoteMmRewardsAlphaConfig> {
     static CONFIG: OnceLock<Option<RemoteMmRewardsAlphaConfig>> = OnceLock::new();
     CONFIG
@@ -36110,6 +36117,22 @@ mod tests {
         assert_eq!(endgame_sweep_poly_price_band_for_tick(1), (0.97, 0.99));
         assert_eq!(endgame_sweep_poly_price_band_for_tick(2), (0.98, 0.99));
         assert_eq!(endgame_sweep_poly_price_band_for_tick(7), (0.98, 0.99));
+    }
+
+    #[test]
+    fn endgame_alpha_policy_fetches_three_minutes_before_close() {
+        let market_open_ms = 1_800_000_000_000_i64;
+        let market_close_ms = market_open_ms + 300_000;
+        assert_eq!(
+            endgame_alpha_policy_fetch_ms(market_open_ms, market_close_ms),
+            market_close_ms - 180_000
+        );
+
+        let short_market_close_ms = market_open_ms + 60_000;
+        assert_eq!(
+            endgame_alpha_policy_fetch_ms(market_open_ms, short_market_close_ms),
+            market_open_ms + 1
+        );
     }
 
     #[test]

@@ -98,7 +98,7 @@ bash scripts/verify_env_coverage.sh --env-file .env
 
 ## Signer and Discovery Defaults
 - Order posting now uses local CLOB V2 SDK signing. Set `POLY_BUILDER_CODE` only when builder attribution is required.
-- Legacy `POLY_BUILDER_*` HMAC credentials are retained only for relayer submit compatibility, not normal CLOB order posting.
+- Relayer submit fallback uses `EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN` only for non-order proxy wallet flows such as redeem, merge, approvals, and Auto-Redeem approval toggles.
 - Shared timeframe discovery and EVSnipe discovery are local-first.
 - If local discovery returns no usable result, runtime falls back to the configured remote discovery endpoints.
 
@@ -136,8 +136,8 @@ python3 scripts/remote_onboard.py \
   --write-env-file .env
 ```
 
-Onboarding writes all remote token destinations it can populate from API runtime, including signer, discovery, per-strategy alpha, and admin token defaults.
-Users normally only need the remote signer token. EVPOLY automatically reuses it for primary order signing unless onboarding returns a separate internal override token.
+Onboarding writes all remote token destinations it can populate from API runtime, including relayer submit signer, discovery, per-strategy alpha, and admin token defaults.
+Order posting stays local through the CLOB V2 SDK.
 It should populate those destinations for all strategies, not only the strategies currently enabled.
 
 Important sizing note:
@@ -152,6 +152,7 @@ Important relayer note:
 - Redeem/merge primary path uses:
   - `RELAYER_API_KEY`
   - `RELAYER_API_KEY_ADDRESS`
+- If relayer API keys are not available, proxy wallet relayer flows can fall back to `EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN`.
 - Onboarding does not generate relayer credentials; you must create them manually in Polymarket.
 - Get these from:
   `https://polymarket.com/settings?tab=api-keys`
@@ -224,7 +225,7 @@ Runtime-level changes in this branch:
 - Pins the Rust toolchain to `1.88.0` for the V2 Rust SDK requirement.
 - Defaults `POLY_CLOB_API_URL` to `https://clob-v2.polymarket.com` for pre-cutover testing.
 - Uses CLOB V2 order signing through the SDK; V2 signed orders carry `timestamp`, `metadata`, and `builder` through the SDK instead of legacy `nonce`, `feeRateBps`, and `taker` fields.
-- Uses `POLY_BUILDER_CODE` for V2 builder attribution. Legacy `POLY_BUILDER_*` HMAC credentials are retained only for relayer submit compatibility where still required.
+- Uses `POLY_BUILDER_CODE` for V2 builder attribution. Remote submit signing is restricted to non-order relayer flows.
 - Moves direct collateral contract checks to the pUSD collateral token address and uses the SDK V2 exchange addresses through `exchange_v2` where present.
 - Replaces Gamma offset discovery with `/events/keyset` and `/markets/keyset`, using `after_cursor` / `next_cursor` and local skipping only for callers that still pass a legacy `offset` argument.
 

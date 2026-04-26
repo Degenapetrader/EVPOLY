@@ -67,14 +67,9 @@ sol! {
     }
 }
 
-const ORDER_SIGNER_PRIMARY_URL_DEFAULT: &str = "https://signer.evplus.ai/sign/order";
-const ORDER_SIGNER_AWS_FALLBACK_URL_DEFAULT: &str =
-    "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign/order";
-const SUBMIT_SIGNER_AWS_URL_DEFAULT: &str =
+const RELAYER_SUBMIT_SIGNER_URL_DEFAULT: &str =
     "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign/submit";
-const ORDER_SIGNER_PRIMARY_FALLBACK_TIMEOUT_MS: u64 = 1000;
-const ORDER_SIGNER_DEGRADED_WINDOW: Duration = Duration::from_secs(5 * 60);
-const ORDER_SIGNER_AWS_FORCE_WINDOW: Duration = Duration::from_secs(60 * 60);
+const AUTO_REDEEM_OPERATOR_ADDRESS: &str = "0x05cD9922A5d37faE921Fc5Dee280A9dBc4C3b393";
 const USDC_BALANCE_CACHE_HIT_TTL_MS: i64 = 60_000;
 const USDC_BALANCE_CACHE_FALLBACK_TTL_MS: i64 = 180_000;
 const TICK_METADATA_RL_BACKOFF_BASE_MS: i64 = 1_000;
@@ -152,12 +147,6 @@ pub struct ClobClientHandle {
 }
 
 #[derive(Debug, Default)]
-struct OrderSignerCircuitState {
-    degraded_since: Option<Instant>,
-    force_aws_until: Option<Instant>,
-}
-
-#[derive(Debug, Default)]
 struct ClobAuthBackoffState {
     consecutive_failures: u32,
     retry_after_ms: i64,
@@ -190,16 +179,13 @@ pub struct PlaceOrderTiming {
     pub build_sign_ms: i64,
     pub post_order_ms: i64,
     pub backoff_sleep_ms: i64,
-    pub order_signer_primary_post_ms: i64,
-    pub order_signer_fallback_post_ms: i64,
-    pub order_signer_primary_attempts: u32,
-    pub order_signer_fallback_attempts: u32,
-    pub order_signer_final_route: String,
-    pub order_signer_primary_url: String,
-    pub order_signer_fallback_url: String,
+    pub local_order_post_ms: i64,
+    pub local_order_post_attempts: u32,
+    pub order_attribution_mode: String,
+    pub builder_code_configured: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 struct PlaceOrderHandleTiming {
     prewarm_ms: i64,
     prewarm_cache_hit: bool,
@@ -207,55 +193,16 @@ struct PlaceOrderHandleTiming {
     sign_ms: i64,
     build_sign_ms: i64,
     post_order_ms: i64,
-    order_signer_primary_post_ms: i64,
-    order_signer_fallback_post_ms: i64,
-    order_signer_primary_attempts: u32,
-    order_signer_fallback_attempts: u32,
-    order_signer_final_route: Option<OrderSignerRoute>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OrderSignerRoute {
-    Primary,
-    Fallback,
-}
-
-impl OrderSignerRoute {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Primary => "primary",
-            Self::Fallback => "fallback",
-        }
-    }
+    local_order_post_ms: i64,
+    local_order_post_attempts: u32,
+    order_attribution_mode: String,
+    builder_code_configured: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-struct OrderSignerPostStats {
-    primary_post_ms: i64,
-    fallback_post_ms: i64,
-    primary_attempts: u32,
-    fallback_attempts: u32,
-    final_route: Option<OrderSignerRoute>,
-}
-
-impl OrderSignerPostStats {
-    fn record_attempt(&mut self, route: OrderSignerRoute, elapsed_ms: i64) {
-        match route {
-            OrderSignerRoute::Primary => {
-                self.primary_attempts = self.primary_attempts.saturating_add(1);
-                self.primary_post_ms = self.primary_post_ms.saturating_add(elapsed_ms.max(0));
-            }
-            OrderSignerRoute::Fallback => {
-                self.fallback_attempts = self.fallback_attempts.saturating_add(1);
-                self.fallback_post_ms = self.fallback_post_ms.saturating_add(elapsed_ms.max(0));
-            }
-        }
-    }
-
-    fn record_success(&mut self, route: OrderSignerRoute) {
-        self.final_route = Some(route);
-    }
+struct LocalOrderPostStats {
+    post_ms: i64,
+    attempts: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -332,8 +279,16 @@ struct RewardsMarketsApiResponse {
     next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AutoRedeemApprovalStatus {
+    pub account: String,
+    pub ctf_contract: String,
+    pub operator: String,
+    pub enabled: bool,
+}
+
 #[derive(Debug, Serialize)]
-struct RemoteBuilderSignerRequest {
+struct RemoteRelayerSubmitSignerRequest {
     method: String,
     path: String,
     body: String,
@@ -341,11 +296,15 @@ struct RemoteBuilderSignerRequest {
 }
 
 #[derive(Debug, Deserialize)]
-struct RemoteBuilderSignerResponse {
-    poly_builder_api_key: String,
-    poly_builder_timestamp: String,
-    poly_builder_passphrase: String,
-    poly_builder_signature: String,
+struct RemoteRelayerSubmitSignerResponse {
+    #[serde(rename = "poly_builder_api_key")]
+    relayer_api_key: String,
+    #[serde(rename = "poly_builder_timestamp")]
+    relayer_timestamp: String,
+    #[serde(rename = "poly_builder_passphrase")]
+    relayer_passphrase: String,
+    #[serde(rename = "poly_builder_signature")]
+    relayer_signature: String,
 }
 
 impl RewardsMarketEntry {
@@ -408,7 +367,6 @@ pub struct PolymarketApi {
     tick_metadata_rl_failures_by_token: Arc<tokio::sync::Mutex<HashMap<String, u32>>>,
     tick_metadata_retry_after_ms_global: Arc<tokio::sync::Mutex<i64>>,
     tick_metadata_rl_failures_global: Arc<tokio::sync::Mutex<u32>>,
-    order_signer_circuit_state: Arc<tokio::sync::Mutex<OrderSignerCircuitState>>,
     ws_state: Arc<tokio::sync::Mutex<Option<SharedPolymarketWsState>>>,
     ws_enabled: bool,
     ws_market_stale_ms: i64,
@@ -480,9 +438,6 @@ impl PolymarketApi {
             tick_metadata_rl_failures_by_token: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             tick_metadata_retry_after_ms_global: Arc::new(tokio::sync::Mutex::new(0)),
             tick_metadata_rl_failures_global: Arc::new(tokio::sync::Mutex::new(0)),
-            order_signer_circuit_state: Arc::new(tokio::sync::Mutex::new(
-                OrderSignerCircuitState::default(),
-            )),
             ws_state: Arc::new(tokio::sync::Mutex::new(None)),
             ws_enabled,
             ws_market_stale_ms,
@@ -725,7 +680,7 @@ impl PolymarketApi {
         }
     }
 
-    fn ensure_no_local_builder_secrets(&self) -> Result<()> {
+    fn ensure_no_local_relayer_submit_hmac_secrets(&self) -> Result<()> {
         for key in [
             "POLY_BUILDER_API_KEY",
             "POLY_BUILDER_API_SECRET",
@@ -733,7 +688,7 @@ impl PolymarketApi {
         ] {
             if Self::env_nonempty(key).is_some() {
                 anyhow::bail!(
-                    "{} is not supported on poly-remote. Use remote signer onboarding token only.",
+                    "{} is legacy relayer submit HMAC config and is not supported locally. Use RELAYER_API_KEY or the relayer submit signer token instead.",
                     key
                 );
             }
@@ -741,10 +696,14 @@ impl PolymarketApi {
         Ok(())
     }
 
-    fn submit_signer_token(&self) -> Result<String> {
-        self.ensure_no_local_builder_secrets()?;
-        let signer_token = Self::env_nonempty("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN")
-            .ok_or_else(|| anyhow::anyhow!("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN is required"))?;
+    fn relayer_submit_signer_token(&self) -> Result<String> {
+        self.ensure_no_local_relayer_submit_hmac_secrets()?;
+        let signer_token = Self::env_nonempty("EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN")
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN is required for relayer submit signer fallback"
+                )
+            })?;
         Ok(signer_token)
     }
 
@@ -768,37 +727,17 @@ impl PolymarketApi {
         }
     }
 
-    fn order_primary_signer_url(&self) -> String {
-        Self::env_nonempty("EVPOLY_ORDER_SIGNER_PRIMARY_URL")
-            .unwrap_or_else(|| ORDER_SIGNER_PRIMARY_URL_DEFAULT.to_string())
-    }
-
-    fn order_primary_signer_token(&self) -> Option<String> {
-        Self::env_nonempty("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN")
-    }
-
-    fn order_fallback_signer_url(&self) -> String {
-        Self::env_nonempty("EVPOLY_ORDER_SIGNER_FALLBACK_URL")
-            .unwrap_or_else(|| ORDER_SIGNER_AWS_FALLBACK_URL_DEFAULT.to_string())
-    }
-
-    fn submit_signer_url(&self) -> String {
-        Self::env_nonempty("EVPOLY_SUBMIT_SIGNER_URL")
-            .unwrap_or_else(|| SUBMIT_SIGNER_AWS_URL_DEFAULT.to_string())
+    fn relayer_submit_signer_url(&self) -> String {
+        Self::env_nonempty("EVPOLY_RELAYER_SUBMIT_SIGNER_URL")
+            .unwrap_or_else(|| RELAYER_SUBMIT_SIGNER_URL_DEFAULT.to_string())
     }
 
     fn v2_builder_code(&self) -> Result<Option<B256>> {
-        let Some(raw) = Self::env_nonempty("POLY_BUILDER_CODE")
-            .or_else(|| Self::env_nonempty("POLYMARKET_BUILDER_CODE"))
-        else {
+        let Some(raw) = Self::env_nonempty("POLY_BUILDER_CODE") else {
             return Ok(None);
         };
-        let code = B256::from_str(raw.trim()).with_context(|| {
-            format!(
-                "Invalid POLY_BUILDER_CODE / POLYMARKET_BUILDER_CODE: {}",
-                raw
-            )
-        })?;
+        let code = B256::from_str(raw.trim())
+            .with_context(|| format!("Invalid POLY_BUILDER_CODE: {}", raw))?;
         Ok(Some(code))
     }
 
@@ -810,64 +749,31 @@ impl PolymarketApi {
         }
     }
 
-    async fn should_force_aws_order_signer(&self) -> bool {
-        let now = Instant::now();
-        let mut state = self.order_signer_circuit_state.lock().await;
-        match state.force_aws_until {
-            Some(until) if now < until => true,
-            Some(_) => {
-                state.force_aws_until = None;
-                state.degraded_since = None;
-                warn!("Order signer fallback window ended; retrying primary signer");
-                false
-            }
-            None => false,
-        }
+    fn local_order_attribution(&self) -> Result<(String, bool)> {
+        let builder_code_configured = self.v2_builder_code()?.is_some();
+        let mode = if builder_code_configured {
+            "local_v2_builder_code"
+        } else {
+            "none"
+        };
+        Ok((mode.to_string(), builder_code_configured))
     }
 
-    async fn note_primary_order_signer_success(&self) {
-        let mut state = self.order_signer_circuit_state.lock().await;
-        state.degraded_since = None;
-    }
-
-    async fn note_primary_order_signer_timeout(&self) {
-        let now = Instant::now();
-        let mut state = self.order_signer_circuit_state.lock().await;
-        if let Some(until) = state.force_aws_until {
-            if now < until {
-                return;
-            }
-            state.force_aws_until = None;
-        }
-        let degraded_since = state.degraded_since.get_or_insert(now);
-        if now.duration_since(*degraded_since) >= ORDER_SIGNER_DEGRADED_WINDOW {
-            state.force_aws_until = Some(now + ORDER_SIGNER_AWS_FORCE_WINDOW);
-            state.degraded_since = None;
-            warn!(
-                "Primary order signer exceeded {}ms for >= {}s; forcing AWS signer for {}s",
-                ORDER_SIGNER_PRIMARY_FALLBACK_TIMEOUT_MS,
-                ORDER_SIGNER_DEGRADED_WINDOW.as_secs(),
-                ORDER_SIGNER_AWS_FORCE_WINDOW.as_secs()
-            );
-        }
-    }
-
-    async fn request_remote_builder_headers_via(
+    async fn request_remote_relayer_submit_headers_via(
         &self,
         sign_url: &str,
         signer_token: Option<&str>,
         method: &str,
         path: &str,
         body: &str,
-        timeout_ms: Option<u64>,
-    ) -> Result<RemoteBuilderSignerResponse> {
+    ) -> Result<RemoteRelayerSubmitSignerResponse> {
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs()
             .to_string();
 
-        let payload = RemoteBuilderSignerRequest {
+        let payload = RemoteRelayerSubmitSignerRequest {
             method: method.to_ascii_uppercase(),
             path: path.to_string(),
             body: body.to_string(),
@@ -879,128 +785,52 @@ impl PolymarketApi {
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .json(&payload);
-        if let Some(ms) = timeout_ms {
-            request = request.timeout(std::time::Duration::from_millis(ms));
-        }
         if let Some(token) = signer_token {
             request = request.bearer_auth(token);
         }
         let response = request
             .send()
             .await
-            .context("Failed to call EVPOLY remote builder signer")?;
+            .context("Failed to call EVPOLY relayer submit signer")?;
 
         let status = response.status();
         let body_text = response
             .text()
             .await
-            .context("Failed to read remote builder signer response")?;
+            .context("Failed to read relayer submit signer response")?;
         if !status.is_success() {
             anyhow::bail!(
-                "Remote builder signer rejected request (status {}): {}",
+                "Relayer submit signer rejected request (status {}): {}",
                 status,
                 &body_text[..200.min(body_text.len())]
             );
         }
 
-        serde_json::from_str::<RemoteBuilderSignerResponse>(&body_text).context(
-            "Failed to parse remote builder signer response (expected poly_builder_* fields)",
-        )
+        serde_json::from_str::<RemoteRelayerSubmitSignerResponse>(&body_text)
+            .context("Failed to parse relayer submit signer response")
     }
 
-    async fn request_remote_builder_headers(
+    async fn request_remote_relayer_submit_headers(
         &self,
         method: &str,
         path: &str,
         body: &str,
-    ) -> Result<RemoteBuilderSignerResponse> {
+    ) -> Result<RemoteRelayerSubmitSignerResponse> {
         let normalized_method = method.to_ascii_uppercase();
-        let order_primary_url = self.order_primary_signer_url();
-        let order_primary_token = self.order_primary_signer_token();
-        let order_fallback_url = self.order_fallback_signer_url();
-        let submit_signer_url = self.submit_signer_url();
         match path {
             "/submit" => {
-                let submit_token = self.submit_signer_token()?;
-                self.request_remote_builder_headers_via(
+                let submit_signer_url = self.relayer_submit_signer_url();
+                let submit_token = self.relayer_submit_signer_token()?;
+                self.request_remote_relayer_submit_headers_via(
                     submit_signer_url.as_str(),
                     Some(submit_token.as_str()),
                     normalized_method.as_str(),
                     path,
                     body,
-                    None,
                 )
                 .await
             }
-            "/order" | "/orders" => {
-                if self.should_force_aws_order_signer().await {
-                    return self
-                        .request_remote_builder_headers_via(
-                            order_fallback_url.as_str(),
-                            None,
-                            normalized_method.as_str(),
-                            path,
-                            body,
-                            None,
-                        )
-                        .await;
-                }
-                match self
-                    .request_remote_builder_headers_via(
-                        order_primary_url.as_str(),
-                        order_primary_token.as_deref(),
-                        normalized_method.as_str(),
-                        path,
-                        body,
-                        Some(ORDER_SIGNER_PRIMARY_FALLBACK_TIMEOUT_MS),
-                    )
-                    .await
-                {
-                    Ok(resp) => {
-                        self.note_primary_order_signer_success().await;
-                        Ok(resp)
-                    }
-                    Err(primary_err) => {
-                        if Self::is_timeout_error(&primary_err) {
-                            self.note_primary_order_signer_timeout().await;
-                        }
-                        if Self::should_fallback_to_aws_signer(&primary_err) {
-                            warn!(
-                                "Primary order signer transient failure; falling back to AWS signer. path={} err={}",
-                                path, primary_err
-                            );
-                            return self
-                                .request_remote_builder_headers_via(
-                                    order_fallback_url.as_str(),
-                                    None,
-                                    normalized_method.as_str(),
-                                    path,
-                                    body,
-                                    None,
-                                )
-                                .await;
-                        }
-                        if Self::is_non_retryable_primary_post_error(&primary_err) {
-                            info!(
-                                "Primary order signer rejected order without a match; skipping AWS fallback. path={} err={}",
-                                path, primary_err
-                            );
-                        } else if Self::is_rate_limit_error(&primary_err) {
-                            warn!(
-                                "Primary order signer rate-limited; skipping AWS fallback and letting caller back off. path={} err={}",
-                                path, primary_err
-                            );
-                        } else {
-                            warn!(
-                                "Primary order signer failed without fallback condition; skipping AWS fallback. path={} err={}",
-                                path, primary_err
-                            );
-                        }
-                        Err(primary_err)
-                    }
-                }
-            }
-            _ => anyhow::bail!("Unsupported remote signer path: {}", path),
+            _ => anyhow::bail!("Unsupported relayer submit signer path: {}", path),
         }
     }
 
@@ -1647,7 +1477,8 @@ impl PolymarketApi {
         } else {
             eprintln!("   ✓ Trading account: EOA (private key account)");
         }
-        eprintln!("   ✓ Builder attribution headers: enabled for all order posts");
+        let (attribution_mode, _) = self.local_order_attribution()?;
+        eprintln!("   ✓ Order attribution: {}", attribution_mode);
         Ok(())
     }
 
@@ -1734,19 +1565,6 @@ impl PolymarketApi {
             || msg.contains("handshake")
     }
 
-    fn should_fallback_to_aws_signer(error: &anyhow::Error) -> bool {
-        if Self::is_rate_limit_error(error) {
-            return false;
-        }
-        if Self::is_non_retryable_primary_post_error(error) {
-            return false;
-        }
-        Self::is_timeout_error(error)
-            || Self::is_network_or_server_error(error)
-            || (Self::fallback_on_primary_post_errors()
-                && Self::is_primary_builder_post_error(error))
-    }
-
     fn order_retry_attempts() -> u32 {
         // Latency-critical submit path: single attempt by default.
         1
@@ -1756,39 +1574,21 @@ impl PolymarketApi {
         250
     }
 
-    fn fallback_on_primary_post_errors() -> bool {
-        std::env::var("EVPOLY_ORDER_SIGNER_FALLBACK_ON_PRIMARY_POST_ERRORS")
-            .ok()
-            .map(|v| {
-                let lc = v.trim().to_ascii_lowercase();
-                lc == "1" || lc == "true" || lc == "yes" || lc == "on"
-            })
-            .unwrap_or(true)
-    }
-
-    fn is_primary_builder_post_error(error: &anyhow::Error) -> bool {
-        let msg = error.to_string().to_ascii_lowercase();
-        msg.contains("failed to post order with primary builder attribution")
-            || msg.contains("failed to post batch orders with primary builder attribution")
-            || msg.contains("primary order signer failed")
-            || msg.contains("primary batch order signer failed")
-    }
-
-    fn is_non_retryable_primary_post_error(error: &anyhow::Error) -> bool {
+    fn is_no_match_fak_fok_error(error: &anyhow::Error) -> bool {
         let msg = error.to_string().to_ascii_lowercase();
         msg.contains("no orders found to match with fak order")
             || msg.contains("no orders found to match with fok order")
     }
 
-    fn order_signer_rate_limit_retry_attempts() -> u32 {
+    fn local_order_post_rate_limit_retry_attempts() -> u32 {
         1
     }
 
-    fn order_signer_rate_limit_retry_base_ms() -> u64 {
+    fn local_order_post_rate_limit_retry_base_ms() -> u64 {
         75
     }
 
-    fn signer_rate_limit_backoff_ms(retry_idx: u32, base_ms: u64) -> u64 {
+    fn local_order_post_rate_limit_backoff_ms(retry_idx: u32, base_ms: u64) -> u64 {
         let shift = retry_idx.min(6);
         base_ms.saturating_mul(1_u64 << shift)
     }
@@ -3327,8 +3127,9 @@ impl PolymarketApi {
         let mut timing = PlaceOrderTiming::default();
         timing.order_type_effective = effective_order_type;
         timing.retry_policy = retry_policy.to_string();
-        timing.order_signer_primary_url = self.order_primary_signer_url();
-        timing.order_signer_fallback_url = self.order_fallback_signer_url();
+        let (attribution_mode, builder_code_configured) = self.local_order_attribution()?;
+        timing.order_attribution_mode = attribution_mode;
+        timing.builder_code_configured = builder_code_configured;
         let started = Instant::now();
 
         for attempt in 1..=attempts {
@@ -3345,21 +3146,12 @@ impl PolymarketApi {
                     timing.sign_ms += handle_timing.sign_ms;
                     timing.build_sign_ms += handle_timing.build_sign_ms;
                     timing.post_order_ms += handle_timing.post_order_ms;
-                    timing.order_signer_primary_post_ms +=
-                        handle_timing.order_signer_primary_post_ms;
-                    timing.order_signer_fallback_post_ms +=
-                        handle_timing.order_signer_fallback_post_ms;
-                    timing.order_signer_primary_attempts = timing
-                        .order_signer_primary_attempts
-                        .saturating_add(handle_timing.order_signer_primary_attempts);
-                    timing.order_signer_fallback_attempts = timing
-                        .order_signer_fallback_attempts
-                        .saturating_add(handle_timing.order_signer_fallback_attempts);
-                    timing.order_signer_final_route = handle_timing
-                        .order_signer_final_route
-                        .map(OrderSignerRoute::as_str)
-                        .unwrap_or("unknown")
-                        .to_string();
+                    timing.local_order_post_ms += handle_timing.local_order_post_ms;
+                    timing.local_order_post_attempts = timing
+                        .local_order_post_attempts
+                        .saturating_add(handle_timing.local_order_post_attempts);
+                    timing.order_attribution_mode = handle_timing.order_attribution_mode;
+                    timing.builder_code_configured = handle_timing.builder_code_configured;
                     timing.total_api_ms = started.elapsed().as_millis() as i64;
                     return Ok((resp, timing));
                 }
@@ -3724,38 +3516,32 @@ impl PolymarketApi {
     ) -> Result<(OrderResponse, PlaceOrderHandleTiming)> {
         let mut prepared = self.build_and_sign_order_with_handle(handle, order).await?;
         let post_started = Instant::now();
-        let mut signer_post_stats = OrderSignerPostStats::default();
-        let rate_limit_retry_attempts = Self::order_signer_rate_limit_retry_attempts();
-        let rate_limit_retry_base_ms = Self::order_signer_rate_limit_retry_base_ms();
-        let mut primary_response: Option<
+        let mut post_stats = LocalOrderPostStats::default();
+        let rate_limit_retry_attempts = Self::local_order_post_rate_limit_retry_attempts();
+        let rate_limit_retry_base_ms = Self::local_order_post_rate_limit_retry_base_ms();
+        let mut response: Option<
             polymarket_client_sdk_v2::clob::types::response::PostOrderResponse,
         > = None;
-        let mut primary_error: Option<anyhow::Error> = None;
+        let mut last_error: Option<anyhow::Error> = None;
 
         for retry_idx in 0..=rate_limit_retry_attempts {
             match self
-                .post_signed_order_with_builder(
-                    handle,
-                    prepared.signed_order,
-                    false,
-                    &mut signer_post_stats,
-                )
+                .post_signed_order_local(handle, prepared.signed_order, &mut post_stats)
                 .await
             {
                 Ok(resp) => {
-                    primary_response = Some(resp);
-                    primary_error = None;
+                    response = Some(resp);
+                    last_error = None;
                     break;
                 }
                 Err(err) => {
-                    if Self::is_timeout_error(&err) {
-                        self.note_primary_order_signer_timeout().await;
-                    }
                     if Self::is_rate_limit_error(&err) && retry_idx < rate_limit_retry_attempts {
-                        let delay_ms =
-                            Self::signer_rate_limit_backoff_ms(retry_idx, rate_limit_retry_base_ms);
+                        let delay_ms = Self::local_order_post_rate_limit_backoff_ms(
+                            retry_idx,
+                            rate_limit_retry_base_ms,
+                        );
                         warn!(
-                            "Primary order signer rate-limited; retrying in {}ms (retry {}/{})",
+                            "Local CLOB order post rate-limited; retrying in {}ms (retry {}/{})",
                             delay_ms,
                             retry_idx + 1,
                             rate_limit_retry_attempts
@@ -3765,61 +3551,21 @@ impl PolymarketApi {
                             .build_and_sign_order_with_handle(handle, order)
                             .await
                             .context(
-                                "Failed to rebuild order for primary signer rate-limit retry",
+                                "Failed to rebuild order for local order post rate-limit retry",
                             )?;
                         continue;
                     }
-                    primary_error = Some(err);
+                    last_error = Some(err);
                     break;
                 }
             }
         }
 
-        let response = if let Some(resp) = primary_response {
-            resp
-        } else {
-            let primary_err = primary_error.unwrap_or_else(|| {
-                anyhow::anyhow!("Primary order signer failed with unknown error")
-            });
-            if !Self::should_fallback_to_aws_signer(&primary_err) {
-                if Self::is_non_retryable_primary_post_error(&primary_err) {
-                    info!(
-                        "Primary order signer rejected FAK/FOK with no opposite resting liquidity (error_kind=no_match_fak_fok); not retrying via AWS fallback. full_chain={:#}",
-                        primary_err
-                    );
-                } else {
-                    warn!(
-                        "Primary order signer error did not qualify for fallback. full_chain={:#}",
-                        primary_err
-                    );
-                }
-                return Err(primary_err.context(
-                    "Order rejected by exchange (error_kind=no_match_fak_fok): FAK/FOK found no matching resting orders; AWS fallback signer skipped for non-infra reject",
-                ));
-            }
-            warn!(
-                "Primary order signer post hit transient failure; retrying with AWS fallback signer: {}",
-                primary_err
-            );
-            prepared = self
-                .build_and_sign_order_with_handle(handle, order)
-                .await
-                .context("Failed to rebuild order for fallback signer")?;
-            self.post_signed_order_with_builder(
-                handle,
-                prepared.signed_order,
-                true,
-                &mut signer_post_stats,
-            )
-                .await
-                .map_err(|fallback_err| {
-                    anyhow::anyhow!(
-                        "Failed to post order via primary and fallback builder signers (primary: {}; fallback: {})",
-                        primary_err,
-                        fallback_err
-                    )
-                })?
-        };
+        let response = response.ok_or_else(|| {
+            last_error.unwrap_or_else(|| {
+                anyhow::anyhow!("Local CLOB order post failed with unknown error")
+            })
+        })?;
         let post_order_ms = post_started.elapsed().as_millis() as i64;
         self.clear_tick_metadata_backoff(prepared.token_id.as_str())
             .await;
@@ -3847,6 +3593,7 @@ impl PolymarketApi {
         } else {
             warn!("Order post succeeded but returned empty orderID from upstream");
         }
+        let (order_attribution_mode, builder_code_configured) = self.local_order_attribution()?;
         Ok((
             OrderResponse {
                 order_id: normalized_order_id.clone(),
@@ -3864,11 +3611,10 @@ impl PolymarketApi {
             },
             PlaceOrderHandleTiming {
                 post_order_ms,
-                order_signer_primary_post_ms: signer_post_stats.primary_post_ms,
-                order_signer_fallback_post_ms: signer_post_stats.fallback_post_ms,
-                order_signer_primary_attempts: signer_post_stats.primary_attempts,
-                order_signer_fallback_attempts: signer_post_stats.fallback_attempts,
-                order_signer_final_route: signer_post_stats.final_route,
+                local_order_post_ms: post_stats.post_ms,
+                local_order_post_attempts: post_stats.attempts,
+                order_attribution_mode,
+                builder_code_configured,
                 ..prepared.timing
             },
         ))
@@ -3916,38 +3662,32 @@ impl PolymarketApi {
         let (mut prepared_orders_meta, mut signed_orders) =
             self.build_signed_orders_with_meta(handle, orders).await?;
         let post_started = Instant::now();
-        let mut signer_post_stats = OrderSignerPostStats::default();
-        let rate_limit_retry_attempts = Self::order_signer_rate_limit_retry_attempts();
-        let rate_limit_retry_base_ms = Self::order_signer_rate_limit_retry_base_ms();
-        let mut primary_responses: Option<
+        let mut post_stats = LocalOrderPostStats::default();
+        let rate_limit_retry_attempts = Self::local_order_post_rate_limit_retry_attempts();
+        let rate_limit_retry_base_ms = Self::local_order_post_rate_limit_retry_base_ms();
+        let mut responses: Option<
             Vec<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse>,
         > = None;
-        let mut primary_error: Option<anyhow::Error> = None;
+        let mut last_error: Option<anyhow::Error> = None;
 
         for retry_idx in 0..=rate_limit_retry_attempts {
             match self
-                .post_signed_orders_with_builder(
-                    handle,
-                    signed_orders,
-                    false,
-                    &mut signer_post_stats,
-                )
+                .post_signed_orders_local(handle, signed_orders, &mut post_stats)
                 .await
             {
                 Ok(resp) => {
-                    primary_responses = Some(resp);
-                    primary_error = None;
+                    responses = Some(resp);
+                    last_error = None;
                     break;
                 }
                 Err(err) => {
-                    if Self::is_timeout_error(&err) {
-                        self.note_primary_order_signer_timeout().await;
-                    }
                     if Self::is_rate_limit_error(&err) && retry_idx < rate_limit_retry_attempts {
-                        let delay_ms =
-                            Self::signer_rate_limit_backoff_ms(retry_idx, rate_limit_retry_base_ms);
+                        let delay_ms = Self::local_order_post_rate_limit_backoff_ms(
+                            retry_idx,
+                            rate_limit_retry_base_ms,
+                        );
                         warn!(
-                            "Primary batch order signer rate-limited; retrying in {}ms (retry {}/{})",
+                            "Local CLOB batch order post rate-limited; retrying in {}ms (retry {}/{})",
                             delay_ms,
                             retry_idx + 1,
                             rate_limit_retry_attempts
@@ -3956,65 +3696,24 @@ impl PolymarketApi {
                             .build_signed_orders_with_meta(handle, orders)
                             .await
                             .context(
-                                "Failed to rebuild batch orders for primary signer rate-limit retry",
+                                "Failed to rebuild batch orders for local order post rate-limit retry",
                             )?;
                         prepared_orders_meta = rebuilt_meta;
                         signed_orders = rebuilt_orders;
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                         continue;
                     }
-                    primary_error = Some(err);
+                    last_error = Some(err);
                     break;
                 }
             }
         }
 
-        let responses = if let Some(resp) = primary_responses {
-            resp
-        } else {
-            let primary_err = primary_error.unwrap_or_else(|| {
-                anyhow::anyhow!("Primary batch order signer failed with unknown error")
-            });
-            if !Self::should_fallback_to_aws_signer(&primary_err) {
-                if Self::is_non_retryable_primary_post_error(&primary_err) {
-                    info!(
-                        "Primary batch order signer rejected FAK/FOK with no opposite resting liquidity (error_kind=no_match_fak_fok); not retrying via AWS fallback. full_chain={:#}",
-                        primary_err
-                    );
-                } else {
-                    warn!(
-                        "Primary batch order signer error did not qualify for fallback. full_chain={:#}",
-                        primary_err
-                    );
-                }
-                return Err(primary_err.context(
-                    "Batch order rejected by exchange (error_kind=no_match_fak_fok): FAK/FOK found no matching resting orders; AWS fallback signer skipped for non-infra reject",
-                ));
-            }
-            warn!(
-                "Primary batch order signer post hit transient failure; retrying with AWS fallback signer: {}",
-                primary_err
-            );
-            let (rebuilt_meta, rebuilt_orders) = self
-                .build_signed_orders_with_meta(handle, orders)
-                .await
-                .context("Failed to rebuild batch orders for fallback signer")?;
-            prepared_orders_meta = rebuilt_meta;
-            self.post_signed_orders_with_builder(
-                handle,
-                rebuilt_orders,
-                true,
-                &mut signer_post_stats,
-            )
-                .await
-                .map_err(|fallback_err| {
-                    anyhow::anyhow!(
-                        "Failed to post batch orders via primary and fallback builder signers (primary: {}; fallback: {})",
-                        primary_err,
-                        fallback_err
-                    )
-                })?
-        };
+        let responses = responses.ok_or_else(|| {
+            last_error.unwrap_or_else(|| {
+                anyhow::anyhow!("Local CLOB batch order post failed with unknown error")
+            })
+        })?;
         let post_order_ms = post_started.elapsed().as_millis() as i64;
         for (_, _, token_id, _, _) in prepared_orders_meta.iter() {
             self.clear_tick_metadata_backoff(token_id.as_str()).await;
@@ -4027,13 +3726,7 @@ impl PolymarketApi {
             );
         }
         let total_api_ms = started.elapsed().as_millis() as i64;
-        let order_signer_primary_url = self.order_primary_signer_url();
-        let order_signer_fallback_url = self.order_fallback_signer_url();
-        let order_signer_final_route = signer_post_stats
-            .final_route
-            .map(OrderSignerRoute::as_str)
-            .unwrap_or("unknown")
-            .to_string();
+        let (order_attribution_mode, builder_code_configured) = self.local_order_attribution()?;
         let mut results: Vec<BatchPlaceOrderResult> = Vec::with_capacity(responses.len());
         for ((timing_base, effective_order_type, token_id, side, size), response) in
             prepared_orders_meta.into_iter().zip(responses.into_iter())
@@ -4052,13 +3745,10 @@ impl PolymarketApi {
                 build_sign_ms: timing_base.build_sign_ms,
                 post_order_ms,
                 backoff_sleep_ms: 0,
-                order_signer_primary_post_ms: signer_post_stats.primary_post_ms,
-                order_signer_fallback_post_ms: signer_post_stats.fallback_post_ms,
-                order_signer_primary_attempts: signer_post_stats.primary_attempts,
-                order_signer_fallback_attempts: signer_post_stats.fallback_attempts,
-                order_signer_final_route: order_signer_final_route.clone(),
-                order_signer_primary_url: order_signer_primary_url.clone(),
-                order_signer_fallback_url: order_signer_fallback_url.clone(),
+                local_order_post_ms: post_stats.post_ms,
+                local_order_post_attempts: post_stats.attempts,
+                order_attribution_mode: order_attribution_mode.clone(),
+                builder_code_configured,
             };
             if response.success {
                 let normalized_order_id = Self::normalize_post_order_id(response.order_id.as_str());
@@ -4106,44 +3796,36 @@ impl PolymarketApi {
         Ok(results)
     }
 
-    async fn post_signed_order_with_builder(
+    async fn post_signed_order_local(
         &self,
         handle: &ClobClientHandle,
         signed_order: ClobSignedOrder,
-        _use_fallback_signer: bool,
-        signer_post_stats: &mut OrderSignerPostStats,
+        post_stats: &mut LocalOrderPostStats,
     ) -> Result<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse> {
-        let route = OrderSignerRoute::Primary;
         let post_started = Instant::now();
         let result = handle.client.post_order(signed_order).await;
         let post_ms = post_started.elapsed().as_millis() as i64;
-        signer_post_stats.record_attempt(route, post_ms);
+        post_stats.attempts = post_stats.attempts.saturating_add(1);
+        post_stats.post_ms = post_stats.post_ms.saturating_add(post_ms.max(0));
         match result {
-            Ok(resp) => {
-                signer_post_stats.record_success(route);
-                Ok(resp)
-            }
+            Ok(resp) => Ok(resp),
             Err(e) => Err(anyhow::anyhow!("Failed to post V2 order: {}", e)),
         }
     }
 
-    async fn post_signed_orders_with_builder(
+    async fn post_signed_orders_local(
         &self,
         handle: &ClobClientHandle,
         signed_orders: Vec<ClobSignedOrder>,
-        _use_fallback_signer: bool,
-        signer_post_stats: &mut OrderSignerPostStats,
+        post_stats: &mut LocalOrderPostStats,
     ) -> Result<Vec<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse>> {
-        let route = OrderSignerRoute::Primary;
         let post_started = Instant::now();
         let result = handle.client.post_orders(signed_orders).await;
         let post_ms = post_started.elapsed().as_millis() as i64;
-        signer_post_stats.record_attempt(route, post_ms);
+        post_stats.attempts = post_stats.attempts.saturating_add(1);
+        post_stats.post_ms = post_stats.post_ms.saturating_add(post_ms.max(0));
         match result {
-            Ok(resp) => {
-                signer_post_stats.record_success(route);
-                Ok(resp)
-            }
+            Ok(resp) => Ok(resp),
             Err(e) => Err(anyhow::anyhow!("Failed to post V2 batch orders: {}", e)),
         }
     }
@@ -4504,11 +4186,10 @@ impl PolymarketApi {
                 sign_ms,
                 build_sign_ms,
                 post_order_ms: 0,
-                order_signer_primary_post_ms: 0,
-                order_signer_fallback_post_ms: 0,
-                order_signer_primary_attempts: 0,
-                order_signer_fallback_attempts: 0,
-                order_signer_final_route: None,
+                local_order_post_ms: 0,
+                local_order_post_attempts: 0,
+                order_attribution_mode: String::new(),
+                builder_code_configured: false,
             },
             effective_order_type: effective_order_type.to_string(),
             token_id: order.token_id.clone(),
@@ -5661,6 +5342,137 @@ impl PolymarketApi {
         Ok(format!("{:#x}", self.resolve_trading_account_address()?))
     }
 
+    fn auto_redeem_operator_address() -> Result<AlloyAddress> {
+        Self::parse_hex_address(AUTO_REDEEM_OPERATOR_ADDRESS)
+            .context("Failed to parse Polymarket auto-redeem operator address")
+    }
+
+    fn auto_redeem_status_value(
+        account: AlloyAddress,
+        ctf_contract: AlloyAddress,
+        operator: AlloyAddress,
+        enabled: bool,
+    ) -> AutoRedeemApprovalStatus {
+        AutoRedeemApprovalStatus {
+            account: format!("{:#x}", account),
+            ctf_contract: format!("{:#x}", ctf_contract),
+            operator: format!("{:#x}", operator),
+            enabled,
+        }
+    }
+
+    pub async fn check_auto_redeem_approval(&self) -> Result<AutoRedeemApprovalStatus> {
+        let account = self.resolve_trading_account_address()?;
+        let ctf_contract = Self::current_ctf_contract_address()?;
+        let operator = Self::auto_redeem_operator_address()?;
+
+        let mut last_error: Option<anyhow::Error> = None;
+        for rpc_url in Self::polygon_rpc_http_urls() {
+            let provider = match ProviderBuilder::new().connect(rpc_url.as_str()).await {
+                Ok(provider) => provider,
+                Err(e) => {
+                    last_error = Some(
+                        anyhow::Error::new(e)
+                            .context(format!("Failed to connect to Polygon RPC {}", rpc_url)),
+                    );
+                    continue;
+                }
+            };
+
+            let ctf = IERC1155::new(ctf_contract, provider);
+            match ctf.isApprovedForAll(account, operator).call().await {
+                Ok(enabled) => {
+                    return Ok(Self::auto_redeem_status_value(
+                        account,
+                        ctf_contract,
+                        operator,
+                        enabled,
+                    ));
+                }
+                Err(e) => {
+                    last_error = Some(anyhow::Error::new(e).context(format!(
+                        "Failed to check auto-redeem approval via {}",
+                        rpc_url
+                    )));
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!("Failed to check auto-redeem approval: no usable Polygon RPC endpoint")
+        }))
+    }
+
+    pub async fn set_auto_redeem_approval(
+        &self,
+        enabled: bool,
+    ) -> Result<AutoRedeemApprovalStatus> {
+        let ctf_contract = Self::current_ctf_contract_address()?;
+        let operator = Self::auto_redeem_operator_address()?;
+
+        if self.proxy_wallet_address.is_some() {
+            let call_data = Self::encode_set_approval_for_all_call_data(operator, enabled);
+            let metadata = format!(
+                "{} Polymarket auto-redeem approval for operator {:#x}",
+                if enabled { "Enable" } else { "Disable" },
+                operator
+            );
+            let relayer_request = self
+                .build_relayer_request_for_calls(vec![(ctf_contract, call_data)], metadata.as_str())
+                .await?;
+            let _ = self
+                .submit_relayer_redeem_request(relayer_request, "Auto-redeem approval", true)
+                .await?;
+            return self.check_auto_redeem_approval().await;
+        }
+
+        let private_key = self.private_key.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("Private key required for direct auto-redeem approval")
+        })?;
+        let signer = LocalSigner::from_str(private_key)
+            .context("Failed to create signer from private key")?
+            .with_chain_id(Some(POLYGON));
+
+        let mut provider_opt = None;
+        let mut last_connect_error: Option<anyhow::Error> = None;
+        for rpc_url in Self::polygon_rpc_http_urls() {
+            match ProviderBuilder::new()
+                .wallet(signer.clone())
+                .connect(rpc_url.as_str())
+                .await
+            {
+                Ok(provider) => {
+                    provider_opt = Some(provider);
+                    break;
+                }
+                Err(e) => {
+                    last_connect_error = Some(
+                        anyhow::Error::new(e)
+                            .context(format!("Failed to connect to Polygon RPC {}", rpc_url)),
+                    );
+                }
+            }
+        }
+        let provider = provider_opt.ok_or_else(|| {
+            last_connect_error.unwrap_or_else(|| {
+                anyhow::anyhow!("Failed to connect to Polygon RPC: no endpoint configured")
+            })
+        })?;
+
+        let ctf = IERC1155::new(ctf_contract, provider);
+        let tx = ctf
+            .setApprovalForAll(operator, enabled)
+            .send()
+            .await
+            .context("Auto-redeem setApprovalForAll send failed")?
+            .watch()
+            .await
+            .context("Auto-redeem setApprovalForAll confirm failed")?;
+        eprintln!("   Auto-redeem approval tx confirmed: {:#x}", tx);
+
+        self.check_auto_redeem_approval().await
+    }
+
     pub async fn get_user_activity(&self, user: &str, limit: usize) -> Result<Vec<Value>> {
         let normalized_user = user.trim();
         if normalized_user.is_empty() {
@@ -6219,7 +6031,7 @@ impl PolymarketApi {
         let body_string = serde_json::to_string(&relayer_request)
             .context("Failed to serialize relayer request")?;
         let remote_headers = self
-            .request_remote_builder_headers("POST", "/submit", body_string.as_str())
+            .request_remote_relayer_submit_headers("POST", "/submit", body_string.as_str())
             .await?;
 
         // Send request to relayer
@@ -6227,19 +6039,13 @@ impl PolymarketApi {
             .client
             .post(RELAYER_SUBMIT)
             .header("User-Agent", "polymarket-trading-bot/1.0")
-            .header("POLY_BUILDER_API_KEY", &remote_headers.poly_builder_api_key)
-            .header(
-                "POLY_BUILDER_TIMESTAMP",
-                &remote_headers.poly_builder_timestamp,
-            )
+            .header("POLY_BUILDER_API_KEY", &remote_headers.relayer_api_key)
+            .header("POLY_BUILDER_TIMESTAMP", &remote_headers.relayer_timestamp)
             .header(
                 "POLY_BUILDER_PASSPHRASE",
-                &remote_headers.poly_builder_passphrase,
+                &remote_headers.relayer_passphrase,
             )
-            .header(
-                "POLY_BUILDER_SIGNATURE",
-                &remote_headers.poly_builder_signature,
-            )
+            .header("POLY_BUILDER_SIGNATURE", &remote_headers.relayer_signature)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .body(body_string)
@@ -6275,7 +6081,7 @@ impl PolymarketApi {
                 Signature Type: {:?}\n\
                 \n\
                 This may be a relayer endpoint issue, remote-signer authentication problem, or request format mismatch.\n\
-                Please verify signer endpoint envs, EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN, and wallet binding.{}",
+                Please verify relayer signer endpoint envs, EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN, and wallet binding.{}",
                 status, response_text, ctf_contract_address, exchange_address, self.signature_type, sig_type_hint
             );
         }
@@ -6848,7 +6654,7 @@ impl PolymarketApi {
                 }
                 Err(e) => {
                     let primary_err = anyhow::anyhow!("{:?}", e);
-                    if Self::is_non_retryable_primary_post_error(&primary_err) {
+                    if Self::is_no_match_fak_fok_error(&primary_err) {
                         info!(
                             "V2 market-order post rejected FAK/FOK without a match: {}",
                             e
@@ -7270,33 +7076,27 @@ impl PolymarketApi {
         Ok(format!("0x{}", hex::encode(&call_data)))
     }
 
-    async fn submit_relayer_redeem_request_with_builder_headers(
+    async fn submit_relayer_redeem_request_with_remote_signer_headers(
         &self,
         relayer_submit_url: &str,
         body_string: &str,
         context_label: &str,
     ) -> Result<String> {
         let remote_headers = self
-            .request_remote_builder_headers("POST", "/submit", body_string)
+            .request_remote_relayer_submit_headers("POST", "/submit", body_string)
             .await?;
 
         let response = self
             .client
             .post(relayer_submit_url)
             .header("User-Agent", "polymarket-trading-bot/1.0")
-            .header("POLY_BUILDER_API_KEY", &remote_headers.poly_builder_api_key)
-            .header(
-                "POLY_BUILDER_TIMESTAMP",
-                &remote_headers.poly_builder_timestamp,
-            )
+            .header("POLY_BUILDER_API_KEY", &remote_headers.relayer_api_key)
+            .header("POLY_BUILDER_TIMESTAMP", &remote_headers.relayer_timestamp)
             .header(
                 "POLY_BUILDER_PASSPHRASE",
-                &remote_headers.poly_builder_passphrase,
+                &remote_headers.relayer_passphrase,
             )
-            .header(
-                "POLY_BUILDER_SIGNATURE",
-                &remote_headers.poly_builder_signature,
-            )
+            .header("POLY_BUILDER_SIGNATURE", &remote_headers.relayer_signature)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
             .body(body_string.to_string())
@@ -7390,7 +7190,7 @@ impl PolymarketApi {
                                 "{} RELAYER_API_KEY primary submit failed; retrying with remote signer fallback: {}",
                                 context_label, primary_err
                             );
-                            self.submit_relayer_redeem_request_with_builder_headers(
+                            self.submit_relayer_redeem_request_with_remote_signer_headers(
                                 RELAYER_SUBMIT,
                                 body_string.as_str(),
                                 context_label,
@@ -7404,7 +7204,7 @@ impl PolymarketApi {
                     }
                 }
                 Ok(None) => self
-                    .submit_relayer_redeem_request_with_builder_headers(
+                    .submit_relayer_redeem_request_with_remote_signer_headers(
                         RELAYER_SUBMIT,
                         body_string.as_str(),
                         context_label,
@@ -7419,7 +7219,7 @@ impl PolymarketApi {
                         "{} RELAYER_API_KEY primary config invalid ({}); retrying with remote signer fallback",
                         context_label, primary_cfg_err
                     );
-                    self.submit_relayer_redeem_request_with_builder_headers(
+                    self.submit_relayer_redeem_request_with_remote_signer_headers(
                         RELAYER_SUBMIT,
                         body_string.as_str(),
                         context_label,
@@ -7432,7 +7232,7 @@ impl PolymarketApi {
                 }
             }
         } else {
-            self.submit_relayer_redeem_request_with_builder_headers(
+            self.submit_relayer_redeem_request_with_remote_signer_headers(
                 RELAYER_SUBMIT,
                 body_string.as_str(),
                 context_label,
@@ -7865,34 +7665,11 @@ mod tests {
     }
 
     #[test]
-    fn should_not_fallback_for_fak_no_match_rejection() {
+    fn detects_fak_no_match_rejection() {
         let error = anyhow::anyhow!(
-            "Failed to post order with primary builder attribution: Status: error(400 Bad Request) making POST call to /order with {{\"error\":\"no orders found to match with FAK order. FAK orders are partially filled or killed if no match is found.\"}}"
+            "Failed to post V2 order: Status: error(400 Bad Request) making POST call to /order with {{\"error\":\"no orders found to match with FAK order. FAK orders are partially filled or killed if no match is found.\"}}"
         );
-        assert!(PolymarketApi::is_non_retryable_primary_post_error(&error));
-        assert!(!PolymarketApi::should_fallback_to_aws_signer(&error));
-    }
-
-    #[test]
-    fn should_fallback_for_timeout_error() {
-        let error = anyhow::anyhow!("Primary builder signer post timed out after 1000ms");
-        assert!(PolymarketApi::should_fallback_to_aws_signer(&error));
-    }
-
-    #[test]
-    fn should_fallback_for_network_or_server_error() {
-        let error = anyhow::anyhow!(
-            "Failed to post order with primary builder attribution: Status: 502 bad gateway"
-        );
-        assert!(PolymarketApi::should_fallback_to_aws_signer(&error));
-    }
-
-    #[test]
-    fn should_not_fallback_for_rate_limit_error() {
-        let error = anyhow::anyhow!(
-            "Failed to post order with primary builder attribution: Status: 429 too many requests"
-        );
-        assert!(!PolymarketApi::should_fallback_to_aws_signer(&error));
+        assert!(PolymarketApi::is_no_match_fak_fok_error(&error));
     }
 
     #[test]

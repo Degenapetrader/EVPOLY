@@ -30,6 +30,8 @@ Request headers:
 - `POST /manual/open/runs/{run_id}/stop`
 - `GET /manual/close/runs/{run_id}`
 - `POST /manual/close/runs/{run_id}/stop`
+- `GET /manual/auto-redeem`
+- `POST /manual/auto-redeem`
 - `POST /manual/redeem`
 - `POST /manual/merge`
 - `GET /manual/positions`
@@ -122,10 +124,25 @@ curl -sS -X POST http://127.0.0.1:8791/manual/close/runs/<run_id>/stop \
   -H 'x-evpoly-manual-token: YOUR_TOKEN'
 ```
 
+Auto-Redeem status:
+```bash
+curl -sS http://127.0.0.1:8791/manual/auto-redeem \
+  -H 'x-evpoly-manual-token: YOUR_TOKEN'
+```
+
+Enable Auto-Redeem:
+```bash
+curl -sS -X POST http://127.0.0.1:8791/manual/auto-redeem \
+  -H 'content-type: application/json' \
+  -H 'x-evpoly-manual-token: YOUR_TOKEN' \
+  -d '{"enabled":true}'
+```
+
 ## Operator Endpoints
 - `/manual/positions`: live positions snapshot.
 - `/manual/balance`: USDC balance/allowance plus live position summary.
 - `/manual/pnl`: activity cashflow plus live unrealized estimate.
 - `/manual/audit`: run-state audit plus fix suggestions.
+- `/manual/auto-redeem`: read or toggle Polymarket Auto-Redeem approval for the configured wallet.
 - `/manual/doctor/check`: issue scanner.
 - `/manual/doctor/fix`: stop/cancel/sync/prune helper.

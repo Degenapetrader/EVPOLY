@@ -38,7 +38,7 @@ fi
 
 check_env_key POLY_PRIVATE_KEY
 check_env_key POLY_SIGNATURE_TYPE
-check_env_key EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN
+check_env_key EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN
 
 bash scripts/verify_env_coverage.sh --env-file .env || true
 

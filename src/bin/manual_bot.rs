@@ -319,6 +319,12 @@ struct ManualRedeemRequest {
     sweep: Option<bool>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualAutoRedeemRequest {
+    enabled: bool,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct ManualChaseStopRequest {
@@ -3780,6 +3786,40 @@ async fn handle_manual_market_by_slug(
     })))
 }
 
+async fn handle_manual_auto_redeem_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
+    check_auth(&headers, &state)?;
+    let status = state
+        .api
+        .check_auto_redeem_approval()
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({
+        "ok": true,
+        "auto_redeem": status
+    })))
+}
+
+async fn handle_manual_auto_redeem_set(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ManualAutoRedeemRequest>,
+) -> Result<Json<Value>, ApiError> {
+    check_auth(&headers, &state)?;
+    ensure_write_allowed(&state)?;
+    let status = state
+        .api
+        .set_auto_redeem_approval(payload.enabled)
+        .await
+        .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(json!({
+        "ok": true,
+        "auto_redeem": status
+    })))
+}
+
 async fn handle_manual_redeem(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -4682,6 +4722,10 @@ async fn main() -> Result<()> {
         .route(
             "/manual/close/runs/{run_id}/stop",
             post(handle_manual_close_stop_path),
+        )
+        .route(
+            "/manual/auto-redeem",
+            get(handle_manual_auto_redeem_status).post(handle_manual_auto_redeem_set),
         )
         .route("/manual/redeem", post(handle_manual_redeem))
         .route("/manual/merge", post(handle_manual_merge))

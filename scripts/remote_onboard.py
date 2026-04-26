@@ -26,7 +26,7 @@ from eth_account.messages import encode_defunct
 from eth_utils import to_checksum_address
 
 DEFAULT_REMOTE_SIGNER_URL = "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign"
-DEFAULT_ORDER_SIGNER_URL = "https://signer.evplus.ai/sign/order"
+DEFAULT_RELAYER_SUBMIT_SIGNER_URL = "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign/submit"
 DEFAULT_ALPHA_BASE_URL = "https://alpha.evplus.ai"
 
 
@@ -89,7 +89,11 @@ def _resolve_runtime_config(finish_res: Dict[str, Any]) -> Dict[str, Any]:
     if not alpha_base:
         alpha_base = DEFAULT_ALPHA_BASE_URL
 
-    order_signer_url = _nonempty(runtime.get("order_signer_url")) or DEFAULT_ORDER_SIGNER_URL
+    relayer_submit_signer_url = (
+        _nonempty(runtime.get("relayer_submit_signer_url"))
+        or _nonempty(runtime.get("submit_signer_url"))
+        or DEFAULT_RELAYER_SUBMIT_SIGNER_URL
+    )
 
     market_discovery_url = _nonempty(runtime.get("remote_market_discovery_url"))
     if not market_discovery_url:
@@ -121,8 +125,7 @@ def _resolve_runtime_config(finish_res: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     return {
-        "order_signer_url": order_signer_url,
-        "order_signer_token": _nonempty(runtime.get("order_signer_token")),
+        "relayer_submit_signer_url": relayer_submit_signer_url,
         "market_discovery_url": market_discovery_url,
         "evsnipe_discovery_url": evsnipe_discovery_url,
         "evcurve_alpha_url": evcurve_alpha_url,
@@ -136,10 +139,6 @@ def _resolve_runtime_config(finish_res: Dict[str, Any]) -> Dict[str, Any]:
             runtime.get("remote_evsnipe_discovery_timeout_ms"), 900, 50, 10_000
         ),
     }
-
-
-def _resolve_order_signer_primary_token(runtime_cfg: Dict[str, Any], remote_signer_token: str) -> str:
-    return _nonempty(runtime_cfg.get("order_signer_token")) or _nonempty(remote_signer_token)
 
 
 def _post_json(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -262,7 +261,7 @@ def _run_post_onboard_approvals(
     env["POLY_SIGNATURE_TYPE"] = str(signature_type)
     if signature_type in (1, 2):
         env["POLY_PROXY_WALLET_ADDRESS"] = bind_wallet
-    env["EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN"] = remote_signer_token
+    env["EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN"] = remote_signer_token
 
     print("approval_bootstrap=start")
     print("approval_bootstrap_cmd=" + " ".join(cmd))
@@ -480,13 +479,15 @@ def main() -> int:
     wrote_keys = []
 
     _upsert_env_value(
-        env_file, "EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN", remote_signer_token
+        env_file, "EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN", remote_signer_token
     )
-    wrote_keys.append("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN")
+    wrote_keys.append("EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN")
     _upsert_env_value(
-        env_file, "EVPOLY_ORDER_SIGNER_PRIMARY_URL", runtime_cfg["order_signer_url"]
+        env_file,
+        "EVPOLY_RELAYER_SUBMIT_SIGNER_URL",
+        runtime_cfg["relayer_submit_signer_url"],
     )
-    wrote_keys.append("EVPOLY_ORDER_SIGNER_PRIMARY_URL")
+    wrote_keys.append("EVPOLY_RELAYER_SUBMIT_SIGNER_URL")
     _upsert_env_value(
         env_file,
         "EVPOLY_REMOTE_MARKET_DISCOVERY_URL",
@@ -589,13 +590,6 @@ def main() -> int:
             "warning: runtime alpha token not provided by onboarding API; "
             "EVPOLY_REMOTE_*_ALPHA_TOKEN left unchanged."
         )
-
-    order_signer_primary_token = _resolve_order_signer_primary_token(
-        runtime_cfg, remote_signer_token
-    )
-    _upsert_env_value(
-        env_file, "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN", order_signer_primary_token
-    )
 
     admin_token = _read_env_value(env_file, "EVPOLY_ADMIN_API_TOKEN")
     if not admin_token:

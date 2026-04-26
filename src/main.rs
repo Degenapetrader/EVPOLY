@@ -31078,7 +31078,7 @@ mod execution_timing_tests {
 
     #[test]
     fn classify_submit_error_kind_detects_no_match_fak_normalized_message() {
-        let message = "Order rejected by exchange (error_kind=no_match_fak_fok): FAK/FOK found no matching resting orders; AWS fallback signer skipped for non-infra reject";
+        let message = "Failed to post V2 order: Status: error(400 Bad Request) making POST call to /order with {\"error\":\"no orders found to match with FAK order.\"}";
         assert_eq!(classify_submit_error_kind(message), "no_match_fak_fok");
     }
 

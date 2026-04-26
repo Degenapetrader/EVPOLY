@@ -6473,13 +6473,13 @@ impl Trader {
                     } else {
                         response_status
                     };
-                    let signer_route = api_timing.order_signer_final_route.clone();
+                    let attribution_mode = api_timing.order_attribution_mode.clone();
                     let window_key = format!(
                         "{}|{}|{}|{}",
                         strategy_id.as_str(),
                         opportunity.token_id,
                         response_status,
-                        signer_route
+                        attribution_mode
                     );
                     let mut emit_immediate = false;
                     let mut summary_count: Option<u64> = None;
@@ -6510,7 +6510,7 @@ impl Trader {
                                 "strategy_id": strategy_id.as_str(),
                                 "token_id": opportunity.token_id,
                                 "response_status": response.status.clone(),
-                                "api_order_signer_final_route": api_timing.order_signer_final_route.clone(),
+                                "api_order_attribution_mode": api_timing.order_attribution_mode.clone(),
                                 "window_ms": 60_000,
                                 "count": count
                             }),
@@ -6530,9 +6530,8 @@ impl Trader {
                                 "units": units,
                                 "size_usd": investment_amount,
                                 "request_id": request_id.clone(),
-                                "api_order_signer_final_route": api_timing.order_signer_final_route.clone(),
-                                "api_order_signer_primary_url": api_timing.order_signer_primary_url.clone(),
-                                "api_order_signer_fallback_url": api_timing.order_signer_fallback_url.clone(),
+                                "api_order_attribution_mode": api_timing.order_attribution_mode.clone(),
+                                "api_builder_code_configured": api_timing.builder_code_configured,
                                 "api_order_type_effective": api_timing.order_type_effective.clone(),
                                 "response_status": response.status.clone()
                             }),
@@ -6562,13 +6561,10 @@ impl Trader {
                     "api_sign_ms": api_timing.sign_ms,
                     "api_build_sign_ms": api_timing.build_sign_ms,
                     "api_post_order_ms": api_timing.post_order_ms,
-                    "api_order_signer_primary_url": api_timing.order_signer_primary_url.clone(),
-                    "api_order_signer_fallback_url": api_timing.order_signer_fallback_url.clone(),
-                    "api_order_signer_final_route": api_timing.order_signer_final_route.clone(),
-                    "api_order_signer_primary_post_ms": api_timing.order_signer_primary_post_ms,
-                    "api_order_signer_fallback_post_ms": api_timing.order_signer_fallback_post_ms,
-                    "api_order_signer_primary_attempts": api_timing.order_signer_primary_attempts,
-                    "api_order_signer_fallback_attempts": api_timing.order_signer_fallback_attempts,
+                    "api_order_attribution_mode": api_timing.order_attribution_mode.clone(),
+                    "api_builder_code_configured": api_timing.builder_code_configured,
+                    "api_local_order_post_ms": api_timing.local_order_post_ms,
+                    "api_local_order_post_attempts": api_timing.local_order_post_attempts,
                     "api_backoff_sleep_ms": api_timing.backoff_sleep_ms,
                     "api_internal_overhead_ms": api_internal_overhead_ms,
                 });

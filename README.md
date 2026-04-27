@@ -237,6 +237,6 @@ Operational cutover guidance:
 
 1. Run read-only and dry-run tests against `https://clob-v2.polymarket.com`.
 2. Confirm pUSD balance and allowances before enabling live BUY orders.
-3. Confirm `POLY_BUILDER_CODE` is set if builder attribution is required.
+3. Confirm order timing reports `builder_code_configured=true`; leave `POLY_BUILDER_CODE` blank unless overriding the built-in official code.
 4. Stop live trading and cancel resting orders before the Polymarket V2 cutover window.
 5. After cutover, production can use `https://clob.polymarket.com` once it reports V2.

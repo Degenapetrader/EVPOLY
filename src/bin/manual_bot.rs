@@ -45,6 +45,10 @@ const DEFAULT_BIND: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8791;
 const DEFAULT_MAX_BODY_BYTES: usize = 64 * 1024;
 const DEFAULT_PREMARKET_SIDE_BUDGET_USD: f64 = 200.0;
+
+fn manual_auth_required_for_bind(addr: SocketAddr) -> bool {
+    !addr.ip().is_loopback()
+}
 const MANUAL_WS_BALANCE_FALLBACK_POLL_MS: i64 = 2_000;
 const MANUAL_TP_SUBMIT_ATTEMPTS: u32 = 3;
 const MANUAL_TP_RETRY_DELAY_MS: u64 = 250;
@@ -4630,6 +4634,20 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+    let addr = SocketAddr::from_str(format!("{}:{}", args.bind, args.port).as_str())
+        .with_context(|| format!("invalid bind address {}:{}", args.bind, args.port))?;
+    let auth_token = args
+        .token
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .or_else(|| std::env::var("EVPOLY_MANUAL_BOT_TOKEN").ok())
+        .filter(|v| !v.is_empty());
+    if auth_token.is_none() && manual_auth_required_for_bind(addr) {
+        anyhow::bail!(
+            "EVPOLY_MANUAL_BOT_TOKEN or --token is required when manual_bot bind is not loopback"
+        );
+    }
+
     let config = Config::load(&args.config)
         .with_context(|| format!("failed to load config: {}", args.config.display()))?;
 
@@ -4676,12 +4694,6 @@ async fn main() -> Result<()> {
         None,
         None,
     )?);
-
-    let auth_token = args
-        .token
-        .or_else(|| std::env::var("EVPOLY_MANUAL_BOT_TOKEN").ok())
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
 
     let state = AppState {
         api,
@@ -4739,9 +4751,6 @@ async fn main() -> Result<()> {
         .with_state(state)
         .layer(axum::extract::DefaultBodyLimit::max(args.max_body_bytes));
 
-    let addr = SocketAddr::from_str(format!("{}:{}", args.bind, args.port).as_str())
-        .with_context(|| format!("invalid bind address {}:{}", args.bind, args.port))?;
-
     log::info!(
         "manual_bot listening on {} (simulation={} auth_token={})",
         addr,
@@ -4761,4 +4770,19 @@ async fn main() -> Result<()> {
         .context("manual_bot server failed")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn manual_auth_is_required_for_public_bind() {
+        let public = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), DEFAULT_PORT);
+        let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), DEFAULT_PORT);
+
+        assert!(manual_auth_required_for_bind(public));
+        assert!(!manual_auth_required_for_bind(loopback));
+    }
 }

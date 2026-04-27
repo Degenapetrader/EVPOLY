@@ -41,4 +41,5 @@ if [[ "${expired_count}" -gt 0 ]]; then
 fi
 
 cd "${ROOT_DIR}"
+cargo metadata --locked --format-version 1 >/dev/null
 cargo audit "$@"

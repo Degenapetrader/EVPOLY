@@ -14,9 +14,9 @@ jobs:
       - name: Rustfmt
         run: cargo fmt --all -- --check
       - name: Cargo Check
-        run: cargo check --all-targets
+        run: cargo check --locked --all-targets
       - name: Cargo Test
-        run: cargo test --all-targets --quiet
+        run: cargo test --locked --all-targets --quiet
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
       - name: Security Audit

@@ -5157,22 +5157,28 @@ impl PolymarketApi {
         // Get contract config to check which contract address we should be checking allowance for
         let config = contract_config(POLYGON, false)
             .ok_or_else(|| anyhow::anyhow!("Failed to get contract config"))?;
-        let exchange_address = config.exchange;
+        let is_neg_risk = handle
+            .client
+            .neg_risk(token_u256)
+            .await
+            .context("Failed to resolve neg-risk status for token allowance check")?
+            .neg_risk;
+        let exchange_address = if is_neg_risk {
+            let neg_risk_config = contract_config(POLYGON, true)
+                .ok_or_else(|| anyhow::anyhow!("Failed to get neg risk contract config"))?;
+            neg_risk_config
+                .exchange_v2
+                .unwrap_or(neg_risk_config.exchange)
+        } else {
+            config.exchange_v2.unwrap_or(config.exchange)
+        };
 
         // Get allowance for the Exchange contract specifically
         let allowance = balance_allowance
             .allowances
             .get(&exchange_address)
             .and_then(|v| rust_decimal::Decimal::from_str(v).ok())
-            .unwrap_or_else(|| {
-                // If Exchange contract not found, try to get any allowance (fallback)
-                balance_allowance
-                    .allowances
-                    .values()
-                    .next()
-                    .and_then(|v| rust_decimal::Decimal::from_str(v).ok())
-                    .unwrap_or(rust_decimal::Decimal::ZERO)
-            });
+            .unwrap_or(rust_decimal::Decimal::ZERO);
 
         let allowance_diagnostics = std::env::var("EVPOLY_ALLOWANCE_DIAGNOSTICS")
             .ok()
@@ -5534,9 +5540,18 @@ impl PolymarketApi {
     pub async fn check_is_approved_for_all(&self) -> Result<bool> {
         let config = contract_config(POLYGON, false)
             .ok_or_else(|| anyhow::anyhow!("Failed to get contract config from SDK"))?;
+        let neg_risk_config = contract_config(POLYGON, true)
+            .ok_or_else(|| anyhow::anyhow!("Failed to get neg risk contract config from SDK"))?;
 
         let ctf_contract_address = config.conditional_tokens;
-        let exchange_address = config.exchange;
+        let (_collateral_targets, operator_targets) = Self::trading_approval_targets(
+            ctf_contract_address,
+            config.exchange_v2.unwrap_or(config.exchange),
+            neg_risk_config
+                .exchange_v2
+                .unwrap_or(neg_risk_config.exchange),
+            neg_risk_config.neg_risk_adapter,
+        );
 
         // Determine which address to check (proxy wallet or EOA)
         let account_to_check = if let Some(proxy_addr) = &self.proxy_wallet_address {
@@ -5569,18 +5584,27 @@ impl PolymarketApi {
             };
 
             let ctf = IERC1155::new(ctf_contract_address, provider);
-            match ctf
-                .isApprovedForAll(account_to_check, exchange_address)
-                .call()
-                .await
-            {
-                Ok(approved) => return Ok(approved),
-                Err(e) => {
-                    last_error = Some(
-                        anyhow::Error::new(e)
-                            .context(format!("Failed to check isApprovedForAll via {}", rpc_url)),
-                    );
+            let mut rpc_failed = false;
+            for (label, operator) in operator_targets.iter() {
+                match ctf
+                    .isApprovedForAll(account_to_check, *operator)
+                    .call()
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => return Ok(false),
+                    Err(e) => {
+                        last_error = Some(anyhow::Error::new(e).context(format!(
+                            "Failed to check isApprovedForAll for {} via {}",
+                            label, rpc_url
+                        )));
+                        rpc_failed = true;
+                        break;
+                    }
                 }
+            }
+            if !rpc_failed {
+                return Ok(true);
             }
         }
 

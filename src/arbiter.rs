@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::strategy::{
     Direction, Timeframe, STRATEGY_ID_ENDGAME_SWEEP_V1, STRATEGY_ID_EVCURVE_V1,
     STRATEGY_ID_EVSNIPE_V1, STRATEGY_ID_MM_SPORT_V1, STRATEGY_ID_PREMARKET_V1,
+    STRATEGY_ID_SESSIONBAND_V1,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +50,10 @@ impl ArbiterConfig {
         per_strategy_max_usd.insert(
             STRATEGY_ID_EVCURVE_V1.to_string(),
             env_f64("EVPOLY_ARB_STRAT_EVCURVE_MAX_USD", global_max_usd).max(0.0),
+        );
+        per_strategy_max_usd.insert(
+            STRATEGY_ID_SESSIONBAND_V1.to_string(),
+            env_f64("EVPOLY_ARB_STRAT_SESSIONBAND_MAX_USD", global_max_usd).max(0.0),
         );
         per_strategy_max_usd.insert(
             STRATEGY_ID_EVSNIPE_V1.to_string(),
@@ -390,8 +395,9 @@ fn strategy_priority(strategy_id: &str) -> u8 {
         STRATEGY_ID_PREMARKET_V1 => 0,
         STRATEGY_ID_ENDGAME_SWEEP_V1 => 1,
         STRATEGY_ID_EVCURVE_V1 => 2,
-        STRATEGY_ID_EVSNIPE_V1 => 3,
-        STRATEGY_ID_MM_SPORT_V1 => 4,
+        STRATEGY_ID_SESSIONBAND_V1 => 3,
+        STRATEGY_ID_EVSNIPE_V1 => 4,
+        STRATEGY_ID_MM_SPORT_V1 => 5,
         _ => 9,
     }
 }
@@ -584,5 +590,15 @@ mod tests {
             .filter(|r| r.status == ArbiterDecisionStatus::Rejected)
             .count();
         assert_eq!(rejected, 1);
+    }
+
+    #[test]
+    fn sessionband_has_explicit_priority_and_budget_cap() {
+        let cfg = ArbiterConfig::from_env();
+
+        assert_eq!(strategy_priority(STRATEGY_ID_SESSIONBAND_V1), 3);
+        assert!(cfg
+            .per_strategy_max_usd
+            .contains_key(STRATEGY_ID_SESSIONBAND_V1));
     }
 }

@@ -76,8 +76,9 @@ trap 'rm -f "$RUNTIME_KEYS_FILE" "$ENV_KEYS_FILE" "$MISSING_KEYS_FILE" "$UNUSED_
 } | sed -E 's/.*\("([A-Z0-9_]+)".*/\1/' | sort -u > "$RUNTIME_KEYS_FILE"
 
 # Keys present in env file.
-awk -F= '/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=/{
+awk -F= '/^[[:space:]]*#?[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=/{
   key=$1
+  gsub(/^[[:space:]]*#[[:space:]]*/, "", key)
   gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
   print key
 }' "$ENV_FILE" | sort -u > "$ENV_KEYS_FILE"

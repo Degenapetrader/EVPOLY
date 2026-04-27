@@ -10,6 +10,9 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-27
+- `sessionband_v1`: wired SessionBand into the shared arbiter's production priority and per-strategy budget map (`src/arbiter.rs`).
+  - `EVPOLY_ARB_STRAT_SESSIONBAND_MAX_USD` now controls SessionBand arbiter allocation instead of being documentation-only.
+  - SessionBand now has explicit priority after EVcurve and before EVSnipe/MM Sport when parallel strategy conflicts are resolved by priority.
 - `mm_sport_v1`: hardened the remote depth-skip alpha client for large discovery cycles (`src/main.rs`).
   - startup preflight now includes `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL` and `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN` when MM Sport is enabled, so missing alpha auth is visible before runtime.
   - local MM Sport now chunks depth-skip alpha requests at the alpha service's 200-market request limit and merges skipped `condition_id`s, preventing large sports slates from being rejected and then fail-closed solely because the request was too large.

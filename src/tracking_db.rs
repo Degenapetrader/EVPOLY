@@ -1,10 +1,11 @@
 use anyhow::{anyhow, Result};
 use log::warn;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::panic::Location;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -78,6 +79,57 @@ pub struct DbLockContentionSnapshot {
     pub recommended_premarket_factor: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct DbMaintenanceConfig {
+    pub enable: bool,
+    pub interval_sec: u64,
+    pub idle_p95_wait_ms: i64,
+    pub idle_min_samples: usize,
+    pub startup_grace_sec: u64,
+    pub max_runtime_ms: u64,
+    pub busy_timeout_ms: u64,
+    pub optimize_enable: bool,
+    pub checkpoint_enable: bool,
+    pub checkpoint_truncate_enable: bool,
+    pub wal_truncate_min_bytes: u64,
+    pub wal_truncate_idle_p95_wait_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct DbFileSizes {
+    pub db_bytes: Option<u64>,
+    pub wal_bytes: Option<u64>,
+    pub shm_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct DbCheckpointResult {
+    pub busy: i64,
+    pub log_frames: i64,
+    pub checkpointed_frames: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DbMaintenanceReport {
+    pub started_ms: i64,
+    pub finished_ms: i64,
+    pub duration_ms: i64,
+    pub skipped: bool,
+    pub skip_reason: Option<String>,
+    pub db_bytes_before: Option<u64>,
+    pub wal_bytes_before: Option<u64>,
+    pub shm_bytes_before: Option<u64>,
+    pub db_bytes_after: Option<u64>,
+    pub wal_bytes_after: Option<u64>,
+    pub shm_bytes_after: Option<u64>,
+    pub p95_wait_ms_before: i64,
+    pub sample_count_before: usize,
+    pub optimize_ran: bool,
+    pub passive_checkpoint: Option<DbCheckpointResult>,
+    pub truncate_checkpoint: Option<DbCheckpointResult>,
+    pub truncate_skip_reason: Option<String>,
+}
+
 fn db_lock_window_ms() -> i64 {
     static WINDOW_MS: OnceLock<i64> = OnceLock::new();
     *WINDOW_MS.get_or_init(|| {
@@ -120,6 +172,27 @@ fn db_contention_throttle_min_factor() -> f64 {
             .unwrap_or(0.25)
             .clamp(0.05, 1.0)
     })
+}
+
+fn env_i64(name: &str, default: i64) -> i64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_u64(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(default)
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(default)
 }
 
 fn db_lock_samples_store() -> &'static Mutex<VecDeque<(i64, i64)>> {
@@ -1005,6 +1078,7 @@ pub struct StrategyFeatureSnapshotIntentRecord {
 }
 
 pub struct TrackingDb {
+    db_path: PathBuf,
     conn: Mutex<Connection>,
     read_conns: Vec<Mutex<Connection>>,
     read_rr: AtomicUsize,
@@ -4074,6 +4148,222 @@ impl TrackingDb {
         ReportingScope::from_env()
     }
 
+    pub fn maintenance_config_from_env() -> DbMaintenanceConfig {
+        DbMaintenanceConfig {
+            enable: env_bool("EVPOLY_DB_MAINTENANCE_ENABLE", true),
+            interval_sec: env_u64("EVPOLY_DB_MAINTENANCE_INTERVAL_SEC", 900).clamp(60, 86_400),
+            idle_p95_wait_ms: env_i64("EVPOLY_DB_MAINTENANCE_IDLE_P95_WAIT_MS", 25)
+                .clamp(0, 60_000),
+            idle_min_samples: env_usize("EVPOLY_DB_MAINTENANCE_IDLE_MIN_SAMPLES", 0)
+                .clamp(0, 10_000),
+            startup_grace_sec: env_u64("EVPOLY_DB_MAINTENANCE_STARTUP_GRACE_SEC", 180)
+                .clamp(0, 86_400),
+            max_runtime_ms: env_u64("EVPOLY_DB_MAINTENANCE_MAX_RUNTIME_MS", 3_000)
+                .clamp(250, 60_000),
+            busy_timeout_ms: env_u64("EVPOLY_DB_MAINTENANCE_BUSY_TIMEOUT_MS", 100).clamp(1, 5_000),
+            optimize_enable: env_bool("EVPOLY_DB_MAINTENANCE_OPTIMIZE_ENABLE", true),
+            checkpoint_enable: env_bool("EVPOLY_DB_MAINTENANCE_CHECKPOINT_ENABLE", false),
+            checkpoint_truncate_enable: env_bool(
+                "EVPOLY_DB_MAINTENANCE_CHECKPOINT_TRUNCATE_ENABLE",
+                false,
+            ),
+            wal_truncate_min_bytes: env_u64(
+                "EVPOLY_DB_MAINTENANCE_WAL_TRUNCATE_MIN_BYTES",
+                64 * 1024 * 1024,
+            )
+            .max(1),
+            wal_truncate_idle_p95_wait_ms: env_i64(
+                "EVPOLY_DB_MAINTENANCE_WAL_TRUNCATE_IDLE_P95_WAIT_MS",
+                10,
+            )
+            .clamp(0, 60_000),
+        }
+    }
+
+    pub fn maintenance_db_path(&self) -> PathBuf {
+        self.db_path.clone()
+    }
+
+    fn sibling_path_with_suffix(&self, suffix: &str) -> PathBuf {
+        let mut path = self.db_path.as_os_str().to_os_string();
+        path.push(suffix);
+        PathBuf::from(path)
+    }
+
+    fn file_len(path: &Path) -> Option<u64> {
+        std::fs::metadata(path).ok().map(|meta| meta.len())
+    }
+
+    pub fn database_file_sizes(&self) -> DbFileSizes {
+        let wal_path = self.sibling_path_with_suffix("-wal");
+        let shm_path = self.sibling_path_with_suffix("-shm");
+        DbFileSizes {
+            db_bytes: Self::file_len(self.db_path.as_path()),
+            wal_bytes: Self::file_len(wal_path.as_path()),
+            shm_bytes: Self::file_len(shm_path.as_path()),
+        }
+    }
+
+    pub fn maintenance_mutexes_currently_idle(&self) -> bool {
+        let Ok(write_guard) = self.conn.try_lock() else {
+            return false;
+        };
+        drop(write_guard);
+        for read_conn in self.read_conns.iter() {
+            let Ok(read_guard) = read_conn.try_lock() else {
+                return false;
+            };
+            drop(read_guard);
+        }
+        true
+    }
+
+    pub fn open_maintenance_conn(&self, busy_timeout_ms: u64) -> Result<Connection> {
+        let conn = Connection::open(self.db_path.as_path())?;
+        conn.busy_timeout(std::time::Duration::from_millis(busy_timeout_ms.max(1)))?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        Ok(conn)
+    }
+
+    pub fn pragma_optimize(&self, conn: &Connection) -> Result<()> {
+        conn.execute_batch("PRAGMA optimize;")?;
+        Ok(())
+    }
+
+    pub fn wal_checkpoint(&self, conn: &Connection, truncate: bool) -> Result<DbCheckpointResult> {
+        let sql = if truncate {
+            "PRAGMA wal_checkpoint(TRUNCATE)"
+        } else {
+            "PRAGMA wal_checkpoint(PASSIVE)"
+        };
+        let result = conn.query_row(sql, [], |row| {
+            Ok(DbCheckpointResult {
+                busy: row.get(0)?,
+                log_frames: row.get(1)?,
+                checkpointed_frames: row.get(2)?,
+            })
+        })?;
+        Ok(result)
+    }
+
+    fn skipped_maintenance_report(
+        started_ms: i64,
+        before: DbFileSizes,
+        snapshot: DbLockContentionSnapshot,
+        reason: impl Into<String>,
+    ) -> DbMaintenanceReport {
+        let finished_ms = chrono::Utc::now().timestamp_millis();
+        DbMaintenanceReport {
+            started_ms,
+            finished_ms,
+            duration_ms: finished_ms.saturating_sub(started_ms),
+            skipped: true,
+            skip_reason: Some(reason.into()),
+            db_bytes_before: before.db_bytes,
+            wal_bytes_before: before.wal_bytes,
+            shm_bytes_before: before.shm_bytes,
+            db_bytes_after: before.db_bytes,
+            wal_bytes_after: before.wal_bytes,
+            shm_bytes_after: before.shm_bytes,
+            p95_wait_ms_before: snapshot.p95_wait_ms,
+            sample_count_before: snapshot.sample_count,
+            optimize_ran: false,
+            passive_checkpoint: None,
+            truncate_checkpoint: None,
+            truncate_skip_reason: None,
+        }
+    }
+
+    pub fn run_light_maintenance(&self, cfg: &DbMaintenanceConfig) -> Result<DbMaintenanceReport> {
+        let started_ms = chrono::Utc::now().timestamp_millis();
+        let before = self.database_file_sizes();
+        let snapshot = db_lock_contention_snapshot();
+        if !cfg.enable {
+            return Ok(Self::skipped_maintenance_report(
+                started_ms, before, snapshot, "disabled",
+            ));
+        }
+        if snapshot.sample_count >= cfg.idle_min_samples
+            && snapshot.p95_wait_ms > cfg.idle_p95_wait_ms
+        {
+            return Ok(Self::skipped_maintenance_report(
+                started_ms,
+                before,
+                snapshot,
+                "db_contention_p95_high",
+            ));
+        }
+        if !self.maintenance_mutexes_currently_idle() {
+            return Ok(Self::skipped_maintenance_report(
+                started_ms,
+                before,
+                snapshot,
+                "db_mutex_busy",
+            ));
+        }
+
+        let conn = self.open_maintenance_conn(cfg.busy_timeout_ms)?;
+        let mut optimize_ran = false;
+        if cfg.optimize_enable {
+            self.pragma_optimize(&conn)?;
+            optimize_ran = true;
+        }
+
+        let passive_checkpoint = if cfg.checkpoint_enable {
+            Some(self.wal_checkpoint(&conn, false)?)
+        } else {
+            None
+        };
+
+        let mut truncate_checkpoint = None;
+        let mut truncate_skip_reason = None;
+        if cfg.checkpoint_truncate_enable {
+            let sizes_after_passive = self.database_file_sizes();
+            let wal_bytes = sizes_after_passive.wal_bytes.unwrap_or(0);
+            let current_snapshot = db_lock_contention_snapshot();
+            if wal_bytes < cfg.wal_truncate_min_bytes {
+                truncate_skip_reason = Some("wal_below_threshold".to_string());
+            } else if passive_checkpoint
+                .as_ref()
+                .map(|checkpoint| checkpoint.busy > 0)
+                .unwrap_or(false)
+            {
+                truncate_skip_reason = Some("passive_checkpoint_busy".to_string());
+            } else if current_snapshot.sample_count >= cfg.idle_min_samples
+                && current_snapshot.p95_wait_ms > cfg.wal_truncate_idle_p95_wait_ms
+            {
+                truncate_skip_reason = Some("truncate_contention_p95_high".to_string());
+            } else if !self.maintenance_mutexes_currently_idle() {
+                truncate_skip_reason = Some("truncate_db_mutex_busy".to_string());
+            } else {
+                truncate_checkpoint = Some(self.wal_checkpoint(&conn, true)?);
+            }
+        }
+
+        let finished_ms = chrono::Utc::now().timestamp_millis();
+        let after = self.database_file_sizes();
+        Ok(DbMaintenanceReport {
+            started_ms,
+            finished_ms,
+            duration_ms: finished_ms.saturating_sub(started_ms),
+            skipped: false,
+            skip_reason: None,
+            db_bytes_before: before.db_bytes,
+            wal_bytes_before: before.wal_bytes,
+            shm_bytes_before: before.shm_bytes,
+            db_bytes_after: after.db_bytes,
+            wal_bytes_after: after.wal_bytes,
+            shm_bytes_after: after.shm_bytes,
+            p95_wait_ms_before: snapshot.p95_wait_ms,
+            sample_count_before: snapshot.sample_count,
+            optimize_ran,
+            passive_checkpoint,
+            truncate_checkpoint,
+            truncate_skip_reason,
+        })
+    }
+
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let db_path = path.as_ref().to_path_buf();
         let mut conn = Connection::open(&db_path)?;
@@ -4835,6 +5125,7 @@ ON CONFLICT(position_key) DO UPDATE SET
             read_conns.push(Mutex::new(read_conn));
         }
         Ok(Self {
+            db_path,
             conn: Mutex::new(conn),
             read_conns,
             read_rr: AtomicUsize::new(0),
@@ -17851,6 +18142,65 @@ WHERE lifecycle_key=?1
         let db = TrackingDb::new(&path)?;
         let base = db.get_evcurve_period_base("XRP", "15m", period_open_ts)?;
         assert_eq!(base, Some(1.33155));
+
+        drop(db);
+        cleanup_db(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn light_maintenance_reports_file_sizes_and_optimizes() -> Result<()> {
+        let path = temp_db_path("light_maintenance_smoke");
+        let db = TrackingDb::new(&path)?;
+        assert_eq!(db.maintenance_db_path(), path);
+        assert!(db.maintenance_mutexes_currently_idle());
+
+        let cfg = DbMaintenanceConfig {
+            enable: true,
+            interval_sec: 900,
+            idle_p95_wait_ms: 25,
+            idle_min_samples: 0,
+            startup_grace_sec: 0,
+            max_runtime_ms: 3_000,
+            busy_timeout_ms: 100,
+            optimize_enable: true,
+            checkpoint_enable: false,
+            checkpoint_truncate_enable: false,
+            wal_truncate_min_bytes: 64 * 1024 * 1024,
+            wal_truncate_idle_p95_wait_ms: 10,
+        };
+        let report = db.run_light_maintenance(&cfg)?;
+        assert!(!report.skipped);
+        assert!(report.optimize_ran);
+        assert!(report.db_bytes_before.unwrap_or(0) > 0);
+        assert!(report.db_bytes_after.unwrap_or(0) > 0);
+
+        drop(db);
+        cleanup_db(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn light_maintenance_disabled_reports_skip() -> Result<()> {
+        let path = temp_db_path("light_maintenance_disabled");
+        let db = TrackingDb::new(&path)?;
+        let cfg = DbMaintenanceConfig {
+            enable: false,
+            interval_sec: 900,
+            idle_p95_wait_ms: 25,
+            idle_min_samples: 0,
+            startup_grace_sec: 0,
+            max_runtime_ms: 3_000,
+            busy_timeout_ms: 100,
+            optimize_enable: true,
+            checkpoint_enable: false,
+            checkpoint_truncate_enable: false,
+            wal_truncate_min_bytes: 64 * 1024 * 1024,
+            wal_truncate_idle_p95_wait_ms: 10,
+        };
+        let report = db.run_light_maintenance(&cfg)?;
+        assert!(report.skipped);
+        assert_eq!(report.skip_reason.as_deref(), Some("disabled"));
 
         drop(db);
         cleanup_db(&path);

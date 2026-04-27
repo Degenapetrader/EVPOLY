@@ -82,6 +82,7 @@ use serde_json::{json, Value};
 
 const ENDGAME_ALPHA_POLICY_FETCH_BEFORE_CLOSE_MS: i64 = 180_000;
 static ALPHA_REQUEST_ID_NONCE: AtomicU64 = AtomicU64::new(1);
+static DB_BACKGROUND_JITTER_NONCE: AtomicU64 = AtomicU64::new(1);
 
 fn next_alpha_request_id_nonce() -> u64 {
     ALPHA_REQUEST_ID_NONCE.fetch_add(1, AtomicOrdering::Relaxed)
@@ -4288,6 +4289,9 @@ async fn main() -> Result<()> {
     let tracking_db =
         Arc::new(TrackingDb::new("tracking.db").context("failed to initialize tracking database")?);
     eprintln!("🗄️ Tracking DB initialized: tracking.db");
+    let db_background_job_gate = Arc::new(tokio::sync::Mutex::new(()));
+    let feature_snapshot_write_tx =
+        spawn_strategy_feature_snapshot_writer(tracking_db.clone(), db_background_job_gate.clone());
 
     let max_buy_price = config.trading.max_buy_price.unwrap_or(0.95);
     let min_time_remaining = config.trading.min_time_remaining_seconds.unwrap_or(30);
@@ -4628,6 +4632,120 @@ async fn main() -> Result<()> {
         }
     });
 
+    let db_maintenance_cfg = TrackingDb::maintenance_config_from_env();
+    if db_maintenance_cfg.enable {
+        let tracking_db_for_maintenance = tracking_db.clone();
+        let db_background_job_gate_for_maintenance = db_background_job_gate.clone();
+        tokio::spawn(async move {
+            let runtime_started = Instant::now();
+            loop {
+                sleep_db_background_interval(db_maintenance_cfg.interval_sec).await;
+                if let Some(skip_reason) = db_background_work_skip_reason(
+                    tracking_db_for_maintenance.as_ref(),
+                    db_maintenance_cfg.idle_p95_wait_ms,
+                    db_maintenance_cfg.idle_min_samples,
+                    db_maintenance_cfg.startup_grace_sec,
+                    runtime_started,
+                ) {
+                    let sizes = tracking_db_for_maintenance.database_file_sizes();
+                    let snapshot = db_lock_contention_snapshot();
+                    log_event(
+                        "db_maintenance_skipped",
+                        json!({
+                            "skip_reason": skip_reason,
+                            "sample_count": snapshot.sample_count,
+                            "p95_wait_ms": snapshot.p95_wait_ms,
+                            "db_bytes": sizes.db_bytes,
+                            "wal_bytes": sizes.wal_bytes,
+                            "shm_bytes": sizes.shm_bytes
+                        }),
+                    );
+                    continue;
+                }
+                let Ok(_background_job_guard) = db_background_job_gate_for_maintenance
+                    .clone()
+                    .try_lock_owned()
+                else {
+                    log_event(
+                        "db_maintenance_skipped",
+                        json!({
+                            "skip_reason": "background_db_job_busy"
+                        }),
+                    );
+                    continue;
+                };
+                if let Some(skip_reason) = db_background_work_skip_reason(
+                    tracking_db_for_maintenance.as_ref(),
+                    db_maintenance_cfg.idle_p95_wait_ms,
+                    db_maintenance_cfg.idle_min_samples,
+                    db_maintenance_cfg.startup_grace_sec,
+                    runtime_started,
+                ) {
+                    log_event(
+                        "db_maintenance_skipped",
+                        json!({
+                            "skip_reason": skip_reason,
+                            "source": "post_gate"
+                        }),
+                    );
+                    continue;
+                }
+
+                let cfg = db_maintenance_cfg.clone();
+                let max_runtime_ms = cfg.max_runtime_ms;
+                let db = tracking_db_for_maintenance.clone();
+                log_event(
+                    "db_maintenance_started",
+                    json!({
+                        "interval_sec": cfg.interval_sec,
+                        "optimize_enable": cfg.optimize_enable,
+                        "checkpoint_enable": cfg.checkpoint_enable,
+                        "checkpoint_truncate_enable": cfg.checkpoint_truncate_enable
+                    }),
+                );
+                match timeout(
+                    Duration::from_millis(max_runtime_ms),
+                    tokio::task::spawn_blocking(move || db.run_light_maintenance(&cfg)),
+                )
+                .await
+                {
+                    Ok(Ok(Ok(report))) => {
+                        log_event("db_maintenance_completed", json!(report));
+                    }
+                    Ok(Ok(Err(e))) => {
+                        warn!("DB maintenance failed: {}", e);
+                        log_event(
+                            "db_maintenance_failed",
+                            json!({
+                                "error": e.to_string()
+                            }),
+                        );
+                    }
+                    Ok(Err(e)) => {
+                        warn!("DB maintenance task failed: {}", e);
+                        log_event(
+                            "db_maintenance_failed",
+                            json!({
+                                "error": e.to_string(),
+                                "source": "join"
+                            }),
+                        );
+                    }
+                    Err(_) => {
+                        warn!("DB maintenance timed out after {}ms", max_runtime_ms);
+                        log_event(
+                            "db_maintenance_failed",
+                            json!({
+                                "error": "timeout",
+                                "max_runtime_ms": max_runtime_ms
+                            }),
+                        );
+                    }
+                }
+            }
+        });
+    }
+
     if env_bool_named("EVPOLY_PENDING_ORDER_PRUNE_ENABLE", true) {
         let pending_orders_prune_interval_sec =
             env_u64_named("EVPOLY_PENDING_ORDER_PRUNE_INTERVAL_SEC", 300).clamp(30, 86_400);
@@ -4643,15 +4761,51 @@ async fn main() -> Result<()> {
             pending_orders_prune_batch_size,
         )
         .clamp(pending_orders_prune_batch_size, 1_000_000);
+        let pending_orders_prune_guard_enable =
+            env_bool_named("EVPOLY_PENDING_ORDER_PRUNE_GUARD_ENABLE", true);
+        let pending_orders_prune_guard_cfg = TrackingDb::maintenance_config_from_env();
 
         let tracking_db_for_pending_prune = tracking_db.clone();
+        let db_background_job_gate_for_pending_prune = db_background_job_gate.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
-                pending_orders_prune_interval_sec,
-            ));
+            let runtime_started = Instant::now();
             let mut is_startup_prune = true;
             loop {
-                interval.tick().await;
+                sleep_db_background_interval(pending_orders_prune_interval_sec).await;
+                if pending_orders_prune_guard_enable {
+                    if let Some(skip_reason) = db_background_work_skip_reason(
+                        tracking_db_for_pending_prune.as_ref(),
+                        pending_orders_prune_guard_cfg.idle_p95_wait_ms,
+                        pending_orders_prune_guard_cfg.idle_min_samples,
+                        pending_orders_prune_guard_cfg.startup_grace_sec,
+                        runtime_started,
+                    ) {
+                        let snapshot = db_lock_contention_snapshot();
+                        log_event(
+                            "pending_orders_prune_skipped",
+                            json!({
+                                "skip_reason": skip_reason,
+                                "startup": is_startup_prune,
+                                "sample_count": snapshot.sample_count,
+                                "p95_wait_ms": snapshot.p95_wait_ms
+                            }),
+                        );
+                        continue;
+                    }
+                }
+                let Ok(_background_job_guard) = db_background_job_gate_for_pending_prune
+                    .clone()
+                    .try_lock_owned()
+                else {
+                    log_event(
+                        "pending_orders_prune_skipped",
+                        json!({
+                            "skip_reason": "background_db_job_busy",
+                            "startup": is_startup_prune
+                        }),
+                    );
+                    continue;
+                };
                 let cutoff_ms = chrono::Utc::now()
                     .timestamp_millis()
                     .saturating_sub(pending_orders_prune_ttl_minutes.saturating_mul(60_000));
@@ -4660,12 +4814,51 @@ async fn main() -> Result<()> {
                 } else {
                     pending_orders_prune_runtime_max_rows
                 };
-                match tracking_db_for_pending_prune.archive_and_prune_pending_orders_batched(
-                    cutoff_ms,
-                    pending_orders_prune_batch_size,
-                    max_rows,
-                ) {
-                    Ok(removed) => {
+                let mut removed = 0_u64;
+                let mut prune_error = None;
+                while removed < max_rows as u64 {
+                    if pending_orders_prune_guard_enable {
+                        if let Some(skip_reason) = db_background_work_skip_reason(
+                            tracking_db_for_pending_prune.as_ref(),
+                            pending_orders_prune_guard_cfg.idle_p95_wait_ms,
+                            pending_orders_prune_guard_cfg.idle_min_samples,
+                            pending_orders_prune_guard_cfg.startup_grace_sec,
+                            runtime_started,
+                        ) {
+                            log_event(
+                                "pending_orders_prune_skipped",
+                                json!({
+                                    "skip_reason": skip_reason,
+                                    "startup": is_startup_prune,
+                                    "removed_rows_before_skip": removed,
+                                    "source": "between_batches"
+                                }),
+                            );
+                            break;
+                        }
+                    }
+                    let remaining = max_rows.saturating_sub(removed as usize);
+                    if remaining == 0 {
+                        break;
+                    }
+                    let limit = pending_orders_prune_batch_size.min(remaining);
+                    match tracking_db_for_pending_prune
+                        .archive_and_prune_pending_orders(cutoff_ms, limit)
+                    {
+                        Ok(batch_removed) => {
+                            removed = removed.saturating_add(batch_removed);
+                            if batch_removed == 0 || batch_removed < limit as u64 {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            prune_error = Some(e);
+                            break;
+                        }
+                    }
+                }
+                match prune_error {
+                    None => {
                         if removed > 0 {
                             log_event(
                                 "pending_orders_pruned",
@@ -4681,7 +4874,7 @@ async fn main() -> Result<()> {
                             );
                         }
                     }
-                    Err(e) => warn!("pending_orders prune failed: {}", e),
+                    Some(e) => warn!("pending_orders prune failed: {}", e),
                 }
                 is_startup_prune = false;
             }
@@ -4793,6 +4986,7 @@ async fn main() -> Result<()> {
         None
     };
     let tracking_db_for_premarket = tracking_db.clone();
+    let feature_snapshot_tx_for_premarket = feature_snapshot_write_tx.clone();
     let tracking_db_for_entries = tracking_db.clone();
     let trader_for_premarket = trader_clone.clone();
     let api_for_premarket = api.clone();
@@ -6667,6 +6861,7 @@ async fn main() -> Result<()> {
         let endgame_hyperliquid_states_for_loop = Arc::new(endgame_hyperliquid_states_by_symbol);
         let api_for_endgame = api.clone();
         let tracking_db_for_endgame = tracking_db.clone();
+        let feature_snapshot_tx_for_endgame = feature_snapshot_write_tx.clone();
         let arbiter_exec_tx_for_endgame = arbiter_exec_tx_for_endgame.clone();
         let enqueue_dedupe_for_endgame = enqueue_dedupe_for_endgame.clone();
         tokio::spawn(async move {
@@ -7875,6 +8070,7 @@ async fn main() -> Result<()> {
                         log_event("endgame_tick_intent", Value::Object(endgame_tick_payload));
                         upsert_feature_snapshot(
                             tracking_db_for_endgame.as_ref(),
+                            feature_snapshot_tx_for_endgame.as_ref(),
                             StrategyFeatureSnapshotIntentRecord {
                                 strategy_id: STRATEGY_ID_ENDGAME_SWEEP_V1.to_string(),
                                 timeframe: timeframe.as_str().to_string(),
@@ -18989,6 +19185,7 @@ async fn main() -> Result<()> {
                         };
                         upsert_feature_snapshot(
                             tracking_db_for_premarket.as_ref(),
+                            feature_snapshot_tx_for_premarket.as_ref(),
                             StrategyFeatureSnapshotIntentRecord {
                                 strategy_id: asset_decision.strategy_id.clone(),
                                 timeframe: intent.timeframe.as_str().to_string(),
@@ -19743,6 +19940,116 @@ fn submit_scope_key_from_request(request: &ArbiterExecutionRequest) -> SubmitSco
     }
 }
 
+fn db_latency_critical_strategy_ids() -> &'static Vec<String> {
+    static IDS: OnceLock<Vec<String>> = OnceLock::new();
+    IDS.get_or_init(|| {
+        std::env::var("EVPOLY_DB_LATENCY_CRITICAL_STRATEGIES")
+            .unwrap_or_else(|_| {
+                format!(
+                    "{},{},{}",
+                    STRATEGY_ID_ENDGAME_SWEEP_V1,
+                    STRATEGY_ID_SESSIONBAND_V1,
+                    STRATEGY_ID_EVSNIPE_V1
+                )
+            })
+            .split(',')
+            .map(|v| v.trim().to_ascii_lowercase())
+            .filter(|v| !v.is_empty())
+            .collect()
+    })
+}
+
+fn is_db_latency_critical_strategy(strategy_id: &str) -> bool {
+    let normalized = strategy_id.trim().to_ascii_lowercase();
+    db_latency_critical_strategy_ids()
+        .iter()
+        .any(|strategy| strategy == &normalized)
+}
+
+fn db_latency_critical_timeframe_durations_ms() -> &'static Vec<i64> {
+    static DURATIONS: OnceLock<Vec<i64>> = OnceLock::new();
+    DURATIONS.get_or_init(|| {
+        let mut durations = std::env::var("EVPOLY_DB_LATENCY_CRITICAL_TIMEFRAMES")
+            .unwrap_or_else(|_| "5m,15m,1h,4h,1d".to_string())
+            .split(',')
+            .filter_map(|label| timeframe_duration_seconds_from_label(label).map(|s| s * 1_000))
+            .filter(|duration_ms| *duration_ms > 0)
+            .collect::<Vec<_>>();
+        durations.sort_unstable();
+        durations.dedup();
+        durations
+    })
+}
+
+fn db_latency_critical_hot_window_active(now_ms: i64, guard_ms: i64) -> bool {
+    if guard_ms <= 0 {
+        return false;
+    }
+    for duration_ms in db_latency_critical_timeframe_durations_ms().iter().copied() {
+        if duration_ms <= 0 {
+            continue;
+        }
+        let phase_ms = now_ms.rem_euclid(duration_ms);
+        if phase_ms <= guard_ms || duration_ms.saturating_sub(phase_ms) <= guard_ms {
+            return true;
+        }
+    }
+    false
+}
+
+fn db_maintenance_hot_window_guard_ms() -> i64 {
+    env_i64_named("EVPOLY_DB_MAINTENANCE_HOT_WINDOW_GUARD_MS", 10_000).clamp(0, 300_000)
+}
+
+fn db_background_jitter_max_ms() -> u64 {
+    env_u64_named("EVPOLY_DB_BACKGROUND_JITTER_MAX_MS", 30_000).clamp(0, 300_000)
+}
+
+fn db_background_jitter_ms(max_jitter_ms: u64) -> u64 {
+    if max_jitter_ms == 0 {
+        return 0;
+    }
+    let nonce = DB_BACKGROUND_JITTER_NONCE.fetch_add(1, AtomicOrdering::Relaxed);
+    let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    (now_ms ^ nonce.wrapping_mul(1_103_515_245)) % (max_jitter_ms.saturating_add(1))
+}
+
+async fn sleep_db_background_interval(interval_sec: u64) {
+    let jitter_ms = db_background_jitter_ms(db_background_jitter_max_ms());
+    tokio::time::sleep(
+        Duration::from_secs(interval_sec).saturating_add(Duration::from_millis(jitter_ms)),
+    )
+    .await;
+}
+
+fn db_background_work_skip_reason(
+    db: &TrackingDb,
+    idle_p95_wait_ms: i64,
+    idle_min_samples: usize,
+    startup_grace_sec: u64,
+    started: Instant,
+) -> Option<String> {
+    if started.elapsed().as_secs() < startup_grace_sec {
+        return Some("startup_grace".to_string());
+    }
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let hot_guard_ms = db_maintenance_hot_window_guard_ms();
+    if db_latency_critical_hot_window_active(now_ms, hot_guard_ms) {
+        return Some("latency_critical_hot_window".to_string());
+    }
+    let snapshot = db_lock_contention_snapshot();
+    if snapshot.sample_count >= idle_min_samples && snapshot.p95_wait_ms > idle_p95_wait_ms {
+        return Some(format!(
+            "db_contention_p95_high:{}>{}",
+            snapshot.p95_wait_ms, idle_p95_wait_ms
+        ));
+    }
+    if !db.maintenance_mutexes_currently_idle() {
+        return Some("db_mutex_busy".to_string());
+    }
+    None
+}
+
 fn premarket_db_throttle_min_active_cap() -> usize {
     std::env::var("EVPOLY_PREMARKET_DB_THROTTLE_MIN_ACTIVE_CAP")
         .ok()
@@ -20458,11 +20765,161 @@ fn to_json_string(value: Value) -> Option<String> {
     serde_json::to_string(&value).ok()
 }
 
+#[derive(Debug, Clone)]
+struct StrategyFeatureSnapshotWrite {
+    row: StrategyFeatureSnapshotIntentRecord,
+    context: String,
+}
+
+type StrategyFeatureSnapshotWriteTx = tokio::sync::mpsc::Sender<StrategyFeatureSnapshotWrite>;
+
+fn db_feature_snapshot_queue_enabled() -> bool {
+    env_bool_named("EVPOLY_DB_FEATURE_SNAPSHOT_QUEUE_ENABLE", true)
+}
+
+fn db_feature_snapshot_queue_capacity() -> usize {
+    env_usize_named("EVPOLY_DB_FEATURE_SNAPSHOT_QUEUE_CAPACITY", 10_000).clamp(128, 200_000)
+}
+
+fn spawn_strategy_feature_snapshot_writer(
+    db: Arc<TrackingDb>,
+    background_job_gate: Arc<tokio::sync::Mutex<()>>,
+) -> Option<StrategyFeatureSnapshotWriteTx> {
+    if !db_feature_snapshot_queue_enabled() {
+        return None;
+    }
+    let capacity = db_feature_snapshot_queue_capacity();
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<StrategyFeatureSnapshotWrite>(capacity);
+    tokio::spawn(async move {
+        let cfg = TrackingDb::maintenance_config_from_env();
+        let runtime_started = Instant::now();
+        let retry_ms =
+            env_u64_named("EVPOLY_DB_FEATURE_SNAPSHOT_QUEUE_RETRY_MS", 500).clamp(50, 5_000);
+        let mut last_defer_log_ms = 0_i64;
+        while let Some(job) = rx.recv().await {
+            let background_job_guard;
+            loop {
+                if let Some(skip_reason) = db_background_work_skip_reason(
+                    db.as_ref(),
+                    cfg.idle_p95_wait_ms,
+                    cfg.idle_min_samples,
+                    cfg.startup_grace_sec,
+                    runtime_started,
+                ) {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    if now_ms.saturating_sub(last_defer_log_ms) >= 30_000 {
+                        last_defer_log_ms = now_ms;
+                        log_event(
+                            "db_feature_snapshot_queue_deferred",
+                            json!({
+                                "skip_reason": skip_reason,
+                                "queue_capacity": capacity
+                            }),
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_millis(retry_ms)).await;
+                    continue;
+                }
+                let Ok(guard) = background_job_gate.clone().try_lock_owned() else {
+                    tokio::time::sleep(Duration::from_millis(retry_ms)).await;
+                    continue;
+                };
+                if let Some(skip_reason) = db_background_work_skip_reason(
+                    db.as_ref(),
+                    cfg.idle_p95_wait_ms,
+                    cfg.idle_min_samples,
+                    cfg.startup_grace_sec,
+                    runtime_started,
+                ) {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    if now_ms.saturating_sub(last_defer_log_ms) >= 30_000 {
+                        last_defer_log_ms = now_ms;
+                        log_event(
+                            "db_feature_snapshot_queue_deferred",
+                            json!({
+                                "skip_reason": skip_reason,
+                                "queue_capacity": capacity,
+                                "source": "post_gate"
+                            }),
+                        );
+                    }
+                    drop(guard);
+                    tokio::time::sleep(Duration::from_millis(retry_ms)).await;
+                    continue;
+                }
+                background_job_guard = guard;
+                break;
+            }
+            let _background_job_guard = background_job_guard;
+            let strategy_id = job.row.strategy_id.clone();
+            let timeframe = job.row.timeframe.clone();
+            let period_timestamp = job.row.period_timestamp;
+            let token_id = job.row.token_id.clone();
+            if let Err(e) = db.upsert_strategy_feature_snapshot_intent(&job.row) {
+                warn!("{} queued snapshot upsert failed: {}", job.context, e);
+                log_event(
+                    "db_feature_snapshot_queue_write_failed",
+                    json!({
+                        "context": job.context,
+                        "strategy_id": strategy_id,
+                        "timeframe": timeframe,
+                        "period_timestamp": period_timestamp,
+                        "token_id": token_id,
+                        "error": e.to_string()
+                    }),
+                );
+            }
+        }
+    });
+    Some(tx)
+}
+
+fn feature_snapshot_is_recovery_critical(row: &StrategyFeatureSnapshotIntentRecord) -> bool {
+    row.order_id.is_some()
+        || row.trade_key.is_some()
+        || row.position_key.is_some()
+        || row.submit_ts_ms.is_some()
+        || row.ack_ts_ms.is_some()
+        || row.fill_ts_ms.is_some()
+        || row.exit_ts_ms.is_some()
+        || row.settled_ts_ms.is_some()
+        || row.realized_pnl_usd.is_some()
+        || row.settled_pnl_usd.is_some()
+}
+
 fn upsert_feature_snapshot(
     db: &TrackingDb,
+    queue_tx: Option<&StrategyFeatureSnapshotWriteTx>,
     row: StrategyFeatureSnapshotIntentRecord,
     context: &str,
 ) {
+    if is_db_latency_critical_strategy(row.strategy_id.as_str())
+        && !feature_snapshot_is_recovery_critical(&row)
+    {
+        if let Some(tx) = queue_tx {
+            match tx.try_send(StrategyFeatureSnapshotWrite {
+                row: row.clone(),
+                context: context.to_string(),
+            }) {
+                Ok(()) => return,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    log_event(
+                        "db_feature_snapshot_queue_drop",
+                        json!({
+                            "context": context,
+                            "strategy_id": row.strategy_id,
+                            "timeframe": row.timeframe,
+                            "period_timestamp": row.period_timestamp,
+                            "token_id": row.token_id,
+                            "reason": "queue_full"
+                        }),
+                    );
+                    return;
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {}
+            }
+        }
+    }
     if let Err(e) = db.upsert_strategy_feature_snapshot_intent(&row) {
         warn!("{} snapshot upsert failed: {}", context, e);
     }

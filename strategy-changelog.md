@@ -10,6 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-27
+- `endgame_sweep_v1`, `sessionband_v1`, `evsnipe_v1`, and future latency-critical strategies: added a generic DB hot-window protection layer (`src/main.rs`, `src/tracking_db.rs`).
+  - background DB maintenance and terminal `pending_orders` pruning now use jittered schedules, a shared background DB-job gate, and skip startup grace, DB mutex contention, and configurable latency-critical period open/close windows.
+  - optional strategy feature snapshots for latency-critical strategies now use a guarded best-effort queue; recovery-critical order identifiers, submit/ack/fill timestamps, lifecycle, cashflow, and pending-order writes remain reliable/blocking.
+  - new env controls include `EVPOLY_DB_MAINTENANCE_*`, `EVPOLY_DB_LATENCY_CRITICAL_STRATEGIES`, `EVPOLY_DB_LATENCY_CRITICAL_TIMEFRAMES`, and `EVPOLY_DB_FEATURE_SNAPSHOT_QUEUE_*`.
 - `sessionband_v1`: wired SessionBand into the shared arbiter's production priority and per-strategy budget map (`src/arbiter.rs`).
   - `EVPOLY_ARB_STRAT_SESSIONBAND_MAX_USD` now controls SessionBand arbiter allocation instead of being documentation-only.
   - SessionBand now has explicit priority after EVcurve and before EVSnipe/MM Sport when parallel strategy conflicts are resolved by priority.

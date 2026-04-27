@@ -34,6 +34,9 @@ fn main() -> anyhow::Result<()> {
     let reader = BufReader::new(file);
     let mut by_scope: BTreeMap<String, ScopeStats> = BTreeMap::new();
     let mut total_rows = 0_u64;
+    let mut maintenance_events: BTreeMap<String, u64> = BTreeMap::new();
+    let mut latest_maintenance_payload: Option<Value> = None;
+    let mut queue_drops = 0_u64;
 
     for line in reader.lines() {
         let line = match line {
@@ -44,12 +47,36 @@ fn main() -> anyhow::Result<()> {
             Ok(v) => v,
             Err(_) => continue,
         };
-        if row
-            .get("kind")
-            .and_then(Value::as_str)
-            .map(|v| v != "db_lock_profile")
-            .unwrap_or(true)
-        {
+        let kind = row.get("kind").and_then(Value::as_str).unwrap_or("");
+        if kind != "db_lock_profile" {
+            if matches!(
+                kind,
+                "db_maintenance_started"
+                    | "db_maintenance_completed"
+                    | "db_maintenance_skipped"
+                    | "db_maintenance_failed"
+                    | "pending_orders_prune_skipped"
+                    | "pending_orders_pruned"
+                    | "db_feature_snapshot_queue_deferred"
+                    | "db_feature_snapshot_queue_drop"
+                    | "db_feature_snapshot_queue_write_failed"
+            ) {
+                let ts_ms = row.get("ts_ms").and_then(Value::as_i64).unwrap_or(0);
+                if ts_ms >= min_ts_ms {
+                    *maintenance_events.entry(kind.to_string()).or_insert(0) += 1;
+                    if kind == "db_feature_snapshot_queue_drop" {
+                        queue_drops = queue_drops.saturating_add(1);
+                    }
+                    if matches!(
+                        kind,
+                        "db_maintenance_completed"
+                            | "db_maintenance_skipped"
+                            | "db_maintenance_failed"
+                    ) {
+                        latest_maintenance_payload = row.get("payload").cloned();
+                    }
+                }
+            }
             continue;
         }
         let ts_ms = row.get("ts_ms").and_then(Value::as_i64).unwrap_or(0);
@@ -74,11 +101,21 @@ fn main() -> anyhow::Result<()> {
     }
 
     println!(
-        "db_lock_audit lookback={}m rows={} scopes={}",
+        "db_lock_audit lookback={}m rows={} scopes={} queue_drops={}",
         lookback_minutes,
         total_rows,
-        by_scope.len()
+        by_scope.len(),
+        queue_drops
     );
+    if !maintenance_events.is_empty() {
+        println!("maintenance_events:");
+        for (kind, count) in maintenance_events {
+            println!("{} | {}", kind, count);
+        }
+    }
+    if let Some(payload) = latest_maintenance_payload {
+        println!("latest_maintenance_payload={}", payload);
+    }
     println!("scope | n | wait_p50 | wait_p95 | hold_p50 | hold_p95");
     for (scope, mut stats) in by_scope {
         let mut waits = std::mem::take(&mut stats.waits);

@@ -3811,7 +3811,7 @@ async fn handle_manual_auto_redeem_set(
     ensure_write_allowed(&state)?;
     let status = state
         .api
-        .set_auto_redeem_approval(payload.enabled)
+        .ensure_auto_redeem_approval(payload.enabled)
         .await
         .map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!({

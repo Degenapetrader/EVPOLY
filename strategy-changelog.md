@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-27
+- `sessionband_v1`: added the missing built-in default for `EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL` in `src/main.rs`.
+  - affects SessionBand remote-alpha setup for all symbols/timeframes; no-env users can rely on the default `https://alpha.evplus.ai/v1/alpha/sessionband` URL plus auto-generated `EVPOLY_ALPHA_KEY`, matching the other remote alpha strategies.
 - `sessionband_v1` was restored/ported back into main2 while keeping `mm_rewards_v1` removed (`src/sessionband.rs`, `src/main.rs`, `src/trader.rs`, `src/bin/alpha_service.rs`, `src/size_policy.rs`, `.env.example`, `.env.full.example`, `README.md`, `docs/sessionband_v1.md`, `docs/strategy_combos.md`).
   - runtime again starts the SessionBand loop, dedicated arbiter worker pool, SessionBand entry mode, sizing policy, near-base guard, and submit timing freshness guard for `BTC/ETH/SOL/XRP` across `5m/15m/1h/4h`.
   - alpha service exposes `/v1/alpha/sessionband`; local runtime owns proxy feeds, base anchoring, discovery, sizing/caps, and order placement while remote alpha owns the SessionBand decision, with unavailable/invalid alpha responses skipping the decision.

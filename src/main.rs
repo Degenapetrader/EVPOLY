@@ -751,6 +751,9 @@ fn remote_url_default_named(name: &str) -> Option<&'static str> {
             Some("https://alpha.evplus.ai/v1/alpha/endgame/policy")
         }
         "EVPOLY_REMOTE_EVCURVE_ALPHA_URL" => Some("https://alpha.evplus.ai/v1/alpha/evcurve"),
+        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL" => {
+            Some("https://alpha.evplus.ai/v1/alpha/sessionband")
+        }
         "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL" => {
             Some("https://alpha.evplus.ai/v1/alpha/mm-sport/depth-skip")
         }

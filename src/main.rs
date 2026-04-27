@@ -55,16 +55,18 @@ use polymarket_arbitrage_bot::mm;
 use polymarket_arbitrage_bot::models::Market;
 use polymarket_arbitrage_bot::monitor::MarketMonitor;
 use polymarket_arbitrage_bot::plan3_tables::Plan3Tables;
+use polymarket_arbitrage_bot::plan4b_tables::Plan4bTables;
 use polymarket_arbitrage_bot::plandaily_tables::PlanDailyTables;
 use polymarket_arbitrage_bot::polymarket_ws::{
     self, new_shared_polymarket_ws_state, PolymarketWsConfig,
 };
+use polymarket_arbitrage_bot::sessionband;
 use polymarket_arbitrage_bot::signal_state::new_shared_signal_state;
 use polymarket_arbitrage_bot::size_policy;
 use polymarket_arbitrage_bot::strategy::{
     new_shared_strategy_book, Direction, StrategyDecision, Timeframe, STRATEGY_ID_ENDGAME_SWEEP_V1,
     STRATEGY_ID_EVCURVE_V1, STRATEGY_ID_EVSNIPE_V1, STRATEGY_ID_MM_SPORT_V1,
-    STRATEGY_ID_PREMARKET_V1,
+    STRATEGY_ID_PREMARKET_V1, STRATEGY_ID_SESSIONBAND_V1,
 };
 use polymarket_arbitrage_bot::strategy_decider::{self, PremarketIntent, StrategyDeciderConfig};
 use polymarket_arbitrage_bot::symbol_ownership;
@@ -79,6 +81,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 const ENDGAME_ALPHA_POLICY_FETCH_BEFORE_CLOSE_MS: i64 = 180_000;
+static ALPHA_REQUEST_ID_NONCE: AtomicU64 = AtomicU64::new(1);
+
+fn next_alpha_request_id_nonce() -> u64 {
+    ALPHA_REQUEST_ID_NONCE.fetch_add(1, AtomicOrdering::Relaxed)
+}
 
 /// A writer that writes to both stderr (terminal) and shared history sink.
 struct DualWriter {
@@ -1032,6 +1039,16 @@ fn warn_remote_alpha_config_startup(endgame_alpha_required: bool) {
         &[
             "EVPOLY_REMOTE_EVCURVE_ALPHA_URL",
             "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
+        ],
+        true,
+    );
+    check_strategy(
+        STRATEGY_ID_SESSIONBAND_V1,
+        "EVPOLY_STRATEGY_SESSIONBAND_ENABLE",
+        true,
+        &[
+            "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
+            "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
         ],
         true,
     );
@@ -4068,17 +4085,22 @@ async fn main() -> Result<()> {
     let premarket_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_PREMARKET_ENABLE", true);
     let endgame_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_ENDGAME_ENABLE", true);
     let evcurve_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_EVCURVE_ENABLE", true);
+    let sessionband_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true);
     let evsnipe_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true);
     let mm_sport_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false);
     let core_strategy_enabled = premarket_strategy_enabled
         || endgame_strategy_enabled
         || evcurve_strategy_enabled
+        || sessionband_strategy_enabled
         || evsnipe_strategy_enabled;
     let mm_strategy_enabled = mm_sport_strategy_enabled;
     let mm_only_mode = !core_strategy_enabled && mm_strategy_enabled;
-    let shared_signal_runtime_enabled = endgame_strategy_enabled || evcurve_strategy_enabled;
-    let core_monitor_runtime_enabled =
-        premarket_strategy_enabled || endgame_strategy_enabled || evcurve_strategy_enabled;
+    let shared_signal_runtime_enabled =
+        endgame_strategy_enabled || evcurve_strategy_enabled || sessionband_strategy_enabled;
+    let core_monitor_runtime_enabled = premarket_strategy_enabled
+        || endgame_strategy_enabled
+        || evcurve_strategy_enabled
+        || sessionband_strategy_enabled;
 
     if !is_simulation
         && core_monitor_runtime_enabled
@@ -4428,6 +4450,9 @@ async fn main() -> Result<()> {
             "signal_pipeline_skipped_strategy_mode",
             json!({
                 "premarket_enabled": premarket_strategy_enabled,
+                "endgame_enabled": endgame_strategy_enabled,
+                "evcurve_enabled": evcurve_strategy_enabled,
+                "sessionband_enabled": sessionband_strategy_enabled,
                 "evsnipe_enabled": evsnipe_strategy_enabled,
                 "mm_sport_enabled": mm_sport_strategy_enabled,
                 "shared_signal_runtime_enabled": shared_signal_runtime_enabled
@@ -4508,7 +4533,7 @@ async fn main() -> Result<()> {
     // MM-only mode skips this startup discovery by design.
     let (eth_market_data, btc_market_data, solana_market_data, xrp_market_data) = if mm_only_mode {
         eprintln!(
-            "⏭️ Skipping core market discovery (MM-only mode: no premarket/endgame/evcurve/evsnipe)"
+            "⏭️ Skipping core market discovery (MM-only mode: no premarket/endgame/evcurve/sessionband/evsnipe)"
         );
         log_event(
             "core_discovery_skipped_mm_only",
@@ -4517,6 +4542,7 @@ async fn main() -> Result<()> {
                 "premarket_enabled": env_bool_named("EVPOLY_STRATEGY_PREMARKET_ENABLE", true),
                 "endgame_enabled": env_bool_named("EVPOLY_STRATEGY_ENDGAME_ENABLE", true),
                 "evcurve_enabled": env_bool_named("EVPOLY_STRATEGY_EVCURVE_ENABLE", true),
+                "sessionband_enabled": env_bool_named("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true),
                 "evsnipe_enabled": env_bool_named("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),
                 "mm_sport_enabled": env_bool_named("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false)
             }),
@@ -4843,6 +4869,18 @@ async fn main() -> Result<()> {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(max_evcurve_entries_per_tf_period.saturating_mul(2))
             .max(1);
+    let max_sessionband_entries_per_tf_period =
+        std::env::var("EVPOLY_MAX_SESSIONBAND_ENTRIES_PER_TIMEFRAME_PERIOD")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1)
+            .max(1);
+    let max_sessionband_submits_per_token_period =
+        std::env::var("EVPOLY_MAX_SESSIONBAND_SUBMITS_PER_TOKEN_PERIOD")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(max_sessionband_entries_per_tf_period)
+            .max(1);
     let max_evsnipe_entries_per_tf_period =
         std::env::var("EVPOLY_MAX_EVSNIPE_ENTRIES_PER_TIMEFRAME_PERIOD")
             .ok()
@@ -4881,6 +4919,9 @@ async fn main() -> Result<()> {
     let worker_idempotency_endgame = Arc::new(tokio::sync::Mutex::new(WorkerIdempotency::new(
         idempotency_cfg.clone(),
     )));
+    let worker_idempotency_sessionband = Arc::new(tokio::sync::Mutex::new(WorkerIdempotency::new(
+        idempotency_cfg.clone(),
+    )));
     let worker_idempotency_evcurve = Arc::new(tokio::sync::Mutex::new(WorkerIdempotency::new(
         idempotency_cfg.clone(),
     )));
@@ -4894,6 +4935,8 @@ async fn main() -> Result<()> {
     let (arbiter_exec_tx_premarket, arbiter_exec_rx_premarket) =
         tokio::sync::mpsc::channel::<ArbiterExecutionRequest>(512);
     let (arbiter_exec_tx_endgame, arbiter_exec_rx_endgame) =
+        tokio::sync::mpsc::channel::<ArbiterExecutionRequest>(256);
+    let (arbiter_exec_tx_sessionband, arbiter_exec_rx_sessionband) =
         tokio::sync::mpsc::channel::<ArbiterExecutionRequest>(256);
     let (arbiter_exec_tx_evcurve, arbiter_exec_rx_evcurve) =
         tokio::sync::mpsc::channel::<ArbiterExecutionRequest>(512);
@@ -4919,6 +4962,11 @@ async fn main() -> Result<()> {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(8)
+        .max(1);
+    let worker_count_sessionband = std::env::var("EVPOLY_ENTRY_WORKER_COUNT_SESSIONBAND")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(2)
         .max(1);
     let worker_count_evcurve = std::env::var("EVPOLY_ENTRY_WORKER_COUNT_EVCURVE")
         .ok()
@@ -5047,11 +5095,11 @@ async fn main() -> Result<()> {
                     let rung_id = request_rung_id(&request);
                     let fastlane_strategy = matches!(
                         request.intent.strategy_id.as_str(),
-                        STRATEGY_ID_ENDGAME_SWEEP_V1
+                        STRATEGY_ID_ENDGAME_SWEEP_V1 | STRATEGY_ID_SESSIONBAND_V1
                     );
                     let fastlane_nonblocking_submit = matches!(
                         request.intent.strategy_id.as_str(),
-                        STRATEGY_ID_ENDGAME_SWEEP_V1
+                        STRATEGY_ID_ENDGAME_SWEEP_V1 | STRATEGY_ID_SESSIONBAND_V1
                     );
                     let begin = {
                         let gate_wait_started = Instant::now();
@@ -5174,6 +5222,8 @@ async fn main() -> Result<()> {
                             max_endgame_entries_per_tf_period
                         } else if request.intent.strategy_id == STRATEGY_ID_EVCURVE_V1 {
                             max_evcurve_entries_per_tf_period
+                        } else if request.intent.strategy_id == STRATEGY_ID_SESSIONBAND_V1 {
+                            max_sessionband_entries_per_tf_period
                         } else if request.intent.strategy_id == STRATEGY_ID_EVSNIPE_V1 {
                             max_evsnipe_entries_per_tf_period
                         } else if is_premarket_ladder {
@@ -5229,6 +5279,8 @@ async fn main() -> Result<()> {
                             max_endgame_submits_per_token_period
                         } else if request.intent.strategy_id == STRATEGY_ID_EVCURVE_V1 {
                             max_evcurve_submits_per_token_period
+                        } else if request.intent.strategy_id == STRATEGY_ID_SESSIONBAND_V1 {
+                            max_sessionband_submits_per_token_period
                         } else if request.intent.strategy_id == STRATEGY_ID_EVSNIPE_V1 {
                             max_evsnipe_submits_per_token_period
                         } else if is_premarket_ladder {
@@ -5629,6 +5681,48 @@ async fn main() -> Result<()> {
                                     worker_index,
                                     "proxy_stale_drop",
                                     Some(reason),
+                                );
+                                return;
+                            }
+                        }
+
+                        if request.intent.strategy_id == STRATEGY_ID_SESSIONBAND_V1 {
+                            let max_gap_ms = sessionband_max_decision_to_submit_ms();
+                            let decision_to_submit_ms =
+                                now_submit_ms.saturating_sub(request.timing.decision_ts_ms);
+                            if decision_to_submit_ms > max_gap_ms {
+                                log_event(
+                                    "sessionband_timing_gap_blocked",
+                                    json!({
+                                        "request_id": request.request_id,
+                                        "strategy_id": request.intent.strategy_id,
+                                        "timeframe": request_timeframe_label(&request),
+                                        "entry_mode": request.entry_mode.as_str(),
+                                        "period_timestamp": request.opportunity.period_timestamp,
+                                        "token_id": request.opportunity.token_id,
+                                        "decision_ts_ms": request.timing.decision_ts_ms,
+                                        "submit_ts_ms": now_submit_ms,
+                                        "decision_to_submit_ms": decision_to_submit_ms,
+                                        "max_decision_to_submit_ms": max_gap_ms,
+                                        "worker_pool": pool_label_for_submit
+                                    }),
+                                );
+                                let mut gate = worker_idempotency_for_submit.lock().await;
+                                gate.finish_failure(
+                                    &logical_key_for_submit,
+                                    &scope_key_for_submit,
+                                    chrono::Utc::now().timestamp_millis(),
+                                    ExecutionErrorClass::Permanent,
+                                );
+                                drop(gate);
+                                request.timing.worker_done_ts_ms =
+                                    Some(chrono::Utc::now().timestamp_millis());
+                                log_arbiter_request_timing(
+                                    &request,
+                                    pool_label_for_submit,
+                                    worker_index,
+                                    "sessionband_timing_gap_drop",
+                                    Some("decision_to_submit_gap_exceeded"),
                                 );
                                 return;
                             }
@@ -6356,6 +6450,12 @@ async fn main() -> Result<()> {
         worker_idempotency_endgame,
     );
     spawn_arbiter_workers(
+        "sessionband",
+        arbiter_exec_rx_sessionband,
+        worker_count_sessionband,
+        worker_idempotency_sessionband,
+    );
+    spawn_arbiter_workers(
         "evcurve",
         arbiter_exec_rx_evcurve,
         worker_count_evcurve,
@@ -6378,15 +6478,19 @@ async fn main() -> Result<()> {
     > = Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
     let arbiter_exec_tx_for_endgame = arbiter_exec_tx_endgame.clone();
     let arbiter_exec_tx_for_evcurve = arbiter_exec_tx_evcurve.clone();
+    let arbiter_exec_tx_for_sessionband = arbiter_exec_tx_sessionband.clone();
     let arbiter_exec_tx_for_evsnipe = arbiter_exec_tx_evsnipe.clone();
     let arbiter_exec_tx_for_premarket = arbiter_exec_tx_premarket.clone();
     let enqueue_dedupe_for_endgame = enqueue_dedupe.clone();
     let enqueue_dedupe_for_evcurve = enqueue_dedupe.clone();
+    let enqueue_dedupe_for_sessionband = enqueue_dedupe.clone();
     let enqueue_dedupe_for_evsnipe = enqueue_dedupe.clone();
     let enqueue_dedupe_for_premarket = enqueue_dedupe.clone();
     let near_base_skip_bps = near_base_skip_threshold_bps();
     let near_base_skip_endgame = true;
     let near_base_skip_evcurve = env_bool_named("EVPOLY_NEAR_BASE_SKIP_ENABLE_EVCURVE", true);
+    let near_base_skip_sessionband =
+        env_bool_named("EVPOLY_NEAR_BASE_SKIP_ENABLE_SESSIONBAND", true);
     let proxy_base_exact_max_delay_ms = std::env::var("EVPOLY_PROXY_BASE_EXACT_MAX_DELAY_MS")
         .ok()
         .and_then(|v| v.trim().parse::<i64>().ok())
@@ -12213,6 +12317,1064 @@ async fn main() -> Result<()> {
         eprintln!("📈 EVcurve strategy disabled (set EVPOLY_STRATEGY_EVCURVE_ENABLE=true)");
     }
 
+    let sessionband_cfg = Arc::new(sessionband::SessionBandExecutionConfig::from_env());
+    if sessionband_cfg.enable {
+        {
+            let sessionband_symbols = symbol_ownership::filter_symbols_for_strategy(
+                STRATEGY_ID_SESSIONBAND_V1,
+                sessionband_cfg.enabled_symbols().as_slice(),
+            );
+            let sessionband_timeframes = sessionband_cfg.enabled_timeframes();
+            let symbols_csv = sessionband_symbols.join(",");
+            let timeframes_csv = sessionband_timeframes
+                .iter()
+                .map(|tf| tf.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            eprintln!(
+                "📶 SessionBand enabled (poll={}ms, symbols=[{}], tfs=[{}], single_attempt={}, strategy_cap=${:.2}, near_base_skip={}, near_base_bps={:.3}, alpha_source=remote)",
+                sessionband_cfg.poll_interval_ms,
+                symbols_csv,
+                timeframes_csv,
+                sessionband_cfg.single_attempt_per_period,
+                sessionband_cfg.strategy_cap_usd,
+                near_base_skip_sessionband,
+                near_base_skip_bps
+            );
+
+            let mut sessionband_coinbase_states_by_symbol: std::collections::HashMap<
+                String,
+                coinbase_ws::SharedCoinbaseBookState,
+            > = std::collections::HashMap::new();
+            let mut sessionband_binance_states_by_symbol: std::collections::HashMap<
+                String,
+                polymarket_arbitrage_bot::signal_state::SharedSignalState,
+            > = std::collections::HashMap::new();
+            let default_coinbase_cfg = CoinbaseWsConfig::default();
+            let default_symbol =
+                market_symbol_from_coinbase_product_id(default_coinbase_cfg.product_id.as_str())
+                    .unwrap_or("BTC")
+                    .to_string();
+
+            for symbol in sessionband_symbols.iter() {
+                if symbol.eq_ignore_ascii_case(default_symbol.as_str()) {
+                    sessionband_coinbase_states_by_symbol
+                        .insert(symbol.clone(), coinbase_book_state.clone());
+                } else if let Some(product_id) =
+                    coinbase_product_id_for_market_symbol(symbol.as_str())
+                {
+                    let extra_state = new_shared_coinbase_book_state();
+                    let mut extra_cfg = default_coinbase_cfg.clone();
+                    extra_cfg.product_id = product_id.to_string();
+                    let _coinbase_feed = coinbase_ws::spawn_coinbase_level2_feed(
+                        extra_cfg,
+                        extra_state.clone(),
+                        None,
+                    );
+                    sessionband_coinbase_states_by_symbol.insert(symbol.clone(), extra_state);
+                    log_event(
+                        "sessionband_coinbase_feed_spawned",
+                        json!({
+                            "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                            "symbol": symbol,
+                            "product_id": product_id
+                        }),
+                    );
+                } else {
+                    log_event(
+                        "sessionband_symbol_coinbase_product_missing",
+                        json!({
+                            "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                            "symbol": symbol
+                        }),
+                    );
+                }
+
+                if symbol.eq_ignore_ascii_case("BTC") {
+                    sessionband_binance_states_by_symbol
+                        .insert(symbol.clone(), signal_state.clone());
+                } else {
+                    let symbol_state = new_shared_signal_state();
+                    let mut cfg = BinanceWssConfig::default();
+                    cfg.stream_url = format!(
+                        "wss://stream.binance.com:9443/ws/{}usdt@trade",
+                        symbol.to_ascii_lowercase()
+                    );
+                    let _binance_feed =
+                        binance_wss::spawn_binance_trade_feed(cfg, symbol_state.clone());
+                    sessionband_binance_states_by_symbol.insert(symbol.clone(), symbol_state);
+                    log_event(
+                        "sessionband_binance_feed_spawned",
+                        json!({
+                            "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                            "symbol": symbol
+                        }),
+                    );
+                }
+            }
+
+            let sessionband_cfg_for_loop = sessionband_cfg.clone();
+            let sessionband_symbols_for_loop = sessionband_symbols.clone();
+            let sessionband_coinbase_states_for_loop =
+                Arc::new(sessionband_coinbase_states_by_symbol);
+            let sessionband_binance_states_for_loop =
+                Arc::new(sessionband_binance_states_by_symbol);
+            let api_for_sessionband = api.clone();
+            let tracking_db_for_sessionband = tracking_db.clone();
+            let arbiter_exec_tx_for_sessionband = arbiter_exec_tx_for_sessionband.clone();
+            let enqueue_dedupe_for_sessionband = enqueue_dedupe_for_sessionband.clone();
+            let near_base_skip_sessionband_for_loop = near_base_skip_sessionband;
+            let near_base_skip_bps_for_sessionband = near_base_skip_bps;
+            let proxy_base_exact_max_delay_ms_for_sessionband = proxy_base_exact_max_delay_ms;
+
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(
+                    sessionband_cfg_for_loop.poll_interval_ms,
+                ));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut base_proxy_by_period: std::collections::HashMap<
+                    (String, Timeframe, i64),
+                    f64,
+                > = std::collections::HashMap::new();
+                let mut first_proxy_after_open_by_period: std::collections::HashMap<
+                    (String, Timeframe, i64),
+                    (f64, i64),
+                > = std::collections::HashMap::new();
+                let mut carry_forward_mid_by_next_period: std::collections::HashMap<
+                    (String, Timeframe, i64),
+                    (f64, i64),
+                > = std::collections::HashMap::new();
+                let mut base_anchor_late_skips: std::collections::HashSet<(
+                    String,
+                    Timeframe,
+                    i64,
+                )> = std::collections::HashSet::new();
+                let mut sessionband_checkpoint_fired: std::collections::HashSet<(
+                    String,
+                    Timeframe,
+                    i64,
+                    i64,
+                )> = std::collections::HashSet::new();
+                let mut sessionband_last_remaining_ms_by_period: std::collections::HashMap<
+                    (String, Timeframe, i64),
+                    i64,
+                > = std::collections::HashMap::new();
+                let mut attempted_periods: std::collections::HashSet<(String, Timeframe, i64)> =
+                    std::collections::HashSet::new();
+                let mut market_cache_by_symbol_tf: std::collections::HashMap<
+                    (String, Timeframe),
+                    (u64, polymarket_arbitrage_bot::models::Market),
+                > = std::collections::HashMap::new();
+                let mut discovery_backoff_until_ms: std::collections::HashMap<
+                    (String, Timeframe),
+                    i64,
+                > = std::collections::HashMap::new();
+                let mut scope_submitted_usd: std::collections::HashMap<
+                    (String, Timeframe, i64),
+                    f64,
+                > = std::collections::HashMap::new();
+                let mut missing_watch_logged: std::collections::HashSet<(String, Timeframe, u8)> =
+                    std::collections::HashSet::new();
+                const SESSIONBAND_ALPHA_CHECKPOINT_TARGETS: &[(i64, i64)] =
+                    &[(2_i64, 2_050_i64), (1_i64, 1_050_i64)];
+                const SESSIONBAND_ALPHA_CHECKPOINT_GRACE_MS: i64 = 500;
+
+                loop {
+                    interval.tick().await;
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let now_ts = now_ms.saturating_div(1_000);
+                    base_proxy_by_period.retain(|(_, timeframe, period_open_ts), _| {
+                        period_open_ts
+                            .saturating_add(timeframe.duration_seconds().saturating_mul(3))
+                            >= now_ts
+                    });
+                    first_proxy_after_open_by_period.retain(|(_, timeframe, period_open_ts), _| {
+                        period_open_ts
+                            .saturating_add(timeframe.duration_seconds().saturating_mul(3))
+                            >= now_ts
+                    });
+                    carry_forward_mid_by_next_period.retain(
+                        |(_, timeframe, next_period_open_ts), _| {
+                            next_period_open_ts
+                                .saturating_add(timeframe.duration_seconds().saturating_mul(3))
+                                >= now_ts
+                        },
+                    );
+                    base_anchor_late_skips.retain(|(_, timeframe, period_open_ts)| {
+                        period_open_ts
+                            .saturating_add(timeframe.duration_seconds().saturating_mul(3))
+                            >= now_ts
+                    });
+                    scope_submitted_usd.retain(|(_, timeframe, period_open_ts), _| {
+                        period_open_ts
+                            .saturating_add(timeframe.duration_seconds().saturating_mul(3))
+                            >= now_ts
+                    });
+                    attempted_periods.retain(|(_, timeframe, period_open_ts)| {
+                        period_open_ts
+                            .saturating_add(timeframe.duration_seconds().saturating_mul(3))
+                            >= now_ts
+                    });
+                    sessionband_checkpoint_fired.retain(|(_, timeframe, period_open_ts, _)| {
+                        period_open_ts
+                            .saturating_add(timeframe.duration_seconds().saturating_mul(3))
+                            >= now_ts
+                    });
+                    sessionband_last_remaining_ms_by_period.retain(
+                        |(_, timeframe, period_open_ts), _| {
+                            period_open_ts
+                                .saturating_add(timeframe.duration_seconds().saturating_mul(3))
+                                >= now_ts
+                        },
+                    );
+
+                    for symbol in sessionband_symbols_for_loop.iter() {
+                        let symbol_key = symbol.to_ascii_uppercase();
+
+                        for timeframe in sessionband_cfg_for_loop.enabled_timeframes() {
+                            if !sessionband_cfg_for_loop.timeframe_enabled(timeframe) {
+                                continue;
+                            }
+                            let period_secs = timeframe.duration_seconds().max(1);
+                            let market_open_ts = now_ts.div_euclid(period_secs) * period_secs;
+                            let close_ts = market_open_ts.saturating_add(period_secs);
+                            if now_ts < market_open_ts || now_ts >= close_ts {
+                                continue;
+                            }
+
+                            let (proxy, proxy_update_ts_ms, proxy_age_ms) = if timeframe
+                                == Timeframe::H1
+                            {
+                                let Some(state) = sessionband_binance_states_for_loop.get(symbol)
+                                else {
+                                    continue;
+                                };
+                                let snapshot = {
+                                    let guard = state.read().await;
+                                    guard.clone()
+                                };
+                                let Some(last_price) = snapshot
+                                    .binance_flow
+                                    .last_price
+                                    .filter(|v| v.is_finite() && *v > 0.0)
+                                else {
+                                    continue;
+                                };
+                                let last_trade_ts =
+                                    snapshot.binance_flow.last_trade_ts_ms.unwrap_or(0);
+                                let age_ms = now_ms.saturating_sub(last_trade_ts);
+                                if last_trade_ts <= 0
+                                    || age_ms > sessionband_cfg_for_loop.proxy_stale_ms
+                                {
+                                    continue;
+                                }
+                                (last_price, last_trade_ts, age_ms)
+                            } else {
+                                let Some(state) = sessionband_coinbase_states_for_loop.get(symbol)
+                                else {
+                                    continue;
+                                };
+                                let snapshot = {
+                                    let guard = state.read().await;
+                                    guard.clone()
+                                };
+                                if snapshot.feed_state != coinbase_ws::CoinbaseFeedState::Healthy {
+                                    continue;
+                                }
+                                let age_ms = now_ms.saturating_sub(snapshot.last_update_ms);
+                                if snapshot.last_update_ms <= 0
+                                    || age_ms > sessionband_cfg_for_loop.proxy_stale_ms
+                                {
+                                    continue;
+                                }
+                                let Some(mid) =
+                                    snapshot.mid_price.filter(|v| v.is_finite() && *v > 0.0)
+                                else {
+                                    continue;
+                                };
+                                (mid, snapshot.last_update_ms, age_ms)
+                            };
+                            let coinbase_15m_anchor = if timeframe == Timeframe::M15 {
+                                sessionband_coinbase_states_for_loop
+                                    .get(symbol)
+                                    .and_then(|state| Some(state.clone()))
+                            } else {
+                                None
+                            };
+
+                            let period_key = (symbol_key.clone(), timeframe, market_open_ts);
+                            let next_period_key = (symbol_key.clone(), timeframe, close_ts);
+                            let period_open_ms = market_open_ts.saturating_mul(1_000);
+                            let period_close_ms = close_ts.saturating_mul(1_000);
+                            if proxy_update_ts_ms > 0
+                                && proxy_update_ts_ms <= period_close_ms
+                                && proxy.is_finite()
+                                && proxy > 0.0
+                            {
+                                let entry = carry_forward_mid_by_next_period
+                                    .entry(next_period_key)
+                                    .or_insert((proxy, proxy_update_ts_ms));
+                                if proxy_update_ts_ms >= entry.1 {
+                                    *entry = (proxy, proxy_update_ts_ms);
+                                }
+                            }
+                            if proxy_update_ts_ms >= period_open_ms && proxy_update_ts_ms > 0 {
+                                let first_entry = first_proxy_after_open_by_period
+                                    .entry(period_key.clone())
+                                    .or_insert((proxy, proxy_update_ts_ms));
+                                if first_entry.1 <= 0 || proxy_update_ts_ms < first_entry.1 {
+                                    *first_entry = (proxy, proxy_update_ts_ms);
+                                }
+                                let first_seen_lag_ms =
+                                    first_entry.1.saturating_sub(period_open_ms);
+                                if first_seen_lag_ms >= 0
+                                    && first_seen_lag_ms
+                                        <= proxy_base_exact_max_delay_ms_for_sessionband
+                                {
+                                    if let Err(e) = tracking_db_for_sessionband
+                                        .upsert_evcurve_period_base(
+                                            symbol_key.as_str(),
+                                            timeframe.as_str(),
+                                            market_open_ts,
+                                            first_entry.0,
+                                            first_entry.1,
+                                        )
+                                    {
+                                        warn!(
+                                            "SessionBand failed to upsert first proxy exact base symbol={} tf={} period={} err={}",
+                                            symbol,
+                                            timeframe.as_str(),
+                                            market_open_ts,
+                                            e
+                                        );
+                                    }
+                                }
+                            }
+
+                            if !base_proxy_by_period.contains_key(&period_key) {
+                                if base_anchor_late_skips.contains(&period_key) {
+                                    continue;
+                                }
+                                let mut anchored: Option<(f64, String, i64)> = None;
+
+                                if let Some((restored, first_seen_ts_ms)) =
+                                    tracking_db_for_sessionband
+                                        .get_evcurve_period_base_with_first_seen(
+                                            symbol_key.as_str(),
+                                            timeframe.as_str(),
+                                            market_open_ts,
+                                        )
+                                        .unwrap_or(None)
+                                {
+                                    let lag_ms = first_seen_ts_ms.saturating_sub(period_open_ms);
+                                    if lag_ms >= 0
+                                        && lag_ms <= proxy_base_exact_max_delay_ms_for_sessionband
+                                    {
+                                        anchored = Some((
+                                            restored,
+                                            String::from("tracking_db_exact"),
+                                            first_seen_ts_ms,
+                                        ));
+                                    } else {
+                                        log_event(
+                                            "sessionband_base_anchor_rejected",
+                                            json!({
+                                                "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                                "symbol": symbol,
+                                                "timeframe": timeframe.as_str(),
+                                                "market_open_ts": market_open_ts,
+                                                "base_mid": restored,
+                                                "first_seen_ts_ms": first_seen_ts_ms,
+                                                "period_open_ms": period_open_ms,
+                                                "lag_ms": lag_ms,
+                                                "max_delay_ms": proxy_base_exact_max_delay_ms_for_sessionband,
+                                                "skip_reason": "tracking_db_not_exact"
+                                            }),
+                                        );
+                                    }
+                                }
+
+                                if anchored.is_none() {
+                                    if timeframe == Timeframe::M15 {
+                                        if let Some((carry_mid, carry_ts_ms)) =
+                                            carry_forward_mid_by_next_period
+                                                .get(&period_key)
+                                                .copied()
+                                        {
+                                            if carry_ts_ms > 0
+                                                && carry_ts_ms <= period_open_ms
+                                                && carry_mid.is_finite()
+                                                && carry_mid > 0.0
+                                            {
+                                                anchored = Some((
+                                                    carry_mid,
+                                                    String::from("ws_mid_carry_forward"),
+                                                    period_open_ms,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if anchored.is_none() {
+                                    if timeframe == Timeframe::M15 {
+                                        if let Some(state) = coinbase_15m_anchor.as_ref() {
+                                            let snapshot = {
+                                                let guard = state.read().await;
+                                                guard.clone()
+                                            };
+                                            if let Some(anchor) =
+                                                snapshot.period_anchors_15m.iter().rev().find(
+                                                    |entry| entry.period_open_ts == market_open_ts,
+                                                )
+                                            {
+                                                if anchor.seq_gap_detected {
+                                                    base_anchor_late_skips
+                                                        .insert(period_key.clone());
+                                                    log_event(
+                                                        "sessionband_base_anchor_exact_skip",
+                                                        json!({
+                                                            "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                                            "symbol": symbol,
+                                                            "timeframe": timeframe.as_str(),
+                                                            "market_open_ts": market_open_ts,
+                                                            "now_ts": now_ts,
+                                                            "source_trade_ts_ms": anchor.source_trade_ts_ms,
+                                                            "source_exchange_seq": anchor.source_exchange_seq,
+                                                            "skip_reason": "sequence_gap_around_open"
+                                                        }),
+                                                    );
+                                                    continue;
+                                                }
+                                                if anchor.anchor_price.is_finite()
+                                                    && anchor.anchor_price > 0.0
+                                                {
+                                                    anchored = Some((
+                                                        anchor.anchor_price,
+                                                        String::from("ws_trade_carry_forward"),
+                                                        period_open_ms,
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if anchored.is_none() {
+                                    if let Some((first_proxy_mid, first_seen_ts_ms)) =
+                                        first_proxy_after_open_by_period.get(&period_key).copied()
+                                    {
+                                        let ws_lag_ms =
+                                            first_seen_ts_ms.saturating_sub(period_open_ms);
+                                        if ws_lag_ms >= 0
+                                            && ws_lag_ms
+                                                <= proxy_base_exact_max_delay_ms_for_sessionband
+                                        {
+                                            anchored = Some((
+                                                first_proxy_mid,
+                                                String::from("ws_exact_first_seen"),
+                                                first_seen_ts_ms,
+                                            ));
+                                        }
+                                    }
+                                }
+
+                                if anchored.is_none() {
+                                    let Some(period_open_u64) = u64::try_from(market_open_ts).ok()
+                                    else {
+                                        continue;
+                                    };
+                                    let rest_base_result = if timeframe == Timeframe::H1 {
+                                        api_for_sessionband
+                                            .fetch_binance_period_open_price(
+                                                symbol_key.as_str(),
+                                                timeframe.as_str(),
+                                                period_open_u64,
+                                            )
+                                            .await
+                                    } else {
+                                        api_for_sessionband
+                                            .fetch_coinbase_period_open_price(
+                                                symbol_key.as_str(),
+                                                timeframe.as_str(),
+                                                period_open_u64,
+                                            )
+                                            .await
+                                    };
+                                    match rest_base_result {
+                                        Ok(Some(rest_base))
+                                            if rest_base.is_finite() && rest_base > 0.0 =>
+                                        {
+                                            anchored = Some((
+                                                rest_base,
+                                                String::from("rest_exact"),
+                                                period_open_ms,
+                                            ));
+                                        }
+                                        Ok(_) => {
+                                            base_anchor_late_skips.insert(period_key.clone());
+                                            log_event(
+                                                "sessionband_base_anchor_exact_skip",
+                                                json!({
+                                                    "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                                    "symbol": symbol,
+                                                    "timeframe": timeframe.as_str(),
+                                                    "market_open_ts": market_open_ts,
+                                                    "now_ts": now_ts,
+                                                    "skip_reason": "exact_proxy_base_unavailable_rest_empty"
+                                                }),
+                                            );
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            base_anchor_late_skips.insert(period_key.clone());
+                                            log_event(
+                                                "sessionband_base_anchor_exact_skip",
+                                                json!({
+                                                    "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                                    "symbol": symbol,
+                                                    "timeframe": timeframe.as_str(),
+                                                    "market_open_ts": market_open_ts,
+                                                    "now_ts": now_ts,
+                                                    "skip_reason": "exact_proxy_base_unavailable_rest_error",
+                                                    "error": e.to_string()
+                                                }),
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                if let Some((exact_base_mid, source, first_seen_write_ms)) =
+                                    anchored
+                                {
+                                    base_proxy_by_period.insert(period_key.clone(), exact_base_mid);
+                                    if source != "tracking_db_exact" {
+                                        if let Err(e) = tracking_db_for_sessionband
+                                            .set_evcurve_period_base(
+                                                symbol_key.as_str(),
+                                                timeframe.as_str(),
+                                                market_open_ts,
+                                                exact_base_mid,
+                                                first_seen_write_ms,
+                                            )
+                                        {
+                                            warn!(
+                                                "SessionBand failed to persist exact base anchor symbol={} tf={} period={} err={}",
+                                                symbol,
+                                                timeframe.as_str(),
+                                                market_open_ts,
+                                                e
+                                            );
+                                        }
+                                    }
+                                    log_event(
+                                        "sessionband_base_anchor_initialized",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                            "symbol": symbol,
+                                            "timeframe": timeframe.as_str(),
+                                            "market_open_ts": market_open_ts,
+                                            "base_mid": exact_base_mid,
+                                            "source": source
+                                        }),
+                                    );
+                                }
+                            }
+                            let Some(base_mid) = base_proxy_by_period.get(&period_key).copied()
+                            else {
+                                continue;
+                            };
+                            let close_ms = close_ts.saturating_mul(1_000);
+                            let remaining_ms = close_ms.saturating_sub(now_ms);
+                            if remaining_ms <= 0 {
+                                continue;
+                            }
+                            if sessionband_cfg_for_loop.single_attempt_per_period
+                                && attempted_periods.contains(&period_key)
+                            {
+                                continue;
+                            }
+                            let prev_remaining_ms = sessionband_last_remaining_ms_by_period
+                                .get(&period_key)
+                                .copied();
+                            let checkpoint_tau_sec = SESSIONBAND_ALPHA_CHECKPOINT_TARGETS
+                                .iter()
+                                .find_map(|(tau_target_sec, send_before_close_ms)| {
+                                    if sessionband_checkpoint_fired.contains(&(
+                                        symbol_key.clone(),
+                                        timeframe,
+                                        market_open_ts,
+                                        *tau_target_sec,
+                                    )) {
+                                        return None;
+                                    }
+                                    let crossed_target = prev_remaining_ms
+                                        .map(|prev_ms| {
+                                            prev_ms > *send_before_close_ms
+                                                && remaining_ms <= *send_before_close_ms
+                                        })
+                                        .unwrap_or(false);
+                                    let in_grace_window = remaining_ms <= *send_before_close_ms
+                                        && remaining_ms
+                                            >= send_before_close_ms.saturating_sub(
+                                                SESSIONBAND_ALPHA_CHECKPOINT_GRACE_MS,
+                                            );
+                                    if crossed_target || in_grace_window {
+                                        Some(*tau_target_sec)
+                                    } else {
+                                        None
+                                    }
+                                });
+                            sessionband_last_remaining_ms_by_period
+                                .insert(period_key.clone(), remaining_ms);
+                            let Some(tau_sec) = checkpoint_tau_sec else {
+                                continue;
+                            };
+                            if !sessionband_checkpoint_fired.insert((
+                                symbol_key.clone(),
+                                timeframe,
+                                market_open_ts,
+                                tau_sec,
+                            )) {
+                                continue;
+                            }
+                            let Some(session_index_hint) =
+                                Plan4bTables::session_index_for_period_open_utc(market_open_ts)
+                            else {
+                                continue;
+                            };
+                            if near_base_skip_sessionband_for_loop {
+                                if let Some(distance_bps) = near_base_distance_bps(base_mid, proxy)
+                                {
+                                    if distance_bps < near_base_skip_bps_for_sessionband {
+                                        log_event(
+                                            "sessionband_skip_near_base_proxy_bps",
+                                            json!({
+                                                "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                                "symbol": symbol,
+                                                "timeframe": timeframe.as_str(),
+                                                "market_open_ts": market_open_ts,
+                                                "session_index": session_index_hint,
+                                                "session_label": Plan4bTables::session_label(session_index_hint),
+                                                "tau_sec": tau_sec,
+                                                "base_mid": base_mid,
+                                                "proxy_mid": proxy,
+                                                "distance_bps": distance_bps,
+                                                "threshold_bps": near_base_skip_bps_for_sessionband,
+                                                "reason": "near_base_proxy_bps"
+                                            }),
+                                        );
+                                        continue;
+                                    }
+                                }
+                            }
+
+                            let Some(market_open_ts_u64) = u64::try_from(market_open_ts).ok()
+                            else {
+                                continue;
+                            };
+                            if market_open_ts_u64 == 0 {
+                                continue;
+                            }
+                            let market_cache_key = (symbol_key.clone(), timeframe);
+                            let market = if let Some((cached_open_ts, cached_market)) =
+                                market_cache_by_symbol_tf.get(&market_cache_key).cloned()
+                            {
+                                if cached_open_ts == market_open_ts_u64 {
+                                    Some(cached_market)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            let market = if let Some(market) = market {
+                                market
+                            } else {
+                                let discovery_backoff_key = (symbol_key.clone(), timeframe);
+                                if discovery_backoff_until_ms
+                                    .get(&discovery_backoff_key)
+                                    .map(|until| *until > now_ms)
+                                    .unwrap_or(false)
+                                {
+                                    continue;
+                                }
+                                let Some(discovered) = discover_market_for_timeframe_once(
+                                    &api_for_sessionband,
+                                    timeframe,
+                                    market_open_ts_u64,
+                                    symbol.as_str(),
+                                )
+                                .await
+                                else {
+                                    discovery_backoff_until_ms.insert(
+                                        discovery_backoff_key,
+                                        now_ms.saturating_add(10_000),
+                                    );
+                                    continue;
+                                };
+                                if h1_market_period_mismatch_for_trade(
+                                    timeframe,
+                                    market_open_ts_u64,
+                                    discovered.matched_open_ts,
+                                    discovered.market.slug.as_str(),
+                                ) {
+                                    log_h1_market_period_mismatch_blocked(
+                                        STRATEGY_ID_SESSIONBAND_V1,
+                                        timeframe,
+                                        market_open_ts_u64,
+                                        discovered.matched_open_ts,
+                                        &discovered.market,
+                                        discovered.source,
+                                        Some(discovered.matched_slug.as_str()),
+                                    );
+                                    continue;
+                                }
+                                market_cache_by_symbol_tf.insert(
+                                    market_cache_key,
+                                    (market_open_ts_u64, discovered.market.clone()),
+                                );
+                                discovered.market
+                            };
+                            if h1_market_period_mismatch_for_trade(
+                                timeframe,
+                                market_open_ts_u64,
+                                market_open_ts_u64,
+                                market.slug.as_str(),
+                            ) {
+                                log_h1_market_period_mismatch_blocked(
+                                    STRATEGY_ID_SESSIONBAND_V1,
+                                    timeframe,
+                                    market_open_ts_u64,
+                                    market_open_ts_u64,
+                                    &market,
+                                    "sessionband_cache",
+                                    None,
+                                );
+                                continue;
+                            }
+
+                            let direction = if proxy >= base_mid {
+                                Direction::Up
+                            } else {
+                                Direction::Down
+                            };
+                            let Some(token_id) = select_token_id_for_direction(&market, direction)
+                            else {
+                                log_event(
+                                    "sessionband_skip_token_missing",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                        "symbol": symbol,
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "condition_id": market.condition_id,
+                                        "direction": match direction { Direction::Up => "UP", Direction::Down => "DOWN" }
+                                    }),
+                                );
+                                continue;
+                            };
+
+                            let quote_ts_ms = chrono::Utc::now().timestamp_millis();
+                            let quote = fetch_best_price_with_retry(
+                                api_for_sessionband.as_ref(),
+                                token_id.as_str(),
+                            )
+                            .await;
+                            let quote_age_ms = chrono::Utc::now()
+                                .timestamp_millis()
+                                .saturating_sub(quote_ts_ms);
+                            if quote_age_ms > sessionband_cfg_for_loop.book_freshness_ms {
+                                log_event(
+                                    "sessionband_skip_book_stale",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                        "symbol": symbol,
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "condition_id": market.condition_id,
+                                        "token_id": token_id,
+                                        "quote_age_ms": quote_age_ms,
+                                        "book_freshness_ms": sessionband_cfg_for_loop.book_freshness_ms
+                                    }),
+                                );
+                                continue;
+                            }
+
+                            let best_ask = quote
+                                .as_ref()
+                                .and_then(|q| q.ask)
+                                .and_then(|v| f64::try_from(v).ok())
+                                .filter(|v| v.is_finite() && *v > 0.0);
+                            let best_bid = quote
+                                .as_ref()
+                                .and_then(|q| q.bid)
+                                .and_then(|v| f64::try_from(v).ok())
+                                .filter(|v| v.is_finite() && *v > 0.0);
+                            let Some(best_ask) = best_ask else {
+                                log_event(
+                                    "sessionband_skip_book_empty",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                        "symbol": symbol,
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "condition_id": market.condition_id,
+                                        "token_id": token_id
+                                    }),
+                                );
+                                continue;
+                            };
+
+                            let (ask_up_for_alpha, ask_down_for_alpha) = match direction {
+                                Direction::Up => (Some(best_ask), None),
+                                Direction::Down => (None, Some(best_ask)),
+                            };
+                            let alpha_decision = evaluate_sessionband_decision_remote_or_local(
+                                symbol.as_str(),
+                                timeframe,
+                                market_open_ts,
+                                tau_sec,
+                                base_mid,
+                                proxy,
+                                ask_up_for_alpha,
+                                ask_down_for_alpha,
+                            )
+                            .await;
+                            let session_index =
+                                alpha_decision.session_index.or(Some(session_index_hint));
+                            if !alpha_decision.should_buy {
+                                if alpha_decision.skip_reason.as_deref() == Some("no_watch_start") {
+                                    if let Some(idx) = session_index {
+                                        if !missing_watch_logged.insert((
+                                            symbol_key.clone(),
+                                            timeframe,
+                                            idx,
+                                        )) {
+                                            continue;
+                                        }
+                                    }
+                                }
+                                log_event(
+                                    "sessionband_skip_alpha_decision",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                        "symbol": symbol,
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "condition_id": market.condition_id,
+                                        "token_id": token_id,
+                                        "source": alpha_decision.source,
+                                        "session_index": session_index,
+                                        "session_label": session_index.map(Plan4bTables::session_label),
+                                        "tau_sec": tau_sec,
+                                        "skip_reason": alpha_decision.skip_reason,
+                                        "lead_pct": alpha_decision.lead_pct,
+                                        "base_mid": base_mid,
+                                        "proxy_mid": proxy,
+                                        "best_ask": best_ask
+                                    }),
+                                );
+                                continue;
+                            }
+                            if alpha_decision.direction != direction {
+                                log_event(
+                                    "sessionband_skip_alpha_direction_mismatch",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                        "symbol": symbol,
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "condition_id": market.condition_id,
+                                        "token_id": token_id,
+                                        "source": alpha_decision.source,
+                                        "local_direction": match direction { Direction::Up => "UP", Direction::Down => "DOWN" },
+                                        "alpha_direction": match alpha_decision.direction { Direction::Up => "UP", Direction::Down => "DOWN" }
+                                    }),
+                                );
+                                continue;
+                            }
+                            let Some(session_index) = session_index else {
+                                log_event(
+                                    "sessionband_skip_missing_session_index",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                        "symbol": symbol,
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "condition_id": market.condition_id,
+                                        "token_id": token_id,
+                                        "source": alpha_decision.source,
+                                        "tau_sec": tau_sec
+                                    }),
+                                );
+                                continue;
+                            };
+                            let band_price_max = alpha_decision.band_price_max.unwrap_or(best_ask);
+                            let band_price_min = alpha_decision.band_price_min.unwrap_or(best_ask);
+                            let lead_pct = alpha_decision.lead_pct;
+
+                            let scope_key = (symbol_key.clone(), timeframe, market_open_ts);
+                            let scope_cap =
+                                sessionband_cfg_for_loop.scope_cap_usd(symbol.as_str(), timeframe);
+                            let used_scope =
+                                scope_submitted_usd.get(&scope_key).copied().unwrap_or(0.0);
+                            let remaining_scope = (scope_cap - used_scope).max(0.0);
+                            if remaining_scope <= 0.0 {
+                                continue;
+                            }
+                            let strategy_used = scope_submitted_usd.values().sum::<f64>();
+                            let remaining_strategy = (sessionband_cfg_for_loop.strategy_cap_usd
+                                - strategy_used)
+                                .max(0.0);
+                            if remaining_strategy <= 0.0 {
+                                continue;
+                            }
+                            let tau_size_mult =
+                                size_policy::sessionband_tau_multiplier(tau_sec).unwrap_or(0.0);
+                            if tau_size_mult <= 0.0 {
+                                continue;
+                            }
+                            let desired_size_usd = sessionband_cfg_for_loop
+                                .size_usd_for_symbol(symbol.as_str())
+                                * tau_size_mult;
+                            let target_size_usd = desired_size_usd
+                                .min(remaining_scope)
+                                .min(remaining_strategy);
+                            if target_size_usd < 1.0 {
+                                continue;
+                            }
+                            let edge_bps = alpha_decision
+                                .score_bps
+                                .unwrap_or(((band_price_max - best_ask) * 10_000.0).max(0.0));
+
+                            let timeframe_seconds =
+                                u64::try_from(timeframe.duration_seconds()).unwrap_or(0);
+                            let elapsed_seconds =
+                                now_ts.saturating_sub(market_open_ts).max(0) as u64;
+                            let time_remaining_seconds =
+                                timeframe_seconds.saturating_sub(elapsed_seconds);
+                            if time_remaining_seconds == 0 {
+                                continue;
+                            }
+
+                            let request_id = format!(
+                                "sessionband:{}:{}:{}:tau{}:fak",
+                                symbol_key.to_ascii_lowercase(),
+                                timeframe.as_str(),
+                                market_open_ts,
+                                tau_sec
+                            );
+                            let strategy_intent = StrategyIntent {
+                                strategy_id: STRATEGY_ID_SESSIONBAND_V1.to_string(),
+                                timeframe,
+                                market_open_ts,
+                                token_id: token_id.clone(),
+                                direction,
+                                max_price: band_price_max,
+                                target_size_usd,
+                                score: edge_bps,
+                            };
+                            let request = ArbiterExecutionRequest {
+                                request_id: request_id.clone(),
+                                intent: strategy_intent,
+                                opportunity: polymarket_arbitrage_bot::detector::BuyOpportunity {
+                                    condition_id: market.condition_id.clone(),
+                                    token_id: token_id.clone(),
+                                    token_type: token_type_for_market_symbol(
+                                        symbol.as_str(),
+                                        direction,
+                                    ),
+                                    bid_price: best_ask,
+                                    expected_edge_bps: edge_bps,
+                                    expected_fill_prob: 0.95,
+                                    period_timestamp: market_open_ts_u64,
+                                    time_remaining_seconds,
+                                    time_elapsed_seconds: elapsed_seconds,
+                                    use_market_order: false,
+                                },
+                                entry_mode: EntryExecutionMode::SessionBand,
+                                rung_id: Some(format!("s{}_tau{}", session_index, tau_sec)),
+                                place_sell_orders: false,
+                                source_timeframe: Some(timeframe.as_str().to_string()),
+                                timing: ArbiterExecutionTiming::new_decision(
+                                    chrono::Utc::now().timestamp_millis(),
+                                )
+                                .with_proxy_snapshot(Some(proxy_update_ts_ms), Some(proxy_age_ms)),
+                            };
+
+                            log_event(
+                                "sessionband_decision",
+                                json!({
+                                    "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                                    "symbol": symbol,
+                                    "timeframe": timeframe.as_str(),
+                                    "market_open_ts": market_open_ts,
+                                    "condition_id": market.condition_id,
+                                    "token_id": token_id,
+                                    "session_index": session_index,
+                                    "session_label": Plan4bTables::session_label(session_index),
+                                    "tau_sec": tau_sec,
+                                    "tau_trigger_sec": alpha_decision.tau_trigger_sec,
+                                    "watch_start_sec": alpha_decision.watch_start_sec,
+                                    "trigger_rate_pct": alpha_decision.trigger_rate_pct,
+                                    "lead_pct": lead_pct,
+                                    "band_price_min": band_price_min,
+                                    "band_price_max": band_price_max,
+                                    "base_mid": base_mid,
+                                    "proxy_mid": proxy,
+                                    "proxy_update_ts_ms": proxy_update_ts_ms,
+                                    "proxy_age_ms": proxy_age_ms,
+                                    "best_bid": best_bid,
+                                    "best_ask": best_ask,
+                                    "alpha_source": alpha_decision.source,
+                                    "decision": "BUY"
+                                }),
+                            );
+
+                            let sent = match enqueue_arbiter_request(
+                                &arbiter_exec_tx_for_sessionband,
+                                &enqueue_dedupe_for_sessionband,
+                                request,
+                                "sessionband",
+                            )
+                            .await
+                            {
+                                Ok(ArbiterEnqueueResult::Sent)
+                                | Ok(ArbiterEnqueueResult::Deduped) => true,
+                                Ok(ArbiterEnqueueResult::SkippedWeekendPause) => false,
+                                Err(e) => {
+                                    warn!(
+                                        "SessionBand enqueue failed symbol={} tf={} period={} tau={} err={}",
+                                        symbol,
+                                        timeframe.as_str(),
+                                        market_open_ts,
+                                        tau_sec,
+                                        e
+                                    );
+                                    false
+                                }
+                            };
+
+                            if sent {
+                                scope_submitted_usd
+                                    .entry(scope_key.clone())
+                                    .and_modify(|v| *v += target_size_usd)
+                                    .or_insert(target_size_usd);
+                            }
+                            if sessionband_cfg_for_loop.single_attempt_per_period {
+                                attempted_periods.insert(scope_key);
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    } else {
+        eprintln!("📶 SessionBand strategy disabled (set EVPOLY_STRATEGY_SESSIONBAND_ENABLE=true)");
+    }
+
     let evsnipe_cfg = Arc::new(evsnipe::EvsnipeConfig::from_env());
     if evsnipe_cfg.enable {
         let symbols = symbol_ownership::filter_symbols_for_strategy(
@@ -17253,7 +18415,7 @@ async fn main() -> Result<()> {
     });
 
     // Runtime alert loop for DB contention p95 so we can react before
-    // endgame degrade into late-guard drops.
+    // endgame/sessionband degrade into late-guard drops.
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(
             db_contention_alert_poll_ms(),
@@ -18502,9 +19664,34 @@ fn endgame_submit_proxy_max_age_ms() -> i64 {
     })
 }
 
+fn sessionband_submit_proxy_max_age_ms() -> i64 {
+    static VALUE: OnceLock<i64> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("EVPOLY_SESSIONBAND_SUBMIT_PROXY_MAX_AGE_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .unwrap_or(500)
+            .clamp(50, 10_000)
+    })
+}
+
+fn sessionband_max_decision_to_submit_ms() -> i64 {
+    static VALUE: OnceLock<i64> = OnceLock::new();
+    *VALUE.get_or_init(|| {
+        std::env::var("EVPOLY_SESSIONBAND_MAX_DECISION_TO_SUBMIT_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .unwrap_or(500)
+            .clamp(50, 60_000)
+    })
+}
+
 fn submit_proxy_max_age_ms_for_strategy(strategy_id: &str) -> Option<i64> {
     if strategy_id == STRATEGY_ID_ENDGAME_SWEEP_V1 {
         return Some(endgame_submit_proxy_max_age_ms());
+    }
+    if strategy_id == STRATEGY_ID_SESSIONBAND_V1 {
+        return Some(sessionband_submit_proxy_max_age_ms());
     }
     None
 }
@@ -19885,6 +21072,29 @@ struct RemoteEvcurveAlphaConfig {
 }
 
 #[derive(Debug, Clone)]
+struct RemoteSessionbandAlphaConfig {
+    url: String,
+    token: Option<String>,
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct SessionbandDecisionOutcome {
+    source: &'static str,
+    lead_pct: f64,
+    direction: Direction,
+    session_index: Option<u8>,
+    watch_start_sec: Option<i64>,
+    tau_trigger_sec: Option<i64>,
+    trigger_rate_pct: Option<f64>,
+    should_buy: bool,
+    skip_reason: Option<String>,
+    band_price_min: Option<f64>,
+    band_price_max: Option<f64>,
+    score_bps: Option<f64>,
+}
+
+#[derive(Debug, Clone)]
 struct RemotePremarketAlphaConfig {
     url: String,
     token: Option<String>,
@@ -20009,6 +21219,55 @@ struct RemoteEvcurveAlphaResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+struct RemoteSessionbandAlphaRequest {
+    symbol: String,
+    timeframe: String,
+    period_open_ts: i64,
+    tau_sec: i64,
+    base_mid: f64,
+    current_mid: f64,
+    ask_up: Option<f64>,
+    ask_down: Option<f64>,
+    builder_code: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteSessionbandAlphaResult {
+    #[serde(default)]
+    symbol: Option<String>,
+    #[serde(default)]
+    timeframe: Option<String>,
+    #[serde(default)]
+    period_open_ts: Option<i64>,
+    tau_sec: i64,
+    lead_pct: f64,
+    direction: String,
+    #[serde(default)]
+    session_index: Option<u8>,
+    #[serde(default)]
+    watch_start_sec: Option<i64>,
+    #[serde(default)]
+    tau_trigger_sec: Option<i64>,
+    #[serde(default)]
+    trigger_rate_pct: Option<f64>,
+    should_buy: bool,
+    #[serde(default)]
+    skip_reason: Option<String>,
+    #[serde(default)]
+    band_price_min: Option<f64>,
+    #[serde(default)]
+    band_price_max: Option<f64>,
+    #[serde(default)]
+    score_bps: Option<f64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RemoteSessionbandAlphaResponse {
+    ok: bool,
+    result: RemoteSessionbandAlphaResult,
+}
+
+#[derive(Debug, Clone, Serialize)]
 struct RemotePremarketLadderRequest {
     strategy_id: String,
     decision_id: String,
@@ -20107,6 +21366,21 @@ fn remote_evcurve_alpha_config() -> Option<&'static RemoteEvcurveAlphaConfig> {
         .as_ref()
 }
 
+fn remote_sessionband_alpha_config() -> Option<&'static RemoteSessionbandAlphaConfig> {
+    static CONFIG: OnceLock<Option<RemoteSessionbandAlphaConfig>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let url = env_nonempty_or_default_named("EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL")?;
+            let timeout_ms = 1_000_u64;
+            Some(RemoteSessionbandAlphaConfig {
+                url,
+                token: alpha_bearer_token_named("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN"),
+                timeout_ms,
+            })
+        })
+        .as_ref()
+}
+
 fn remote_premarket_alpha_config() -> Option<&'static RemotePremarketAlphaConfig> {
     static CONFIG: OnceLock<Option<RemotePremarketAlphaConfig>> = OnceLock::new();
     CONFIG
@@ -20173,11 +21447,9 @@ fn is_valid_wallet_address(value: &str) -> bool {
     value.chars().skip(2).all(|ch| ch.is_ascii_hexdigit())
 }
 
-static REMOTE_ALPHA_NONCE: AtomicU64 = AtomicU64::new(1);
-
 fn remote_alpha_nonce(prefix: &str) -> String {
     let ts_ms = chrono::Utc::now().timestamp_millis();
-    let seq = REMOTE_ALPHA_NONCE.fetch_add(1, AtomicOrdering::Relaxed);
+    let seq = next_alpha_request_id_nonce();
     format!("{}:{}:{}", prefix, ts_ms, seq)
 }
 
@@ -20702,6 +21974,218 @@ async fn evaluate_evcurve_d1_candidates_remote(
                     ask_down,
                 ),
             }]
+        }
+    }
+}
+
+fn sessionband_remote_error_outcome(
+    period_open_ts: i64,
+    _tau_sec: i64,
+    base_mid: f64,
+    current_mid: f64,
+    reason: &str,
+) -> SessionbandDecisionOutcome {
+    let direction = if current_mid >= base_mid {
+        Direction::Up
+    } else {
+        Direction::Down
+    };
+    let lead_pct = ((current_mid - base_mid).abs() / base_mid.max(f64::EPSILON) * 100.0).max(0.0);
+    SessionbandDecisionOutcome {
+        source: "remote",
+        lead_pct,
+        direction,
+        session_index: Plan4bTables::session_index_for_period_open_utc(period_open_ts),
+        watch_start_sec: None,
+        tau_trigger_sec: None,
+        trigger_rate_pct: None,
+        should_buy: false,
+        skip_reason: Some(reason.to_string()),
+        band_price_min: None,
+        band_price_max: None,
+        score_bps: None,
+    }
+}
+
+async fn fetch_remote_sessionband_decision(
+    cfg: &RemoteSessionbandAlphaConfig,
+    timeframe: Timeframe,
+    symbol: &str,
+    period_open_ts: i64,
+    tau_sec: i64,
+    base_mid: f64,
+    current_mid: f64,
+    ask_up: Option<f64>,
+    ask_down: Option<f64>,
+) -> Result<SessionbandDecisionOutcome> {
+    let payload = RemoteSessionbandAlphaRequest {
+        symbol: normalize_market_symbol(symbol),
+        timeframe: timeframe.as_str().to_string(),
+        period_open_ts,
+        tau_sec,
+        base_mid,
+        current_mid,
+        ask_up,
+        ask_down,
+        builder_code: official_builder_code_for_alpha(),
+    };
+    let (status, body) = send_remote_json_post_with_alpha_failover(
+        cfg.url.as_str(),
+        cfg.timeout_ms,
+        cfg.token.as_deref(),
+        None,
+        &payload,
+        "sessionband_alpha",
+    )
+    .await
+    .context("failed to call remote sessionband alpha service")?;
+    if !status.is_success() {
+        anyhow::bail!(
+            "remote sessionband alpha rejected request (status={} body={})",
+            status.as_u16(),
+            truncate_for_log(body.as_str(), 300)
+        );
+    }
+    let parsed: RemoteSessionbandAlphaResponse =
+        serde_json::from_str(body.as_str()).with_context(|| {
+            format!(
+                "failed to parse remote sessionband alpha response: {}",
+                truncate_for_log(body.as_str(), 300)
+            )
+        })?;
+    if !parsed.ok {
+        anyhow::bail!("remote sessionband alpha returned ok=false");
+    }
+    if let Some(resp_symbol) = parsed.result.symbol.as_deref() {
+        if !normalize_market_symbol(resp_symbol)
+            .as_str()
+            .eq_ignore_ascii_case(normalize_market_symbol(symbol).as_str())
+        {
+            anyhow::bail!(
+                "remote sessionband alpha symbol mismatch response={} expected={}",
+                resp_symbol,
+                symbol
+            );
+        }
+    }
+    if let Some(resp_tf) = parsed.result.timeframe.as_deref() {
+        if !resp_tf.trim().eq_ignore_ascii_case(timeframe.as_str()) {
+            anyhow::bail!(
+                "remote sessionband alpha timeframe mismatch response={} expected={}",
+                resp_tf,
+                timeframe.as_str()
+            );
+        }
+    }
+    if let Some(resp_open_ts) = parsed.result.period_open_ts {
+        if resp_open_ts != period_open_ts {
+            anyhow::bail!(
+                "remote sessionband alpha period_open mismatch response={} expected={}",
+                resp_open_ts,
+                period_open_ts
+            );
+        }
+    }
+    if parsed.result.tau_sec != tau_sec {
+        anyhow::bail!(
+            "remote sessionband alpha tau mismatch response={} expected={}",
+            parsed.result.tau_sec,
+            tau_sec
+        );
+    }
+
+    let direction = match parsed.result.direction.trim().to_ascii_uppercase().as_str() {
+        "UP" => Direction::Up,
+        "DOWN" => Direction::Down,
+        other => anyhow::bail!("remote sessionband alpha invalid direction={}", other),
+    };
+
+    Ok(SessionbandDecisionOutcome {
+        source: "remote",
+        lead_pct: parsed.result.lead_pct,
+        direction,
+        session_index: parsed.result.session_index,
+        watch_start_sec: parsed.result.watch_start_sec,
+        tau_trigger_sec: parsed.result.tau_trigger_sec,
+        trigger_rate_pct: parsed.result.trigger_rate_pct,
+        should_buy: parsed.result.should_buy,
+        skip_reason: parsed.result.skip_reason,
+        band_price_min: parsed.result.band_price_min,
+        band_price_max: parsed.result.band_price_max,
+        score_bps: parsed.result.score_bps,
+    })
+}
+
+async fn evaluate_sessionband_decision_remote_or_local(
+    symbol: &str,
+    timeframe: Timeframe,
+    period_open_ts: i64,
+    tau_sec: i64,
+    base_mid: f64,
+    current_mid: f64,
+    ask_up: Option<f64>,
+    ask_down: Option<f64>,
+) -> SessionbandDecisionOutcome {
+    let Some(cfg) = remote_sessionband_alpha_config() else {
+        warn_remote_alpha_missing_runtime(
+            STRATEGY_ID_SESSIONBAND_V1,
+            &[
+                "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
+                "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
+            ],
+            "remote_alpha_not_configured",
+        );
+        return sessionband_remote_error_outcome(
+            period_open_ts,
+            tau_sec,
+            base_mid,
+            current_mid,
+            "remote_alpha_not_configured",
+        );
+    };
+
+    match fetch_remote_sessionband_decision(
+        cfg,
+        timeframe,
+        symbol,
+        period_open_ts,
+        tau_sec,
+        base_mid,
+        current_mid,
+        ask_up,
+        ask_down,
+    )
+    .await
+    {
+        Ok(result) => {
+            log_event(
+                "remote_sessionband_alpha_hit",
+                json!({
+                    "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
+                    "symbol": symbol,
+                    "timeframe": timeframe.as_str(),
+                    "period_open_ts": period_open_ts,
+                    "tau_sec": tau_sec
+                }),
+            );
+            result
+        }
+        Err(err) => {
+            warn!(
+                "Remote SessionBand alpha failed symbol={} tf={} period={} tau={} err={}",
+                symbol,
+                timeframe.as_str(),
+                period_open_ts,
+                tau_sec,
+                err
+            );
+            sessionband_remote_error_outcome(
+                period_open_ts,
+                tau_sec,
+                base_mid,
+                current_mid,
+                "remote_alpha_unavailable",
+            )
         }
     }
 }
@@ -21929,6 +23413,22 @@ fn mm_unknown_order_status_terminal_bucket(raw: &str) -> Option<&'static str> {
     None
 }
 
+#[cfg(test)]
+fn mm_order_status_is_terminal(
+    status: &polymarket_client_sdk_v2::clob::types::OrderStatusType,
+) -> bool {
+    matches!(
+        status,
+        polymarket_client_sdk_v2::clob::types::OrderStatusType::Matched
+            | polymarket_client_sdk_v2::clob::types::OrderStatusType::Canceled
+            | polymarket_client_sdk_v2::clob::types::OrderStatusType::Unmatched
+    ) || matches!(
+        status,
+        polymarket_client_sdk_v2::clob::types::OrderStatusType::Unknown(raw)
+            if mm_unknown_order_status_terminal_bucket(raw.as_str()).is_some()
+    )
+}
+
 fn mm_order_lookup_error_is_terminal(error_text: &str) -> bool {
     let lower = error_text.to_ascii_lowercase();
     lower.contains("404")
@@ -22363,6 +23863,10 @@ mod tests {
         ];
         assert_eq!(
             symbol_ownership::filter_symbols_for_strategy(STRATEGY_ID_EVCURVE_V1, &raw),
+            vec!["BTC", "ETH", "SOL", "XRP"]
+        );
+        assert_eq!(
+            symbol_ownership::filter_symbols_for_strategy(STRATEGY_ID_SESSIONBAND_V1, &raw),
             vec!["BTC", "ETH", "SOL", "XRP"]
         );
         assert_eq!(
@@ -23555,18 +25059,20 @@ mod tests {
     }
 
     #[test]
-    fn mm_pending_status_treats_invalid_as_terminal_stale() {
+    fn mm_status_helpers_treat_invalid_as_terminal_stale() {
         use polymarket_client_sdk_v2::clob::types::OrderStatusType;
 
         let status = OrderStatusType::Unknown("INVALID".to_string());
+        assert!(mm_order_status_is_terminal(&status));
         assert_eq!(mm_pending_terminal_status(&status), Some("STALE"));
     }
 
     #[test]
-    fn mm_pending_status_keeps_unknown_non_terminal_open() {
+    fn mm_status_helpers_keep_unknown_non_terminal_open() {
         use polymarket_client_sdk_v2::clob::types::OrderStatusType;
 
         let status = OrderStatusType::Unknown("LIVE_PENDING".to_string());
+        assert!(!mm_order_status_is_terminal(&status));
         assert_eq!(mm_pending_terminal_status(&status), None);
     }
 }

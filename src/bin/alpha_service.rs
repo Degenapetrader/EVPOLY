@@ -23,7 +23,9 @@ use polymarket_arbitrage_bot::evcurve;
 use polymarket_arbitrage_bot::evsnipe;
 use polymarket_arbitrage_bot::models::Market;
 use polymarket_arbitrage_bot::plan3_tables::Plan3Tables;
+use polymarket_arbitrage_bot::plan4b_tables::{Plan4bTables, SessionWatchKey, SessionWatchStart};
 use polymarket_arbitrage_bot::plandaily_tables::PlanDailyTables;
+use polymarket_arbitrage_bot::sessionband;
 use polymarket_arbitrage_bot::strategy::Timeframe;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -35,6 +37,7 @@ const DEFAULT_BIND: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8790;
 const DEFAULT_MAX_BODY_BYTES: usize = 524_288;
 const DEFAULT_PLAN3_PATH: &str = "/opt/evpoly-alpha-service/alpha/plan3.md";
+const DEFAULT_PLAN4B_PATH: &str = "/opt/evpoly-alpha-service/alpha/plan4b.md";
 const DEFAULT_PLANDAILY_PATH: &str = "/opt/evpoly-alpha-service/alpha/plandaily.md";
 const DEFAULT_GAMMA_URL: &str = "https://gamma-api.polymarket.com";
 const DEFAULT_CLOB_URL: &str = "https://clob.polymarket.com";
@@ -70,6 +73,7 @@ struct Settings {
     rate_limit_global_rps: u32,
     rate_limit_global_burst: u32,
     plan3_path: String,
+    plan4b_path: String,
     plandaily_path: String,
     gamma_url: String,
     clob_url: String,
@@ -247,10 +251,12 @@ struct AppState {
     rate_limiter: Arc<RateLimiter>,
     api: Arc<PolymarketApi>,
     evcurve_cfg: evcurve::EvcurveExecutionConfig,
+    sessionband_cfg: sessionband::SessionBandExecutionConfig,
     evsnipe_cfg: evsnipe::EvsnipeConfig,
     evsnipe_spot_anchors: Arc<RwLock<HashMap<String, evsnipe::EvsnipeSpotAnchor>>>,
     plan3_tables: Arc<Plan3Tables>,
     plandaily_tables: Option<Arc<PlanDailyTables>>,
+    watch_starts: Arc<HashMap<SessionWatchKey, SessionWatchStart>>,
     discovery_cache: Arc<DiscoveryCache>,
 }
 
@@ -404,6 +410,40 @@ struct EvcurveRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct SessionbandRequest {
+    symbol: String,
+    timeframe: String,
+    period_open_ts: i64,
+    tau_sec: i64,
+    base_mid: f64,
+    current_mid: f64,
+    ask_up: Option<f64>,
+    ask_down: Option<f64>,
+    #[serde(default)]
+    builder_code: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SessionbandResponse {
+    symbol: String,
+    timeframe: String,
+    period_open_ts: i64,
+    tau_sec: i64,
+    lead_pct: f64,
+    direction: String,
+    session_index: Option<u8>,
+    watch_start_sec: Option<i64>,
+    tau_trigger_sec: Option<i64>,
+    trigger_rate_pct: Option<f64>,
+    should_buy: bool,
+    skip_reason: Option<String>,
+    chosen_ask: Option<f64>,
+    band_price_min: Option<f64>,
+    band_price_max: Option<f64>,
+    score_bps: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct PremarketAlphaLadderRequest {
     strategy_id: String,
     decision_id: String,
@@ -548,8 +588,24 @@ async fn main() -> Result<()> {
         }
     };
 
+    let plan4b_tables =
+        Plan4bTables::load_from_path(settings.plan4b_path.as_str()).with_context(|| {
+            format!(
+                "failed to load plan4b tables from {}",
+                settings.plan4b_path.as_str()
+            )
+        })?;
+
     let evcurve_cfg = evcurve::EvcurveExecutionConfig::from_env();
+    let sessionband_cfg = sessionband::SessionBandExecutionConfig::from_env();
     let evsnipe_cfg = evsnipe::EvsnipeConfig::from_env();
+
+    let watch_starts = Arc::new(plan4b_tables.derive_watch_starts(
+        sessionband_cfg.enabled_symbols().as_slice(),
+        sessionband_cfg.enabled_timeframes().as_slice(),
+        sessionband_cfg.flip_threshold_pct,
+        sessionband_cfg.prewatch_sec,
+    ));
 
     let rate_limiter = Arc::new(RateLimiter::new(
         settings.rate_limit_per_ip_rps,
@@ -565,10 +621,12 @@ async fn main() -> Result<()> {
         rate_limiter,
         api,
         evcurve_cfg,
+        sessionband_cfg,
         evsnipe_cfg,
         evsnipe_spot_anchors,
         plan3_tables,
         plandaily_tables,
+        watch_starts,
         discovery_cache,
     };
 
@@ -593,6 +651,7 @@ async fn main() -> Result<()> {
             post(alpha_mm_sport_depth_skip_handler),
         )
         .route("/v1/alpha/evcurve", post(alpha_evcurve_handler))
+        .route("/v1/alpha/sessionband", post(alpha_sessionband_handler))
         .route(
             "/v1/alpha/premarket/ladder",
             post(alpha_premarket_ladder_handler),
@@ -609,7 +668,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to bind {}", addr.as_str()))?;
 
     eprintln!(
-        "evpoly alpha service listening on {} with routes: /health, /v1/onboard, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-sport/depth-skip, /v1/alpha/evcurve, /v1/alpha/premarket/ladder, /v1/alpha/endgame/policy",
+        "evpoly alpha service listening on {} with routes: /health, /v1/onboard, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-sport/depth-skip, /v1/alpha/evcurve, /v1/alpha/sessionband, /v1/alpha/premarket/ladder, /v1/alpha/endgame/policy",
         addr.as_str()
     );
 
@@ -1238,6 +1297,121 @@ async fn alpha_evcurve_handler(
         "timeframe": timeframe.as_str(),
         "decision": evcurve_decision_to_json(&decision),
     })))
+}
+
+async fn alpha_sessionband_handler(
+    State(state): State<AppState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let payload: SessionbandRequest = parse_json_request(&state, remote.ip(), &headers, &body)?;
+    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
+
+    let timeframe = parse_timeframe(payload.timeframe.as_str()).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "timeframe must be one of 5m,15m,1h,4h",
+        )
+    })?;
+
+    if timeframe == Timeframe::D1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "sessionband does not support 1d timeframe",
+        ));
+    }
+
+    validate_mids_and_asks(
+        payload.base_mid,
+        payload.current_mid,
+        payload.ask_up,
+        payload.ask_down,
+    )?;
+
+    let symbol = normalize_symbol(payload.symbol.as_str());
+    let direction_up = payload.current_mid >= payload.base_mid;
+    let direction = if direction_up { "UP" } else { "DOWN" };
+    let lead_pct = ((payload.current_mid - payload.base_mid).abs()
+        / payload.base_mid.max(f64::EPSILON)
+        * 100.0)
+        .max(0.0);
+
+    let session_index = Plan4bTables::session_index_for_period_open_utc(payload.period_open_ts);
+    let watch = session_index.and_then(|idx| {
+        let key = SessionWatchKey {
+            symbol: symbol.clone(),
+            timeframe,
+            session_index: idx,
+        };
+        state
+            .watch_starts
+            .get(&key)
+            .copied()
+            .map(|watch_start| (idx, watch_start))
+    });
+
+    let chosen_ask = if direction_up {
+        payload.ask_up
+    } else {
+        payload.ask_down
+    }
+    .filter(|value| value.is_finite() && *value > 0.0);
+
+    let band = state.sessionband_cfg.band_for_lead_pct(lead_pct);
+
+    let mut should_buy = false;
+    let mut skip_reason: Option<String> = None;
+    let mut score_bps: Option<f64> = None;
+
+    if payload.tau_sec <= 0 {
+        skip_reason = Some("tau_non_positive".to_string());
+    } else if watch.is_none() {
+        skip_reason = Some("no_watch_start".to_string());
+    } else if payload.tau_sec
+        > watch
+            .map(|(_, watch_start)| watch_start.watch_start_sec)
+            .unwrap_or(i64::MAX)
+    {
+        skip_reason = Some("prewatch_not_started".to_string());
+    } else if !state.sessionband_cfg.tau_allowed(payload.tau_sec) {
+        skip_reason = Some("tau_not_allowed".to_string());
+    } else if band.is_none() {
+        skip_reason = Some("lead_out_of_range".to_string());
+    } else if chosen_ask.is_none() {
+        skip_reason = Some("book_empty".to_string());
+    } else if !band
+        .map(|b| b.contains_price(chosen_ask.unwrap_or_default()))
+        .unwrap_or(false)
+    {
+        skip_reason = Some("ask_out_of_band".to_string());
+    } else {
+        should_buy = true;
+        if let (Some(valid_band), Some(ask)) = (band, chosen_ask) {
+            score_bps = Some(((valid_band.price_max - ask) * 10_000.0).max(0.0));
+        }
+    }
+
+    let response = SessionbandResponse {
+        symbol,
+        timeframe: timeframe.as_str().to_string(),
+        period_open_ts: payload.period_open_ts,
+        tau_sec: payload.tau_sec,
+        lead_pct,
+        direction: direction.to_string(),
+        session_index: watch.map(|(idx, _)| idx),
+        watch_start_sec: watch.map(|(_, watch_start)| watch_start.watch_start_sec),
+        tau_trigger_sec: watch.map(|(_, watch_start)| watch_start.tau_trigger_sec),
+        trigger_rate_pct: watch.map(|(_, watch_start)| watch_start.trigger_rate_pct),
+        should_buy,
+        skip_reason,
+        chosen_ask,
+        band_price_min: band.map(|item| item.price_min),
+        band_price_max: band.map(|item| item.price_max),
+        score_bps,
+    };
+
+    Ok(Json(json!({ "ok": true, "result": response })))
 }
 
 async fn alpha_premarket_ladder_handler(
@@ -2142,6 +2316,12 @@ fn load_settings() -> Result<Settings> {
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_PLAN3_PATH.to_string());
 
+    let plan4b_path = std::env::var("ALPHA_PLAN4B_PATH")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_PLAN4B_PATH.to_string());
+
     let plandaily_path = std::env::var("ALPHA_PLANDAILY_PATH")
         .ok()
         .map(|v| v.trim().to_string())
@@ -2289,6 +2469,7 @@ fn load_settings() -> Result<Settings> {
         rate_limit_global_rps,
         rate_limit_global_burst,
         plan3_path,
+        plan4b_path,
         plandaily_path,
         gamma_url,
         clob_url,

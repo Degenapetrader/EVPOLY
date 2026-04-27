@@ -427,7 +427,7 @@ fn env_f64(key: &str, default: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::strategy::{
-        STRATEGY_ID_ENDGAME_SWEEP_V1, STRATEGY_ID_EVCURVE_V1, STRATEGY_ID_PREMARKET_V1,
+        STRATEGY_ID_ENDGAME_SWEEP_V1, STRATEGY_ID_PREMARKET_V1, STRATEGY_ID_SESSIONBAND_V1,
     };
     use std::collections::HashMap;
 
@@ -577,7 +577,7 @@ mod tests {
         };
         let arbiter = Arbiter::new(cfg);
 
-        let dupe = intent(STRATEGY_ID_EVCURVE_V1, Direction::Up, 0.5, 25.0);
+        let dupe = intent(STRATEGY_ID_SESSIONBAND_V1, Direction::Up, 0.5, 25.0);
         let results = arbiter.submit_intents(vec![dupe.clone(), dupe]);
         let rejected = results
             .iter()

@@ -49,6 +49,11 @@ BASELINE_GENERATED = [
         "EVcurve Remote Token",
         "EVcurve remote alpha token.",
     ),
+    (
+        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
+        "SessionBand Remote Token",
+        "SessionBand remote alpha token.",
+    ),
 ]
 
 

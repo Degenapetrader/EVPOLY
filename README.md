@@ -26,13 +26,15 @@ See [LICENSE](LICENSE).
 - `premarket_v1`
 - `endgame_sweep_v1`
 - `evcurve_v1`
+- `sessionband_v1`
 - `evsnipe_v1`
 - `mm_sport_v1`
 
 ## Current Default Runtime Profile
-- Strategy toggles default ON: `premarket`, `endgame`, `evcurve`, `evsnipe`
+- Strategy toggles default ON: `premarket`, `endgame`, `evcurve`, `sessionband`, `evsnipe`
 - Strategy toggles default OFF: `mm_sport`
 - Default symbols (`premarket`): `BTC,ETH,SOL,XRP`
+- Default symbols (`sessionband`): `BTC,ETH,SOL,XRP`
 - Default symbols (`endgame`, `evcurve`, `evsnipe`): `BTC,ETH,SOL,XRP,DOGE,BNB,HYPE`
 - MM market mode default: `auto`
 
@@ -43,6 +45,7 @@ Defaults are defined by runtime config loaders and reflected in `.env.example` /
 - [Premarket v1](docs/premarket_v1.md)
 - [Endgame Sweep v1](docs/endgame_sweep_v1.md)
 - [EVcurve v1](docs/evcurve_v1.md)
+- [SessionBand v1](docs/sessionband_v1.md)
 - [EVSnipe v1](docs/evsnipe_v1.md)
 
 ### Ops guides
@@ -105,6 +108,7 @@ Timeout policy currently hardcoded in runtime:
 - Premarket ladder alpha: `1000ms`
 - Endgame alpha: `1000ms`
 - EVcurve alpha: `1000ms`
+- SessionBand alpha: `1000ms`
 - EVSnipe remote discovery: `2000ms`
 - Shared timeframe discovery: `2000ms`
 
@@ -140,6 +144,7 @@ Important sizing note:
   - `EVPOLY_PREMARKET_BASE_SIZE_USD`
   - `EVPOLY_ENDGAME_BASE_SIZE_USD`
   - `EVPOLY_EVCURVE_BASE_SIZE_USD`
+  - `EVPOLY_SESSIONBAND_BASE_SIZE_USD`
 - If left blank, each defaults to `100` USD.
 
 Important relayer note:

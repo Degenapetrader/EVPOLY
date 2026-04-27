@@ -5,7 +5,7 @@ use crate::event_log::log_event;
 use crate::signal_state::SharedSignalState;
 use crate::strategy::{
     STRATEGY_ID_ENDGAME_SWEEP_V1, STRATEGY_ID_EVCURVE_V1, STRATEGY_ID_EVSNIPE_V1,
-    STRATEGY_ID_MM_SPORT_V1, STRATEGY_ID_PREMARKET_V1,
+    STRATEGY_ID_MM_SPORT_V1, STRATEGY_ID_PREMARKET_V1, STRATEGY_ID_SESSIONBAND_V1,
 };
 use crate::symbol_ownership;
 use crate::trader::Trader;
@@ -333,6 +333,20 @@ fn setting_specs() -> Vec<BotSettingSpec> {
             description: "EVcurve polling cadence in ms.",
         },
         BotSettingSpec {
+            key: "EVPOLY_SESSIONBAND_POLL_MS",
+            group: "speed",
+            strategy: Some("sessionband"),
+            value_type: BotSettingType::Integer,
+            default_raw: "250",
+            min: Some(100.0),
+            max: Some(60_000.0),
+            enum_values: &[],
+            mutable: true,
+            restart_required: true,
+            config_fallback_key: None,
+            description: "SessionBand polling cadence in ms.",
+        },
+        BotSettingSpec {
             key: "EVPOLY_EVSNIPE_DISCOVERY_REFRESH_SEC",
             group: "speed",
             strategy: Some("evsnipe"),
@@ -430,6 +444,20 @@ fn setting_specs() -> Vec<BotSettingSpec> {
             restart_required: true,
             config_fallback_key: None,
             description: "Enable EVcurve strategy.",
+        },
+        BotSettingSpec {
+            key: "EVPOLY_STRATEGY_SESSIONBAND_ENABLE",
+            group: "strategy",
+            strategy: Some("sessionband"),
+            value_type: BotSettingType::Bool,
+            default_raw: "true",
+            min: None,
+            max: None,
+            enum_values: &[],
+            mutable: true,
+            restart_required: true,
+            config_fallback_key: None,
+            description: "Enable SessionBand strategy.",
         },
         BotSettingSpec {
             key: "EVPOLY_STRATEGY_EVSNIPE_ENABLE",
@@ -543,6 +571,20 @@ fn setting_specs() -> Vec<BotSettingSpec> {
             restart_required: true,
             config_fallback_key: None,
             description: "EVcurve total strategy cap.",
+        },
+        BotSettingSpec {
+            key: "EVPOLY_SESSIONBAND_STRATEGY_CAP_USD",
+            group: "risk",
+            strategy: Some("sessionband"),
+            value_type: BotSettingType::Number,
+            default_raw: "2000",
+            min: Some(1.0),
+            max: Some(10_000_000.0),
+            enum_values: &[],
+            mutable: true,
+            restart_required: true,
+            config_fallback_key: None,
+            description: "SessionBand total strategy cap.",
         },
         BotSettingSpec {
             key: "EVPOLY_MM_HARD_DISABLE",
@@ -684,6 +726,20 @@ fn setting_specs() -> Vec<BotSettingSpec> {
             restart_required: true,
             config_fallback_key: None,
             description: "EVcurve base size in USD before symbol/timeframe multipliers.",
+        },
+        BotSettingSpec {
+            key: "EVPOLY_SESSIONBAND_BASE_SIZE_USD",
+            group: "strategy",
+            strategy: Some("sessionband"),
+            value_type: BotSettingType::Number,
+            default_raw: "10",
+            min: Some(1.0),
+            max: Some(1_000_000.0),
+            enum_values: &[],
+            mutable: true,
+            restart_required: true,
+            config_fallback_key: None,
+            description: "SessionBand base size in USD before symbol and tau multipliers.",
         },
         BotSettingSpec {
             key: "EVPOLY_ENDGAME_TIMEFRAMES",
@@ -1644,11 +1700,11 @@ fn strategy_enabled(strategy_slug: &str) -> bool {
 }
 
 fn strategy_requires_shared_signal_health(strategy_slug: &str) -> bool {
-    matches!(strategy_slug, "endgame" | "evcurve")
+    matches!(strategy_slug, "endgame" | "evcurve" | "sessionband")
 }
 
 fn strategy_requires_shared_coinbase_health(strategy_slug: &str) -> bool {
-    matches!(strategy_slug, "endgame" | "evcurve")
+    matches!(strategy_slug, "endgame" | "evcurve" | "sessionband")
 }
 
 fn any_enabled_strategy_requires_shared_signal_health() -> bool {
@@ -1688,6 +1744,7 @@ fn strategy_symbol_env_key(strategy_slug: &str) -> Option<&'static str> {
         "endgame" => Some("EVPOLY_ENDGAME_SYMBOLS"),
         "evcurve" => Some("EVPOLY_EVCURVE_SYMBOLS"),
         "evsnipe" => Some("EVPOLY_EVSNIPE_SYMBOLS"),
+        "sessionband" => Some("EVPOLY_SESSIONBAND_SYMBOLS"),
         _ => None,
     }
 }
@@ -2378,6 +2435,14 @@ async fn collect_doctor_issues(
         true,
         "EVPOLY_REMOTE_EVCURVE_ALPHA_URL",
         "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
+        true,
+    );
+    check_remote_alpha_issue(
+        STRATEGY_ID_SESSIONBAND_V1,
+        "EVPOLY_STRATEGY_SESSIONBAND_ENABLE",
+        true,
+        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
+        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
         true,
     );
     check_remote_alpha_issue(

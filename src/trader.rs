@@ -133,6 +133,7 @@ pub enum EntryExecutionMode {
     Ladder,
     Endgame,
     Evcurve,
+    SessionBand,
     Evsnipe,
     Restored,
     Legacy,
@@ -144,6 +145,7 @@ impl EntryExecutionMode {
             EntryExecutionMode::Ladder => "ladder",
             EntryExecutionMode::Endgame => "endgame",
             EntryExecutionMode::Evcurve => "evcurve",
+            EntryExecutionMode::SessionBand => "sessionband",
             EntryExecutionMode::Evsnipe => "evsnipe",
             EntryExecutionMode::Restored => "restored",
             EntryExecutionMode::Legacy => "legacy",
@@ -155,6 +157,7 @@ impl EntryExecutionMode {
             "ladder" => EntryExecutionMode::Ladder,
             "endgame" => EntryExecutionMode::Endgame,
             "evcurve" => EntryExecutionMode::Evcurve,
+            "sessionband" => EntryExecutionMode::SessionBand,
             "evsnipe" => EntryExecutionMode::Evsnipe,
             "restored" => EntryExecutionMode::Restored,
             _ => EntryExecutionMode::Legacy,
@@ -588,6 +591,10 @@ impl Trader {
                 .hold_to_resolution_ladder
                 .unwrap_or(self.config.hold_to_resolution),
             EntryExecutionMode::Evcurve => self
+                .config
+                .hold_to_resolution_ladder
+                .unwrap_or(self.config.hold_to_resolution),
+            EntryExecutionMode::SessionBand => self
                 .config
                 .hold_to_resolution_ladder
                 .unwrap_or(self.config.hold_to_resolution),
@@ -1972,6 +1979,12 @@ impl Trader {
                         period_timestamp, token_id, price_cents, timeframe, strategy
                     )
                 }
+            }
+            EntryExecutionMode::SessionBand => {
+                format!(
+                    "{}_{}_sessionband_{}_{}_{}",
+                    period_timestamp, token_id, price_cents, timeframe, strategy
+                )
             }
             EntryExecutionMode::Evsnipe => {
                 format!(
@@ -5705,7 +5718,9 @@ impl Trader {
             .unwrap_or(false);
         let use_fak_limit_entry = matches!(
             strategy_id.as_str(),
-            crate::strategy::STRATEGY_ID_ENDGAME_SWEEP_V1 | crate::strategy::STRATEGY_ID_EVSNIPE_V1
+            crate::strategy::STRATEGY_ID_ENDGAME_SWEEP_V1
+                | crate::strategy::STRATEGY_ID_SESSIONBAND_V1
+                | crate::strategy::STRATEGY_ID_EVSNIPE_V1
         ) || request_force_fak;
         let cross_spread_used = opportunity.use_market_order;
         let post_only_default = Self::entry_post_only_enabled_for_strategy(strategy_id.as_str());
@@ -15256,6 +15271,23 @@ mod tests {
         let adjusted = Trader::effective_market_order_constraints(
             crate::strategy::STRATEGY_ID_EVCURVE_V1,
             EntryExecutionMode::Evcurve,
+            Some(MarketOrderConstraints {
+                min_notional_usd: 5.0,
+                min_size_shares: 50.0,
+                tick_size: 0.01,
+            }),
+        )
+        .expect("constraints");
+
+        assert_eq!(adjusted.min_notional_usd, 5.0);
+        assert_eq!(adjusted.min_size_shares, 0.0);
+    }
+
+    #[test]
+    fn sessionband_constraints_ignore_reward_share_floor() {
+        let adjusted = Trader::effective_market_order_constraints(
+            crate::strategy::STRATEGY_ID_SESSIONBAND_V1,
+            EntryExecutionMode::SessionBand,
             Some(MarketOrderConstraints {
                 min_notional_usd: 5.0,
                 min_size_shares: 50.0,

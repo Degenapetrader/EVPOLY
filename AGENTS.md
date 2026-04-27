@@ -14,6 +14,7 @@ Strategies include (minimum):
 - `premarket_v1`
 - `endgame_sweep_v1`
 - `evcurve_v1`
+- `sessionband_v1`
 - `evsnipe_v1`
 - `mm_sport_v1`
 
@@ -30,6 +31,7 @@ Strategies include (minimum):
 - Strategy configs:
   - `src/config.rs` (endgame/global)
   - `src/evcurve.rs`
+  - `src/sessionband.rs`
   - `src/evsnipe.rs`
   - `src/mm/mod.rs`
 - Shared sizing policy: `src/size_policy.rs`
@@ -40,14 +42,16 @@ Strategies include (minimum):
 
 ### 3) Current Runtime Defaults
 - Strategy toggles:
-  - ON: premarket, endgame, evcurve, evsnipe
+  - ON: premarket, endgame, evcurve, sessionband, evsnipe
   - OFF: mm_sport
 - Default symbols:
   - premarket: `BTC, ETH, SOL, XRP`
+  - sessionband: `BTC, ETH, SOL, XRP`
   - endgame/evcurve/evsnipe: `BTC, ETH, SOL, XRP, DOGE, BNB, HYPE`
 - MM mode default: `auto`
 
 ### 4) Known Combo Constraints
+- `endgame_sweep_v1` and `sessionband_v1` are both late-window close strategies; review sizing before running both heavy.
 - `mm_sport_v1` should not be combined with heavy directional profiles until risk sizing is reviewed.
 - See `docs/strategy_combos.md`.
 
@@ -64,6 +68,10 @@ Strategies include (minimum):
 - Endgame/EVcurve alpha:
   - remote decision path,
   - unavailable/invalid responses skip decision (strategy-specific skip behavior).
+- SessionBand alpha:
+  - remote decision path at tau checkpoints,
+  - local runtime owns market discovery, base anchoring, sizing, caps, and order placement,
+  - unavailable/invalid responses skip decision.
 - MM Sport:
   - remote alpha owns low-depth skip decisions,
   - local runtime owns quote placement and inventory handling.

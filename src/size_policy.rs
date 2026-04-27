@@ -13,6 +13,8 @@ const DEFAULT_SYMBOL_MULTIPLIER_HYPE: f64 = 0.5;
 const DEFAULT_PREMARKET_TIMEFRAME_MULTIPLIERS: [f64; 5] = [0.75, 1.0, 1.25, 1.25, 1.25];
 const DEFAULT_EVCURVE_TIMEFRAME_MULTIPLIERS: [f64; 4] = [0.75, 1.0, 1.25, 1.25];
 const DEFAULT_ENDGAME_TICK_MULTIPLIERS: [f64; 3] = [0.20, 0.40, 0.40];
+const DEFAULT_SESSIONBAND_TAU2_MULTIPLIER: f64 = 0.30;
+const DEFAULT_SESSIONBAND_TAU1_MULTIPLIER: f64 = 0.70;
 
 pub fn base_size_usd_from_env(env_key: &str) -> f64 {
     base_size_usd_from_env_with_default(env_key, DEFAULT_BASE_SIZE_USD)
@@ -75,6 +77,15 @@ pub fn endgame_tick_multiplier(tick_index: u32) -> Option<f64> {
         0 => Some(multipliers[0]),
         1 => Some(multipliers[1]),
         2 => Some(multipliers[2]),
+        _ => None,
+    }
+}
+
+pub fn sessionband_tau_multiplier(tau_sec: i64) -> Option<f64> {
+    let (tau2_multiplier, tau1_multiplier) = sessionband_tau_multipliers();
+    match tau_sec {
+        2 => Some(tau2_multiplier),
+        1 => Some(tau1_multiplier),
         _ => None,
     }
 }
@@ -187,6 +198,22 @@ fn evcurve_timeframe_multipliers() -> &'static [f64; 4] {
     })
 }
 
+fn sessionband_tau_multipliers() -> (f64, f64) {
+    static MULTIPLIERS: OnceLock<(f64, f64)> = OnceLock::new();
+    *MULTIPLIERS.get_or_init(|| {
+        (
+            env_nonnegative_f64(
+                "EVPOLY_SESSIONBAND_TAU2_MULTIPLIER",
+                DEFAULT_SESSIONBAND_TAU2_MULTIPLIER,
+            ),
+            env_nonnegative_f64(
+                "EVPOLY_SESSIONBAND_TAU1_MULTIPLIER",
+                DEFAULT_SESSIONBAND_TAU1_MULTIPLIER,
+            ),
+        )
+    })
+}
+
 fn env_nonnegative_f64(env_key: &str, default: f64) -> f64 {
     std::env::var(env_key)
         .ok()
@@ -252,6 +279,13 @@ mod tests {
         assert_eq!(endgame_tick_multiplier(1), Some(0.40));
         assert_eq!(endgame_tick_multiplier(2), Some(0.40));
         assert_eq!(endgame_tick_multiplier(3), None);
+    }
+
+    #[test]
+    fn sessionband_tau_multiplier_matches_policy() {
+        assert_eq!(sessionband_tau_multiplier(2), Some(0.30));
+        assert_eq!(sessionband_tau_multiplier(1), Some(0.70));
+        assert_eq!(sessionband_tau_multiplier(3), None);
     }
 
     #[test]

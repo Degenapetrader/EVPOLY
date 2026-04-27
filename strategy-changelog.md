@@ -9,6 +9,12 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-04-27
+- `sessionband_v1` was restored/ported back into main2 while keeping `mm_rewards_v1` removed (`src/sessionband.rs`, `src/main.rs`, `src/trader.rs`, `src/bin/alpha_service.rs`, `src/size_policy.rs`, `.env.example`, `.env.full.example`, `README.md`, `docs/sessionband_v1.md`, `docs/strategy_combos.md`).
+  - runtime again starts the SessionBand loop, dedicated arbiter worker pool, SessionBand entry mode, sizing policy, near-base guard, and submit timing freshness guard for `BTC/ETH/SOL/XRP` across `5m/15m/1h/4h`.
+  - alpha service exposes `/v1/alpha/sessionband`; local runtime owns proxy feeds, base anchoring, discovery, sizing/caps, and order placement while remote alpha owns the SessionBand decision, with unavailable/invalid alpha responses skipping the decision.
+  - env/onboarding/docs now expose `EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL`, `EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN`, `EVPOLY_STRATEGY_SESSIONBAND_ENABLE`, and SessionBand base-size/tau controls.
+
 ### 2026-04-26
 - `sessionband_v1` and `mm_rewards_v1` were retired from main2 active runtime/code/docs/env (`src/main.rs`, `src/trader.rs`, `src/bin/alpha_service.rs`, `src/mm/mod.rs`, `.env.example`, `.env.full.example`, `README.md`, `docs/strategy_combos.md`).
   - removed SessionBand and MM Rewards strategy constants, runtime loops, alpha-service endpoints, admin metadata, env/onboarding keys, per-strategy docs, and MM Rewards helper modules.
@@ -98,6 +104,12 @@ Older entries may reference env keys that were removed in later commits.
 - Core gate: `p_flip` cap, min samples, curve-derived `max_buy`, min-buy floor.
 - Supports `15m/1h/4h/1d` (`5m` removed from EVcurve runtime path).
 - 1d uses dedicated zero-flip and EV-gap sub-rules.
+
+### `sessionband_v1`
+- Late-window checkpoint strategy at `tau=2s` and `tau=1s`.
+- Remote alpha owns session/band decisioning through `/v1/alpha/sessionband`.
+- Local runtime owns proxy feeds, base anchoring, market discovery, sizing/caps, and FAK order placement.
+- Remote alpha unavailable/invalid -> skip decision.
 
 ### `evsnipe_v1`
 - Binance price-rule strategy for hit markets (`High >= strike` / `Low <= strike`) only.

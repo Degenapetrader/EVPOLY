@@ -56,6 +56,9 @@ const DEFAULT_ENDGAME_BASE_OFFSETS_MS: &[u64] = &[2000, 1000, 100];
 const DEFAULT_ENDGAME_NEAR_T_RANDOM_MAX_BPS: u32 = 2500;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_BASE_MS: i64 = 400;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_JITTER_MS: i64 = 100;
+const DEFAULT_ENDGAME_LEGACY_SDK1_COMPAT: bool = true;
+const DEFAULT_ENDGAME_LEGACY_SDK1_BASE_OFFSETS_MS: &[u64] = &[3000, 1000, 100];
+const DEFAULT_ENDGAME_LEGACY_SDK1_OFFSET_JITTER_MS: i64 = 50;
 const MM_SPORT_DEPTH_SKIP_MAX_MARKETS: usize = 200;
 const MM_SPORT_DEPTH_SKIP_CONCURRENCY: usize = 8;
 const AUTO_ALPHA_KEY_PREFIX: &str = "evp_auto";
@@ -96,6 +99,9 @@ struct Settings {
     endgame_near_t_random_max_bps: u32,
     endgame_submit_proxy_max_age_base_ms: i64,
     endgame_submit_proxy_max_age_jitter_ms: i64,
+    endgame_legacy_sdk1_compat: bool,
+    endgame_legacy_sdk1_base_offsets_ms: Vec<u64>,
+    endgame_legacy_sdk1_offset_jitter_ms: i64,
     allowed_proxy_wallets: HashSet<String>,
 }
 
@@ -1796,7 +1802,11 @@ async fn alpha_endgame_policy_handler(
 ) -> Result<impl IntoResponse, ApiError> {
     let payload: EndgameAlphaPolicyRequest =
         parse_json_request(&state, remote.ip(), &headers, &body)?;
-    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
+    let legacy_sdk1_request =
+        state.settings.endgame_legacy_sdk1_compat && payload.builder_code.is_none();
+    if !(legacy_sdk1_request && request_uses_service_token(&state.settings, &headers)) {
+        ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
+    }
     let timeframe = parse_timeframe(payload.timeframe.as_str()).ok_or_else(|| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -1838,10 +1848,16 @@ async fn alpha_endgame_policy_handler(
     let proxy_wallet =
         ensure_proxy_wallet_authorized(&state.settings, &headers, payload.proxy_wallet.as_str())?;
     let symbol = normalize_symbol(payload.symbol.as_str());
+    let base_offsets_ms = if legacy_sdk1_request {
+        state
+            .settings
+            .endgame_legacy_sdk1_base_offsets_ms
+            .as_slice()
+    } else {
+        state.settings.endgame_base_offsets_ms.as_slice()
+    };
 
-    let mut tick_offsets_ms = state
-        .settings
-        .endgame_base_offsets_ms
+    let mut tick_offsets_ms = base_offsets_ms
         .iter()
         .enumerate()
         .filter_map(|(idx, base)| {
@@ -1855,11 +1871,22 @@ async fn alpha_endgame_policy_handler(
                 payload.nonce,
                 idx
             );
-            Some(seeded_near_t_offset_ms(
-                *base,
-                state.settings.endgame_near_t_random_max_bps,
-                seed.as_str(),
-            ))
+            if legacy_sdk1_request {
+                Some(
+                    seeded_jitter_ms(
+                        i64::try_from(*base).unwrap_or(120_000),
+                        state.settings.endgame_legacy_sdk1_offset_jitter_ms,
+                        seed.as_str(),
+                    )
+                    .clamp(50, 120_000) as u64,
+                )
+            } else {
+                Some(seeded_near_t_offset_ms(
+                    *base,
+                    state.settings.endgame_near_t_random_max_bps,
+                    seed.as_str(),
+                ))
+            }
         })
         .collect::<Vec<_>>();
     tick_offsets_ms.sort_by(|a, b| b.cmp(a));
@@ -1892,7 +1919,12 @@ async fn alpha_endgame_policy_handler(
         tick_offsets_ms,
         submit_proxy_max_age_ms,
         source: "remote".to_string(),
-        reason: "near_t_randomized_policy".to_string(),
+        reason: if legacy_sdk1_request {
+            "legacy_sdk1_randomized_policy"
+        } else {
+            "near_t_randomized_policy"
+        }
+        .to_string(),
     }))
 }
 
@@ -2049,6 +2081,15 @@ fn request_uses_auto_alpha(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+fn request_uses_service_token(settings: &Settings, headers: &HeaderMap) -> bool {
+    let Some(expected) = settings.token.as_deref() else {
+        return false;
+    };
+    bearer_token(headers)
+        .map(|token| constant_time_eq(expected.as_bytes(), token.as_bytes()))
+        .unwrap_or(false)
+}
+
 fn builder_code_matches_official(builder_code: Option<&str>) -> bool {
     builder_code
         .map(str::trim)
@@ -2170,6 +2211,27 @@ fn seeded_near_t_offset_ms(base_ms: u64, max_near_t_bps: u32, seed: &str) -> u64
     seed.hash(&mut hasher);
     let shift_ms = hasher.finish() % max_shift_ms.saturating_add(1);
     base_ms.saturating_sub(shift_ms).clamp(50, 120_000)
+}
+
+fn normalize_endgame_offsets_ms(mut offsets: Vec<u64>) -> Vec<u64> {
+    offsets.retain(|value| *value > 0);
+    offsets.sort_by(|a, b| b.cmp(a));
+    offsets.dedup();
+    offsets
+}
+
+fn parse_endgame_offsets_ms_env(name: &str, default_values: &[u64]) -> Vec<u64> {
+    let offsets = std::env::var(name)
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .filter_map(|part| part.trim().parse::<u64>().ok())
+                .collect::<Vec<_>>()
+        })
+        .map(normalize_endgame_offsets_ms)
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| default_values.to_vec());
+    normalize_endgame_offsets_ms(offsets)
 }
 
 fn validate_mids_and_asks(
@@ -2691,18 +2753,25 @@ fn load_settings() -> Result<Settings> {
         .unwrap_or(DEFAULT_PREMARKET_YES_MAX)
         .clamp(0.0, 1.0);
 
-    let mut endgame_base_offsets_ms = std::env::var("ALPHA_ENDGAME_BASE_OFFSETS_MS")
+    let endgame_base_offsets_ms = parse_endgame_offsets_ms_env(
+        "ALPHA_ENDGAME_BASE_OFFSETS_MS",
+        DEFAULT_ENDGAME_BASE_OFFSETS_MS,
+    );
+
+    let endgame_legacy_sdk1_compat = std::env::var("ALPHA_ENDGAME_LEGACY_SDK1_COMPAT")
         .ok()
-        .map(|raw| {
-            raw.split(',')
-                .filter_map(|part| part.trim().parse::<u64>().ok())
-                .filter(|value| *value > 0)
-                .collect::<Vec<_>>()
-        })
-        .filter(|values| !values.is_empty())
-        .unwrap_or_else(|| DEFAULT_ENDGAME_BASE_OFFSETS_MS.to_vec());
-    endgame_base_offsets_ms.sort_by(|a, b| b.cmp(a));
-    endgame_base_offsets_ms.dedup();
+        .and_then(|v| parse_bool(v.as_str()))
+        .unwrap_or(DEFAULT_ENDGAME_LEGACY_SDK1_COMPAT);
+    let endgame_legacy_sdk1_base_offsets_ms = parse_endgame_offsets_ms_env(
+        "ALPHA_ENDGAME_LEGACY_SDK1_BASE_OFFSETS_MS",
+        DEFAULT_ENDGAME_LEGACY_SDK1_BASE_OFFSETS_MS,
+    );
+    let endgame_legacy_sdk1_offset_jitter_ms =
+        std::env::var("ALPHA_ENDGAME_LEGACY_SDK1_OFFSET_JITTER_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .unwrap_or(DEFAULT_ENDGAME_LEGACY_SDK1_OFFSET_JITTER_MS)
+            .clamp(0, 5_000);
 
     let endgame_near_t_random_max_bps = std::env::var("ALPHA_ENDGAME_NEAR_T_RANDOM_MAX_BPS")
         .ok()
@@ -2767,6 +2836,9 @@ fn load_settings() -> Result<Settings> {
         endgame_near_t_random_max_bps,
         endgame_submit_proxy_max_age_base_ms,
         endgame_submit_proxy_max_age_jitter_ms,
+        endgame_legacy_sdk1_compat,
+        endgame_legacy_sdk1_base_offsets_ms,
+        endgame_legacy_sdk1_offset_jitter_ms,
         allowed_proxy_wallets,
     })
 }
@@ -2808,5 +2880,28 @@ mod tests {
     #[test]
     fn endgame_default_offsets_are_t0_t1_t2() {
         assert_eq!(DEFAULT_ENDGAME_BASE_OFFSETS_MS, &[2_000, 1_000, 100]);
+    }
+
+    #[test]
+    fn endgame_legacy_sdk1_offsets_keep_v1_t0_t1_t2() {
+        assert_eq!(
+            DEFAULT_ENDGAME_LEGACY_SDK1_BASE_OFFSETS_MS,
+            &[3_000, 1_000, 100]
+        );
+        for base_ms in DEFAULT_ENDGAME_LEGACY_SDK1_BASE_OFFSETS_MS {
+            for idx in 0..200 {
+                let offset = seeded_jitter_ms(
+                    i64::try_from(*base_ms).unwrap(),
+                    DEFAULT_ENDGAME_LEGACY_SDK1_OFFSET_JITTER_MS,
+                    format!("legacy-seed-{base_ms}-{idx}").as_str(),
+                )
+                .clamp(50, 120_000) as u64;
+                let lower =
+                    base_ms.saturating_sub(DEFAULT_ENDGAME_LEGACY_SDK1_OFFSET_JITTER_MS as u64);
+                let upper =
+                    base_ms.saturating_add(DEFAULT_ENDGAME_LEGACY_SDK1_OFFSET_JITTER_MS as u64);
+                assert!(offset >= lower && offset <= upper);
+            }
+        }
     }
 }

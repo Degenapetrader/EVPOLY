@@ -22,6 +22,11 @@ Policy includes:
 - Alpha may move each offset up to `25%` closer to `T` only, so `2000ms` can become `1700ms` but not `2300ms`.
 - `submit_proxy_max_age_ms` (submit-time stale guard)
 
+Compatibility:
+- SDK v1 clients that do not send `builder_code` still use the same `/v1/alpha/endgame/policy` endpoint.
+- For those legacy shared-token requests, alpha returns the SDK v1-compatible `3000,1000,100` ms base schedule with small symmetric jitter.
+- `main2` requests include the official builder code and keep the `2000,1000,100` near-T policy.
+
 Config:
 - `EVPOLY_REMOTE_ENDGAME_ALPHA_URL`
 - `EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN`

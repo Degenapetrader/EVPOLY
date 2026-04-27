@@ -10,6 +10,9 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-27
+- `endgame_sweep_v1`: made `/v1/alpha/endgame/policy` serve both SDK v1 and `main2` timing contracts from the alpha service (`src/bin/alpha_service.rs`, `docs/endgame_sweep_v1.md`).
+  - SDK v1 requests using the shared alpha token without `builder_code` now receive the legacy-compatible `3000,1000,100` ms base checkpoint schedule with small symmetric jitter.
+  - `main2` requests that include the official builder code keep the newer `2000,1000,100` ms near-T-only policy and submit-stale guard response shape.
 - `premarket_v1`: restored the SDK v1 compatibility alpha gate route on the alpha service (`src/bin/alpha_service.rs`).
   - `POST /v1/alpha/premarket/should-trade` again returns the legacy random yes/no gate response for old clients while current main2 continues to use `/v1/alpha/premarket/ladder`.
   - also restored compatibility handlers for retired `mm_rewards_v1` alpha selection/preflight routes so old clients receive valid responses instead of 404s during the migration window.

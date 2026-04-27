@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 
 import remote_onboard
@@ -33,10 +34,12 @@ class RemoteOnboardTests(unittest.TestCase):
 
 class SetupDoctorTests(unittest.TestCase):
     def test_doctor_user_facing_baseline_has_no_order_posting_signer_token(self) -> None:
-        generated_keys = [key for key, _, _ in setup_doctor.BASELINE_GENERATED]
-        self.assertIn("EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN", generated_keys)
-        self.assertTrue(all("ORDER_SIGNER" not in key for key in generated_keys))
-        self.assertTrue(all("BUILDER_REMOTE" not in key for key in generated_keys))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = setup_doctor.run_doctor(setup_doctor.Path(tmpdir) / ".env")
+        item_keys = [item["key"] for item in result["items"]]
+        self.assertIn("EVPOLY_ALPHA_KEY", item_keys)
+        self.assertTrue(all("ORDER_SIGNER" not in key for key in item_keys))
+        self.assertTrue(all("BUILDER_REMOTE" not in key for key in item_keys))
 
 
 if __name__ == "__main__":

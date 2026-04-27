@@ -5401,6 +5401,17 @@ impl PolymarketApi {
         }))
     }
 
+    pub async fn ensure_auto_redeem_approval(
+        &self,
+        enabled: bool,
+    ) -> Result<AutoRedeemApprovalStatus> {
+        let current = self.check_auto_redeem_approval().await?;
+        if current.enabled == enabled {
+            return Ok(current);
+        }
+        self.set_auto_redeem_approval(enabled).await
+    }
+
     pub async fn set_auto_redeem_approval(
         &self,
         enabled: bool,

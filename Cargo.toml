@@ -48,6 +48,10 @@ path = "src/bin/main_price_monitor.rs"
 name = "manual_bot"
 path = "src/bin/manual_bot.rs"
 
+[[bin]]
+name = "builder_fees"
+path = "src/bin/builder_fees.rs"
+
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
 reqwest = { version = "0.11", features = ["json"] }

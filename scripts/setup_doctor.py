@@ -1,64 +1,41 @@
 #!/usr/bin/env python3
 """EVPOLY setup doctor.
 
-Checks the current env against the baseline remote/runtime credentials that a
-healthy EVPOLY setup should have, regenerates anything onboarding can provide,
-and reports any remaining manual fields that still need user input.
+Checks the current env against the baseline public V2 runtime fields that a
+healthy EVPOLY setup should have, confirms alpha self-onboarding posture, and
+reports any remaining manual fields that still need user input.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import subprocess
-import sys
+import shutil
+import string
 from pathlib import Path
 from typing import Any, Dict, List
 
-import remote_onboard as ro
-
-
-BASELINE_GENERATED = [
-    (
-        "EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN",
-        "Relayer Submit Signer Token",
-        "Remote signer token used only for relayer submit fallback.",
-    ),
-    (
-        "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN",
-        "Remote Discovery Token",
-        "Shared discovery token used for remote timeframe market discovery.",
-    ),
-    (
-        "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
-        "Premarket Remote Token",
-        "Premarket remote alpha token.",
-    ),
-    (
-        "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
-        "Endgame Remote Token",
-        "Endgame remote alpha token.",
-    ),
-    (
-        "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
-        "EVSnipe Discovery Token",
-        "EVSnipe discovery token.",
-    ),
-    (
-        "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
-        "EVcurve Remote Token",
-        "EVcurve remote alpha token.",
-    ),
-    (
-        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
-        "SessionBand Remote Token",
-        "SessionBand remote alpha token.",
-    ),
-]
-
 
 def _env_value(env_path: Path, key: str) -> str:
-    return ro._read_env_value(str(env_path), key).strip()
+    if not env_path.exists():
+        return ""
+    needle = f"{key}="
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(needle):
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _ensure_env_file(env_path: Path, repo_root: Path) -> None:
+    if env_path.exists():
+        return
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    for seed_name in (".env.example", ".env.full.example"):
+        seed = repo_root / seed_name
+        if seed.exists():
+            shutil.copyfile(seed, env_path)
+            return
+    env_path.write_text("", encoding="utf-8")
 
 
 def _status_item(key: str, label: str, status: str, message: str) -> Dict[str, Any]:
@@ -88,47 +65,34 @@ def _parse_signature_type(raw: str) -> int:
     return value if value in (0, 1, 2) else 0
 
 
-def _run_remote_onboard(env_path: Path, private_key: str, signature_type: int, proxy_wallet: str) -> str:
-    script_path = Path(__file__).resolve().parent / "remote_onboard.py"
-    command = [
-        sys.executable,
-        str(script_path),
-        "--private-key",
-        private_key,
-        "--signature-type",
-        str(signature_type),
-        "--write-env-file",
-        str(env_path),
-        "--skip-approvals",
-        "--skip-retention-cron",
-    ]
-    if signature_type in (1, 2):
-        command.extend(["--proxy-wallet", proxy_wallet])
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    stdout = completed.stdout.strip()
-    stderr = completed.stderr.strip()
-    if completed.returncode != 0:
-        detail = stderr or stdout or f"exit code {completed.returncode}"
-        raise RuntimeError(f"remote onboarding failed: {detail}")
-    return stdout
+def _parse_env_bool(raw: str, default: bool) -> bool:
+    normalized = (raw or "").strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _private_key_looks_valid(raw: str) -> bool:
+    value = raw.strip()
+    if value.startswith("0x"):
+        value = value[2:]
+    return len(value) == 64 and all(ch in string.hexdigits for ch in value)
 
 
 def _collect_audit(env_path: Path) -> Dict[str, Any]:
     items: List[Dict[str, Any]] = []
     blocking_missing_labels: List[str] = []
     manual_missing_labels: List[str] = []
-    generated_missing_keys: List[str] = []
 
     private_key = _env_value(env_path, "POLY_PRIVATE_KEY")
     signature_type = _parse_signature_type(_env_value(env_path, "POLY_SIGNATURE_TYPE"))
     proxy_wallet = _env_value(env_path, "POLY_PROXY_WALLET_ADDRESS")
     relayer_key = _env_value(env_path, "RELAYER_API_KEY")
     relayer_address = _env_value(env_path, "RELAYER_API_KEY_ADDRESS")
+    alpha_key = _env_value(env_path, "EVPOLY_ALPHA_KEY")
+    alpha_auto_onboard = _parse_env_bool(_env_value(env_path, "EVPOLY_ALPHA_AUTO_ONBOARD"), True)
 
     if not private_key:
         items.append(
@@ -142,9 +106,7 @@ def _collect_audit(env_path: Path) -> Dict[str, Any]:
         blocking_missing_labels.append("Private Key")
         manual_missing_labels.append("Private Key")
     else:
-        try:
-            ro.Account.from_key(private_key)
-        except Exception:
+        if not _private_key_looks_valid(private_key):
             items.append(
                 _status_item(
                     "POLY_PRIVATE_KEY",
@@ -190,17 +152,37 @@ def _collect_audit(env_path: Path) -> Dict[str, Any]:
         )
         manual_missing_labels.append("Relayer API Key Address")
 
-    for key, label, message in BASELINE_GENERATED:
-        if not _env_value(env_path, key):
-            items.append(
-                _status_item(
-                    key,
-                    label,
-                    "missing_generated",
-                    f"{message} Setup Doctor will regenerate it from onboarding when available.",
-                )
+    if alpha_key:
+        items.append(
+            _status_item(
+                "EVPOLY_ALPHA_KEY",
+                "Alpha Access",
+                "ok",
+                "EVPOLY_ALPHA_KEY is already present.",
             )
-            generated_missing_keys.append(key)
+        )
+    elif alpha_auto_onboard:
+        items.append(
+            _status_item(
+                "EVPOLY_ALPHA_KEY",
+                "Alpha Access",
+                "ok",
+                (
+                    "EVPOLY_ALPHA_KEY is blank; runtime will auto-register it on first start "
+                    "when POLY_PROXY_WALLET_ADDRESS and the official builder code are present."
+                ),
+            )
+        )
+    else:
+        items.append(
+            _status_item(
+                "EVPOLY_ALPHA_KEY",
+                "Alpha Access",
+                "missing_user",
+                "Set EVPOLY_ALPHA_KEY manually or set EVPOLY_ALPHA_AUTO_ONBOARD=true.",
+            )
+        )
+        manual_missing_labels.append("Alpha Access")
 
     if not items:
         items.append(
@@ -216,28 +198,7 @@ def _collect_audit(env_path: Path) -> Dict[str, Any]:
         "items": items,
         "blocking_missing_labels": blocking_missing_labels,
         "manual_missing_labels": manual_missing_labels,
-        "generated_missing_keys": generated_missing_keys,
-        "private_key": private_key,
-        "signature_type": signature_type,
-        "proxy_wallet": proxy_wallet,
     }
-
-
-def _mark_fixed_items(items: List[Dict[str, Any]], fixed_keys: List[str]) -> None:
-    for item in items:
-        if item["key"] in fixed_keys and item["status"] in {"missing_generated", "ok"}:
-            item["status"] = "fixed"
-            item["message"] = f'{item["label"]} regenerated automatically.'
-
-
-def _mark_unfixed_generated(items: List[Dict[str, Any]], missing_keys: List[str]) -> None:
-    for item in items:
-        if item["key"] in missing_keys and item["status"] == "missing_generated":
-            item["status"] = "failed"
-            item["message"] = (
-                f'{item["label"]} is still missing after doctor regeneration. '
-                "Rerun onboarding or inspect the remote onboarding service."
-            )
 
 
 def _popup_for_needs_you(audit: Dict[str, Any], relayer_only: bool) -> Dict[str, str]:
@@ -271,32 +232,12 @@ def _popup_for_needs_you(audit: Dict[str, Any], relayer_only: bool) -> Dict[str,
 def run_doctor(env_path: Path) -> Dict[str, Any]:
     env_path = env_path.expanduser().resolve()
     repo_root = Path(__file__).resolve().parents[1]
-    ro._ensure_env_file(str(env_path), repo_root)
-
-    initial = _collect_audit(env_path)
-    fixed_keys: List[str] = []
-
-    if initial["generated_missing_keys"] and not initial["blocking_missing_labels"]:
-        _run_remote_onboard(
-            env_path,
-            initial["private_key"],
-            initial["signature_type"],
-            initial["proxy_wallet"],
-        )
+    _ensure_env_file(env_path, repo_root)
 
     final = _collect_audit(env_path)
-    for key, _, _ in BASELINE_GENERATED:
-        if key in initial["generated_missing_keys"] and not _env_value(env_path, key):
-            continue
-        if key in initial["generated_missing_keys"] and _env_value(env_path, key):
-            fixed_keys.append(key)
-
-    _mark_fixed_items(final["items"], fixed_keys)
-    _mark_unfixed_generated(final["items"], final["generated_missing_keys"])
 
     relayer_only = (
         not final["blocking_missing_labels"]
-        and not final["generated_missing_keys"]
         and any(
             item["key"] in {"RELAYER_API_KEY", "RELAYER_API_KEY_ADDRESS"}
             for item in final["items"]
@@ -304,15 +245,9 @@ def run_doctor(env_path: Path) -> Dict[str, Any]:
         )
     )
 
-    if final["manual_missing_labels"] or final["generated_missing_keys"]:
+    if final["manual_missing_labels"]:
         status = "needs_you"
         popup = _popup_for_needs_you(final, relayer_only)
-    elif fixed_keys:
-        status = "fixed"
-        popup = {
-            "title": "Setup Doctor Fixed Missing Setup",
-            "body": "Setup Doctor refreshed the baseline relayer signer setup and regenerated any missing remote credentials.",
-        }
     else:
         status = "ready"
         popup = None
@@ -320,7 +255,7 @@ def run_doctor(env_path: Path) -> Dict[str, Any]:
     return {
         "status": status,
         "items": final["items"],
-        "fixed_count": sum(1 for item in final["items"] if item["status"] == "fixed"),
+        "fixed_count": 0,
         "missing_user_count": sum(1 for item in final["items"] if item["status"] == "missing_user"),
         "popup": popup,
     }

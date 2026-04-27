@@ -14,6 +14,11 @@ Older entries may reference env keys that were removed in later commits.
   - startup preflight now includes `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL` and `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN` when MM Sport is enabled, so missing alpha auth is visible before runtime.
   - local MM Sport now chunks depth-skip alpha requests at the alpha service's 200-market request limit and merges skipped `condition_id`s, preventing large sports slates from being rejected and then fail-closed solely because the request was too large.
   - affects MM Sport discovery refresh/depth gating only; local quote placement, inventory exit, and fail-closed behavior on alpha transport/parse failures remain unchanged.
+- Public V2 release surface cleanup (`README.md`, `.env.example`, `.env.full.example`, `docs/*.md`, `scripts/setup_doctor.py`, `src/bot_admin.rs`).
+  - Starter env templates and admin defaults now match the runtime profile: `premarket_v1`, `endgame_sweep_v1`, `evcurve_v1`, `sessionband_v1`, and `evsnipe_v1` enabled; `mm_sport_v1` disabled.
+  - SessionBand is restored to the admin strategy catalog, old generic MM Rewards admin/env controls are removed from the public surface, and `EVPOLY_MM_SPORT_*` keys are the only public MM strategy controls.
+  - Strategy docs now state the runtime base-size defaults accurately: `10` USD for Premarket/EVcurve/SessionBand and `50` USD for Endgame.
+  - Setup Doctor now treats blank per-strategy alpha tokens as valid when `EVPOLY_ALPHA_KEY` is present or runtime alpha auto-onboard is enabled.
 - `endgame_sweep_v1`: made `/v1/alpha/endgame/policy` serve both SDK v1 and `main2` timing contracts from the alpha service (`src/bin/alpha_service.rs`, `docs/endgame_sweep_v1.md`).
   - SDK v1 requests using the shared alpha token without `builder_code` now receive the legacy-compatible `3000,1000,100` ms base checkpoint schedule with small symmetric jitter.
   - `main2` requests that include the official builder code keep the newer `2000,1000,100` ms near-T-only policy and submit-stale guard response shape.

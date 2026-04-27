@@ -39,7 +39,7 @@ Behavior:
 10. Submit FAK order and enforce decision-to-submit timing gap guard.
 
 ## Sizing Policy
-Base key: `EVPOLY_SESSIONBAND_BASE_SIZE_USD` (blank defaults to `100`).
+Base key: `EVPOLY_SESSIONBAND_BASE_SIZE_USD` (blank defaults to `10`).
 
 Multipliers:
 - Symbol: `BTC=1.0`, `ETH=0.8`, `SOL/XRP=0.5`

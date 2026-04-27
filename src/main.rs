@@ -1065,6 +1065,16 @@ fn warn_remote_alpha_config_startup(endgame_alpha_required: bool) {
         ],
         endgame_alpha_required,
     );
+    check_strategy(
+        STRATEGY_ID_MM_SPORT_V1,
+        "EVPOLY_STRATEGY_MM_SPORT_ENABLE",
+        false,
+        &[
+            "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL",
+            "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN",
+        ],
+        true,
+    );
 }
 
 fn env_f64_named(name: &str, default: f64) -> f64 {
@@ -1430,6 +1440,7 @@ fn mm_sport_size_shares_from_pending(row: &PendingOrderRecord) -> Option<f64> {
 }
 
 const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 1_000.0;
+const MM_SPORT_DEPTH_SKIP_ALPHA_MAX_MARKETS_PER_REQUEST: usize = 200;
 const MM_SPORT_LOW_DEPTH_QUOTE_SIZE_MULT: f64 = 1.2;
 const MM_SPORT_FORCE_EXIT_WINDOW_MS: i64 = 30 * 60 * 1_000;
 const MM_SPORT_EXIT_FALLBACK_REFRESH_MS: i64 = 60_000;
@@ -22465,63 +22476,68 @@ async fn fetch_remote_mm_sport_depth_skips(
     if markets.is_empty() {
         return Ok(std::collections::HashSet::new());
     }
-    let payload = RemoteMmSportDepthSkipRequest {
-        strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
-        request_ts_ms,
-        depth_floor_usd: MM_SPORT_LOW_DEPTH_FLOOR_USD,
-        builder_code: official_builder_code_for_alpha(),
-        markets: markets
-            .iter()
-            .map(mm_sport_depth_skip_market_payload)
-            .collect::<Vec<_>>(),
-    };
-    let (status, body) = send_remote_json_post_with_alpha_failover(
-        cfg.url.as_str(),
-        cfg.timeout_ms,
-        cfg.token.as_deref(),
-        None,
-        &payload,
-        "mm_sport_depth_skip_alpha",
-    )
-    .await
-    .context("failed to call remote mm-sport depth-skip alpha service")?;
-    if !status.is_success() {
-        anyhow::bail!(
-            "remote mm-sport depth-skip alpha rejected request (status={} body={})",
-            status.as_u16(),
-            truncate_for_log(body.as_str(), 300)
-        );
-    }
-    let parsed: RemoteMmSportDepthSkipResponse =
-        serde_json::from_str(body.as_str()).with_context(|| {
-            format!(
-                "failed to parse remote mm-sport depth-skip alpha response: {}",
-                truncate_for_log(body.as_str(), 300)
-            )
-        })?;
-    if !parsed.ok {
-        anyhow::bail!("remote mm-sport depth-skip alpha returned ok=false");
-    }
-    if !parsed.kind.is_empty() && parsed.kind != "depth_skip" {
-        anyhow::bail!(
-            "remote mm-sport depth-skip alpha returned unexpected kind={}",
-            parsed.kind
-        );
-    }
-    if let Some(remote_floor) = parsed.depth_floor_usd {
-        if !remote_floor.is_finite() || remote_floor < 0.0 {
+    let mut skipped_condition_ids = std::collections::HashSet::new();
+    for market_chunk in markets.chunks(MM_SPORT_DEPTH_SKIP_ALPHA_MAX_MARKETS_PER_REQUEST) {
+        let payload = RemoteMmSportDepthSkipRequest {
+            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
+            request_ts_ms,
+            depth_floor_usd: MM_SPORT_LOW_DEPTH_FLOOR_USD,
+            builder_code: official_builder_code_for_alpha(),
+            markets: market_chunk
+                .iter()
+                .map(mm_sport_depth_skip_market_payload)
+                .collect::<Vec<_>>(),
+        };
+        let (status, body) = send_remote_json_post_with_alpha_failover(
+            cfg.url.as_str(),
+            cfg.timeout_ms,
+            cfg.token.as_deref(),
+            None,
+            &payload,
+            "mm_sport_depth_skip_alpha",
+        )
+        .await
+        .context("failed to call remote mm-sport depth-skip alpha service")?;
+        if !status.is_success() {
             anyhow::bail!(
-                "remote mm-sport depth-skip alpha returned invalid depth_floor_usd={}",
-                remote_floor
+                "remote mm-sport depth-skip alpha rejected request (status={} body={})",
+                status.as_u16(),
+                truncate_for_log(body.as_str(), 300)
             );
         }
+        let parsed: RemoteMmSportDepthSkipResponse = serde_json::from_str(body.as_str())
+            .with_context(|| {
+                format!(
+                    "failed to parse remote mm-sport depth-skip alpha response: {}",
+                    truncate_for_log(body.as_str(), 300)
+                )
+            })?;
+        if !parsed.ok {
+            anyhow::bail!("remote mm-sport depth-skip alpha returned ok=false");
+        }
+        if !parsed.kind.is_empty() && parsed.kind != "depth_skip" {
+            anyhow::bail!(
+                "remote mm-sport depth-skip alpha returned unexpected kind={}",
+                parsed.kind
+            );
+        }
+        if let Some(remote_floor) = parsed.depth_floor_usd {
+            if !remote_floor.is_finite() || remote_floor < 0.0 {
+                anyhow::bail!(
+                    "remote mm-sport depth-skip alpha returned invalid depth_floor_usd={}",
+                    remote_floor
+                );
+            }
+        }
+        skipped_condition_ids.extend(
+            parsed
+                .skipped_condition_ids
+                .into_iter()
+                .map(|condition_id| condition_id.trim().to_ascii_lowercase())
+                .filter(|condition_id| !condition_id.is_empty()),
+        );
     }
-    Ok(parsed
-        .skipped_condition_ids
-        .into_iter()
-        .map(|condition_id| condition_id.trim().to_ascii_lowercase())
-        .filter(|condition_id| !condition_id.is_empty())
-        .collect())
+    Ok(skipped_condition_ids)
 }
 
 fn build_allowed_market_slugs_for_timeframe(

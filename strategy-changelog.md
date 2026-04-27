@@ -10,6 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-27
+- `mm_sport_v1`: hardened the remote depth-skip alpha client for large discovery cycles (`src/main.rs`).
+  - startup preflight now includes `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL` and `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN` when MM Sport is enabled, so missing alpha auth is visible before runtime.
+  - local MM Sport now chunks depth-skip alpha requests at the alpha service's 200-market request limit and merges skipped `condition_id`s, preventing large sports slates from being rejected and then fail-closed solely because the request was too large.
+  - affects MM Sport discovery refresh/depth gating only; local quote placement, inventory exit, and fail-closed behavior on alpha transport/parse failures remain unchanged.
 - `endgame_sweep_v1`: made `/v1/alpha/endgame/policy` serve both SDK v1 and `main2` timing contracts from the alpha service (`src/bin/alpha_service.rs`, `docs/endgame_sweep_v1.md`).
   - SDK v1 requests using the shared alpha token without `builder_code` now receive the legacy-compatible `3000,1000,100` ms base checkpoint schedule with small symmetric jitter.
   - `main2` requests that include the official builder code keep the newer `2000,1000,100` ms near-T-only policy and submit-stale guard response shape.

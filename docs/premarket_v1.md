@@ -53,7 +53,7 @@ Reward `min_size` is ignored for Premarket ladder sizing and submit-time constra
 Tick-size validation still applies, and some tiny orders may still be rejected by the venue.
 
 ## Sizing Policy
-Base key: `EVPOLY_PREMARKET_BASE_SIZE_USD` (blank defaults to `100`).
+Base key: `EVPOLY_PREMARKET_BASE_SIZE_USD` (blank defaults to `10`).
 
 Multipliers:
 - Symbol: `BTC=1.0`, `ETH=0.8`, `SOL/XRP=0.5`

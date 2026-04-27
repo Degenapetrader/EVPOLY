@@ -50,7 +50,7 @@ If required policy is unavailable, the period is skipped (fail-closed).
 12. Enforce submit-time stale guard from alpha policy.
 
 ## Sizing Policy
-Base key: `EVPOLY_ENDGAME_BASE_SIZE_USD` (blank defaults to `100`).
+Base key: `EVPOLY_ENDGAME_BASE_SIZE_USD` (blank defaults to `50`).
 
 Multipliers:
 - Symbol: `BTC=1.0`, `ETH=0.8`, `SOL/XRP/DOGE/BNB/HYPE=0.5`

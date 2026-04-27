@@ -34,9 +34,8 @@ See [LICENSE](LICENSE).
 - Strategy toggles default ON: `premarket`, `endgame`, `evcurve`, `sessionband`, `evsnipe`
 - Strategy toggles default OFF: `mm_sport`
 - Default symbols (`premarket`): `BTC,ETH,SOL,XRP`
-- Default symbols (`sessionband`): `BTC,ETH,SOL,XRP`
-- Default symbols (`endgame`, `evcurve`, `evsnipe`): `BTC,ETH,SOL,XRP,DOGE,BNB,HYPE`
-- MM market mode default: `auto`
+- Default symbols (`evcurve`, `sessionband`): `BTC,ETH,SOL,XRP`
+- Default symbols (`endgame`, `evsnipe`): `BTC,ETH,SOL,XRP,DOGE,BNB,HYPE`
 
 Defaults are defined by runtime config loaders and reflected in `.env.example` / `.env.full.example`.
 
@@ -47,11 +46,13 @@ Defaults are defined by runtime config loaders and reflected in `.env.example` /
 - [EVcurve v1](docs/evcurve_v1.md)
 - [SessionBand v1](docs/sessionband_v1.md)
 - [EVSnipe v1](docs/evsnipe_v1.md)
+- [MM Sport v1](docs/mm_sport_v1.md)
 
 ### Ops guides
 - [Manual endpoint guide](docs/manual_endpoint_guide.md)
 - [Setup Doctor](docs/setup_doctor.md)
 - [Strategy combo guide](docs/strategy_combos.md)
+- [Public V2 migration guide](docs/public_v2_migration.md)
 
 ## Quick Start
 1. Install dependencies:
@@ -62,7 +63,7 @@ Defaults are defined by runtime config loaders and reflected in `.env.example` /
    `cargo build --release --bin polymarket-arbitrage-bot`
 4. Create env file:
    `cp .env.example .env`
-5. Fill required secrets/URLs in `.env`.
+5. Fill wallet fields and strategy base sizes in `.env`.
 6. Start:
    `./ev start live`
 
@@ -96,10 +97,10 @@ bash scripts/verify_env_coverage.sh --env-file .env
 ```
 
 ## Signer and Discovery Defaults
-- Order posting now uses local CLOB V2 SDK signing. Set `POLY_BUILDER_CODE` only when builder attribution is required.
+- Order posting uses local CLOB V2 SDK signing with the official EVPOLY builder code built in.
+- Leave `POLY_BUILDER_CODE` blank unless you are intentionally testing an advanced override.
 - Relayer submit fallback uses `EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN` only for non-order proxy wallet flows such as redeem, merge, approvals, and Auto-Redeem approval toggles.
-- Shared timeframe discovery and EVSnipe discovery are local-first.
-- If local discovery returns no usable result, runtime falls back to the configured remote discovery endpoints.
+- Shared timeframe discovery and EVSnipe discovery use the configured remote discovery endpoints first, with local fallback where supported.
 
 ## Remote Alpha/Discovery Fallbacks
 Remote endpoints still default to `https://alpha.evplus.ai/...` and retry to `https://alpha2.evplus.ai/...` on transport/timeout/429/5xx failure classes.
@@ -112,7 +113,14 @@ Timeout policy currently hardcoded in runtime:
 - EVSnipe remote discovery: `2000ms`
 - Shared timeframe discovery: `2000ms`
 
-## Remote Onboarding (Signer + Alpha URLs)
+## Alpha Access
+Normal users do not need to request or buy an alpha key.
+
+With the official builder code unchanged, runtime auto-registers `EVPOLY_ALPHA_KEY` on first start when `EVPOLY_ALPHA_AUTO_ONBOARD=true` and `POLY_PROXY_WALLET_ADDRESS` is present. Blank per-endpoint remote tokens fall back to `EVPOLY_ALPHA_KEY`.
+
+## Advanced Remote Onboarding (Optional)
+Use this only when you need to refresh legacy remote signer/discovery values manually.
+
 Recommended helper env:
 ```bash
 python3 -m venv .venv
@@ -135,9 +143,7 @@ python3 scripts/remote_onboard.py \
   --write-env-file .env
 ```
 
-Onboarding writes all remote token destinations it can populate from API runtime, including relayer submit signer, discovery, per-strategy alpha, and admin token defaults.
-Order posting stays local through the CLOB V2 SDK.
-It should populate those destinations for all strategies, not only the strategies currently enabled.
+Onboarding writes remote signer/discovery destinations it can populate from API runtime plus admin token defaults. Order posting stays local through the CLOB V2 SDK.
 
 Important sizing note:
 - Set strategy base-size vars explicitly:
@@ -145,7 +151,7 @@ Important sizing note:
   - `EVPOLY_ENDGAME_BASE_SIZE_USD`
   - `EVPOLY_EVCURVE_BASE_SIZE_USD`
   - `EVPOLY_SESSIONBAND_BASE_SIZE_USD`
-- If left blank, each defaults to `100` USD.
+- If left blank, Premarket/EVcurve/SessionBand default to `10` USD and Endgame defaults to `50` USD.
 
 Important relayer note:
 - Redeem/merge primary path uses:
@@ -164,8 +170,7 @@ python3 scripts/setup_doctor.py --env-file .env
 ```
 
 Setup Doctor:
-- checks the baseline runtime credentials a healthy EVPOLY setup should have,
-- reruns remote onboarding to refill any missing generateable remote fields,
+- checks wallet fields, alpha self-onboarding posture, and relayer manual fields,
 - reports manual-only fields like relayer credentials as `needs_you`,
 - does not block the bot from running.
 
@@ -216,7 +221,7 @@ If strategy logic/risk/sizing/defaults change, update `strategy-changelog.md` in
 
 ## Polymarket CLOB V2 migration notes
 
-This local branch has been migrated for Polymarket CLOB V2 while preserving the seven EVPOLY strategy decision paths.
+This local branch has been migrated for Polymarket CLOB V2 while preserving the six public EVPOLY strategy decision paths.
 
 Runtime-level changes in this branch:
 

@@ -1,24 +1,20 @@
 # Setup Doctor
 
-EVPOLY Setup Doctor checks the baseline setup fields a healthy profile should have, regenerates the remote credentials that onboarding can provide, and tells the operator exactly what still needs manual input.
+EVPOLY Setup Doctor checks the baseline public V2 setup fields a healthy profile should have, confirms alpha self-onboarding posture, and tells the operator exactly what still needs manual input.
 
 ## What it checks
 
 - `POLY_PRIVATE_KEY`
 - `POLY_PROXY_WALLET_ADDRESS` for proxy/safe modes
-- `EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN`
-- `EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN`
-- `EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN`
-- `EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN`
-- `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN`
-- `EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN`
-- `EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN`
+- `EVPOLY_ALPHA_KEY` or `EVPOLY_ALPHA_AUTO_ONBOARD=true`
 - `RELAYER_API_KEY`
 - `RELAYER_API_KEY_ADDRESS`
 
 ## What it can auto-fix
 
-Setup Doctor reruns remote onboarding to refill every remote credential the onboarding API currently returns. That includes relayer submit signer, discovery, and strategy remote tokens for all strategies.
+Setup Doctor creates the target env file from the repo template if it is missing.
+
+Normal alpha access is self-serve at runtime: blank `EVPOLY_ALPHA_KEY` is acceptable when `EVPOLY_ALPHA_AUTO_ONBOARD=true`.
 
 ## What it cannot auto-fix
 
@@ -44,10 +40,10 @@ Doctor result meanings:
 - `failed`: doctor itself hit an execution error
 
 Important:
-- order posting is local through the CLOB V2 SDK; the remote signer token is only for non-order relayer fallback
+- order posting is local through the CLOB V2 SDK with built-in official builder attribution
+- per-strategy remote tokens are optional because blank values fall back to `EVPOLY_ALPHA_KEY`
 - relayer credentials are reported, not generated
 - doctor is advisory only and should not be treated as a runtime gate
-- onboarding should populate all remote token destinations for all strategies
 
 ## Usage
 

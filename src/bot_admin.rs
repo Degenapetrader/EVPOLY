@@ -361,46 +361,32 @@ fn setting_specs() -> Vec<BotSettingSpec> {
             description: "EVSnipe market discovery refresh cadence in seconds.",
         },
         BotSettingSpec {
-            key: "EVPOLY_MM_POLL_MS",
+            key: "EVPOLY_MM_SPORT_POLL_MS",
             group: "speed",
-            strategy: Some("mm"),
+            strategy: Some("mm_sport"),
             value_type: BotSettingType::Integer,
-            default_raw: "1000",
-            min: Some(200.0),
+            default_raw: "250",
+            min: Some(50.0),
             max: Some(60_000.0),
             enum_values: &[],
             mutable: true,
             restart_required: true,
             config_fallback_key: None,
-            description: "MM quote loop polling cadence in ms.",
+            description: "MM Sport polling cadence in ms.",
         },
         BotSettingSpec {
-            key: "EVPOLY_MM_REPRICE_MIN_INTERVAL_MS",
+            key: "EVPOLY_MM_SPORT_REPRICE_MIN_INTERVAL_MS",
             group: "speed",
-            strategy: Some("mm"),
+            strategy: Some("mm_sport"),
             value_type: BotSettingType::Integer,
-            default_raw: "300",
+            default_raw: "600",
             min: Some(50.0),
             max: Some(30_000.0),
             enum_values: &[],
             mutable: true,
             restart_required: true,
             config_fallback_key: None,
-            description: "Minimum MM reprice interval in ms.",
-        },
-        BotSettingSpec {
-            key: "EVPOLY_MM_EVENT_FALLBACK_POLL_MS",
-            group: "speed",
-            strategy: Some("mm"),
-            value_type: BotSettingType::Integer,
-            default_raw: "1000",
-            min: Some(50.0),
-            max: Some(30_000.0),
-            enum_values: &[],
-            mutable: true,
-            restart_required: true,
-            config_fallback_key: None,
-            description: "MM event fallback polling interval in ms.",
+            description: "Minimum MM Sport reprice interval in ms.",
         },
         // Strategy toggles
         BotSettingSpec {
@@ -587,74 +573,74 @@ fn setting_specs() -> Vec<BotSettingSpec> {
             description: "SessionBand total strategy cap.",
         },
         BotSettingSpec {
-            key: "EVPOLY_MM_HARD_DISABLE",
+            key: "EVPOLY_MM_SPORT_HARD_DISABLE",
             group: "risk",
-            strategy: Some("mm"),
+            strategy: Some("mm_sport"),
             value_type: BotSettingType::Bool,
-            default_raw: "true",
+            default_raw: "false",
             min: None,
             max: None,
             enum_values: &[],
             mutable: true,
             restart_required: true,
             config_fallback_key: None,
-            description: "Hard-disable gate for MM runtime.",
+            description: "Hard-disable gate for MM Sport runtime.",
         },
         BotSettingSpec {
-            key: "EVPOLY_MM_MIN_PRICE",
+            key: "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD",
             group: "risk",
-            strategy: Some("mm"),
+            strategy: Some("mm_sport"),
             value_type: BotSettingType::Number,
-            default_raw: "0.01",
-            min: Some(0.01),
-            max: Some(0.98),
-            enum_values: &[],
-            mutable: true,
-            restart_required: true,
-            config_fallback_key: None,
-            description: "MM minimum quote price.",
-        },
-        BotSettingSpec {
-            key: "EVPOLY_MM_MAX_PRICE",
-            group: "risk",
-            strategy: Some("mm"),
-            value_type: BotSettingType::Number,
-            default_raw: "0.99",
-            min: Some(0.02),
-            max: Some(0.99),
-            enum_values: &[],
-            mutable: true,
-            restart_required: true,
-            config_fallback_key: None,
-            description: "MM maximum quote price.",
-        },
-        BotSettingSpec {
-            key: "EVPOLY_MM_AUTO_RANK_BUDGET_USD",
-            group: "risk",
-            strategy: Some("mm"),
-            value_type: BotSettingType::Number,
-            default_raw: "2000",
-            min: Some(100.0),
+            default_raw: "10000",
+            min: Some(0.0),
             max: Some(1_000_000.0),
             enum_values: &[],
             mutable: true,
             restart_required: true,
             config_fallback_key: None,
-            description: "MM auto-mode rank budget in USD.",
+            description: "MM Sport local top-depth floor before alpha skip filtering.",
         },
         BotSettingSpec {
-            key: "EVPOLY_MM_MAX_SHARES_PER_ORDER",
+            key: "EVPOLY_MM_SPORT_MAX_SHARE_RATIO",
             group: "risk",
-            strategy: Some("mm"),
+            strategy: Some("mm_sport"),
             value_type: BotSettingType::Number,
-            default_raw: "5000",
-            min: Some(1.0),
-            max: Some(10_000_000.0),
+            default_raw: "0.05",
+            min: Some(0.01),
+            max: Some(0.99),
             enum_values: &[],
             mutable: true,
             restart_required: true,
             config_fallback_key: None,
-            description: "MM max shares per order.",
+            description: "MM Sport max share ratio per market side.",
+        },
+        BotSettingSpec {
+            key: "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT",
+            group: "risk",
+            strategy: Some("mm_sport"),
+            value_type: BotSettingType::Number,
+            default_raw: "1.2",
+            min: Some(0.1),
+            max: Some(20.0),
+            enum_values: &[],
+            mutable: true,
+            restart_required: true,
+            config_fallback_key: None,
+            description: "MM Sport quote size multiplier.",
+        },
+        BotSettingSpec {
+            key: "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC",
+            group: "risk",
+            strategy: Some("mm_sport"),
+            value_type: BotSettingType::Integer,
+            default_raw: "7200",
+            min: Some(60.0),
+            max: Some(86_400.0),
+            enum_values: &[],
+            mutable: true,
+            restart_required: true,
+            config_fallback_key: None,
+            description: "MM Sport pause window after a fill.",
         },
         BotSettingSpec {
             key: "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET",
@@ -812,18 +798,32 @@ fn setting_specs() -> Vec<BotSettingSpec> {
             description: "EVSnipe enabled symbols CSV.",
         },
         BotSettingSpec {
-            key: "EVPOLY_MM_MARKET_MODE",
+            key: "EVPOLY_MM_SPORT_MAX_MARKETS",
             group: "strategy",
-            strategy: Some("mm"),
-            value_type: BotSettingType::Enum,
-            default_raw: "target",
-            min: None,
-            max: None,
-            enum_values: &["target", "single", "auto"],
+            strategy: Some("mm_sport"),
+            value_type: BotSettingType::Integer,
+            default_raw: "0",
+            min: Some(0.0),
+            max: Some(10_000.0),
+            enum_values: &[],
             mutable: true,
             restart_required: true,
             config_fallback_key: None,
-            description: "MM market selection mode.",
+            description: "MM Sport max active markets; 0 means no cap.",
+        },
+        BotSettingSpec {
+            key: "EVPOLY_MM_SPORT_QUOTE_SIZE_MODE",
+            group: "strategy",
+            strategy: Some("mm_sport"),
+            value_type: BotSettingType::Enum,
+            default_raw: "multiple",
+            min: None,
+            max: None,
+            enum_values: &["multiple", "depth_ratio"],
+            mutable: true,
+            restart_required: true,
+            config_fallback_key: None,
+            description: "MM Sport quote sizing mode.",
         },
     ]
 }
@@ -846,6 +846,11 @@ fn strategy_catalog() -> Vec<(&'static str, &'static str, &'static [&'static str
             &["evcurve", "evcurve_v1"],
         ),
         (
+            "sessionband",
+            STRATEGY_ID_SESSIONBAND_V1,
+            &["sessionband", "sessionband_v1"],
+        ),
+        (
             "evsnipe",
             STRATEGY_ID_EVSNIPE_V1,
             &["evsnipe", "evsnipe_v1"],
@@ -853,7 +858,7 @@ fn strategy_catalog() -> Vec<(&'static str, &'static str, &'static [&'static str
         (
             "mm_sport",
             STRATEGY_ID_MM_SPORT_V1,
-            &["mm", "mm_sport", "mm_sport_v1", "sport", "mmsport"],
+            &["mm_sport", "mm_sport_v1", "sport", "mmsport"],
         ),
     ]
 }
@@ -876,7 +881,7 @@ fn normalize_strategy_slug(raw: &str) -> Option<&'static str> {
 
 fn strategy_enable_default(strategy_slug: &str) -> bool {
     match strategy_slug {
-        "premarket" => true,
+        "premarket" | "endgame" | "evcurve" | "sessionband" | "evsnipe" => true,
         _ => false,
     }
 }
@@ -886,6 +891,7 @@ fn strategy_enable_key(strategy_slug: &str) -> Option<&'static str> {
         "premarket" => Some("EVPOLY_STRATEGY_PREMARKET_ENABLE"),
         "endgame" => Some("EVPOLY_STRATEGY_ENDGAME_ENABLE"),
         "evcurve" => Some("EVPOLY_STRATEGY_EVCURVE_ENABLE"),
+        "sessionband" => Some("EVPOLY_STRATEGY_SESSIONBAND_ENABLE"),
         "evsnipe" => Some("EVPOLY_STRATEGY_EVSNIPE_ENABLE"),
         "mm_sport" => Some("EVPOLY_STRATEGY_MM_SPORT_ENABLE"),
         _ => None,
@@ -1765,7 +1771,6 @@ fn summarize_symbols(symbols: &[String]) -> String {
 
 fn strategy_scope_summary(strategy_slug: &str, strategy_id: &str) -> String {
     match strategy_slug {
-        "mm" => "Reward markets chosen automatically".to_string(),
         "mm_sport" => "Sports reward markets".to_string(),
         _ => {
             let symbols = strategy_symbol_env_key(strategy_slug)
@@ -2108,7 +2113,6 @@ async fn build_ui_strategy_states(ctx: &BotAdminContext) -> Vec<UiStrategyState>
             let last_action_at_ms = last_event.as_ref().map(|event| event.ts_ms);
             let last_action_at = last_action_at_ms.and_then(iso_from_ms);
             let idle_blocker = match slug {
-                "mm" => Some("Waiting for reward markets worth quoting.".to_string()),
                 "mm_sport" => Some("Waiting for sports reward markets worth quoting.".to_string()),
                 _ => None,
             };
@@ -2337,26 +2341,27 @@ async fn collect_doctor_issues(
     )
     .unwrap_or(false);
     let mm_hard_disable = parse_bool_raw(
-        std::env::var("EVPOLY_MM_HARD_DISABLE")
-            .unwrap_or_else(|_| "true".to_string())
+        std::env::var("EVPOLY_MM_SPORT_HARD_DISABLE")
+            .unwrap_or_else(|_| "false".to_string())
             .as_str(),
     )
-    .unwrap_or(true);
+    .unwrap_or(false);
     if mm_sport_enabled && mm_hard_disable {
         issues.push(DoctorIssue {
             id: "mm:enabled_but_hard_disabled".to_string(),
             severity: "error",
             key: None,
-            summary: "MM strategy is enabled while EVPOLY_MM_HARD_DISABLE=true".to_string(),
+            summary: "MM Sport strategy is enabled while EVPOLY_MM_SPORT_HARD_DISABLE=true"
+                .to_string(),
             recommended_fix: Some(json!({
-                "key": "EVPOLY_MM_HARD_DISABLE",
+                "key": "EVPOLY_MM_SPORT_HARD_DISABLE",
                 "value": false,
                 "action": "set"
             })),
             auto_fixable: true,
             details: json!({
                 "EVPOLY_STRATEGY_MM_SPORT_ENABLE": mm_sport_enabled,
-                "EVPOLY_MM_HARD_DISABLE": mm_hard_disable
+                "EVPOLY_MM_SPORT_HARD_DISABLE": mm_hard_disable
             }),
         });
     }

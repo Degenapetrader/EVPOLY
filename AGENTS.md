@@ -46,9 +46,8 @@ Strategies include (minimum):
   - OFF: mm_sport
 - Default symbols:
   - premarket: `BTC, ETH, SOL, XRP`
-  - sessionband: `BTC, ETH, SOL, XRP`
-  - endgame/evcurve/evsnipe: `BTC, ETH, SOL, XRP, DOGE, BNB, HYPE`
-- MM mode default: `auto`
+  - evcurve/sessionband: `BTC, ETH, SOL, XRP`
+  - endgame/evsnipe: `BTC, ETH, SOL, XRP, DOGE, BNB, HYPE`
 
 ### 4) Known Combo Constraints
 - `endgame_sweep_v1` and `sessionband_v1` are both late-window close strategies; review sizing before running both heavy.
@@ -77,8 +76,8 @@ Strategies include (minimum):
   - local runtime owns quote placement and inventory handling.
 - Setup Doctor:
   - command: `python3 scripts/setup_doctor.py --env-file .env`
-  - checks missing baseline setup fields only
-  - regenerates all onboarding-provided remote tokens for all strategies
+  - checks wallet fields, alpha self-onboarding posture, and relayer manual fields
+  - treats blank per-strategy remote tokens as acceptable when `EVPOLY_ALPHA_KEY` is present or `EVPOLY_ALPHA_AUTO_ONBOARD=true`
   - reports relayer fields as manual `needs_you` items and does not fake-generate them
   - is advisory only and should not be treated as a runtime gate
 

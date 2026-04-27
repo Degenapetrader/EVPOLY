@@ -10,6 +10,9 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-27
+- `premarket_v1`: restored the SDK v1 compatibility alpha gate route on the alpha service (`src/bin/alpha_service.rs`).
+  - `POST /v1/alpha/premarket/should-trade` again returns the legacy random yes/no gate response for old clients while current main2 continues to use `/v1/alpha/premarket/ladder`.
+  - also restored compatibility handlers for retired `mm_rewards_v1` alpha selection/preflight routes so old clients receive valid responses instead of 404s during the migration window.
 - `sessionband_v1`: added the missing built-in default for `EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL` in `src/main.rs`.
   - affects SessionBand remote-alpha setup for all symbols/timeframes; no-env users can rely on the default `https://alpha.evplus.ai/v1/alpha/sessionband` URL plus auto-generated `EVPOLY_ALPHA_KEY`, matching the other remote alpha strategies.
 - `sessionband_v1` was restored/ported back into main2 while keeping `mm_rewards_v1` removed (`src/sessionband.rs`, `src/main.rs`, `src/trader.rs`, `src/bin/alpha_service.rs`, `src/size_policy.rs`, `.env.example`, `.env.full.example`, `README.md`, `docs/sessionband_v1.md`, `docs/strategy_combos.md`).

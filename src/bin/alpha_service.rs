@@ -50,6 +50,8 @@ const DEFAULT_DISCOVERY_HORIZON_15M: u64 = 2;
 const DEFAULT_DISCOVERY_HORIZON_1H: u64 = 1;
 const DEFAULT_DISCOVERY_HORIZON_4H: u64 = 1;
 const DEFAULT_DISCOVERY_HORIZON_1D: u64 = 1;
+const DEFAULT_PREMARKET_YES_MIN: f64 = 0.70;
+const DEFAULT_PREMARKET_YES_MAX: f64 = 0.90;
 const DEFAULT_ENDGAME_BASE_OFFSETS_MS: &[u64] = &[2000, 1000, 100];
 const DEFAULT_ENDGAME_NEAR_T_RANDOM_MAX_BPS: u32 = 2500;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_BASE_MS: i64 = 400;
@@ -88,6 +90,8 @@ struct Settings {
     discovery_horizon_1h: u64,
     discovery_horizon_4h: u64,
     discovery_horizon_1d: u64,
+    premarket_yes_min: f64,
+    premarket_yes_max: f64,
     endgame_base_offsets_ms: Vec<u64>,
     endgame_near_t_random_max_bps: u32,
     endgame_submit_proxy_max_age_base_ms: i64,
@@ -458,6 +462,20 @@ struct PremarketAlphaLadderRequest {
     base_prices: Vec<f64>,
 }
 
+#[derive(Debug, Deserialize)]
+struct PremarketAlphaShouldTradeRequest {
+    strategy_id: String,
+    decision_id: String,
+    symbol: String,
+    timeframe: String,
+    market_open_ts: i64,
+    proxy_wallet: String,
+    ts_ms: i64,
+    nonce: String,
+    #[serde(default)]
+    builder_code: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct PremarketAlphaLadderResponse {
     ok: bool,
@@ -465,6 +483,15 @@ struct PremarketAlphaLadderResponse {
     reason: String,
     shift_pct: f64,
     prices: Vec<f64>,
+}
+
+#[derive(Debug, Serialize)]
+struct PremarketAlphaShouldTradeResponse {
+    ok: bool,
+    should_trade: bool,
+    source: String,
+    reason: String,
+    yes_prob: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -650,8 +677,20 @@ async fn main() -> Result<()> {
             "/v1/alpha/mm-sport/depth-skip",
             post(alpha_mm_sport_depth_skip_handler),
         )
+        .route(
+            "/v1/alpha/mm-rewards/selection",
+            post(alpha_mm_rewards_selection_compat_handler),
+        )
+        .route(
+            "/v1/alpha/mm-rewards/preflight",
+            post(alpha_mm_rewards_preflight_compat_handler),
+        )
         .route("/v1/alpha/evcurve", post(alpha_evcurve_handler))
         .route("/v1/alpha/sessionband", post(alpha_sessionband_handler))
+        .route(
+            "/v1/alpha/premarket/should-trade",
+            post(alpha_premarket_should_trade_handler),
+        )
         .route(
             "/v1/alpha/premarket/ladder",
             post(alpha_premarket_ladder_handler),
@@ -668,7 +707,7 @@ async fn main() -> Result<()> {
         .with_context(|| format!("failed to bind {}", addr.as_str()))?;
 
     eprintln!(
-        "evpoly alpha service listening on {} with routes: /health, /v1/onboard, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-sport/depth-skip, /v1/alpha/evcurve, /v1/alpha/sessionband, /v1/alpha/premarket/ladder, /v1/alpha/endgame/policy",
+        "evpoly alpha service listening on {} with routes: /health, /v1/onboard, /v1/discovery/timeframe, /v1/discovery/evsnipe, /v1/alpha/mm-sport/depth-skip, /v1/alpha/mm-rewards/selection, /v1/alpha/mm-rewards/preflight, /v1/alpha/evcurve, /v1/alpha/sessionband, /v1/alpha/premarket/should-trade, /v1/alpha/premarket/ladder, /v1/alpha/endgame/policy",
         addr.as_str()
     );
 
@@ -1209,6 +1248,140 @@ async fn alpha_mm_sport_depth_skip_handler(
     }))
 }
 
+async fn alpha_mm_rewards_selection_compat_handler(
+    State(state): State<AppState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let payload: Value = parse_json_request(&state, remote.ip(), &headers, &body)?;
+    let builder_code = payload.get("builder_code").and_then(Value::as_str);
+    ensure_builder_code_authorized(&state.settings, &headers, builder_code)?;
+
+    let enabled_modes = payload
+        .get("enabled_modes")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let selection_pool = payload
+        .get("selection_pool")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .clamp(1, 50) as usize;
+    let mut ranked = payload
+        .get("candidates")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|candidate| {
+                    let condition_id = candidate.get("condition_id")?.as_str()?.trim();
+                    if condition_id.is_empty() {
+                        return None;
+                    }
+                    let reward_daily_rate = candidate
+                        .get("reward_daily_rate")
+                        .and_then(Value::as_f64)
+                        .filter(|value| value.is_finite())
+                        .unwrap_or(0.0);
+                    Some((condition_id.to_string(), reward_daily_rate))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.dedup_by(|a, b| a.0 == b.0);
+
+    let selected_ids = ranked
+        .iter()
+        .take(selection_pool)
+        .map(|(condition_id, _)| condition_id.clone())
+        .collect::<Vec<_>>();
+    let selected_by_mode = enabled_modes
+        .iter()
+        .map(|mode| {
+            json!({
+                "mode": mode,
+                "condition_ids": selected_ids,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let force_threshold = payload
+        .get("auto_force_include_reward_min")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.0);
+    let force_include_ids = if payload
+        .get("auto_force_top_reward")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        ranked
+            .first()
+            .map(|(condition_id, _)| vec![condition_id.clone()])
+            .unwrap_or_default()
+    } else if force_threshold > 0.0 {
+        ranked
+            .iter()
+            .filter(|(_, reward_daily_rate)| *reward_daily_rate >= force_threshold)
+            .map(|(condition_id, _)| condition_id.clone())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let force_include_by_mode = enabled_modes
+        .iter()
+        .filter(|_| !force_include_ids.is_empty())
+        .map(|mode| {
+            json!({
+                "mode": mode,
+                "condition_ids": force_include_ids,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(Json(json!({
+        "ok": true,
+        "selected_by_mode": selected_by_mode,
+        "force_include_by_mode": force_include_by_mode,
+        "source": "compat_mm_rewards_selection",
+    })))
+}
+
+async fn alpha_mm_rewards_preflight_compat_handler(
+    State(state): State<AppState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let payload: Value = parse_json_request(&state, remote.ip(), &headers, &body)?;
+    let builder_code = payload.get("builder_code").and_then(Value::as_str);
+    ensure_builder_code_authorized(&state.settings, &headers, builder_code)?;
+
+    let covered_levels = payload
+        .get("rungs")
+        .and_then(Value::as_array)
+        .map(|rungs| rungs.len())
+        .unwrap_or(0);
+
+    Ok(Json(json!({
+        "ok": true,
+        "covered_levels": covered_levels,
+        "block_reason": null,
+        "block_detail": null,
+        "source": "compat_mm_rewards_preflight",
+    })))
+}
+
 async fn alpha_evcurve_handler(
     State(state): State<AppState>,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
@@ -1412,6 +1585,99 @@ async fn alpha_sessionband_handler(
     };
 
     Ok(Json(json!({ "ok": true, "result": response })))
+}
+
+async fn alpha_premarket_should_trade_handler(
+    State(state): State<AppState>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, ApiError> {
+    let payload: PremarketAlphaShouldTradeRequest =
+        parse_json_request(&state, remote.ip(), &headers, &body)?;
+    ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
+    let timeframe = parse_timeframe(payload.timeframe.as_str()).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "timeframe must be one of 5m,15m,1h,4h",
+        )
+    })?;
+    if timeframe == Timeframe::D1 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "premarket alpha does not support 1d timeframe",
+        ));
+    }
+    if !payload
+        .strategy_id
+        .trim()
+        .eq_ignore_ascii_case("premarket_v1")
+    {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "strategy_id must be premarket_v1",
+        ));
+    }
+    if payload.market_open_ts <= 0 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "market_open_ts must be > 0",
+        ));
+    }
+    if payload.decision_id.trim().is_empty() || payload.nonce.trim().is_empty() {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "decision_id and nonce are required",
+        ));
+    }
+    let now_ms = Utc::now().timestamp_millis();
+    if now_ms.saturating_sub(payload.ts_ms).abs() > 120_000 {
+        return Err(ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "ts_ms outside freshness window",
+        ));
+    }
+    let proxy_wallet =
+        ensure_proxy_wallet_authorized(&state.settings, &headers, payload.proxy_wallet.as_str())?;
+    let symbol = normalize_symbol(payload.symbol.as_str());
+    let yes_min = state
+        .settings
+        .premarket_yes_min
+        .min(state.settings.premarket_yes_max)
+        .clamp(0.0, 1.0);
+    let yes_max = state
+        .settings
+        .premarket_yes_min
+        .max(state.settings.premarket_yes_max)
+        .clamp(0.0, 1.0);
+
+    let yes_prob_seed = format!(
+        "premarket:prob:{}:{}:{}:{}:{}",
+        payload.decision_id,
+        symbol,
+        timeframe.as_str(),
+        payload.market_open_ts,
+        payload.ts_ms
+    );
+    let yes_seed = format!(
+        "premarket:yes:{}:{}:{}:{}:{}",
+        payload.decision_id, payload.nonce, proxy_wallet, symbol, now_ms
+    );
+    let yes_prob = yes_min + (yes_max - yes_min) * seeded_unit(yes_prob_seed.as_str());
+    let should_trade = seeded_unit(yes_seed.as_str()) < yes_prob;
+    let reason = if should_trade {
+        "random_gate_yes"
+    } else {
+        "random_gate_no"
+    };
+
+    Ok(Json(PremarketAlphaShouldTradeResponse {
+        ok: true,
+        should_trade,
+        source: "remote".to_string(),
+        reason: reason.to_string(),
+        yes_prob,
+    }))
 }
 
 async fn alpha_premarket_ladder_handler(
@@ -2414,6 +2680,17 @@ fn load_settings() -> Result<Settings> {
         .unwrap_or(DEFAULT_DISCOVERY_HORIZON_1D)
         .clamp(0, 7);
 
+    let premarket_yes_min = std::env::var("ALPHA_PREMARKET_YES_MIN")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .unwrap_or(DEFAULT_PREMARKET_YES_MIN)
+        .clamp(0.0, 1.0);
+    let premarket_yes_max = std::env::var("ALPHA_PREMARKET_YES_MAX")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .unwrap_or(DEFAULT_PREMARKET_YES_MAX)
+        .clamp(0.0, 1.0);
+
     let mut endgame_base_offsets_ms = std::env::var("ALPHA_ENDGAME_BASE_OFFSETS_MS")
         .ok()
         .map(|raw| {
@@ -2484,6 +2761,8 @@ fn load_settings() -> Result<Settings> {
         discovery_horizon_1h,
         discovery_horizon_4h,
         discovery_horizon_1d,
+        premarket_yes_min,
+        premarket_yes_max,
         endgame_base_offsets_ms,
         endgame_near_t_random_max_bps,
         endgame_submit_proxy_max_age_base_ms,

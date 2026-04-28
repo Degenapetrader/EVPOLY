@@ -11,7 +11,7 @@ import { useBotStatus } from "../hooks/useBotStatus";
 import {
   CORE_SYMBOLS,
   EXTRA_SYMBOLS,
-  STRATEGIES,
+  VISIBLE_STRATEGIES,
   DEFAULT_CONFIG,
   formatUsd,
   mergeConfig,
@@ -480,7 +480,7 @@ export function Dashboard() {
       <div className="page-split xl:grid-cols-[18rem_minmax(0,1fr)_18rem]">
         <SectionPanel title="Strategy List" subtitle="Pick the strategy you want to tune.">
           <div className="space-y-2">
-            {STRATEGIES.map((strategy) => {
+            {VISIBLE_STRATEGIES.map((strategy) => {
               const selected = strategy.key === selectedStrategy;
               const enabled = config.strategies[strategy.key];
               return (

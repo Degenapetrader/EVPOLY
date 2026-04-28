@@ -1707,13 +1707,13 @@ export function StrategyEditorPane({
             <div className="surface-panel">
               <div className="surface-panel__header">
                 <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Inventory Exit</h2>
+                  <h2 className="surface-panel__title">Filters & Inventory Exit</h2>
                   <p className="surface-panel__subtitle">
-                    Choose how MM 2.0 exits inventory when it needs to clean up.
+                    Choose cleanup behavior and keep MM 2.0 away from unwanted markets.
                   </p>
                 </div>
               </div>
-              <div className="surface-panel__body grid gap-4">
+              <div className="surface-panel__body grid gap-5">
                 <div>
                   <label className="field-label">Inventory Exit Mode</label>
                   <div className="flex flex-wrap gap-2">
@@ -1728,7 +1728,8 @@ export function StrategyEditorPane({
                         disabled={!canEdit}
                         onClick={() =>
                           patchMMSport({
-                            inventory_exit_mode: value as BotConfig["strategy_settings"]["mm_sport"]["inventory_exit_mode"],
+                            inventory_exit_mode:
+                              value as BotConfig["strategy_settings"]["mm_sport"]["inventory_exit_mode"],
                           })
                         }
                         className={`mode-choice ${
@@ -1753,21 +1754,6 @@ export function StrategyEditorPane({
                     </div>
                   ) : null}
                 </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Discovery Filters</h2>
-                  <p className="surface-panel__subtitle">
-                    Optional controls for rollout safety without changing the Alpha signal.
-                  </p>
-                </div>
-              </div>
-              <div className="surface-panel__body grid gap-4">
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
                     <label className="field-label">Allowed Sport Leagues</label>
@@ -1858,7 +1844,6 @@ export function StrategyEditorPane({
                 </p>
               </div>
             </div>
-
           </div>
         </div>
       );

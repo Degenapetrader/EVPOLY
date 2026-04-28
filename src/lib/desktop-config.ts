@@ -53,6 +53,10 @@ export const STRATEGIES = [
   },
 ] as const;
 
+export const VISIBLE_STRATEGIES = STRATEGIES.filter(
+  (strategy) => strategy.key !== "mm_rewards"
+);
+
 export type StrategyKey = (typeof STRATEGIES)[number]["key"];
 export type StrategyEditorSection = "general" | "risk" | "symbols" | "advanced";
 type StrategyMeta = (typeof STRATEGIES)[number];

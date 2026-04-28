@@ -15,6 +15,7 @@ import { useAppContext } from "../App";
 import { useHomeOverview } from "../hooks/useHomeOverview";
 import {
   STRATEGIES,
+  VISIBLE_STRATEGIES,
   DEFAULT_CONFIG,
   formatUsd,
   formatEndgameSplitTooltip,
@@ -375,7 +376,7 @@ export function Home() {
       </div>
 
       <div className="strategy-rail__list">
-        {STRATEGIES.map((strategy) => {
+        {VISIBLE_STRATEGIES.map((strategy) => {
           const enabled = config.strategies[strategy.key];
           const value = strategySizeValue(config, strategy.key);
           const selected = strategy.key === selectedStrategy;

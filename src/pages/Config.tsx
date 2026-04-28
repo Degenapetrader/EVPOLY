@@ -15,7 +15,7 @@ import { useHomeOverview } from "../hooks/useHomeOverview";
 import { useWalletSyncStatus } from "../hooks/useWalletSyncStatus";
 import {
   DEFAULT_CONFIG,
-  STRATEGIES,
+  VISIBLE_STRATEGIES,
   formatMaybeTime,
   formatUsd,
   mergeConfig,
@@ -224,7 +224,7 @@ export function Config() {
   }, [loadProfileConfig, setActiveProfileId]);
 
   const dirty = useMemo(() => JSON.stringify(config) !== savedSnapshot, [config, savedSnapshot]);
-  const enabledStrategies = STRATEGIES.filter((strategy) => config.strategies[strategy.key]);
+  const enabledStrategies = VISIBLE_STRATEGIES.filter((strategy) => config.strategies[strategy.key]);
   const walletSyncDetails = useMemo(
     () => summarizeWalletSyncResult(walletSyncStatus?.last_result ?? null),
     [walletSyncStatus?.last_result]

@@ -1,0 +1,107 @@
+name: Release EVPoly Desktop (Windows)
+
+on:
+  push:
+    tags:
+      - "UI-v*"
+      - "UI-hotfix-v*"
+
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  preflight-linux-fast:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout desktop tag
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Fast gate checks
+        run: INSTALL_DEPS=1 RUN_FRONTEND_BUILD=1 RUN_CARGO_CHECK=0 RUN_SMOKE=0 bash scripts/desktop-gate-fast.sh
+
+  windows-installer:
+    needs:
+      - preflight-linux-fast
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout desktop tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build EVPOLY sidecar (Windows)
+        shell: pwsh
+        env:
+          ALLOW_DEBUG_SIDECAR_FALLBACK: "1"
+        run: |
+          $logDir = Join-Path $env:RUNNER_TEMP "evpoly-logs"
+          $logPath = Join-Path $logDir "build-sidecar-windows.log"
+          New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+          try {
+            & ./scripts/build-sidecar-windows.ps1 *>&1 | Tee-Object -FilePath $logPath
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          } catch {
+            $_ | Out-String | Tee-Object -FilePath $logPath -Append | Out-Host
+            throw
+          }
+
+      - name: Upload sidecar build logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-sidecar-build-logs
+          path: ${{ runner.temp }}\evpoly-logs
+
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Command contract checks
+        shell: pwsh
+        run: ./scripts/desktop-gate-fast.ps1 -RunSmoke:$false -InstallDeps:$false -RunFrontendBuild:$false -RunCargoCheck:$false
+
+      - name: Runtime smoke checks
+        shell: pwsh
+        run: ./scripts/smoke-release.ps1
+
+      - name: Build and publish NSIS release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "EVPoly Desktop ${{ github.ref_name }}"
+          releaseBody: "Windows one-click installer (.exe) for EVPoly Desktop."
+          releaseDraft: false
+          prerelease: false
+
+      - name: NSIS install smoke
+        shell: pwsh
+        run: ./scripts/smoke-installer.ps1

@@ -881,6 +881,9 @@ pub fn filter_specs_by_spot_anchor(
     specs
         .iter()
         .filter(|spec| {
+            // Close-rule markets need the full bracket surface active into the final candle.
+            // Strike-window filtering is correct for hit-style markets, but not for
+            // close-rule markets where the winning bracket may sit far from the anchor.
             if spec.is_close_rule() {
                 return true;
             }
@@ -1710,22 +1713,23 @@ fn env_usize(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn parse_u64_like(raw: &str) -> Option<u64> {
-    raw.parse::<u64>().ok().or_else(|| {
-        let parsed = raw.parse::<f64>().ok()?;
-        if !parsed.is_finite() || parsed < 0.0 || parsed.fract().abs() > f64::EPSILON {
-            return None;
-        }
-        (parsed <= u64::MAX as f64).then_some(parsed as u64)
-    })
+fn parse_u64_like(value: &str) -> Option<u64> {
+    if let Ok(parsed) = value.parse::<u64>() {
+        return Some(parsed);
+    }
+    let parsed = value.parse::<f64>().ok()?;
+    if !parsed.is_finite() || parsed < 0.0 || parsed.fract() != 0.0 || parsed > u64::MAX as f64 {
+        return None;
+    }
+    Some(parsed as u64)
 }
 
-fn parse_u32_like(raw: &str) -> Option<u32> {
-    parse_u64_like(raw).and_then(|value| u32::try_from(value).ok())
+fn parse_u32_like(value: &str) -> Option<u32> {
+    parse_u64_like(value).and_then(|parsed| u32::try_from(parsed).ok())
 }
 
-fn parse_usize_like(raw: &str) -> Option<usize> {
-    parse_u64_like(raw).and_then(|value| usize::try_from(value).ok())
+fn parse_usize_like(value: &str) -> Option<usize> {
+    parse_u64_like(value).and_then(|parsed| usize::try_from(parsed).ok())
 }
 
 fn env_i64(key: &str, default: i64) -> i64 {
@@ -1842,6 +1846,31 @@ mod tests {
                 assert_eq!(cfg.strategy_cap_usd, EVSNIPE_INTERNAL_STRATEGY_CAP_USD);
             },
         );
+    }
+
+    #[test]
+    fn evsnipe_config_accepts_whole_number_float_env_values() {
+        with_evsnipe_env(
+            &[
+                ("EVPOLY_EVSNIPE_DISCOVERY_REFRESH_SEC", Some("15.0")),
+                ("EVPOLY_EVSNIPE_DISCOVERY_LIMIT", Some("1200.0")),
+                ("EVPOLY_EVSNIPE_CROSS_ASK_LEVELS", Some("4.0")),
+            ],
+            || {
+                let cfg = EvsnipeConfig::from_env();
+                assert_eq!(cfg.discovery_refresh_sec, 15);
+                assert_eq!(cfg.discovery_limit, 1_200);
+                assert_eq!(cfg.cross_ask_levels, 4);
+            },
+        );
+    }
+
+    #[test]
+    fn evsnipe_config_defaults_to_ten_dollars() {
+        with_evsnipe_env(&[("EVPOLY_EVSNIPE_SIZE_USD", None)], || {
+            let cfg = EvsnipeConfig::from_env();
+            assert!((cfg.size_usd - 10.0).abs() < 1e-9);
+        });
     }
 
     #[test]

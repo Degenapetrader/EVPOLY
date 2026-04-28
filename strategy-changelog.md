@@ -26,6 +26,9 @@ Older entries may reference env keys that were removed in later commits.
 - `evsnipe_v1`: softened alpha discovery empty-cache behavior (`src/bin/alpha_service.rs`).
   - after the alpha service has refreshed EVSnipe discovery, an empty remote spec list now returns `200` with `specs: []` instead of `503`.
   - true uninitialized discovery cache still returns `503`; this keeps transport/outage signaling while allowing valid "no current HIT markets" responses during CLOB V2 test-market windows.
+- `evsnipe_v1`: aligned platform-safe env parsing hardening while preserving main2 remote-first alpha discovery (`src/evsnipe.rs`).
+  - integer-like EVSnipe env knobs now accept whole-number float values such as `15.0` and reject fractional/non-finite values consistently.
+  - remote discovery remains builder-attributed, alpha-key-backed, remote-first with local fallback; runtime still ignores stale `EVPOLY_EVSNIPE_STRATEGY_CAP_USD`.
 
 ### 2026-04-27
 - Remote alpha startup and V2 order acknowledgement hardening (`src/main.rs`, `src/api.rs`).

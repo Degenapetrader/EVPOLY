@@ -10,6 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-28
+- `endgame_sweep_v1`: aligned local v1 proxy guards while keeping the existing v2 alpha `t0/t1/t2` timing contract (`src/main.rs`, `docs/endgame_sweep_v1.md`, `.env.full.example`).
+  - `BTC/ETH/SOL/XRP` now require Coinbase and Binance to agree on up/down direction versus their period-open proxy bases before a due alpha tick can submit.
+  - `HYPE` Endgame routing now uses Binance for all supported timeframes, matching `DOGE/BNB`; the Hyperliquid Endgame proxy path is no longer used.
+  - Endgame v1 near-base skip is fixed at `3.0` bps; `EVPOLY_NEAR_BASE_SKIP_BPS` remains available for the other near-base-guarded strategies.
 - `mm_sport_v1`: made quote submission safer and operator-configurable (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
   - MM Sport order submit now has a bounded timeout (`EVPOLY_MM_SPORT_ORDER_SUBMIT_TIMEOUT_MS`) so quote loops recover from stuck CLOB submits.
   - MM Sport post-only behavior is env-configurable (`EVPOLY_MM_SPORT_POST_ONLY`, default `true`) while keeping normal discovery, depth-skip alpha, holder-intel, and pair-ratio gates intact.

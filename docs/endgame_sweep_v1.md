@@ -9,9 +9,9 @@
 - Strategy toggle default: `EVPOLY_STRATEGY_ENDGAME_ENABLE=true`
 
 ## Proxy Routing Defaults
-- `BTC/ETH/SOL/XRP` use Coinbase proxy feed path.
-- `DOGE/BNB` use Binance trade proxy feed path.
-- `HYPE` uses Hyperliquid for `5m/15m/4h`, and Binance for `1h`.
+- `BTC/ETH/SOL/XRP` use Coinbase as the primary proxy feed path.
+- `BTC/ETH/SOL/XRP` also require a Binance direction-agreement guard before each alpha tick can trade.
+- `DOGE/BNB/HYPE` use Binance trade proxy feed path.
 - Alpha `submit_proxy_max_age_ms` is multiplied by `3x` for `DOGE/BNB/HYPE`.
 
 ## Alpha-Driven Timing
@@ -36,18 +36,19 @@ Config:
 If required policy is unavailable, the period is skipped (fail-closed).
 
 ## End-to-End Flow
-1. Build symbol proxy feeds (Coinbase/Binance/Hyperliquid by symbol+timeframe path).
+1. Build symbol proxy feeds (Coinbase primary feeds plus Binance guard/routing feeds).
 2. Compute/restore period base anchor.
 3. Request alpha policy at `T-3m` before close / next period open.
 4. If no valid policy and required mode is enabled, skip period.
-5. For each due alpha tick, build direction/probability plan.
-6. Apply mandatory near-base skip gate.
-7. Resolve market with remote-first discovery + local fallback.
-8. Enforce quote/book freshness + market constraints.
-9. Apply poly price-band / entry-price guards.
-10. Apply EV-safe sizing and cap checks.
-11. Enqueue to arbiter/trader.
-12. Enforce submit-time stale guard from alpha policy.
+5. For each due alpha tick, require Coinbase/Binance direction agreement for `BTC/ETH/SOL/XRP`.
+6. Build direction/probability plan.
+7. Apply mandatory near-base skip gate.
+8. Resolve market with remote-first discovery + local fallback.
+9. Enforce quote/book freshness + market constraints.
+10. Apply poly price-band / entry-price guards.
+11. Apply EV-safe sizing and cap checks.
+12. Enqueue to arbiter/trader.
+13. Enforce submit-time stale guard from alpha policy.
 
 ## Sizing Policy
 Base key: `EVPOLY_ENDGAME_BASE_SIZE_USD` (blank defaults to `50`).
@@ -57,7 +58,8 @@ Multipliers:
 - Tick split: `tick0=20%`, `tick1=40%`, `tick2=40%`
 
 ## Core Guards
-- Mandatory near-base skip gate (`EVPOLY_NEAR_BASE_SKIP_BPS`, default `1.0`)
+- Mandatory Endgame near-base skip gate fixed at `3.0` bps.
+- `BTC/ETH/SOL/XRP` require Coinbase and Binance to agree on up/down direction versus their period-open proxy base before an Endgame tick can submit.
 - Quote/proxy freshness gates
 - Submit-time stale guard (policy-aware)
 - Safety stop defaults to `0s` so alpha-owned millisecond ticks, including `t-100ms`, can fire.

@@ -606,6 +606,19 @@ input[type="number"]::-webkit-inner-spin-button {
     margin-top: 0;
   }
 
+  .strategy-rail__heading {
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+  }
+
+  .strategy-rail__heading-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+  }
+
   .strategy-rail__title {
     color: var(--text-primary);
     font-size: 0.88rem;
@@ -613,43 +626,59 @@ input[type="number"]::-webkit-inner-spin-button {
     letter-spacing: -0.03em;
   }
 
-  .strategy-rail__title-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.6rem;
+  .strategy-rail__policy-toggle {
+    flex: 0 0 auto;
+    min-height: 2.05rem;
+    padding: 0.5rem 0.9rem;
+    border-radius: 0.7rem;
+    border: 1px solid rgba(114, 145, 183, 0.18);
+    background: rgba(15, 22, 34, 0.82);
+    color: #eef4ff;
+    font: inherit;
+    font-size: 0.74rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
   }
 
-  .strategy-rail__title-action {
-    min-width: 0;
-    white-space: nowrap;
+  .strategy-rail__policy-toggle:hover:not(:disabled) {
+    border-color: rgba(99, 181, 255, 0.42);
+    background: rgba(23, 33, 49, 0.95);
+    color: #ffffff;
   }
 
-  .strategy-rail__header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(4.9rem, 5.3rem);
-    gap: 0.55rem;
-    padding: 0 0.15rem 0.18rem;
-    color: var(--text-muted);
-    font-size: 0.62rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+  .strategy-rail__policy-toggle--active {
+    border-color: rgba(99, 181, 255, 0.42);
+    background: rgba(99, 181, 255, 0.14);
+    color: var(--accent);
+  }
+
+  .strategy-rail__policy-toggle:disabled {
+    cursor: not-allowed;
+    opacity: 0.78;
+  }
+
+  .strategy-rail__hint {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.45;
   }
 
   .strategy-rail__list {
     display: flex;
     flex-direction: column;
-    gap: 0.24rem;
+    gap: 0.5rem;
   }
 
   .strategy-rail__group {
     display: flex;
     flex-direction: column;
-    gap: 0.14rem;
+    gap: 0.25rem;
     border-left: 2px solid transparent;
     border-radius: 0.9rem;
-    padding-left: 0.45rem;
+    padding-left: 0.1rem;
     transition: border-color 160ms ease, background 160ms ease;
   }
 
@@ -660,93 +689,181 @@ input[type="number"]::-webkit-inner-spin-button {
 
   .strategy-rail__row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(6.5rem, 7.2rem);
+    grid-template-columns: 5.5rem auto minmax(0, 1fr);
     align-items: center;
-    gap: 0.55rem;
-    padding: 0.2rem 0.1rem 0.2rem 0.2rem;
+    gap: 0.3rem;
+    padding: 0.2rem 0.15rem;
     transition: color 160ms ease;
   }
 
   .strategy-rail__link {
-    display: block;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.08rem;
     min-width: 0;
+    width: 100%;
+    max-width: 100%;
     border: 0;
+    border-radius: 0.4rem;
     background: transparent;
     color: inherit;
     cursor: pointer;
-    padding: 0;
+    padding: 0.1rem 0.18rem;
+    margin: -0.1rem -0.18rem;
     text-align: left;
   }
 
+  .strategy-rail__link:hover:not(:disabled) {
+    background: rgba(99, 181, 255, 0.12);
+    color: var(--accent);
+  }
+
   .strategy-rail__label {
+    min-width: 0;
     color: var(--text-primary);
-    font-size: 0.9rem;
-    font-weight: 625;
-    letter-spacing: -0.03em;
+    font-size: 0.78rem;
+    font-weight: 650;
+    letter-spacing: -0.02em;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .strategy-rail__control {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 0.38rem;
-    min-width: 6.5rem;
+  .strategy-rail__link-chevron {
+    flex-shrink: 0;
+    margin-left: 0.02rem;
+    font-size: 1.12em;
+    font-weight: 650;
+    line-height: 1;
+    color: rgba(186, 206, 232, 0.92);
+    transition: color 0.15s ease;
+  }
+
+  .strategy-rail__group--active .strategy-rail__link-chevron,
+  .strategy-rail__link:hover:not(:disabled) .strategy-rail__link-chevron,
+  .strategy-rail__subrow-label:hover:not(:disabled) .strategy-rail__link-chevron {
+    color: var(--accent);
+  }
+
+  .strategy-rail .ui-button--compact {
+    min-height: 2.7rem;
+    padding: 0.62rem 0.8rem;
+    border-radius: 0.85rem;
+    font-size: 0.88rem;
   }
 
   .strategy-rail__field {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    gap: 0.38rem;
     min-width: 0;
+    border-radius: 0.78rem;
+    border: 1px solid var(--border);
+    background: rgba(8, 13, 21, 0.84);
+    overflow: hidden;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .strategy-rail__field:focus-within {
+    border-color: rgba(99, 181, 255, 0.36);
+    box-shadow: 0 0 0 1px rgba(99, 181, 255, 0.16);
   }
 
   .strategy-rail__field .field-input--compact {
     width: auto;
     min-width: 0;
-    flex: 1 1 0;
-    padding: 0.56rem 0.68rem;
-    border-radius: 0.78rem;
-    font-size: 0.86rem;
-    font-variant-numeric: tabular-nums;
+    flex: 1 1 auto;
+    margin: 0;
+    padding: 0.56rem 0.35rem 0.56rem 0.6rem;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    font-size: 0.88rem;
     text-align: right;
   }
 
+  .strategy-rail__field .field-input--compact::-webkit-inner-spin-button,
+  .strategy-rail__field .field-input--compact::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  .strategy-rail__field .field-input--compact:focus {
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+
   .strategy-rail__field-suffix {
-    flex: 0 0 auto;
-    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 2.8rem;
+    margin-right: 0.5rem;
     color: var(--text-muted);
-    font-size: 0.7rem;
+    font-size: 0.58rem;
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    pointer-events: none;
-    min-width: 1.4rem;
-    text-align: left;
+    text-align: center;
+  }
+
+  .strategy-rail__field-suffix--toggle {
+    pointer-events: auto;
+    cursor: pointer;
+    border-radius: 0.35rem;
+    padding: 0.22rem 0.4rem;
+    margin-right: 0.42rem;
+    border: 1px solid rgba(99, 181, 255, 0.3);
+    background: rgba(99, 181, 255, 0.08);
+    color: var(--accent);
+  }
+
+  .strategy-rail__field-suffix--toggle:hover:not(:disabled) {
+    color: #fff;
+    background: rgba(99, 181, 255, 0.2);
+    border-color: rgba(99, 181, 255, 0.5);
+  }
+
+  .strategy-rail__field-suffix--toggle:disabled {
+    cursor: not-allowed;
   }
 
   .strategy-rail__subrow {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(6.5rem, 7.2rem);
+    grid-template-columns: 5.5rem auto minmax(0, 1fr);
     align-items: center;
-    gap: 0.55rem;
-    padding: 0 0.1rem 0.2rem 0.2rem;
+    gap: 0.3rem;
+    padding: 0 0.15rem 0.2rem;
   }
 
   .strategy-rail__subrow-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.06rem;
     border: 0;
+    border-radius: 0.4rem;
     background: transparent;
     color: var(--text-secondary);
     font-size: 0.76rem;
     text-align: left;
-    padding: 0;
+    padding: 0.1rem 0.18rem;
+    margin: -0.1rem -0.18rem;
     cursor: pointer;
   }
 
+  .strategy-rail__subrow-label:hover:not(:disabled) {
+    background: rgba(99, 181, 255, 0.12);
+    color: var(--accent);
+  }
+
   .strategy-rail__subrow-hint {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    min-height: 2rem;
+    border-radius: 0.78rem;
+    border: 1px solid var(--border);
+    background: rgba(8, 13, 21, 0.84);
+    padding: 0.3rem 0.6rem;
     color: var(--text-muted);
     font-size: 0.7rem;
     font-weight: 700;
@@ -755,17 +872,98 @@ input[type="number"]::-webkit-inner-spin-button {
     text-align: right;
   }
 
-  .rail-save {
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    padding-top: 0.6rem;
+  .strategy-rail__group--has-divider {
+    border-top: 1px solid rgba(114, 145, 183, 0.1);
+    padding-top: 0.5rem;
+    margin-top: 0.15rem;
   }
 
-  .rail-save__hint {
+  .strategy-rail__route-row {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1rem 0.15rem 0.15rem 5.8rem;
+  }
+
+  .strategy-rail__mode-btn {
+    padding: 0.2rem 0.5rem;
+    border-radius: 0.35rem;
+    border: 1px solid rgba(114, 145, 183, 0.15);
+    background: rgba(16, 24, 36, 0.6);
+    color: var(--text-muted);
+    font-size: 0.62rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .strategy-rail__mode-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--text-primary);
+  }
+
+  .strategy-rail__mode-btn--active {
+    background: rgba(99, 181, 255, 0.14);
+    border-color: rgba(99, 181, 255, 0.35);
+    color: var(--accent);
+  }
+
+  .strategy-rail__mode-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .strategy-rail__save-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    width: 100%;
+    margin-top: 0.8rem;
+  }
+
+  .strategy-rail__save {
+    display: block;
+    width: 100%;
+    padding: 0.75rem 1.2rem;
+    border: 1px solid rgba(114, 145, 183, 0.22);
+    border-radius: 0.85rem;
+    background: rgba(15, 22, 34, 0.82);
     color: var(--text-secondary);
-    font-size: 0.8rem;
-    line-height: 1.6;
+    font-weight: 700;
+    cursor: pointer;
+    transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+  }
+
+  .strategy-rail__save:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--text-primary);
+  }
+
+  .strategy-rail__save--dirty {
+    background: rgba(99, 181, 255, 0.14);
+    border-color: rgba(99, 181, 255, 0.35);
+    color: var(--accent);
+  }
+
+  .strategy-rail__save--dirty:hover:not(:disabled) {
+    background: rgba(99, 181, 255, 0.22);
+  }
+
+  .strategy-rail__save--synced:disabled {
+    opacity: 1;
+    cursor: default;
+    background: rgba(86, 213, 154, 0.14);
+    border-color: rgba(86, 213, 154, 0.32);
+    color: rgba(198, 248, 220, 0.98);
+  }
+
+  .strategy-rail__save--saving:disabled {
+    opacity: 0.92;
+    cursor: wait;
+  }
+
+  .strategy-rail__save:disabled:not(.strategy-rail__save--synced):not(.strategy-rail__save--saving) {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 
   .activity-feed {

@@ -28,6 +28,7 @@ import {
   strategySizeValue,
   strategyTooltip,
   updateStrategyEnabled,
+  updateStrategySettingsSection,
   updateStrategySize,
   type StrategyKey,
 } from "../lib/desktop-config";
@@ -127,6 +128,11 @@ export function Home() {
   const [pendingResumeOffer, setPendingResumeOffer] = useState<PendingLinuxResumeOffer | null>(null);
   const [resumeLoading, setResumeLoading] = useState(false);
   const [portfolioFeedSeed, setPortfolioFeedSeed] = useState(0);
+  const [railDraftValues, setRailDraftValues] = useState<Record<StrategyKey, string>>(() =>
+    Object.fromEntries(
+      STRATEGIES.map((strategy) => [strategy.key, String(strategySizeValue(DEFAULT_CONFIG, strategy.key))])
+    ) as Record<StrategyKey, string>
+  );
 
   const refreshUpdateAvailability = useCallback(async () => {
     try {
@@ -153,6 +159,14 @@ export function Home() {
       navigate("/home", { replace: true });
     }
   }, [navigate, selectedStrategy, strategySlug]);
+
+  useEffect(() => {
+    setRailDraftValues(
+      Object.fromEntries(
+        STRATEGIES.map((strategy) => [strategy.key, String(strategySizeValue(config, strategy.key))])
+      ) as Record<StrategyKey, string>
+    );
+  }, [config]);
 
   const loadProfileConfig = useCallback(async (profileId: string) => {
     const saved = await getSavedConfig(profileId);
@@ -453,36 +467,45 @@ export function Home() {
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
   ];
 
+  const commitRailDraftValue = (strategy: StrategyKey) => {
+    const currentValue = strategySizeValue(config, strategy);
+    const nextValue = parseNonNegative(railDraftValues[strategy], currentValue);
+    setRailDraftValues((current) => ({ ...current, [strategy]: String(nextValue) }));
+    setConfig((current) => updateStrategySize(current, strategy, nextValue));
+  };
+
+  const updateRailDraftValue = (strategy: StrategyKey, nextRawValue: string) => {
+    setRailDraftValues((current) => ({ ...current, [strategy]: nextRawValue }));
+  };
+
   const renderStrategyList = () => (
     <div className="strategy-rail">
-      <div className="strategy-rail__title-row">
-        <div className="strategy-rail__title">Strategy List</div>
-        <button
-          type="button"
-          onClick={() =>
-            setConfig((current) => ({
-              ...current,
-              weekend_policy: current.weekend_policy === "pause" ? "off" : "pause",
-            }))
-          }
-          disabled={!canOperate}
-          className={`ui-button ui-button--compact strategy-rail__title-action ${
-            config.weekend_policy === "pause" ? "ui-button--accent" : ""
-          }`.trim()}
-          title={
-            config.weekend_policy === "pause"
-              ? WEEKEND_POLICY_TOOLTIP_PAUSE
-              : WEEKEND_POLICY_TOOLTIP_OFF
-          }
-          aria-pressed={config.weekend_policy === "pause"}
-        >
-          {config.weekend_policy === "pause" ? "Weekend" : "NO OFF DAY"}
-        </button>
-      </div>
-      <div className="strategy-rail__header" aria-hidden="true">
-        <span>Strategy</span>
-        <span>State</span>
-        <span>Control</span>
+      <div className="strategy-rail__heading">
+        <div className="strategy-rail__heading-row">
+          <div className="strategy-rail__title">Strategy List</div>
+          <button
+            type="button"
+            onClick={() =>
+              setConfig((current) => ({
+                ...current,
+                weekend_policy: current.weekend_policy === "pause" ? "off" : "pause",
+              }))
+            }
+            disabled={!canOperate}
+            className={`strategy-rail__policy-toggle ${
+              config.weekend_policy === "pause" ? "strategy-rail__policy-toggle--active" : ""
+            }`.trim()}
+            title={
+              config.weekend_policy === "pause"
+                ? WEEKEND_POLICY_TOOLTIP_PAUSE
+                : WEEKEND_POLICY_TOOLTIP_OFF
+            }
+            aria-pressed={config.weekend_policy === "pause"}
+          >
+            {config.weekend_policy === "pause" ? "OFF-HOURS PAUSE" : "NO OFF DAY"}
+          </button>
+        </div>
+        <p className="strategy-rail__hint">Select a strategy to edit its settings.</p>
       </div>
 
       <div className="strategy-rail__list">
@@ -498,8 +521,8 @@ export function Home() {
           return (
             <div
               key={strategy.key}
-              className={`strategy-rail__group ${
-                selected ? "strategy-rail__group--active" : ""
+              className={`strategy-rail__group ${selected ? "strategy-rail__group--active" : ""} ${
+                strategy.key === "mm_sport" ? "strategy-rail__group--has-divider" : ""
               }`.trim()}
             >
               <div
@@ -513,7 +536,12 @@ export function Home() {
                   className="strategy-rail__link"
                   title={strategyTooltip(strategy.key)}
                 >
-                  <div className="strategy-rail__label">{strategy.label}</div>
+                  <span className="strategy-rail__label">
+                    {strategy.key === "endgame" ? "Endgame V1" : strategy.label}
+                  </span>
+                  <span className="strategy-rail__link-chevron" aria-hidden="true">
+                    &rsaquo;
+                  </span>
                 </button>
 
                 <button
@@ -531,33 +559,52 @@ export function Home() {
                   {enabled ? "On" : "Off"}
                 </button>
 
-                <div className="strategy-rail__control" title={controlTitle}>
-                  <div className="strategy-rail__field">
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      value={value}
-                      aria-label={`${strategy.label} ${strategySizeLabel(strategy.key, config)}`}
-                      onChange={(event) =>
-                        setConfig((current) =>
-                          updateStrategySize(
-                            current,
-                            strategy.key,
-                            parseNonNegative(event.target.value, value)
-                          )
-                        )
+                <div className="strategy-rail__field" title={controlTitle}>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value={railDraftValues[strategy.key] ?? String(value)}
+                    aria-label={`${strategy.label} ${strategySizeLabel(strategy.key, config)}`}
+                    onChange={(event) => updateRailDraftValue(strategy.key, event.target.value)}
+                    onBlur={() => commitRailDraftValue(strategy.key)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.currentTarget.blur();
                       }
+                    }}
                     disabled={!canOperate}
                     className="field-input field-input--compact"
+                    placeholder={suffix}
                     title={
                       strategy.key === "endgame"
                         ? `Split ${formatEndgameSplitTooltip(config)}`
                         : controlTitle
                     }
                   />
-                  <span className="strategy-rail__field-suffix">{suffix}</span>
-                </div>
+                  {strategy.key === "mm_sport" ? (
+                    <button
+                      type="button"
+                      className="strategy-rail__field-suffix strategy-rail__field-suffix--toggle"
+                      disabled={!canOperate}
+                      onClick={() =>
+                        setConfig((current) =>
+                          updateStrategySettingsSection(current, "mm_sport", {
+                            ...current.strategy_settings.mm_sport,
+                            quote_size_mode:
+                              current.strategy_settings.mm_sport.quote_size_mode === "multiple"
+                                ? "depth_ratio"
+                                : "multiple",
+                          })
+                        )
+                      }
+                      title="Click to toggle Multiple / Depth Ratio"
+                    >
+                      {suffix}
+                    </button>
+                  ) : (
+                    <span className="strategy-rail__field-suffix">{suffix}</span>
+                  )}
                 </div>
               </div>
 
@@ -569,7 +616,10 @@ export function Home() {
                     className="strategy-rail__subrow-label"
                     title="Fast pre-hit entries before the full hit leg is live."
                   >
-                    Pre-hit
+                    <span>Pre-hit</span>
+                    <span className="strategy-rail__link-chevron" aria-hidden="true">
+                      &rsaquo;
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -588,35 +638,61 @@ export function Home() {
                   </div>
                 </div>
               ) : null}
+
+              {strategy.key === "mm_sport" ? (
+                <div className="strategy-rail__route-row">
+                  {([
+                    ["sports", "Sport"],
+                    ["nonsports", "Non-S"],
+                    ["dual", "Dual"],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      disabled={!canOperate}
+                      onClick={() =>
+                        setConfig((current) =>
+                          updateStrategySettingsSection(current, "mm_sport", {
+                            ...current.strategy_settings.mm_sport,
+                            discovery_route: value,
+                          })
+                        )
+                      }
+                      className={`strategy-rail__mode-btn ${
+                        config.strategy_settings.mm_sport.discovery_route === value
+                          ? "strategy-rail__mode-btn--active"
+                          : ""
+                      }`.trim()}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           );
         })}
       </div>
-    </div>
-  );
 
-  const renderRailSave = () => (
-    <div className="rail-save">
-      <div className="strategy-rail__title">Profile Save</div>
-      <div className="rail-save__hint">
-        Save overview edits from the rail. Strategy-specific saves move into the editor footer.
+      <div className="strategy-rail__save-wrap">
+        <button
+          type="button"
+          onClick={() => void handleSave()}
+          disabled={saveLoading || !dirty || !canOperate}
+          className={`strategy-rail__save ${
+            dirty ? "strategy-rail__save--dirty" : "strategy-rail__save--synced"
+          } ${saveLoading ? "strategy-rail__save--saving" : ""}`.trim()}
+        >
+          {saveLoading ? "Saving..." : dirty ? "Save" : "Saved"}
+        </button>
+        {saveMessage ? <div className="metric-detail">{saveMessage}</div> : null}
       </div>
-      <button
-        type="button"
-        onClick={() => void handleSave()}
-        disabled={saveLoading || !canOperate}
-        className="ui-button ui-button--accent"
-      >
-        {saveLoading ? "Saving..." : dirty ? "Save changes" : "Saved"}
-      </button>
-      {saveMessage ? <div className="metric-detail">{saveMessage}</div> : null}
     </div>
   );
 
   const renderRailContent = () => (
     <div className="space-y-4">
       {renderStrategyList()}
-      {!selectedStrategy ? renderRailSave() : null}
     </div>
   );
 

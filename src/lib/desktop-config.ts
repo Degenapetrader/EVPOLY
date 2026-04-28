@@ -642,6 +642,7 @@ export function strategySections(strategy: StrategyKey): StrategyEditorSection[]
 export function strategySizeLabel(strategy: StrategyKey, config?: BotConfig): string {
   if (strategy === "evsnipe") return "Size Per Hit (USD)";
   if (strategy === "mm_rewards") return "Min Share Multiple";
+  if (strategy === "endgame") return "Base Size (Shares)";
   if (strategy === "mm_sport") {
     return config && mmSportUsesDepthRatio(config) ? "Max Share Ratio" : "Quote Size Multiplier";
   }
@@ -687,7 +688,9 @@ export function strategyControlSuffix(strategy: StrategyKey, config?: BotConfig)
     case "mm_rewards":
       return "x";
     case "mm_sport":
-      return config && mmSportUsesDepthRatio(config) ? "ratio" : "x";
+      return config && mmSportUsesDepthRatio(config) ? "DEPTH" : "MULT";
+    case "endgame":
+      return "SHARE";
     default:
       return "USD";
   }

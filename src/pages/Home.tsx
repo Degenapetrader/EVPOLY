@@ -76,9 +76,9 @@ function strategyKeyFromRoute(strategySlug?: string): StrategyKey | null {
 }
 
 const WEEKEND_POLICY_TOOLTIP_PAUSE =
-  "Stops new weekend entries for Premarket, Endgame, EVCurve, and SessionBand.";
+  "Stops new weekend entries for Premarket, Endgame, EVCurve, and S-Band.";
 const WEEKEND_POLICY_TOOLTIP_OFF =
-  "Premarket, Endgame, EVCurve, and SessionBand keep trading on weekends.";
+  "Premarket, Endgame, EVCurve, and S-Band keep trading on weekends.";
 
 function resumeOfferCopy(offer: PendingLinuxResumeOffer): string {
   if (offer.reason === "linux_update") {
@@ -632,7 +632,7 @@ export function Home() {
           ) : null}
         </SectionPanel>
 
-        <SectionPanel title="Available Balance" subtitle="Free USDC available from the active wallet.">
+              <SectionPanel title="Available Balance" subtitle="Free pUSD collateral available from the active wallet.">
           <div className="text-4xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
             {formatUsd(overview?.available_balance)}
           </div>

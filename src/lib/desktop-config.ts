@@ -25,13 +25,13 @@ export const STRATEGIES = [
     key: "evcurve",
     label: "EVCurve",
     summary: "Trades curve-based setups when the price path lines up.",
-    tooltip: "Curve-based entries when price and flip probability align.",
+    tooltip: "Curve-based entries when price and Alpha signal align.",
   },
   {
     key: "session_band",
-    label: "SessionBand",
-    summary: "Looks for session swings and reversal bands.",
-    tooltip: "Reversal entries around session bands.",
+    label: "S-Band",
+    summary: "Trades late-window S-Band setups from EVPlus Alpha signals.",
+    tooltip: "Late-window S-Band entries with local sizing and Alpha signal checks.",
   },
   {
     key: "evsnipe",
@@ -47,9 +47,9 @@ export const STRATEGIES = [
   },
   {
     key: "mm_sport",
-    label: "MM Sport",
-    summary: "Quotes sports markets when extra activity is enabled.",
-    tooltip: "Quote sports reward markets with inventory-aware exits.",
+    label: "MM 2.0",
+    summary: "Quotes selected reward markets with Alpha risk gating.",
+    tooltip: "Quote selected reward markets with pUSD caps and inventory-aware exits.",
   },
 ] as const;
 
@@ -68,6 +68,15 @@ function normalizeMMRewardsMarketMode(value: string | undefined) {
 
 function normalizeMMSportQuoteSizeMode(value: string | undefined) {
   return value?.trim().toLowerCase() === "depth_ratio" ? "depth_ratio" : "multiple";
+}
+
+function normalizeMMSportDiscoveryRoute(value: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === "nonsports" || normalized === "non-sports" || normalized === "non_sports") {
+    return "nonsports";
+  }
+  if (normalized === "dual") return "dual";
+  return "sports";
 }
 
 function normalizeMMSportInventoryExitMode(value: string | undefined) {
@@ -189,13 +198,25 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     reward_min_shares_cap: 0,
   },
   mm_sport: {
+    discovery_route: "sports",
     quote_size_mode: "multiple",
+    multiple_collateral_cap_mult: 0.45,
+    depth_ratio_collateral_cap_mult: 0.9,
     min_reward_rate_per_day: 300,
+    allowed_sport_league_codes: "",
+    blocked_sport_league_codes: "",
+    blocked_competition_levels: "",
+    market_allowlist_keywords: "",
+    market_blacklist_keywords: "",
+    reward_min_shares_cap: 0,
+    polymarket_live_guard_enable: true,
+    polymarket_live_guard_ws_enable: true,
+    polymarket_live_guard_ws_stale_ms: 600000,
     pause_after_fill_sec: 7200,
     inventory_exit_start_hours: 8,
     inventory_exit_mode: "normal",
     max_share_ratio: 0.05,
-    min_top_depth_usd: 10000,
+    min_top_depth_usd: 1100,
     quote_expiry_min_sec: 180,
     quote_expiry_max_sec: 300,
   },
@@ -390,6 +411,9 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
       mm_sport: {
         ...DEFAULT_CONFIG.strategy_settings.mm_sport,
         ...saved?.strategy_settings?.mm_sport,
+        discovery_route: normalizeMMSportDiscoveryRoute(
+          saved?.strategy_settings?.mm_sport?.discovery_route
+        ),
         quote_size_mode: normalizeMMSportQuoteSizeMode(
           saved?.strategy_settings?.mm_sport?.quote_size_mode
         ),
@@ -674,15 +698,15 @@ export function strategyControlTooltip(config: BotConfig, strategy: StrategyKey)
     case "evcurve":
       return "Curve-entry base for each EVCurve setup.";
     case "session_band":
-      return "Per-band entry base for SessionBand.";
+      return "Per-band entry base for S-Band.";
     case "evsnipe":
       return "Size used for each EVSnipe hit leg.";
     case "mm_rewards":
       return "Multiplier applied to the reward minimum shares target.";
     case "mm_sport":
       return mmSportUsesDepthRatio(config)
-        ? "Depth Ratio mode sizes from visible depth and buying power."
-        : "Multiplier applied to MM Sport quote size.";
+        ? "Depth Ratio mode sizes from visible depth and pUSD collateral."
+        : "Multiplier applied to MM 2.0 quote size.";
     default:
       return "Strategy control";
   }

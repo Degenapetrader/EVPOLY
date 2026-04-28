@@ -26,8 +26,8 @@ export const STRATEGY_META: Record<
     summary: "Trades curve-based setups when the price path lines up.",
   },
   session_band: {
-    label: "SessionBand",
-    summary: "Looks for session swings and band reversals.",
+    label: "S-Band",
+    summary: "Trades late-window S-Band setups from EVPlus Alpha signals.",
   },
   evsnipe: {
     label: "EVSnipe",
@@ -38,8 +38,8 @@ export const STRATEGY_META: Record<
     summary: "Refreshes quotes on reward markets automatically.",
   },
   mm_sport: {
-    label: "MM Sport",
-    summary: "Quotes sports reward markets when enabled.",
+    label: "MM 2.0",
+    summary: "Quotes selected reward markets with Alpha risk gating.",
   },
 };
 

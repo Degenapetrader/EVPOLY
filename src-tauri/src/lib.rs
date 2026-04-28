@@ -247,8 +247,20 @@ struct DesktopMmRewardsSettings {
 
 #[derive(Clone, serde::Deserialize)]
 struct DesktopMmSportSettings {
+    discovery_route: String,
     quote_size_mode: String,
+    multiple_collateral_cap_mult: f64,
+    depth_ratio_collateral_cap_mult: f64,
     min_reward_rate_per_day: f64,
+    allowed_sport_league_codes: String,
+    blocked_sport_league_codes: String,
+    blocked_competition_levels: String,
+    market_allowlist_keywords: String,
+    market_blacklist_keywords: String,
+    reward_min_shares_cap: f64,
+    polymarket_live_guard_enable: bool,
+    polymarket_live_guard_ws_enable: bool,
+    polymarket_live_guard_ws_stale_ms: f64,
     pause_after_fill_sec: f64,
     inventory_exit_start_hours: f64,
     inventory_exit_mode: String,
@@ -269,6 +281,14 @@ fn normalize_mm_sport_quote_size_mode(value: &str) -> &'static str {
     match value.trim().to_ascii_lowercase().as_str() {
         "depth_ratio" | "depth-ratio" | "ratio" => "depth_ratio",
         _ => "multiple",
+    }
+}
+
+fn normalize_mm_sport_discovery_route(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "nonsports" | "non-sports" | "non_sports" => "nonsports",
+        "dual" => "dual",
+        _ => "sports",
     }
 }
 
@@ -858,15 +878,65 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 ),
             },
             mm_sport: DesktopMmSportSettings {
+                discovery_route: normalize_mm_sport_discovery_route(
+                    config_io::env_template_default_string("EVPOLY_MM_SPORT_DISCOVERY_ROUTE")
+                        .as_deref()
+                        .unwrap_or("sports"),
+                )
+                .to_string(),
                 quote_size_mode: normalize_mm_sport_quote_size_mode(
                     config_io::env_template_default_string("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE")
                         .as_deref()
                         .unwrap_or("multiple"),
                 )
                 .to_string(),
+                multiple_collateral_cap_mult: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT",
+                    0.45,
+                ),
+                depth_ratio_collateral_cap_mult: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
+                    0.90,
+                ),
                 min_reward_rate_per_day: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY",
                     300.0,
+                ),
+                allowed_sport_league_codes: config_io::env_template_default_string(
+                    "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES",
+                )
+                .unwrap_or_default(),
+                blocked_sport_league_codes: config_io::env_template_default_string(
+                    "EVPOLY_MM_SPORT_BLOCKED_SPORT_LEAGUE_CODES",
+                )
+                .unwrap_or_default(),
+                blocked_competition_levels: config_io::env_template_default_string(
+                    "EVPOLY_MM_SPORT_BLOCKED_COMPETITION_LEVELS",
+                )
+                .unwrap_or_default(),
+                market_allowlist_keywords: config_io::env_template_default_string(
+                    "EVPOLY_MM_SPORT_MARKET_ALLOWLIST_KEYWORDS",
+                )
+                .unwrap_or_default(),
+                market_blacklist_keywords: config_io::env_template_default_string(
+                    "EVPOLY_MM_SPORT_MARKET_BLACKLIST_KEYWORDS",
+                )
+                .unwrap_or_default(),
+                reward_min_shares_cap: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_REWARD_MIN_SHARES_CAP",
+                    0.0,
+                ),
+                polymarket_live_guard_enable: config_io::env_template_default_bool(
+                    "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_ENABLE",
+                    true,
+                ),
+                polymarket_live_guard_ws_enable: config_io::env_template_default_bool(
+                    "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_ENABLE",
+                    true,
+                ),
+                polymarket_live_guard_ws_stale_ms: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_STALE_MS",
+                    600000.0,
                 ),
                 pause_after_fill_sec: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC",
@@ -888,7 +958,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 ),
                 min_top_depth_usd: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD",
-                    10000.0,
+                    1100.0,
                 ),
                 quote_expiry_min_sec: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC",
@@ -1750,6 +1820,19 @@ fn desktop_config_to_profile_payload(
         number_to_json(config.strategy_settings.mm_rewards.reward_min_shares_cap),
     );
     strategy.insert(
+        "EVPOLY_MM_SPORT_DISCOVERY_ROUTE".to_string(),
+        Value::String(
+            normalize_mm_sport_discovery_route(
+                config
+                    .strategy_settings
+                    .mm_sport
+                    .discovery_route
+                    .as_str(),
+            )
+            .to_string(),
+        ),
+    );
+    strategy.insert(
         "EVPOLY_MM_SPORT_QUOTE_SIZE_MODE".to_string(),
         Value::String(
             normalize_mm_sport_quote_size_mode(
@@ -1759,8 +1842,112 @@ fn desktop_config_to_profile_payload(
         ),
     );
     strategy.insert(
+        "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT".to_string(),
+        number_to_json(
+            config
+                .strategy_settings
+                .mm_sport
+                .multiple_collateral_cap_mult,
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT".to_string(),
+        number_to_json(
+            config
+                .strategy_settings
+                .mm_sport
+                .depth_ratio_collateral_cap_mult,
+        ),
+    );
+    strategy.insert(
         "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY".to_string(),
         number_to_json(config.strategy_settings.mm_sport.min_reward_rate_per_day),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_sport
+                .allowed_sport_league_codes
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_BLOCKED_SPORT_LEAGUE_CODES".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_sport
+                .blocked_sport_league_codes
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_BLOCKED_COMPETITION_LEVELS".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_sport
+                .blocked_competition_levels
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_MARKET_ALLOWLIST_KEYWORDS".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_sport
+                .market_allowlist_keywords
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_MARKET_BLACKLIST_KEYWORDS".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_sport
+                .market_blacklist_keywords
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_REWARD_MIN_SHARES_CAP".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.reward_min_shares_cap),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_ENABLE".to_string(),
+        bool_to_json(
+            config
+                .strategy_settings
+                .mm_sport
+                .polymarket_live_guard_enable,
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_ENABLE".to_string(),
+        bool_to_json(
+            config
+                .strategy_settings
+                .mm_sport
+                .polymarket_live_guard_ws_enable,
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_STALE_MS".to_string(),
+        number_to_json(
+            config
+                .strategy_settings
+                .mm_sport
+                .polymarket_live_guard_ws_stale_ms,
+        ),
     );
     strategy.insert(
         "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC".to_string(),
@@ -2151,17 +2338,31 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "reward_min_shares_cap": f64_from_object(&strategy, "EVPOLY_MM_REWARD_MIN_SHARES_CAP", config_io::env_template_default_f64("EVPOLY_MM_REWARD_MIN_SHARES_CAP", 0.0))
             },
             "mm_sport": {
+                "discovery_route": normalize_mm_sport_discovery_route(
+                    string_from_object(&strategy, "EVPOLY_MM_SPORT_DISCOVERY_ROUTE", "sports").as_str()
+                ),
                 "quote_size_mode": normalize_mm_sport_quote_size_mode(
                     string_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_SIZE_MODE", "multiple").as_str()
                 ),
+                "multiple_collateral_cap_mult": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", 0.45)),
+                "depth_ratio_collateral_cap_mult": f64_from_object(&strategy, "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT", config_io::env_template_default_f64("EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT", 0.90)),
                 "min_reward_rate_per_day": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 300.0)),
+                "allowed_sport_league_codes": string_from_object(&strategy, "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES", ""),
+                "blocked_sport_league_codes": string_from_object(&strategy, "EVPOLY_MM_SPORT_BLOCKED_SPORT_LEAGUE_CODES", ""),
+                "blocked_competition_levels": string_from_object(&strategy, "EVPOLY_MM_SPORT_BLOCKED_COMPETITION_LEVELS", ""),
+                "market_allowlist_keywords": string_from_object(&strategy, "EVPOLY_MM_SPORT_MARKET_ALLOWLIST_KEYWORDS", ""),
+                "market_blacklist_keywords": string_from_object(&strategy, "EVPOLY_MM_SPORT_MARKET_BLACKLIST_KEYWORDS", ""),
+                "reward_min_shares_cap": f64_from_object(&strategy, "EVPOLY_MM_SPORT_REWARD_MIN_SHARES_CAP", config_io::env_template_default_f64("EVPOLY_MM_SPORT_REWARD_MIN_SHARES_CAP", 0.0)),
+                "polymarket_live_guard_enable": bool_from_object(&strategy, "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_ENABLE", config_io::env_template_default_bool("EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_ENABLE", true)),
+                "polymarket_live_guard_ws_enable": bool_from_object(&strategy, "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_ENABLE", config_io::env_template_default_bool("EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_ENABLE", true)),
+                "polymarket_live_guard_ws_stale_ms": f64_from_object(&strategy, "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_STALE_MS", config_io::env_template_default_f64("EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_STALE_MS", 600000.0)),
                 "pause_after_fill_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 7200.0)),
                 "inventory_exit_start_hours": f64_from_object(&strategy, "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28800.0)) / 3600.0,
                 "inventory_exit_mode": normalize_mm_sport_exit_mode(
                     string_from_object(&strategy, "EVPOLY_MM_SPORT_EXIT_MODE", "normal").as_str()
                 ),
                 "max_share_ratio": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MAX_SHARE_RATIO", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05)),
-                "min_top_depth_usd": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 10000.0)),
+                "min_top_depth_usd": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 1100.0)),
                 "quote_expiry_min_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", 180.0)),
                 "quote_expiry_max_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 300.0))
             }

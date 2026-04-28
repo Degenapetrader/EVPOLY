@@ -789,53 +789,14 @@ export function StrategyEditorPane({
             <div className="surface-panel">
               <div className="surface-panel__header">
                 <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Entry Filters</h2>
+                  <h2 className="surface-panel__title">Alpha Signal</h2>
                   <p className="surface-panel__subtitle">
-                    Tune the flip probability ceiling and the minimum buy price gate.
+                    EVcurve local controls are limited to scope and sizing. Runtime requires an EVPlus Alpha signal before a checkpoint can trade.
                   </p>
                 </div>
               </div>
-              <div className="surface-panel__body grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="field-label">Max Flip Probability</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={config.strategy_settings.evcurve.max_flip_prob}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchEVCurve({
-                        max_flip_prob: parseNonNegative(
-                          event.target.value,
-                          config.strategy_settings.evcurve.max_flip_prob
-                        ),
-                      })
-                    }
-                    className="field-input"
-                  />
-                </div>
-                <div>
-                  <label className="field-label">Min Buy Price</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={config.strategy_settings.evcurve.min_buy_price}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchEVCurve({
-                        min_buy_price: parseNonNegative(
-                          event.target.value,
-                          config.strategy_settings.evcurve.min_buy_price
-                        ),
-                      })
-                    }
-                    className="field-input"
-                  />
-                </div>
+              <div className="surface-panel__body">
+                <div className="inline-alert">Alpha signal: required</div>
               </div>
             </div>
           </>
@@ -845,7 +806,7 @@ export function StrategyEditorPane({
           <>
             {renderTimeframeChoiceCard(
               "Timeframes",
-              "Choose which SessionBand windows can trade.",
+              "Choose which S-Band windows can trade.",
               strategyTimeframeOptions("session_band"),
               config.strategy_settings.session_band.timeframes,
               (next) => patchSessionBand({ timeframes: next })
@@ -853,30 +814,14 @@ export function StrategyEditorPane({
             <div className="surface-panel">
               <div className="surface-panel__header">
                 <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Band Threshold</h2>
+                  <h2 className="surface-panel__title">Alpha Signal</h2>
                   <p className="surface-panel__subtitle">
-                    Control how far the lead price must flip before SessionBand acts.
+                    S-Band keeps local scope and sizing controls here. Runtime requires an EVPlus Alpha signal before a checkpoint can trade.
                   </p>
                 </div>
               </div>
               <div className="surface-panel__body">
-                <label className="field-label">Flip Threshold %</label>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.1"
-                  value={config.strategy_settings.session_band.flip_threshold_pct}
-                  disabled={!canEdit}
-                  onChange={(event) =>
-                    patchSessionBand({
-                      flip_threshold_pct: parseNonNegative(
-                        event.target.value,
-                        config.strategy_settings.session_band.flip_threshold_pct
-                      ),
-                    })
-                  }
-                  className="field-input"
-                />
+                <div className="inline-alert">Alpha signal: required</div>
               </div>
             </div>
           </>
@@ -1440,11 +1385,40 @@ export function StrategyEditorPane({
               <div className="surface-panel__copy">
                 <h2 className="surface-panel__title">Quote Sizing</h2>
                 <p className="surface-panel__subtitle">
-                  Choose whether MM Sport sizes from reward multiples or visible book depth.
+                  Choose how MM 2.0 sizes quotes and caps pUSD collateral exposure.
                 </p>
               </div>
             </div>
-            <div className="surface-panel__body grid gap-4">
+              <div className="surface-panel__body grid gap-4">
+              <div>
+                <label className="field-label">Discovery Route</label>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    ["sports", "Sports"],
+                    ["nonsports", "Non-sports"],
+                    ["dual", "Dual"],
+                  ].map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      disabled={!canEdit}
+                      onClick={() =>
+                        patchMMSport({
+                          discovery_route: value as BotConfig["strategy_settings"]["mm_sport"]["discovery_route"],
+                        })
+                      }
+                      className={`mode-choice ${
+                        mmSport.discovery_route === value ? "mode-choice--active" : ""
+                      }`.trim()}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                  Sports keeps pregame sports checks active. Non-sports uses reward markets without sports metadata. Dual includes both with duplicate markets merged.
+                </p>
+              </div>
               <div>
                 <label className="field-label">Quote Size Mode</label>
                 <div className="flex flex-wrap gap-2">
@@ -1471,9 +1445,57 @@ export function StrategyEditorPane({
                 </div>
                 <p className="mt-2 text-sm text-[var(--text-secondary)]">
                   {mmSportUsesDepthRatio
-                    ? "Depth Ratio sizes quotes from visible book depth and available buying power."
+                    ? "Depth Ratio sizes quotes from visible book depth and pUSD collateral."
                     : "Quote Multiple sizes from the reward minimum share target."}
                 </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="field-label">Multiple pUSD Cap Mult</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={mmSport.multiple_collateral_cap_mult}
+                    disabled={!canEdit}
+                    onChange={(event) =>
+                      patchMMSport({
+                        multiple_collateral_cap_mult: parseNonNegative(
+                          event.target.value,
+                          mmSport.multiple_collateral_cap_mult
+                        ),
+                      })
+                    }
+                    className="field-input"
+                  />
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    Cap for Quote Multiple mode. Default 0.45 means MM 2.0 plans up to 45% of available pUSD collateral.
+                  </p>
+                </div>
+                <div>
+                  <label className="field-label">Depth Ratio pUSD Cap Mult</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={mmSport.depth_ratio_collateral_cap_mult}
+                    disabled={!canEdit}
+                    onChange={(event) =>
+                      patchMMSport({
+                        depth_ratio_collateral_cap_mult: parseNonNegative(
+                          event.target.value,
+                          mmSport.depth_ratio_collateral_cap_mult
+                        ),
+                      })
+                    }
+                    className="field-input"
+                  />
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    Cap for Depth Ratio mode. Approval and balance status are checked by runtime before live quoting.
+                  </p>
+                </div>
               </div>
               {mmSportUsesDepthRatio ? (
                 <div className="grid gap-4 md:grid-cols-2">
@@ -1546,7 +1568,7 @@ export function StrategyEditorPane({
                     className="field-input"
                   />
                   <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    1.2 means MM Sport quotes at 120% of the reward minimum share size.
+                    1.2 means MM 2.0 quotes at 120% of the reward minimum share size.
                   </p>
                 </div>
               )}
@@ -1559,7 +1581,7 @@ export function StrategyEditorPane({
                 <div className="surface-panel__copy">
                   <h2 className="surface-panel__title">Pacing</h2>
                   <p className="surface-panel__subtitle">
-                    Control when MM Sport starts cleanup and how long it cools down after a fill.
+                    Control when MM 2.0 starts cleanup and how long it cools down after a fill.
                   </p>
                 </div>
               </div>
@@ -1583,7 +1605,7 @@ export function StrategyEditorPane({
                       className="field-input"
                     />
                   <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    Minimum daily liquidity reward rate a sports market must offer before MM Sport
+                    Minimum daily liquidity reward rate a market must offer before MM 2.0
                     will quote it.
                   </p>
                 </div>
@@ -1629,7 +1651,7 @@ export function StrategyEditorPane({
                     className="field-input"
                   />
                   <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    MM Sport stops opening fresh entry quotes and switches into inventory cleanup
+                    MM 2.0 stops opening fresh entry quotes and switches into inventory cleanup
                     this many hours before game start.
                   </p>
                 </div>
@@ -1653,7 +1675,7 @@ export function StrategyEditorPane({
                       className="field-input"
                     />
                     <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Shortest quote lifetime MM Sport will use before refreshing a resting entry.
+                      Shortest quote lifetime MM 2.0 will use before refreshing a resting entry.
                     </p>
                   </div>
                   <div>
@@ -1675,7 +1697,7 @@ export function StrategyEditorPane({
                       className="field-input"
                     />
                     <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Longest quote lifetime MM Sport will allow when market conditions stay calm.
+                      Longest quote lifetime MM 2.0 will allow when market conditions stay calm.
                     </p>
                   </div>
                 </div>
@@ -1687,7 +1709,7 @@ export function StrategyEditorPane({
                 <div className="surface-panel__copy">
                   <h2 className="surface-panel__title">Inventory Exit</h2>
                   <p className="surface-panel__subtitle">
-                    Choose how MM Sport exits inventory when it needs to clean up.
+                    Choose how MM 2.0 exits inventory when it needs to clean up.
                   </p>
                 </div>
               </div>
@@ -1733,6 +1755,110 @@ export function StrategyEditorPane({
                 </div>
               </div>
             </div>
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
+            <div className="surface-panel">
+              <div className="surface-panel__header">
+                <div className="surface-panel__copy">
+                  <h2 className="surface-panel__title">Discovery Filters</h2>
+                  <p className="surface-panel__subtitle">
+                    Optional controls for rollout safety without changing the Alpha signal.
+                  </p>
+                </div>
+              </div>
+              <div className="surface-panel__body grid gap-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="field-label">Allowed Sport Leagues</label>
+                    <input
+                      type="text"
+                      value={mmSport.allowed_sport_league_codes}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({ allowed_sport_league_codes: event.target.value })
+                      }
+                      className="field-input"
+                    />
+                  </div>
+                  <div>
+                    <label className="field-label">Blocked Sport Leagues</label>
+                    <input
+                      type="text"
+                      value={mmSport.blocked_sport_league_codes}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({ blocked_sport_league_codes: event.target.value })
+                      }
+                      className="field-input"
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="field-label">Keyword Allowlist</label>
+                    <input
+                      type="text"
+                      value={mmSport.market_allowlist_keywords}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({ market_allowlist_keywords: event.target.value })
+                      }
+                      className="field-input"
+                    />
+                  </div>
+                  <div>
+                    <label className="field-label">Keyword Blacklist</label>
+                    <input
+                      type="text"
+                      value={mmSport.market_blacklist_keywords}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({ market_blacklist_keywords: event.target.value })
+                      }
+                      className="field-input"
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="field-label">Blocked Competition Levels</label>
+                    <input
+                      type="text"
+                      value={mmSport.blocked_competition_levels}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({ blocked_competition_levels: event.target.value })
+                      }
+                      className="field-input"
+                    />
+                  </div>
+                  <div>
+                    <label className="field-label">Reward Min Shares Cap</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={mmSport.reward_min_shares_cap}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({
+                          reward_min_shares_cap: parseNonNegative(
+                            event.target.value,
+                            mmSport.reward_min_shares_cap
+                          ),
+                        })
+                      }
+                      className="field-input"
+                    />
+                  </div>
+                </div>
+                <p className="text-sm text-[var(--text-secondary)]">
+                  League fields accept comma-separated codes. Keyword filters apply to every MM 2.0 route.
+                </p>
+              </div>
+            </div>
+
           </div>
         </div>
       );

@@ -1,5 +1,11 @@
 # EVPoly Desktop Changelog
 
+## UI-v2.0.1 - 2026-04-28
+- Updated the Home strategy rail UI to match the hosted platform controls.
+- Hid MM Rewards from the visible strategy list.
+- Merged MM 2.0 filters and inventory exit controls into one compact panel.
+- Displayed available balance in pUSD.
+
 ## UI-v1.1.2 - 2026-04-13
 - Repinned the bundled EVPoly runtime sidecar to runtime `v1.1.2` (`feabdb0`).
 - Inherits runtime `v1.1.2` behavior changes:

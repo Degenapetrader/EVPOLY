@@ -1657,11 +1657,7 @@ fn mm_sport_effective_game_start_ts_ms_for_route(
         report.skipped_non_match = report.skipped_non_match.saturating_add(1);
         return None;
     }
-    if cfg.pregame_only && game_start_ts_ms <= 0 {
-        report.skipped_missing_start_time = report.skipped_missing_start_time.saturating_add(1);
-        return None;
-    }
-    if cfg.pregame_only && game_start_ts_ms <= now_ms {
+    if cfg.pregame_only && game_start_ts_ms > 0 && game_start_ts_ms <= now_ms {
         report.skipped_not_pregame = report.skipped_not_pregame.saturating_add(1);
         return None;
     }
@@ -26415,6 +26411,74 @@ mod tests {
             "will-barcelona-win-the-202526-la-liga",
             "Will Barcelona win the 2025–26 La Liga?"
         ));
+    }
+
+    fn mm_sport_route_test_cfg(match_only: bool, pregame_only: bool) -> mm::MmSportConfig {
+        let mut cfg = mm::MmSportConfig::default();
+        cfg.discovery_route = mm::MmSportDiscoveryRoute::Sports;
+        cfg.match_only = match_only;
+        cfg.pregame_only = pregame_only;
+        cfg
+    }
+
+    #[test]
+    fn mm_sport_route_allows_sports_future_without_game_start_when_match_filter_off() {
+        let cfg = mm_sport_route_test_cfg(false, true);
+        let mut report = MmSportDiscoveryReport::default();
+
+        let effective_start = mm_sport_effective_game_start_ts_ms_for_route(
+            &cfg,
+            &mut report,
+            true,
+            "will-the-san-antonio-spurs-win-the-2026-nba-finals",
+            "Will the San Antonio Spurs win the 2026 NBA Finals?",
+            0,
+            2_000_000_000_000,
+        );
+
+        assert_eq!(effective_start, Some(0));
+        assert_eq!(report.skipped_non_match, 0);
+        assert_eq!(report.skipped_missing_start_time, 0);
+        assert_eq!(report.skipped_not_pregame, 0);
+    }
+
+    #[test]
+    fn mm_sport_route_still_skips_non_match_when_match_filter_on() {
+        let cfg = mm_sport_route_test_cfg(true, true);
+        let mut report = MmSportDiscoveryReport::default();
+
+        let effective_start = mm_sport_effective_game_start_ts_ms_for_route(
+            &cfg,
+            &mut report,
+            true,
+            "will-the-san-antonio-spurs-win-the-2026-nba-finals",
+            "Will the San Antonio Spurs win the 2026 NBA Finals?",
+            0,
+            2_000_000_000_000,
+        );
+
+        assert_eq!(effective_start, None);
+        assert_eq!(report.skipped_non_match, 1);
+    }
+
+    #[test]
+    fn mm_sport_route_skips_explicit_started_match_when_pregame_only() {
+        let cfg = mm_sport_route_test_cfg(false, true);
+        let mut report = MmSportDiscoveryReport::default();
+        let now_ms = 2_000_000_000_000;
+
+        let effective_start = mm_sport_effective_game_start_ts_ms_for_route(
+            &cfg,
+            &mut report,
+            true,
+            "lakers-vs-spurs-2026-01-01",
+            "Lakers vs Spurs",
+            now_ms - 1,
+            now_ms,
+        );
+
+        assert_eq!(effective_start, None);
+        assert_eq!(report.skipped_not_pregame, 1);
     }
 
     #[test]

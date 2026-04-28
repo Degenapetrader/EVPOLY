@@ -10,6 +10,9 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-28
+- `mm_sport_v1` / MM 2.0: allowed reward-eligible sports futures/outrights without CLOB `game_start_time` while preserving started-match protection (`src/main.rs`, `src/mm/mod.rs`, `.env.full.example`).
+  - `EVPOLY_MM_SPORT_MATCH_ONLY` now defaults to `false`, so sports futures such as NBA champion markets are discoverable by default.
+  - `EVPOLY_MM_SPORT_PREGAME_ONLY=true` no longer rejects sports markets solely because `game_start_time` is missing/null; explicit known start times in the past still skip as `skipped_not_pregame`.
 - `mm_sport_v1` / MM 2.0: filled the main2 public-release gaps against the platform reference while preserving the remote alpha dependency (`src/mm/mod.rs`, `src/mm/sports_live_guard.rs`, `src/main.rs`, `src/models.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
   - Added pUSD collateral quote caps for both `multiple` and `depth_ratio` sizing modes with `EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT` and `EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT`; deprecated `*_USDC_*` cap env names remain accepted as aliases.
   - Added `EVPOLY_MM_SPORT_DISCOVERY_ROUTE=sports|nonsports|dual`, optional league/competition/keyword/reward-floor filters, and condition-id dedupe across route candidates.

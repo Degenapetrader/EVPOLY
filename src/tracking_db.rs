@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use log::warn;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 use std::panic::Location;
 use std::path::{Path, PathBuf};
@@ -1157,6 +1157,223 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, definition: &str)
     let alter = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, definition);
     conn.execute(alter.as_str(), [])?;
     Ok(())
+}
+
+fn wallet_sidecar_schema_sql() -> &'static str {
+    r#"
+CREATE TABLE IF NOT EXISTS wallet_positions_live_latest_v1 (
+    wallet_address TEXT NOT NULL,
+    condition_id TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    snapshot_ts_ms INTEGER NOT NULL,
+    outcome TEXT,
+    opposite_outcome TEXT,
+    slug TEXT,
+    event_slug TEXT,
+    title TEXT,
+    token_type TEXT,
+    position_size REAL,
+    avg_price REAL,
+    cur_price REAL,
+    initial_value REAL,
+    current_value REAL,
+    cash_pnl REAL,
+    realized_pnl REAL,
+    redeemable INTEGER,
+    mergeable INTEGER,
+    negative_risk INTEGER,
+    end_date TEXT,
+    raw_json TEXT,
+    PRIMARY KEY (wallet_address, condition_id, token_id)
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_positions_live_snapshot
+    ON wallet_positions_live_latest_v1(wallet_address, snapshot_ts_ms DESC);
+CREATE INDEX IF NOT EXISTS idx_wallet_positions_live_mergeable
+    ON wallet_positions_live_latest_v1(condition_id, token_id, mergeable);
+
+CREATE TABLE IF NOT EXISTS wallet_activity_v1 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    wallet_address TEXT NOT NULL,
+    activity_key TEXT NOT NULL UNIQUE,
+    ts_ms INTEGER NOT NULL,
+    activity_type TEXT,
+    condition_id TEXT,
+    token_id TEXT,
+    outcome TEXT,
+    side TEXT,
+    size REAL,
+    usdc_size REAL,
+    inventory_consumed_units REAL,
+    price REAL,
+    transaction_hash TEXT,
+    slug TEXT,
+    title TEXT,
+    raw_json TEXT,
+    synced_at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_activity_wallet_ts
+    ON wallet_activity_v1(wallet_address, ts_ms DESC);
+
+CREATE TABLE IF NOT EXISTS positions_unrealized_mid_latest_v1 (
+    position_key TEXT PRIMARY KEY,
+    snapshot_ts_ms INTEGER NOT NULL,
+    strategy_id TEXT NOT NULL,
+    timeframe TEXT NOT NULL,
+    period_timestamp INTEGER NOT NULL,
+    condition_id TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    token_type TEXT,
+    remaining_units REAL NOT NULL,
+    remaining_cost_usd REAL NOT NULL,
+    entry_avg_price REAL,
+    best_bid REAL,
+    best_ask REAL,
+    mid_price REAL,
+    unrealized_mid_pnl_usd REAL,
+    mark_source TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_positions_unrealized_mid_scope
+    ON positions_unrealized_mid_latest_v1(strategy_id, timeframe, period_timestamp, condition_id, token_id);
+
+CREATE TABLE IF NOT EXISTS wallet_sync_runs_v1 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts_ms INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    error TEXT,
+    inventory_reconcile_error TEXT,
+    dust_sell_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_sync_runs_ts
+    ON wallet_sync_runs_v1(ts_ms DESC);
+"#
+}
+
+fn ensure_wallet_sidecar_tables_conn(conn: &Connection) -> Result<()> {
+    conn.execute_batch(wallet_sidecar_schema_sql())?;
+    Ok(())
+}
+
+fn json_string_field(row: &Value, key: &str) -> Option<String> {
+    row.get(key).and_then(|value| match value {
+        Value::String(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        Value::Number(num) => Some(num.to_string()),
+        _ => None,
+    })
+}
+
+fn json_f64_field(row: &Value, key: &str) -> Option<f64> {
+    row.get(key).and_then(|value| match value {
+        Value::Number(num) => num.as_f64(),
+        Value::String(raw) => raw.trim().parse::<f64>().ok(),
+        _ => None,
+    })
+}
+
+fn json_bool_field(row: &Value, key: &str) -> Option<bool> {
+    row.get(key).and_then(|value| match value {
+        Value::Bool(flag) => Some(*flag),
+        Value::Number(num) => num.as_i64().map(|v| v != 0),
+        Value::String(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+fn json_string_fields(row: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| json_string_field(row, key))
+}
+
+fn json_f64_fields(row: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter().find_map(|key| json_f64_field(row, key))
+}
+
+fn json_bool_fields(row: &Value, keys: &[&str]) -> Option<bool> {
+    keys.iter().find_map(|key| json_bool_field(row, key))
+}
+
+fn json_i64_field(row: &Value, key: &str) -> Option<i64> {
+    row.get(key).and_then(|value| match value {
+        Value::Number(num) => num.as_i64().or_else(|| num.as_u64().map(|v| v as i64)),
+        Value::String(raw) => raw.trim().parse::<i64>().ok(),
+        _ => None,
+    })
+}
+
+fn json_i64_fields(row: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter().find_map(|key| json_i64_field(row, key))
+}
+
+fn json_ts_ms_fields(row: &Value, keys: &[&str]) -> Option<i64> {
+    let raw = json_i64_fields(row, keys).or_else(|| {
+        json_string_fields(row, keys).and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else if let Ok(parsed) = trimmed.parse::<i64>() {
+                Some(parsed)
+            } else {
+                chrono::DateTime::parse_from_rfc3339(trimmed)
+                    .ok()
+                    .map(|dt| dt.timestamp_millis())
+            }
+        })
+    })?;
+    if raw >= 1_000_000_000_000 {
+        Some(raw)
+    } else if raw >= 1_000_000_000 {
+        Some(raw.saturating_mul(1_000))
+    } else {
+        None
+    }
+}
+
+fn normalize_wallet_address_input(wallet_address: &str) -> Result<String> {
+    let normalized = wallet_address.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Err(anyhow!("wallet_address is required"));
+    }
+    Ok(normalized)
+}
+
+fn derive_wallet_activity_key(
+    row: &Value,
+    activity_type: Option<&str>,
+    condition_id: Option<&str>,
+    token_id: Option<&str>,
+    side: Option<&str>,
+    ts_ms: i64,
+) -> Option<String> {
+    json_string_fields(row, &["activityKey", "activity_key", "id"]).or_else(|| {
+        let tx_hash =
+            json_string_fields(row, &["transactionHash", "transaction_hash"]).unwrap_or_default();
+        let size =
+            json_f64_fields(row, &["size", "position_size", "shares", "quantity"]).unwrap_or(0.0);
+        let usdc_size =
+            json_f64_fields(row, &["usdcSize", "usdc_size", "sizeUsd", "size_usd"]).unwrap_or(0.0);
+        let price = json_f64_fields(row, &["price", "avgPrice", "avg_price"]).unwrap_or(0.0);
+        Some(format!(
+            "{}:{}:{}:{}:{}:{}:{:.8}:{:.8}:{:.8}",
+            ts_ms,
+            activity_type.unwrap_or("").trim().to_ascii_lowercase(),
+            condition_id.unwrap_or("").trim().to_ascii_lowercase(),
+            token_id.unwrap_or("").trim().to_ascii_lowercase(),
+            side.unwrap_or("").trim().to_ascii_lowercase(),
+            tx_hash.trim().to_ascii_lowercase(),
+            size,
+            usdc_size,
+            price
+        ))
+    })
 }
 
 fn normalize_side(side: &str) -> String {
@@ -5110,6 +5327,7 @@ ON CONFLICT(position_key) DO UPDATE SET
         ensure_strategy_feature_snapshot_schema(&conn)?;
         ensure_evcurve_period_base_schema(&conn)?;
         ensure_mm_sport_holder_intel_schema(&conn)?;
+        ensure_wallet_sidecar_tables_conn(&conn)?;
         backfill_snapback_feature_snapshots_into_unified(&conn)?;
         let read_pool_size = std::env::var("EVPOLY_DB_READ_POOL_SIZE")
             .ok()
@@ -5129,6 +5347,264 @@ ON CONFLICT(position_key) DO UPDATE SET
             conn: Mutex::new(conn),
             read_conns,
             read_rr: AtomicUsize::new(0),
+        })
+    }
+
+    pub fn replace_wallet_positions_live_snapshot(
+        &self,
+        wallet_address: &str,
+        rows: &[Value],
+        snapshot_ts_ms: i64,
+    ) -> Result<usize> {
+        let wallet_address = normalize_wallet_address_input(wallet_address)?;
+
+        self.with_conn_mut(|conn| {
+            ensure_wallet_sidecar_tables_conn(conn)?;
+            let tx = conn.transaction()?;
+            tx.execute(
+                "DELETE FROM wallet_positions_live_latest_v1 WHERE wallet_address=?1",
+                params![wallet_address.as_str()],
+            )?;
+
+            let mut stmt = tx.prepare(
+                r#"
+INSERT OR REPLACE INTO wallet_positions_live_latest_v1 (
+    wallet_address,
+    condition_id,
+    token_id,
+    snapshot_ts_ms,
+    outcome,
+    opposite_outcome,
+    slug,
+    event_slug,
+    title,
+    token_type,
+    position_size,
+    avg_price,
+    cur_price,
+    initial_value,
+    current_value,
+    cash_pnl,
+    realized_pnl,
+    redeemable,
+    mergeable,
+    negative_risk,
+    end_date,
+    raw_json
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
+"#,
+            )?;
+
+            let mut inserted = 0usize;
+            for row in rows {
+                let Some(condition_id) = json_string_fields(row, &["conditionId", "condition_id"])
+                else {
+                    continue;
+                };
+                let Some(token_id) =
+                    json_string_fields(row, &["asset", "tokenId", "token_id"])
+                else {
+                    continue;
+                };
+                let position_size = json_f64_fields(
+                    row,
+                    &["size", "position_size", "positionSize", "shares", "quantity"],
+                );
+                if let Some(size) = position_size {
+                    if !size.is_finite() || size <= 1e-9 {
+                        continue;
+                    }
+                }
+                let raw_json = serde_json::to_string(row).unwrap_or_else(|_| "{}".to_string());
+                stmt.execute(params![
+                    wallet_address.as_str(),
+                    condition_id.trim().to_string(),
+                    token_id.trim().to_string(),
+                    snapshot_ts_ms,
+                    json_string_fields(row, &["outcome"]),
+                    json_string_fields(row, &["oppositeOutcome", "opposite_outcome"]),
+                    json_string_fields(row, &["slug", "marketSlug", "market_slug"]),
+                    json_string_fields(row, &["eventSlug", "event_slug"]),
+                    json_string_fields(row, &["title", "marketTitle", "market_title"]),
+                    json_string_fields(row, &["tokenType", "token_type"])
+                        .or_else(|| json_string_fields(row, &["outcome"])),
+                    position_size,
+                    json_f64_fields(row, &["avgPrice", "avg_price", "averagePrice", "average_price"]),
+                    json_f64_fields(row, &["curPrice", "cur_price", "currentPrice", "current_price"]),
+                    json_f64_fields(row, &["initialValue", "initial_value"]),
+                    json_f64_fields(row, &["currentValue", "current_value"]),
+                    json_f64_fields(row, &["cashPnl", "cash_pnl"]),
+                    json_f64_fields(row, &["realizedPnl", "realized_pnl"]),
+                    json_bool_fields(row, &["redeemable"]).map(i64::from),
+                    json_bool_fields(row, &["mergeable"]).map(i64::from),
+                    json_bool_fields(row, &["negativeRisk", "negative_risk"]).map(i64::from),
+                    json_string_fields(row, &["endDate", "end_date"]),
+                    raw_json,
+                ])?;
+                inserted = inserted.saturating_add(1);
+            }
+
+            drop(stmt);
+            tx.commit()?;
+            Ok(inserted)
+        })
+    }
+
+    pub fn upsert_wallet_activity_snapshot(
+        &self,
+        wallet_address: &str,
+        rows: &[Value],
+        synced_at_ms: i64,
+    ) -> Result<usize> {
+        let wallet_address = normalize_wallet_address_input(wallet_address)?;
+
+        self.with_conn_mut(|conn| {
+            ensure_wallet_sidecar_tables_conn(conn)?;
+            let tx = conn.transaction()?;
+            let mut stmt = tx.prepare(
+                r#"
+INSERT INTO wallet_activity_v1 (
+    wallet_address,
+    activity_key,
+    ts_ms,
+    activity_type,
+    condition_id,
+    token_id,
+    outcome,
+    side,
+    size,
+    usdc_size,
+    inventory_consumed_units,
+    price,
+    transaction_hash,
+    slug,
+    title,
+    raw_json,
+    synced_at_ms
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+ON CONFLICT(activity_key) DO UPDATE SET
+    ts_ms=excluded.ts_ms,
+    activity_type=COALESCE(excluded.activity_type, wallet_activity_v1.activity_type),
+    condition_id=COALESCE(excluded.condition_id, wallet_activity_v1.condition_id),
+    token_id=COALESCE(excluded.token_id, wallet_activity_v1.token_id),
+    outcome=COALESCE(excluded.outcome, wallet_activity_v1.outcome),
+    side=COALESCE(excluded.side, wallet_activity_v1.side),
+    size=COALESCE(excluded.size, wallet_activity_v1.size),
+    usdc_size=COALESCE(excluded.usdc_size, wallet_activity_v1.usdc_size),
+    inventory_consumed_units=COALESCE(excluded.inventory_consumed_units, wallet_activity_v1.inventory_consumed_units),
+    price=COALESCE(excluded.price, wallet_activity_v1.price),
+    transaction_hash=COALESCE(excluded.transaction_hash, wallet_activity_v1.transaction_hash),
+    slug=COALESCE(excluded.slug, wallet_activity_v1.slug),
+    title=COALESCE(excluded.title, wallet_activity_v1.title),
+    raw_json=excluded.raw_json,
+    synced_at_ms=MAX(wallet_activity_v1.synced_at_ms, excluded.synced_at_ms)
+"#,
+            )?;
+
+            let mut inserted = 0usize;
+            for row in rows {
+                let ts_ms = json_ts_ms_fields(
+                    row,
+                    &[
+                        "timestamp",
+                        "ts_ms",
+                        "ts",
+                        "createdAt",
+                        "created_at",
+                        "time",
+                    ],
+                )
+                .unwrap_or(synced_at_ms);
+                let activity_type = json_string_fields(row, &["type", "activityType", "activity_type"]);
+                let condition_id = json_string_fields(row, &["conditionId", "condition_id"]);
+                let token_id = json_string_fields(row, &["asset", "tokenId", "token_id"]);
+                let side = json_string_fields(row, &["side"]);
+                let Some(activity_key) = derive_wallet_activity_key(
+                    row,
+                    activity_type.as_deref(),
+                    condition_id.as_deref(),
+                    token_id.as_deref(),
+                    side.as_deref(),
+                    ts_ms,
+                )
+                else {
+                    continue;
+                };
+                let raw_json = serde_json::to_string(row).unwrap_or_else(|_| "{}".to_string());
+                let size =
+                    json_f64_fields(row, &["size", "position_size", "positionSize", "shares"]);
+                let usdc_size = json_f64_fields(
+                    row,
+                    &["usdcSize", "usdc_size", "sizeUsd", "size_usd", "notional", "notionalUsd"],
+                );
+                let inventory_consumed_units = json_f64_fields(
+                    row,
+                    &["inventoryConsumedUnits", "inventory_consumed_units"],
+                )
+                .or_else(|| {
+                    activity_type
+                        .as_deref()
+                        .map(|value| value.trim().eq_ignore_ascii_case("merge"))
+                        .filter(|is_merge| *is_merge)
+                        .and(size)
+                });
+                stmt.execute(params![
+                    wallet_address.as_str(),
+                    activity_key,
+                    ts_ms,
+                    activity_type,
+                    condition_id,
+                    token_id,
+                    json_string_fields(row, &["outcome"]),
+                    side,
+                    size,
+                    usdc_size,
+                    inventory_consumed_units,
+                    json_f64_fields(row, &["price", "avgPrice", "avg_price"]),
+                    json_string_fields(row, &["transactionHash", "transaction_hash"]),
+                    json_string_fields(row, &["slug", "marketSlug", "market_slug"]),
+                    json_string_fields(row, &["title", "marketTitle", "market_title"]),
+                    raw_json,
+                    synced_at_ms,
+                ])?;
+                inserted = inserted.saturating_add(1);
+            }
+
+            drop(stmt);
+            tx.commit()?;
+            Ok(inserted)
+        })
+    }
+
+    pub fn record_wallet_sync_run(
+        &self,
+        ts_ms: i64,
+        status: &str,
+        error: Option<&str>,
+        inventory_reconcile_error: Option<&str>,
+        dust_sell_error: Option<&str>,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            ensure_wallet_sidecar_tables_conn(conn)?;
+            conn.execute(
+                r#"
+INSERT INTO wallet_sync_runs_v1 (
+    ts_ms,
+    status,
+    error,
+    inventory_reconcile_error,
+    dust_sell_error
+) VALUES (?1, ?2, ?3, ?4, ?5)
+"#,
+                params![
+                    ts_ms,
+                    normalize_snapshot_status(Some(status), "ok"),
+                    normalize_snapshot_optional_payload(error),
+                    normalize_snapshot_optional_payload(inventory_reconcile_error),
+                    normalize_snapshot_optional_payload(dust_sell_error),
+                ],
+            )?;
+            Ok(())
         })
     }
 
@@ -7253,6 +7729,94 @@ WHERE COALESCE(w.position_size, 0.0) > 1e-9
         AND p.token_id = w.token_id
         AND COALESCE(p.entry_units, 0.0) >
             (COALESCE(p.exit_units, 0.0) + COALESCE(p.inventory_consumed_units, 0.0))
+  )
+GROUP BY w.condition_id, w.token_id
+ORDER BY ABS(wallet_shares) DESC, w.condition_id ASC, w.token_id ASC
+LIMIT ?2
+"#,
+            )?;
+            let rows = stmt.query_map(
+                params![
+                    strategy_id.as_str(),
+                    i64::try_from(limit.clamp(1, 20_000)).ok().unwrap_or(2_000),
+                ],
+                |row| {
+                    Ok(MmWalletInventoryRow {
+                        condition_id: row.get(0)?,
+                        token_id: row.get(1)?,
+                        market_slug: row.get(2)?,
+                        timeframe: row.get(3)?,
+                        symbol: row.get(4)?,
+                        mode: row.get(5)?,
+                        wallet_shares: row.get(6)?,
+                        wallet_avg_price: row.get(7)?,
+                        wallet_value_usd: row.get(8)?,
+                        snapshot_ts_ms: row.get(9)?,
+                    })
+                },
+            )?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
+    pub fn list_mm_wallet_inventory_fallback_by_strategy(
+        &self,
+        strategy_id: &str,
+        limit: usize,
+    ) -> Result<Vec<MmWalletInventoryRow>> {
+        let strategy_id = normalize_strategy_id(strategy_id);
+        self.with_conn_read_profiled("wallet_inventory.list_fallback_by_strategy", Some(limit), |conn| {
+            if !table_exists(conn, "wallet_positions_live_latest_v1")? {
+                return Ok(Vec::new());
+            }
+            let mut stmt = conn.prepare(
+                r#"
+SELECT
+    w.condition_id,
+    w.token_id,
+    COALESCE(MAX(s.market_slug), MAX(w.slug)) AS market_slug,
+    MAX(s.timeframe) AS timeframe,
+    MAX(s.symbol) AS symbol,
+    MAX(s.mode) AS mode,
+    COALESCE(SUM(COALESCE(w.position_size, 0.0)), 0.0) AS wallet_shares,
+    CASE
+        WHEN COALESCE(SUM(COALESCE(w.position_size, 0.0)), 0.0) > 0.0
+        THEN COALESCE(SUM(COALESCE(w.avg_price, 0.0) * COALESCE(w.position_size, 0.0)), 0.0)
+            / SUM(COALESCE(w.position_size, 0.0))
+        ELSE NULL
+    END AS wallet_avg_price,
+    COALESCE(SUM(COALESCE(w.current_value, COALESCE(w.cur_price, 0.0) * COALESCE(w.position_size, 0.0))), 0.0) AS wallet_value_usd,
+    MAX(w.snapshot_ts_ms) AS snapshot_ts_ms
+FROM wallet_positions_live_latest_v1 w
+LEFT JOIN mm_market_states_v1 s
+  ON s.strategy_id=?1
+ AND s.condition_id = w.condition_id
+WHERE COALESCE(w.position_size, 0.0) > 1e-9
+  AND w.condition_id IS NOT NULL
+  AND TRIM(w.condition_id) <> ''
+  AND (
+      EXISTS (
+          SELECT 1
+          FROM mm_market_states_v1 scoped
+          WHERE scoped.strategy_id=?1
+            AND scoped.condition_id = w.condition_id
+            AND (
+                scoped.up_token_id = w.token_id
+                OR scoped.down_token_id = w.token_id
+            )
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM pending_orders po
+          WHERE po.strategy_id=?1
+            AND po.entry_mode='MM_SPORT'
+            AND po.condition_id = w.condition_id
+            AND po.token_id = w.token_id
+      )
   )
 GROUP BY w.condition_id, w.token_id
 ORDER BY ABS(wallet_shares) DESC, w.condition_id ASC, w.token_id ASC
@@ -13929,76 +14493,204 @@ mod tests {
     }
 
     fn ensure_wallet_sidecar_tables(db: &TrackingDb) -> Result<()> {
-        db.with_conn(|conn| {
-            conn.execute_batch(
+        db.with_conn(ensure_wallet_sidecar_tables_conn)
+    }
+
+    #[test]
+    fn wallet_sidecar_tables_exist_in_production_schema() -> Result<()> {
+        let path = temp_db_path("wallet_sidecar_production_schema");
+        let db = TrackingDb::new(&path)?;
+        let tables = db.with_conn(|conn| {
+            Ok((
+                table_exists(conn, "wallet_positions_live_latest_v1")?,
+                table_exists(conn, "wallet_activity_v1")?,
+                table_exists(conn, "positions_unrealized_mid_latest_v1")?,
+                table_exists(conn, "wallet_sync_runs_v1")?,
+            ))
+        })?;
+        assert_eq!(tables, (true, true, true, true));
+        drop(db);
+        cleanup_db(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn wallet_snapshot_replace_seeds_mergeable_inventory() -> Result<()> {
+        let path = temp_db_path("wallet_snapshot_mergeable_seed");
+        let db = TrackingDb::new(&path)?;
+        let snapshot_ts_ms = 456_000_i64;
+        let wallet_address = "0xwallet";
+        let rows = vec![
+            json!({
+                "proxyWallet": wallet_address,
+                "conditionId": "cond-a",
+                "asset": "token-yes",
+                "size": 12.5,
+                "avgPrice": 0.62,
+                "curPrice": 0.64,
+                "currentValue": 8.0,
+                "outcome": "Yes",
+                "oppositeOutcome": "No",
+                "slug": "cond-a-slug",
+                "eventSlug": "cond-a-event",
+                "title": "Condition A",
+                "mergeable": true,
+                "redeemable": false,
+                "negativeRisk": false,
+                "endDate": "2026-04-30"
+            }),
+            json!({
+                "proxyWallet": wallet_address,
+                "conditionId": "cond-a",
+                "asset": "token-no",
+                "size": 7.25,
+                "avgPrice": 0.31,
+                "curPrice": 0.35,
+                "currentValue": 2.5,
+                "outcome": "No",
+                "oppositeOutcome": "Yes",
+                "slug": "cond-a-slug",
+                "eventSlug": "cond-a-event",
+                "title": "Condition A",
+                "mergeable": true,
+                "redeemable": false,
+                "negativeRisk": false,
+                "endDate": "2026-04-30"
+            }),
+            json!({
+                "proxyWallet": wallet_address,
+                "conditionId": "cond-b",
+                "asset": "token-other",
+                "size": 4.0,
+                "avgPrice": 0.8,
+                "curPrice": 0.81,
+                "currentValue": 3.24,
+                "mergeable": false
+            }),
+        ];
+
+        let inserted = db.replace_wallet_positions_live_snapshot(
+            wallet_address,
+            rows.as_slice(),
+            snapshot_ts_ms,
+        )?;
+        assert_eq!(inserted, 3);
+        assert_eq!(
+            db.latest_wallet_positions_snapshot_ts_ms()?,
+            Some(snapshot_ts_ms)
+        );
+
+        let mergeable = db.list_wallet_mergeable_inventory(10)?;
+        assert_eq!(mergeable.len(), 2);
+        assert!(mergeable.iter().all(|row| row.condition_id == "cond-a"));
+        assert!(mergeable.iter().any(|row| row.token_id == "token-yes"));
+        assert!(mergeable.iter().any(|row| row.token_id == "token-no"));
+
+        let replacement = vec![json!({
+            "proxyWallet": wallet_address,
+            "conditionId": "cond-z",
+            "asset": "token-z",
+            "size": 1.0,
+            "mergeable": true
+        })];
+        db.replace_wallet_positions_live_snapshot(
+            wallet_address,
+            replacement.as_slice(),
+            snapshot_ts_ms + 1,
+        )?;
+        let replaced_mergeable = db.list_wallet_mergeable_inventory(10)?;
+        assert_eq!(replaced_mergeable.len(), 1);
+        assert_eq!(replaced_mergeable[0].condition_id, "cond-z");
+
+        drop(db);
+        cleanup_db(&path);
+        Ok(())
+    }
+
+    #[test]
+    fn wallet_activity_snapshot_upsert_dedupes_and_persists_latest_sync_time() -> Result<()> {
+        let path = temp_db_path("wallet_activity_snapshot_upsert");
+        let db = TrackingDb::new(&path)?;
+        let wallet_address = "0xwallet";
+        let synced_at_ms = 789_000_i64;
+        let rows = vec![
+            json!({
+                "id": "activity-1",
+                "timestamp": "2026-04-12T01:02:03Z",
+                "type": "MERGE",
+                "conditionId": "cond-merge",
+                "asset": "token-up",
+                "side": "SELL",
+                "size": 4.5,
+                "usdcSize": 4.45,
+                "price": 0.99,
+                "transactionHash": "0xtxhash",
+                "slug": "cond-merge-slug",
+                "title": "Condition Merge"
+            }),
+            json!({
+                "id": "activity-1",
+                "timestamp": "2026-04-12T01:02:03Z",
+                "type": "MERGE",
+                "conditionId": "cond-merge",
+                "asset": "token-up",
+                "side": "SELL",
+                "size": 4.5,
+                "usdcSize": 4.45,
+                "price": 0.99,
+                "transactionHash": "0xtxhash",
+                "slug": "cond-merge-slug",
+                "title": "Condition Merge"
+            }),
+        ];
+
+        let inserted =
+            db.upsert_wallet_activity_snapshot(wallet_address, rows.as_slice(), synced_at_ms)?;
+        assert_eq!(inserted, 2);
+
+        let activity_row = db.with_conn(|conn| {
+            Ok(conn.query_row(
                 r#"
-CREATE TABLE IF NOT EXISTS wallet_positions_live_latest_v1 (
-    wallet_address TEXT NOT NULL,
-    condition_id TEXT NOT NULL,
-    token_id TEXT NOT NULL,
-    snapshot_ts_ms INTEGER NOT NULL,
-    outcome TEXT,
-    opposite_outcome TEXT,
-    slug TEXT,
-    event_slug TEXT,
-    title TEXT,
-    token_type TEXT,
-    position_size REAL,
-    avg_price REAL,
-    cur_price REAL,
-    initial_value REAL,
-    current_value REAL,
-    cash_pnl REAL,
-    realized_pnl REAL,
-    redeemable INTEGER,
-    mergeable INTEGER,
-    negative_risk INTEGER,
-    end_date TEXT,
-    raw_json TEXT,
-    PRIMARY KEY (wallet_address, condition_id, token_id)
-);
-CREATE TABLE IF NOT EXISTS wallet_activity_v1 (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    wallet_address TEXT NOT NULL,
-    activity_key TEXT NOT NULL UNIQUE,
-    ts_ms INTEGER NOT NULL,
-    activity_type TEXT,
-    condition_id TEXT,
-    token_id TEXT,
-    outcome TEXT,
-    side TEXT,
-    size REAL,
-    usdc_size REAL,
-    inventory_consumed_units REAL,
-    price REAL,
-    transaction_hash TEXT,
-    slug TEXT,
-    title TEXT,
-    raw_json TEXT,
-    synced_at_ms INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS positions_unrealized_mid_latest_v1 (
-    position_key TEXT PRIMARY KEY,
-    snapshot_ts_ms INTEGER NOT NULL,
-    strategy_id TEXT NOT NULL,
-    timeframe TEXT NOT NULL,
-    period_timestamp INTEGER NOT NULL,
-    condition_id TEXT NOT NULL,
-    token_id TEXT NOT NULL,
-    token_type TEXT,
-    remaining_units REAL NOT NULL,
-    remaining_cost_usd REAL NOT NULL,
-    entry_avg_price REAL,
-    best_bid REAL,
-    best_ask REAL,
-    mid_price REAL,
-    unrealized_mid_pnl_usd REAL,
-    mark_source TEXT NOT NULL
-);
+SELECT activity_key, ts_ms, activity_type, condition_id, token_id, inventory_consumed_units, synced_at_ms
+FROM wallet_activity_v1
+WHERE wallet_address=?1
+LIMIT 1
 "#,
-            )?;
-            Ok(())
-        })
+                params![wallet_address],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<f64>>(5)?,
+                        row.get::<_, i64>(6)?,
+                    ))
+                },
+            )?)
+        })?;
+
+        assert_eq!(activity_row.0, "activity-1");
+        assert_eq!(activity_row.1, 1_775_955_723_000);
+        assert_eq!(activity_row.2.as_deref(), Some("MERGE"));
+        assert_eq!(activity_row.3.as_deref(), Some("cond-merge"));
+        assert_eq!(activity_row.4.as_deref(), Some("token-up"));
+        assert_eq!(activity_row.5, Some(4.5));
+        assert_eq!(activity_row.6, synced_at_ms);
+
+        let row_count = db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM wallet_activity_v1 WHERE wallet_address=?1",
+                params![wallet_address],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })?;
+        assert_eq!(row_count, 1);
+
+        drop(db);
+        cleanup_db(&path);
+        Ok(())
     }
 
     #[test]

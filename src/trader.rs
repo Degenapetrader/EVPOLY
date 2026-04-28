@@ -1614,16 +1614,14 @@ impl Trader {
         strategy_id: &str,
         submit_price: f64,
     ) -> i64 {
-        let now_ts = chrono::Utc::now().timestamp().max(0) as u64;
-        Self::compute_limit_order_expiration_ts(
-            now_ts,
+        self.limit_order_expiration_ts_with_ttl(
             period_timestamp,
             source_timeframe,
-            self.configured_order_ttl_seconds(),
             entry_mode,
             strategy_id,
             submit_price,
-        ) as i64
+            None,
+        )
     }
 
     fn limit_order_expiration_ts_with_ttl(
@@ -1633,16 +1631,14 @@ impl Trader {
         entry_mode: EntryExecutionMode,
         strategy_id: &str,
         submit_price: f64,
-        ttl_seconds: Option<u64>,
+        ttl_override_seconds: Option<u64>,
     ) -> i64 {
         let now_ts = chrono::Utc::now().timestamp().max(0) as u64;
         Self::compute_limit_order_expiration_ts(
             now_ts,
             period_timestamp,
             source_timeframe,
-            ttl_seconds
-                .unwrap_or_else(|| self.configured_order_ttl_seconds())
-                .max(61),
+            ttl_override_seconds.unwrap_or_else(|| self.configured_order_ttl_seconds()),
             entry_mode,
             strategy_id,
             submit_price,
@@ -9757,7 +9753,7 @@ impl Trader {
         std::env::var("EVPOLY_REDEMPTION_AUTO_TRIGGER_PENDING_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(10)
+            .unwrap_or(5)
             .clamp(1, 10_000)
     }
 
@@ -9765,7 +9761,7 @@ impl Trader {
         std::env::var("EVPOLY_REDEMPTION_AUTO_TRIGGER_AVAILABLE_RATIO_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(0.20)
+            .unwrap_or(0.50)
             .clamp(0.01, 0.99)
     }
 
@@ -9881,7 +9877,7 @@ impl Trader {
         std::env::var("EVPOLY_MERGE_AUTO_TRIGGER_PENDING_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(10)
+            .unwrap_or(5)
             .clamp(1, 10_000)
     }
 
@@ -9889,7 +9885,7 @@ impl Trader {
         std::env::var("EVPOLY_MERGE_AUTO_TRIGGER_AVAILABLE_RATIO_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
-            .unwrap_or(0.20)
+            .unwrap_or(0.50)
             .clamp(0.01, 0.99)
     }
 
@@ -9923,6 +9919,53 @@ impl Trader {
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(1.0)
             .clamp(0.01, 1_000_000.0)
+    }
+
+    fn wallet_positions_snapshot_refresh_interval_ms() -> i64 {
+        std::env::var("EVPOLY_WALLET_POSITIONS_SNAPSHOT_REFRESH_INTERVAL_MS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(60_000)
+            .clamp(5_000, 30 * 60 * 1_000)
+    }
+
+    fn wallet_positions_snapshot_timeout_ms() -> u64 {
+        std::env::var("EVPOLY_WALLET_POSITIONS_SNAPSHOT_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(8_000)
+            .clamp(1_000, 120_000)
+    }
+
+    fn wallet_activity_snapshot_refresh_limit() -> usize {
+        std::env::var("EVPOLY_WALLET_ACTIVITY_SNAPSHOT_LIMIT")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(250)
+            .clamp(25, 1_000)
+    }
+
+    fn wallet_snapshot_address(&self) -> Result<String> {
+        for key in ["EVPOLY_WALLET_SYNC_ADDRESS", "POLY_PROXY_WALLET_ADDRESS"] {
+            if let Ok(value) = std::env::var(key) {
+                let normalized = value.trim().to_ascii_lowercase();
+                if !normalized.is_empty() {
+                    return Ok(normalized);
+                }
+            }
+        }
+        self.api
+            .trading_account_address()
+            .map(|value| value.trim().to_ascii_lowercase())
+            .and_then(|value| {
+                if value.is_empty() {
+                    Err(anyhow!(
+                        "wallet address is required for live wallet snapshot"
+                    ))
+                } else {
+                    Ok(value)
+                }
+            })
     }
 
     fn merge_max_conditions_per_sweep() -> usize {
@@ -11821,6 +11864,92 @@ impl Trader {
     pub async fn run_manual_merge_sweep_now(&self) -> Result<()> {
         self.run_merge_sweep_with_trigger(MergeSweepTrigger::ManualApi)
             .await
+    }
+
+    async fn refresh_wallet_positions_snapshot_if_needed(
+        &self,
+        force: bool,
+        reason: &str,
+    ) -> Result<Option<usize>> {
+        let Some(db) = self.tracking_db.as_ref() else {
+            return Ok(None);
+        };
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        if !force {
+            if let Ok(Some(snapshot_ts_ms)) = db.latest_wallet_positions_snapshot_ts_ms() {
+                let age_ms = now_ms.saturating_sub(snapshot_ts_ms);
+                if age_ms >= 0 && age_ms < Self::wallet_positions_snapshot_refresh_interval_ms() {
+                    return Ok(None);
+                }
+            }
+        }
+
+        let wallet_address = self.wallet_snapshot_address()?;
+        let rows = tokio::time::timeout(
+            tokio::time::Duration::from_millis(Self::wallet_positions_snapshot_timeout_ms()),
+            self.api
+                .get_wallet_positions_live(Some(wallet_address.as_str())),
+        )
+        .await
+        .map_err(|_| anyhow!("wallet positions snapshot refresh timed out"))??;
+
+        let positions_inserted = db.replace_wallet_positions_live_snapshot(
+            wallet_address.as_str(),
+            rows.as_slice(),
+            now_ms,
+        )?;
+        let activity_limit = Self::wallet_activity_snapshot_refresh_limit();
+        let (activity_rows_fetched, activity_rows_persisted, activity_error) =
+            match tokio::time::timeout(
+                tokio::time::Duration::from_millis(Self::wallet_positions_snapshot_timeout_ms()),
+                self.api
+                    .get_user_activity(wallet_address.as_str(), activity_limit),
+            )
+            .await
+            {
+                Ok(Ok(activity_rows)) => {
+                    let persisted = db.upsert_wallet_activity_snapshot(
+                        wallet_address.as_str(),
+                        activity_rows.as_slice(),
+                        now_ms,
+                    )?;
+                    (activity_rows.len(), persisted, None)
+                }
+                Ok(Err(e)) => (
+                    0usize,
+                    0usize,
+                    Some(format!("wallet activity snapshot refresh failed: {:#}", e)),
+                ),
+                Err(_) => (
+                    0usize,
+                    0usize,
+                    Some("wallet activity snapshot refresh timed out".to_string()),
+                ),
+            };
+        let sync_status = if activity_error.is_some() {
+            "partial"
+        } else {
+            "ok"
+        };
+        let _ =
+            db.record_wallet_sync_run(now_ms, sync_status, activity_error.as_deref(), None, None);
+        log_event(
+            "wallet_positions_snapshot_refreshed",
+            json!({
+                "reason": reason,
+                "force": force,
+                "status": sync_status,
+                "wallet_address": wallet_address,
+                "rows_fetched": rows.len(),
+                "rows_persisted": positions_inserted,
+                "activity_rows_fetched": activity_rows_fetched,
+                "activity_rows_persisted": activity_rows_persisted,
+                "activity_error": activity_error,
+                "snapshot_ts_ms": now_ms
+            }),
+        );
+        Ok(Some(positions_inserted))
     }
 
     pub async fn run_manual_merge_condition_now(&self, condition_id: &str) -> Result<Value> {
@@ -13959,6 +14088,36 @@ impl Trader {
         } else {
             Self::manual_merge_request_pending()
         };
+        if manual_requested || Self::merge_sweep_enabled() {
+            if let Err(e) = self
+                .refresh_wallet_positions_snapshot_if_needed(manual_requested, "merge_sweep")
+                .await
+            {
+                warn!(
+                    "wallet positions snapshot refresh failed before merge sweep: {}",
+                    e
+                );
+                if let Some(db) = self.tracking_db.as_ref() {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let err_text = e.to_string();
+                    let _ = db.record_wallet_sync_run(
+                        now_ms,
+                        "error",
+                        Some(err_text.as_str()),
+                        None,
+                        None,
+                    );
+                    log_event(
+                        "wallet_positions_snapshot_refresh_failed",
+                        json!({
+                            "reason": "merge_sweep",
+                            "force": manual_requested,
+                            "error": err_text
+                        }),
+                    );
+                }
+            }
+        }
 
         let mut trigger_name = "scheduler";
         let mut reason = String::new();

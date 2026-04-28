@@ -159,6 +159,13 @@ impl StrategyExecutionSizeMode {
         }
     }
 
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Usd => "usd",
+            Self::Shares => "shares",
+        }
+    }
+
     pub fn uses_share_size(self) -> bool {
         matches!(self, Self::Shares)
     }
@@ -206,6 +213,8 @@ pub struct EndgameExecutionConfig {
     pub divergence_threshold: f64,
     pub divergence_min_size_usd: f64,
     pub divergence_min_size_ratio: f64,
+    pub execution_size_mode: StrategyExecutionSizeMode,
+    pub base_size_shares: f64,
 }
 
 impl EndgameExecutionConfig {
@@ -349,6 +358,12 @@ impl EndgameExecutionConfig {
             ])
             .unwrap_or(0.10)
             .clamp(0.0, 1.0),
+            execution_size_mode: StrategyExecutionSizeMode::from_env(
+                env_nonempty(&["EVPOLY_ENDGAME_EXECUTION_SIZE_MODE".to_string()]).as_deref(),
+            ),
+            base_size_shares: env_f64_any(&["EVPOLY_ENDGAME_BASE_SIZE_SHARES".to_string()])
+                .unwrap_or(50.0)
+                .max(0.0),
         }
     }
 
@@ -362,6 +377,18 @@ impl EndgameExecutionConfig {
 
     pub fn period_cap_usd(&self) -> f64 {
         self.per_period_cap_usd
+    }
+
+    pub fn execution_size_mode(&self) -> StrategyExecutionSizeMode {
+        self.execution_size_mode
+    }
+
+    pub fn uses_share_size(&self) -> bool {
+        self.execution_size_mode.uses_share_size()
+    }
+
+    pub fn base_size_shares_for_symbol(&self, symbol: &str) -> f64 {
+        crate::size_policy::strategy_symbol_scaled_size(self.base_size_shares, symbol).max(0.0)
     }
 
     pub fn timeframe_enabled(&self, timeframe: crate::strategy::Timeframe) -> bool {

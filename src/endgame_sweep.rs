@@ -237,9 +237,13 @@ pub fn build_intent_plan_for_tick(
             .unwrap_or_default();
         idx
     };
-    let base_size_usd = size_policy::endgame_base_size_usd_from_env();
-    let per_tick_notional_default = size_policy::endgame_tick_multiplier(tick_index).unwrap_or(0.0)
-        * size_policy::strategy_symbol_size_usd(base_size_usd, asset_symbol);
+    let tick_size_multiplier = size_policy::endgame_tick_multiplier(tick_index).unwrap_or(0.0);
+    let per_tick_notional_default = if cfg.uses_share_size() {
+        cfg.base_size_shares_for_symbol(asset_symbol) * tick_size_multiplier * 0.99
+    } else {
+        let base_size_usd = size_policy::endgame_base_size_usd_from_env();
+        tick_size_multiplier * size_policy::strategy_symbol_size_usd(base_size_usd, asset_symbol)
+    };
     if per_tick_notional_default <= 0.0 {
         return None;
     }
@@ -950,6 +954,8 @@ mod tests {
             divergence_threshold: 0.18,
             divergence_min_size_usd: 10.0,
             divergence_min_size_ratio: 0.10,
+            execution_size_mode: crate::config::StrategyExecutionSizeMode::Usd,
+            base_size_shares: 50.0,
         }
     }
 
@@ -1469,5 +1475,37 @@ mod tests {
         assert!((plan_tick2.target_size_usd - 40.0).abs() < 1e-6);
         assert!((plan_eth_tick1.target_size_usd - 32.0).abs() < 1e-6);
         unsafe { std::env::remove_var("EVPOLY_ENDGAME_BASE_SIZE_USD") };
+    }
+
+    #[test]
+    fn build_intent_plan_share_mode_scales_target_with_nominal_cap_price() {
+        let mut cfg = test_endgame_cfg();
+        cfg.execution_size_mode = crate::config::StrategyExecutionSizeMode::Shares;
+        cfg.base_size_shares = 100.0;
+        cfg.edge_floor_bps = 0.0;
+        cfg.min_entry_price = 0.01;
+        cfg.latency_haircut = 1.0;
+        cfg.guard_v3_enable = false;
+        cfg.thin_flip_guard_enable = false;
+
+        let market_open_ts = 1_771_604_500_i64;
+        let now_ms = (market_open_ts + 237) * 1_000;
+        let signal = test_signal(now_ms);
+        let coinbase = test_coinbase(100.0, 1.0, now_ms);
+
+        let plan = build_intent_plan_for_tick(
+            &cfg,
+            "BTC",
+            Timeframe::M5,
+            market_open_ts,
+            100.0,
+            &signal,
+            &coinbase,
+            now_ms,
+            Some(0),
+        )
+        .expect("share-sized tick0 plan");
+
+        assert!((plan.target_size_usd - 19.8).abs() < 1e-6);
     }
 }

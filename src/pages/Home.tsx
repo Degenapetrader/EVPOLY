@@ -64,6 +64,11 @@ function formatRelativeTime(value: string): string {
   return rtf.format(Math.round(diffSeconds / 86400), "day");
 }
 
+function formatPusd(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  return `${value.toFixed(2)} pUSD`;
+}
+
 function strategyKeyFromRoute(strategySlug?: string): StrategyKey | null {
   if (!strategySlug) return null;
   return (
@@ -520,9 +525,9 @@ export function Home() {
           ) : null}
         </SectionPanel>
 
-              <SectionPanel title="Available Balance" subtitle="Free pUSD collateral available from the active wallet.">
+        <SectionPanel title="Available Balance" subtitle="Free pUSD collateral available from the active wallet.">
           <div className="text-4xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
-            {formatUsd(overview?.available_balance)}
+            {formatPusd(overview?.available_balance)}
           </div>
           <div className="mt-3 text-sm text-[var(--text-secondary)]">
             Ready for new orders from the active trading wallet.

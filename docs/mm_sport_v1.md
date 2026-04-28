@@ -19,6 +19,8 @@ Blank `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN` falls back to `EVPOLY_ALPH
 
 Alpha returns markets whose two-outcome depth is below the alpha floor. Local runtime skips new quotes for those markets until the next discovery refresh.
 
+Main2 always marks this alpha request with `clob_version="v2"`, so the alpha service evaluates depth against CLOB V2 books. The alpha server still accepts old SDK v1/no-flag requests and can route those to its legacy CLOB client during migration.
+
 ## Key Env
 
 - `EVPOLY_STRATEGY_MM_SPORT_ENABLE`
@@ -29,6 +31,8 @@ Alpha returns markets whose two-outcome depth is below the alpha floor. Local ru
 - `EVPOLY_REMOTE_MM_SPORT_ALPHA_TIMEOUT_MS`
 - `EVPOLY_MM_SPORT_QUOTE_SIZE_MODE`
 - `EVPOLY_MM_SPORT_QUOTE_SIZE_MULT`
+- `EVPOLY_MM_SPORT_POST_ONLY`
+- `EVPOLY_MM_SPORT_ORDER_SUBMIT_TIMEOUT_MS`
 - `EVPOLY_MM_SPORT_MAX_SHARE_RATIO`
 - `EVPOLY_MM_SPORT_MAX_MARKETS`
 

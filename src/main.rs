@@ -822,21 +822,55 @@ fn alpha_install_id() -> String {
 }
 
 fn persist_generated_alpha_key(alpha_key: &str) {
-    let path = std::path::Path::new(".env");
+    let env_file = env_nonempty_named("EVPOLY_ENV_FILE").unwrap_or_else(|| ".env".to_string());
+    let path = std::path::Path::new(env_file.as_str());
     if !path.exists() {
         return;
     }
     let Ok(existing) = std::fs::read_to_string(path) else {
         return;
     };
-    if existing
-        .lines()
-        .any(|line| line.trim_start().starts_with("EVPOLY_ALPHA_KEY="))
-    {
+    let mut replaced = false;
+    let mut output = String::new();
+    for line in existing.lines() {
+        if line.trim_start().starts_with("EVPOLY_ALPHA_KEY=") {
+            output.push_str("EVPOLY_ALPHA_KEY=");
+            output.push_str(alpha_key.trim());
+            output.push('\n');
+            replaced = true;
+        } else {
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+    if replaced {
+        let _ = std::fs::write(path, output);
         return;
     }
     if let Ok(mut file) = OpenOptions::new().append(true).open(path) {
         let _ = writeln!(file, "\nEVPOLY_ALPHA_KEY={}", alpha_key.trim());
+    }
+}
+
+fn set_remote_alpha_fallback_envs(alpha_key: &str) {
+    let token = alpha_key.trim();
+    if token.is_empty() {
+        return;
+    }
+    for key in [
+        "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN",
+        "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
+        "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
+        "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
+        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
+        "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
+        "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN",
+    ] {
+        if env_nonempty_named(key).is_none() {
+            unsafe {
+                std::env::set_var(key, token);
+            }
+        }
     }
 }
 
@@ -912,6 +946,7 @@ async fn ensure_alpha_key_auto_onboard(proxy_wallet: Option<&str>) {
     unsafe {
         std::env::set_var("EVPOLY_ALPHA_KEY", parsed.alpha_key.trim());
     }
+    set_remote_alpha_fallback_envs(parsed.alpha_key.trim());
     persist_generated_alpha_key(parsed.alpha_key.trim());
     log_event(
         "alpha_auto_onboard_ready",
@@ -2372,7 +2407,7 @@ async fn mm_sport_cancel_pending_rows(
 }
 
 async fn mm_sport_place_order(
-    api: &PolymarketApi,
+    api: &Arc<PolymarketApi>,
     tracking_db: &TrackingDb,
     market: &MmSportMarket,
     token_id: &str,
@@ -2397,7 +2432,26 @@ async fn mm_sport_place_order(
         expiration_ts: Some(expiration_ts.max(1)),
         post_only: Some(post_only),
     };
-    let response = api.place_order(&order).await?;
+    let submit_timeout_ms =
+        env_u64_named("EVPOLY_MM_SPORT_ORDER_SUBMIT_TIMEOUT_MS", 10_000).clamp(1_000, 60_000);
+    let api_for_submit = Arc::clone(api);
+    let order_for_submit = order.clone();
+    let mut submit_task =
+        tokio::spawn(async move { api_for_submit.place_order(&order_for_submit).await });
+    let response = match timeout(Duration::from_millis(submit_timeout_ms), &mut submit_task).await {
+        Ok(join_result) => join_result.context("MM Sport order submit task failed")??,
+        Err(_) => {
+            submit_task.abort();
+            anyhow::bail!(
+                "MM Sport order submit timed out after {}ms token={} side={} price={} size={}",
+                submit_timeout_ms,
+                token_id,
+                side,
+                order.price,
+                order.size
+            );
+        }
+    };
     let Some(order_id) = response.order_id else {
         return Ok(None);
     };
@@ -19437,14 +19491,22 @@ async fn main() -> Result<()> {
     // Restore in-memory pending trades from DB + wallet balances on startup.
     // This preserves claim/redeem continuity across restarts.
     crate::log_println!("🔄 Restoring pending trades from tracking DB...");
-    if let Err(e) = trader_clone.restore_pending_trades_from_tracking_db().await {
-        warn!("Error restoring pending trades from tracking DB: {}", e);
+    if env_bool_named("EVPOLY_STARTUP_TRADE_RESTORE_ENABLE", true) {
+        if let Err(e) = trader_clone.restore_pending_trades_from_tracking_db().await {
+            warn!("Error restoring pending trades from tracking DB: {}", e);
+        }
+    } else {
+        eprintln!("Startup trade restore skipped (EVPOLY_STARTUP_TRADE_RESTORE_ENABLE=false)");
     }
 
     // Sync pending trades with portfolio on startup (check if tokens were already redeemed)
     crate::log_println!("🔄 Syncing pending trades with portfolio balance...");
-    if let Err(e) = trader_clone.sync_trades_with_portfolio().await {
-        warn!("Error syncing trades with portfolio: {}", e);
+    if env_bool_named("EVPOLY_STARTUP_PORTFOLIO_SYNC_ENABLE", true) {
+        if let Err(e) = trader_clone.sync_trades_with_portfolio().await {
+            warn!("Error syncing trades with portfolio: {}", e);
+        }
+    } else {
+        eprintln!("Startup portfolio sync skipped (EVPOLY_STARTUP_PORTFOLIO_SYNC_ENABLE=false)");
     }
 
     // Start a background task to check pending trades and sell points
@@ -21605,6 +21667,7 @@ struct RemoteMmSportDepthSkipRequest {
     request_ts_ms: i64,
     depth_floor_usd: f64,
     builder_code: String,
+    clob_version: String,
     markets: Vec<RemoteMmSportDepthSkipMarketPayload>,
 }
 
@@ -22948,6 +23011,7 @@ async fn fetch_remote_mm_sport_depth_skips(
             request_ts_ms,
             depth_floor_usd: MM_SPORT_LOW_DEPTH_FLOOR_USD,
             builder_code: official_builder_code_for_alpha(),
+            clob_version: "v2".to_string(),
             markets: market_chunk
                 .iter()
                 .map(mm_sport_depth_skip_market_payload)
@@ -25248,6 +25312,20 @@ mod tests {
             Some(2_535.6085404),
         );
         assert!(adjusted.is_none());
+    }
+
+    #[test]
+    fn mm_sport_depth_skip_remote_request_marks_main2_v2_clob() {
+        let payload = RemoteMmSportDepthSkipRequest {
+            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
+            request_ts_ms: 1,
+            depth_floor_usd: MM_SPORT_LOW_DEPTH_FLOOR_USD,
+            builder_code: "builder".to_string(),
+            clob_version: "v2".to_string(),
+            markets: Vec::new(),
+        };
+        let value = serde_json::to_value(payload).expect("serialize payload");
+        assert_eq!(value["clob_version"], "v2");
     }
 
     #[test]

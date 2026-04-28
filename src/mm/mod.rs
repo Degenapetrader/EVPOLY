@@ -159,7 +159,7 @@ impl MmSportConfig {
             require_reward_eligible: env_bool("EVPOLY_MM_SPORT_REQUIRE_REWARD_ELIGIBLE", true),
             pregame_only: env_bool("EVPOLY_MM_SPORT_PREGAME_ONLY", true),
             match_only: env_bool("EVPOLY_MM_SPORT_MATCH_ONLY", true),
-            post_only: true,
+            post_only: env_bool("EVPOLY_MM_SPORT_POST_ONLY", true),
             max_markets: env_usize("EVPOLY_MM_SPORT_MAX_MARKETS", 0),
         }
     }
@@ -320,5 +320,13 @@ mod tests {
                 assert_eq!(cfg.inventory_exit_start_sec, 21_600);
             },
         );
+    }
+
+    #[test]
+    fn mm_sport_config_reads_post_only_override() {
+        with_mm_env(&[("EVPOLY_MM_SPORT_POST_ONLY", Some("false"))], || {
+            let cfg = MmSportConfig::from_env();
+            assert!(!cfg.post_only);
+        });
     }
 }

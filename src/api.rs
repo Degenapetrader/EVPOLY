@@ -3506,16 +3506,43 @@ impl PolymarketApi {
             .remove(token_id);
     }
 
+    async fn heartbeat_ok_endpoint(&self) -> Result<()> {
+        let url = format!("{}/ok", self.clob_url.trim_end_matches('/'));
+        let response = self
+            .client
+            .get(url.as_str())
+            .send()
+            .await
+            .context("heartbeat /ok request failed")?
+            .error_for_status()
+            .context("heartbeat /ok returned non-success status")?;
+        let body = response
+            .text()
+            .await
+            .context("heartbeat /ok body read failed")?;
+        let normalized = body.trim().trim_matches('"').trim();
+        if normalized.eq_ignore_ascii_case("OK") {
+            Ok(())
+        } else {
+            anyhow::bail!("heartbeat /ok returned unexpected body");
+        }
+    }
+
     pub async fn heartbeat_closed_only_mode(&self) -> Result<()> {
         let first = self.get_or_create_clob_client().await?;
         match first.client.ok().await {
             Ok(_) => Ok(()),
             Err(e) => {
                 let err = anyhow::anyhow!(e.to_string());
+                if self.heartbeat_ok_endpoint().await.is_ok() {
+                    return Ok(());
+                }
                 if Self::should_invalidate_auth_cache(&err) {
                     self.invalidate_clob_client_cache().await;
                     let second = self.get_or_create_clob_client().await?;
-                    second.client.ok().await?;
+                    if second.client.ok().await.is_err() {
+                        self.heartbeat_ok_endpoint().await?;
+                    }
                     Ok(())
                 } else {
                     Err(err).context("heartbeat ok failed")
@@ -5831,7 +5858,7 @@ impl PolymarketApi {
                 .build_relayer_request_for_calls(calls, metadata.as_str())
                 .await?;
             let _ = self
-                .submit_relayer_redeem_request(relayer_request, "Relayer approvals batch", false)
+                .submit_relayer_redeem_request(relayer_request, "Relayer approvals batch", true)
                 .await?;
             eprintln!("✅ Relayer approval batch confirmed");
             return Ok(());
@@ -5931,6 +5958,63 @@ impl PolymarketApi {
         let mut call_data = function_selector.to_vec();
         call_data.extend_from_slice(&encoded_params);
         format!("0x{}", hex::encode(call_data))
+    }
+
+    fn encode_collateral_onramp_wrap_call_data(
+        asset: AlloyAddress,
+        to: AlloyAddress,
+        amount: U256,
+    ) -> String {
+        let function_selector = Self::function_selector("wrap(address,address,uint256)");
+        let mut encoded_params = Vec::with_capacity(96);
+
+        encoded_params.extend_from_slice(&Self::pad_address_32(asset));
+        encoded_params.extend_from_slice(&Self::pad_address_32(to));
+        encoded_params.extend_from_slice(&amount.to_be_bytes::<32>());
+
+        let mut call_data = function_selector.to_vec();
+        call_data.extend_from_slice(&encoded_params);
+        format!("0x{}", hex::encode(call_data))
+    }
+
+    /// Wrap USDC.e held by the configured proxy wallet into pUSD through the V2
+    /// Collateral Onramp. Amount is in 6-decimal base units.
+    pub async fn wrap_usdce_to_pusd_base_units(
+        &self,
+        amount_base_units: u128,
+    ) -> Result<RedeemResponse> {
+        use polymarket_client_sdk_v2::types::address;
+
+        const USDCE_ADDRESS: Address = address!("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174");
+        const COLLATERAL_ONRAMP: Address = address!("0x93070a847efEf7F70739046A929D47a521F5B8ee");
+
+        if amount_base_units == 0 {
+            anyhow::bail!("wrap amount must be greater than zero");
+        }
+
+        let proxy_wallet = self.configured_funder_wallet_address()?.ok_or_else(|| {
+            anyhow::anyhow!("pUSD wrap currently requires POLY_PROXY_WALLET_ADDRESS")
+        })?;
+        let amount = U256::from(amount_base_units);
+
+        let calls = vec![
+            (
+                USDCE_ADDRESS,
+                Self::encode_erc20_approve_call_data(COLLATERAL_ONRAMP, amount),
+            ),
+            (
+                COLLATERAL_ONRAMP,
+                Self::encode_collateral_onramp_wrap_call_data(USDCE_ADDRESS, proxy_wallet, amount),
+            ),
+        ];
+        let human_amount = Decimal::from(amount_base_units) / Decimal::from(1_000_000u64);
+        let metadata = format!("Wrap {} USDC.e to pUSD", human_amount);
+        let relayer_request = self
+            .build_relayer_request_for_calls(calls, metadata.as_str())
+            .await?;
+
+        self.submit_relayer_redeem_request(relayer_request, "Relayer pUSD wrap", true)
+            .await
     }
 
     /// Approve the CLOB contract for ALL conditional tokens using CTF contract's setApprovalForAll()

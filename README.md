@@ -99,6 +99,7 @@ bash scripts/verify_env_coverage.sh --env-file .env
 ## Signer and Discovery Defaults
 - Order posting uses local CLOB V2 SDK signing with the official EVPOLY builder code built in.
 - Leave `POLY_BUILDER_CODE` blank unless you are intentionally testing an advanced override.
+- Builder fee rates are not configured locally. Set maker/taker builder fees in the Polymarket Builder Profile; the CLOB validates the builder code and applies the active server-side rates at match time.
 - Relayer submit fallback uses `EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN` only for non-order proxy wallet flows such as redeem, merge, approvals, and Auto-Redeem approval toggles.
 - Shared timeframe discovery and EVSnipe discovery use the configured remote discovery endpoints first, with local fallback where supported.
 
@@ -227,9 +228,10 @@ Runtime-level changes in this branch:
 
 - Uses `polymarket_client_sdk_v2` with CLOB, CTF, WebSocket, Gamma, and Bridge features.
 - Pins the Rust toolchain to `1.91.0` for the current Alloy/Rust SDK dependency floor.
-- Defaults `POLY_CLOB_API_URL` to `https://clob-v2.polymarket.com` for pre-cutover testing.
+- Defaults `POLY_CLOB_API_URL` to `https://clob-v2.polymarket.com`; main2 is CLOB V2 only.
 - Uses CLOB V2 order signing through the SDK; V2 signed orders carry `timestamp`, `metadata`, and `builder` through the SDK instead of legacy `nonce`, `feeRateBps`, and `taker` fields.
-- Uses `POLY_BUILDER_CODE` for V2 builder attribution. Remote submit signing is restricted to non-order relayer flows.
+- Uses the built-in official builder code for V2 builder attribution. EVPOLY does not send local maker/taker fee bps on orders; Polymarket applies the active builder fee rates attached to that code at match time.
+- Remote submit signing is restricted to non-order relayer flows.
 - Moves direct collateral contract checks to the pUSD collateral token address and uses the SDK V2 exchange addresses through `exchange_v2` where present.
 - Replaces Gamma offset discovery with `/events/keyset` and `/markets/keyset`, using `after_cursor` / `next_cursor` and local skipping only for callers that still pass a legacy `offset` argument.
 
@@ -238,5 +240,6 @@ Operational cutover guidance:
 1. Run read-only and dry-run tests against `https://clob-v2.polymarket.com`.
 2. Confirm pUSD balance and allowances before enabling live BUY orders.
 3. Confirm order timing reports `builder_code_configured=true`; leave `POLY_BUILDER_CODE` blank unless overriding the built-in official code.
-4. Stop live trading and cancel resting orders before the Polymarket V2 cutover window.
-5. After cutover, production can use `https://clob.polymarket.com` once it reports V2.
+4. Confirm active builder fee rates from Polymarket, for example `/fees/builder-fees/<builderCode>`; scheduled fee changes may not be active immediately.
+5. Stop live trading and cancel resting orders before the Polymarket V2 cutover window.
+6. Keep main2 on the CLOB V2 API surface; the alpha service separately preserves SDK v1 compatibility for old clients.

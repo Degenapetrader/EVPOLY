@@ -40,7 +40,8 @@ const DEFAULT_PLAN3_PATH: &str = "/opt/evpoly-alpha-service/alpha/plan3.md";
 const DEFAULT_PLAN4B_PATH: &str = "/opt/evpoly-alpha-service/alpha/plan4b.md";
 const DEFAULT_PLANDAILY_PATH: &str = "/opt/evpoly-alpha-service/alpha/plandaily.md";
 const DEFAULT_GAMMA_URL: &str = "https://gamma-api.polymarket.com";
-const DEFAULT_CLOB_URL: &str = "https://clob-v2.polymarket.com";
+const DEFAULT_CLOB_URL: &str = "https://clob.polymarket.com";
+const DEFAULT_CLOB_V2_URL: &str = "https://clob-v2.polymarket.com";
 const DEFAULT_DISCOVERY_SYMBOLS: &[&str] = &["BTC", "ETH", "SOL", "XRP"];
 const DEFAULT_DISCOVERY_REFRESH_SEC: u64 = 20;
 const DEFAULT_EVSNIPE_REFRESH_SEC: u64 = 60;
@@ -82,6 +83,7 @@ struct Settings {
     plandaily_path: String,
     gamma_url: String,
     clob_url: String,
+    clob_v2_url: String,
     h1_strict_match: bool,
     h1_allow_next_hour_fallback: bool,
     discovery_symbols: Vec<String>,
@@ -260,6 +262,7 @@ struct AppState {
     settings: Settings,
     rate_limiter: Arc<RateLimiter>,
     api: Arc<PolymarketApi>,
+    api_v2: Arc<PolymarketApi>,
     evcurve_cfg: evcurve::EvcurveExecutionConfig,
     sessionband_cfg: sessionband::SessionBandExecutionConfig,
     evsnipe_cfg: evsnipe::EvsnipeConfig,
@@ -530,6 +533,8 @@ struct MmSportDepthSkipRequest {
     depth_floor_usd: f64,
     #[serde(default)]
     builder_code: Option<String>,
+    #[serde(default)]
+    clob_version: Option<String>,
     markets: Vec<MmSportDepthSkipMarketInput>,
 }
 
@@ -595,6 +600,13 @@ async fn main() -> Result<()> {
         None,
         None,
     ));
+    let api_v2 = Arc::new(PolymarketApi::new(
+        settings.gamma_url.clone(),
+        settings.clob_v2_url.clone(),
+        None,
+        None,
+        None,
+    ));
 
     let plan3_tables = Arc::new(
         Plan3Tables::load_from_path(Path::new(settings.plan3_path.as_str())).with_context(
@@ -653,6 +665,7 @@ async fn main() -> Result<()> {
         settings: settings.clone(),
         rate_limiter,
         api,
+        api_v2,
         evcurve_cfg,
         sessionband_cfg,
         evsnipe_cfg,
@@ -997,8 +1010,8 @@ async fn discovery_evsnipe_handler(
         parse_json_request(&state, remote.ip(), &headers, &body)?;
     ensure_builder_code_authorized(&state.settings, &headers, payload.builder_code.as_deref())?;
 
-    let (_updated_at_ms, mut specs) = state.discovery_cache.get_evsnipe_specs().await;
-    if specs.is_empty() {
+    let (updated_at_ms, mut specs) = state.discovery_cache.get_evsnipe_specs().await;
+    if specs.is_empty() && updated_at_ms <= 0 {
         return Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "evsnipe discovery cache unavailable",
@@ -1087,6 +1100,29 @@ fn mm_sport_alpha_bid_depth_at_or_above(
         .fold((0.0, 0.0), |(shares_acc, usd_acc), (shares, usd)| {
             (shares_acc + shares, usd_acc + usd)
         })
+}
+
+fn mm_sport_depth_skip_wants_v2(clob_version: Option<&str>) -> bool {
+    match clob_version
+        .map(str::trim)
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "v2" | "clob-v2" | "clob_v2" => true,
+        _ => false,
+    }
+}
+
+fn mm_sport_depth_skip_api_for_request(
+    state: &AppState,
+    clob_version: Option<&str>,
+) -> Arc<PolymarketApi> {
+    if mm_sport_depth_skip_wants_v2(clob_version) {
+        state.api_v2.clone()
+    } else {
+        state.api.clone()
+    }
 }
 
 fn finite_json_number(value: f64) -> Option<f64> {
@@ -1227,7 +1263,7 @@ async fn alpha_mm_sport_depth_skip_handler(
         ));
     };
 
-    let api = state.api.clone();
+    let api = mm_sport_depth_skip_api_for_request(&state, payload.clob_version.as_deref());
     let mut markets = stream::iter(payload.markets.into_iter())
         .map(|market| {
             let api = api.clone();
@@ -2667,6 +2703,11 @@ fn load_settings() -> Result<Settings> {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| DEFAULT_CLOB_URL.to_string());
+    let clob_v2_url = std::env::var("POLY_CLOB_V2_API_URL")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| DEFAULT_CLOB_V2_URL.to_string());
 
     let h1_strict_match = std::env::var("ALPHA_H1_DISCOVERY_STRICT_MATCH")
         .ok()
@@ -2819,6 +2860,7 @@ fn load_settings() -> Result<Settings> {
         plandaily_path,
         gamma_url,
         clob_url,
+        clob_v2_url,
         h1_strict_match,
         h1_allow_next_hour_fallback,
         discovery_symbols,
@@ -2903,5 +2945,17 @@ mod tests {
                 assert!(offset >= lower && offset <= upper);
             }
         }
+    }
+
+    #[test]
+    fn mm_sport_depth_skip_defaults_to_legacy_clob_unless_v2_requested() {
+        assert!(!mm_sport_depth_skip_wants_v2(None));
+        assert!(!mm_sport_depth_skip_wants_v2(Some("")));
+        assert!(!mm_sport_depth_skip_wants_v2(Some("v1")));
+        assert!(!mm_sport_depth_skip_wants_v2(Some("legacy")));
+
+        assert!(mm_sport_depth_skip_wants_v2(Some("v2")));
+        assert!(mm_sport_depth_skip_wants_v2(Some(" clob-v2 ")));
+        assert!(mm_sport_depth_skip_wants_v2(Some("CLOB_V2")));
     }
 }

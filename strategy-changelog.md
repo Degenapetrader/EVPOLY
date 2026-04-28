@@ -9,6 +9,17 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-04-28
+- `mm_sport_v1`: made quote submission safer and operator-configurable (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+  - MM Sport order submit now has a bounded timeout (`EVPOLY_MM_SPORT_ORDER_SUBMIT_TIMEOUT_MS`) so quote loops recover from stuck CLOB submits.
+  - MM Sport post-only behavior is env-configurable (`EVPOLY_MM_SPORT_POST_ONLY`, default `true`) while keeping normal discovery, depth-skip alpha, holder-intel, and pair-ratio gates intact.
+- `mm_sport_v1`: made main2 depth-skip alpha requests explicitly CLOB V2 while keeping alpha-service SDK v1 compatibility (`src/main.rs`, `src/bin/alpha_service.rs`, `docs/mm_sport_v1.md`).
+  - main2 now sends `clob_version: "v2"` on `/v1/alpha/mm-sport/depth-skip` requests, so low-depth skip decisions are evaluated against CLOB V2 books.
+  - alpha service now keeps separate legacy/default and V2 CLOB clients; old SDK v1/no-flag requests continue to use the legacy-compatible path during migration.
+- `evsnipe_v1`: softened alpha discovery empty-cache behavior (`src/bin/alpha_service.rs`).
+  - after the alpha service has refreshed EVSnipe discovery, an empty remote spec list now returns `200` with `specs: []` instead of `503`.
+  - true uninitialized discovery cache still returns `503`; this keeps transport/outage signaling while allowing valid "no current HIT markets" responses during CLOB V2 test-market windows.
+
 ### 2026-04-27
 - Remote alpha startup and V2 order acknowledgement hardening (`src/main.rs`, `src/api.rs`).
   - runtime now performs self-serve alpha auto-onboard before market monitor initialization and remote clients can pick up a newly generated `EVPOLY_ALPHA_KEY` at request time, preventing startup-time blank-token caching from causing repeated remote discovery/alpha `401` skips.

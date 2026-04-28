@@ -1,8 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
-use polymarket_arbitrage_bot::builder_attribution::{
-    configured_builder_code, official_builder_fee_bps, validate_builder_fee_bps,
-};
+use polymarket_arbitrage_bot::builder_attribution::configured_builder_code;
 use reqwest::header::{
     HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, COOKIE, USER_AGENT,
 };
@@ -45,11 +43,11 @@ struct Args {
     #[arg(long)]
     set: bool,
 
-    /// Maker fee in basis points. Defaults to EVPOLY official target when --set is used.
+    /// Maker fee in basis points. Required with --set.
     #[arg(long)]
     maker_bps: Option<u16>,
 
-    /// Taker fee in basis points. Defaults to EVPOLY official target when --set is used.
+    /// Taker fee in basis points. Required with --set.
     #[arg(long)]
     taker_bps: Option<u16>,
 
@@ -108,10 +106,12 @@ async fn main() -> Result<()> {
         return print_response("GET", response).await;
     }
 
-    let (default_maker_bps, default_taker_bps) = official_builder_fee_bps();
-    let maker_bps = args.maker_bps.unwrap_or(default_maker_bps);
-    let taker_bps = args.taker_bps.unwrap_or(default_taker_bps);
-    validate_builder_fee_bps(maker_bps, taker_bps).map_err(anyhow::Error::msg)?;
+    let maker_bps = args
+        .maker_bps
+        .context("--maker-bps is required when --set is used")?;
+    let taker_bps = args
+        .taker_bps
+        .context("--taker-bps is required when --set is used")?;
 
     let payload = BuilderFeeUpdate {
         builder_maker_fee_rate_bps: maker_bps,

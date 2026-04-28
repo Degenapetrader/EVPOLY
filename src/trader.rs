@@ -14750,6 +14750,13 @@ mod tests {
             .expect("redemption test lock poisoned")
     }
 
+    fn premarket_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .expect("premarket env lock poisoned")
+    }
+
     fn reset_redemption_sweep_test_state() {
         if let Ok(mut guard) = Trader::redemption_manual_request_store().lock() {
             *guard = false;
@@ -14895,6 +14902,7 @@ mod tests {
 
     #[test]
     fn premarket_cancel_window_is_timeframe_configurable() {
+        let _guard = premarket_env_lock();
         // SAFETY: unit test mutates process env in a single-threaded assertion scope.
         unsafe {
             std::env::set_var("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC", "11");
@@ -14909,6 +14917,12 @@ mod tests {
 
     #[test]
     fn premarket_ladder_expiration_uses_timeframe_specific_defaults() {
+        let _guard = premarket_env_lock();
+        // SAFETY: unit test clears process env overrides before checking defaults.
+        unsafe {
+            std::env::remove_var("EVPOLY_PREMARKET_EXPIRE_4H_SEC");
+            std::env::remove_var("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_4H_SEC");
+        }
         let now_ts = 1_000_000_u64;
         let period_ts = now_ts + 240;
 
@@ -14967,6 +14981,7 @@ mod tests {
 
     #[test]
     fn premarket_ladder_expiration_honors_env_override() {
+        let _guard = premarket_env_lock();
         // SAFETY: unit test mutates process env in a single-threaded assertion scope.
         unsafe {
             std::env::set_var("EVPOLY_PREMARKET_EXPIRE_4H_SEC", "650");

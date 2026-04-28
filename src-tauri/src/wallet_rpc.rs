@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::time::Duration;
 
-const USDC_CONTRACT: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
+const PUSD_CONTRACT: &str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
 const BALANCE_OF_SELECTOR: &str = "0x70a08231";
 const RPC_TIMEOUT_SECS: u64 = 8;
 
@@ -72,7 +72,7 @@ fn parse_rpc_balance_response(raw: &str) -> Result<f64, String> {
     ))
 }
 
-pub async fn fetch_usdc_balance(rpc_url: &str, wallet_address: &str) -> Result<f64, String> {
+pub async fn fetch_pusd_balance(rpc_url: &str, wallet_address: &str) -> Result<f64, String> {
     let addr = wallet_address.trim_start_matches("0x");
     let padded = format!("{:0>64}", addr);
     let data = format!("{BALANCE_OF_SELECTOR}{padded}");
@@ -82,7 +82,7 @@ pub async fn fetch_usdc_balance(rpc_url: &str, wallet_address: &str) -> Result<f
         method: "eth_call".into(),
         params: serde_json::json!([
             {
-                "to": USDC_CONTRACT,
+                "to": PUSD_CONTRACT,
                 "data": data
             },
             "latest"
@@ -113,7 +113,7 @@ pub async fn fetch_usdc_balance(rpc_url: &str, wallet_address: &str) -> Result<f
     parse_rpc_balance_response(&body)
 }
 
-pub async fn fetch_usdc_balance_with_fallback(
+pub async fn fetch_pusd_balance_with_fallback(
     rpc_urls: &[&str],
     wallet_address: &str,
 ) -> Result<f64, String> {
@@ -122,7 +122,7 @@ pub async fn fetch_usdc_balance_with_fallback(
     }
     let mut errors = Vec::new();
     for rpc_url in rpc_urls {
-        match fetch_usdc_balance(rpc_url, wallet_address).await {
+        match fetch_pusd_balance(rpc_url, wallet_address).await {
             Ok(balance) => return Ok(balance),
             Err(err) => errors.push(format!("{rpc_url}: {err}")),
         }

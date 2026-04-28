@@ -207,6 +207,7 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     multiple_collateral_cap_mult: 0.45,
     depth_ratio_collateral_cap_mult: 0.9,
     min_reward_rate_per_day: 300,
+    match_only: false,
     allowed_sport_league_codes: "",
     blocked_sport_league_codes: "",
     blocked_competition_levels: "",

@@ -1756,6 +1756,30 @@ export function StrategyEditorPane({
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <div>
+                    <label className="field-label">Match Only</label>
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        { value: false, label: "Off" },
+                        { value: true, label: "On" },
+                      ].map(({ value, label }) => (
+                        <button
+                          key={label}
+                          type="button"
+                          disabled={!canEdit}
+                          onClick={() => patchMMSport({ match_only: value })}
+                          className={`mode-choice ${
+                            mmSport.match_only === value ? "mode-choice--active" : ""
+                          }`.trim()}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Off allows sports futures and outrights. On limits discovery to scheduled match-style markets.
+                    </p>
+                  </div>
+                  <div>
                     <label className="field-label">Allowed Sport Leagues</label>
                     <input
                       type="text"

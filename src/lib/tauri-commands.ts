@@ -370,6 +370,7 @@ export interface MMSportSettings {
   multiple_collateral_cap_mult: number;
   depth_ratio_collateral_cap_mult: number;
   min_reward_rate_per_day: number;
+  match_only: boolean;
   allowed_sport_league_codes: string;
   blocked_sport_league_codes: string;
   blocked_competition_levels: string;

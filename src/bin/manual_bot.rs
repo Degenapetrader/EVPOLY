@@ -734,6 +734,7 @@ fn market_from_details(details: &MarketDetails) -> Market {
         end_date_iso_alt: (!end_iso.is_empty()).then_some(end_iso.to_string()),
         game_start_time: details.game_start_time.clone(),
         start_date: None,
+        sports_market_type: None,
         active: details.active,
         closed: details.closed,
         tokens: Some(
@@ -750,6 +751,7 @@ fn market_from_details(details: &MarketDetails) -> Market {
         clob_token_ids: None,
         outcomes: None,
         competitive: None,
+        events: None,
     }
 }
 

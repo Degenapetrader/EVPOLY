@@ -1,3 +1,5 @@
+pub mod sports_live_guard;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MmSportQuoteSizeMode {
     Multiple,
@@ -21,6 +23,38 @@ impl MmSportQuoteSizeMode {
         match self {
             Self::Multiple => "multiple",
             Self::DepthRatio => "depth_ratio",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmSportDiscoveryRoute {
+    Sports,
+    NonSports,
+    Dual,
+}
+
+impl MmSportDiscoveryRoute {
+    fn from_env(raw: Option<String>) -> Self {
+        match raw
+            .unwrap_or_else(|| "sports".to_string())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "nonsports" | "non_sports" | "non-sports" | "non_sport" | "non-sport" => {
+                Self::NonSports
+            }
+            "dual" | "both" => Self::Dual,
+            _ => Self::Sports,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sports => "sports",
+            Self::NonSports => "nonsports",
+            Self::Dual => "dual",
         }
     }
 }
@@ -66,10 +100,19 @@ pub struct MmSportConfig {
     pub discovery_refresh_sec: u64,
     pub rewards_page_budget: u32,
     pub min_reward_rate_per_day: f64,
+    pub discovery_route: MmSportDiscoveryRoute,
     pub quote_size_mode: MmSportQuoteSizeMode,
     pub exit_mode: MmSportExitMode,
     pub quote_size_mult: f64,
     pub pair_baseline_quote_size_mult: f64,
+    pub multiple_collateral_cap_mult: f64,
+    pub depth_ratio_collateral_cap_mult: f64,
+    pub market_allowlist_keywords: Vec<String>,
+    pub market_blacklist_keywords: Vec<String>,
+    pub allowed_sport_league_codes: Vec<String>,
+    pub blocked_sport_league_codes: Vec<String>,
+    pub blocked_competition_levels: Vec<String>,
+    pub reward_min_shares_cap: f64,
     pub max_share_ratio: f64,
     pub min_top_depth_usd: f64,
     pub inventory_exit_start_sec: u64,
@@ -91,6 +134,9 @@ pub struct MmSportConfig {
     pub match_only: bool,
     pub post_only: bool,
     pub max_markets: usize,
+    pub polymarket_live_guard_enable: bool,
+    pub polymarket_live_guard_ws_enable: bool,
+    pub polymarket_live_guard_ws_stale_ms: i64,
 }
 
 impl Default for MmSportConfig {
@@ -119,6 +165,9 @@ impl MmSportConfig {
             rewards_page_budget: env_u32("EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET", 8).clamp(1, 200),
             min_reward_rate_per_day: env_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 300.0)
                 .max(0.0),
+            discovery_route: MmSportDiscoveryRoute::from_env(
+                std::env::var("EVPOLY_MM_SPORT_DISCOVERY_ROUTE").ok(),
+            ),
             quote_size_mode: MmSportQuoteSizeMode::from_env(
                 std::env::var("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE").ok(),
             ),
@@ -129,8 +178,36 @@ impl MmSportConfig {
                 1.2,
             )
             .clamp(0.1, 20.0),
+            multiple_collateral_cap_mult: env_f64_with_alias(
+                "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT",
+                "EVPOLY_MM_SPORT_MULTIPLE_USDC_CAP_MULT",
+                0.45,
+            )
+            .clamp(0.0, 1.0),
+            depth_ratio_collateral_cap_mult: env_f64_with_alias(
+                "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
+                "EVPOLY_MM_SPORT_DEPTH_RATIO_USDC_CAP_MULT",
+                0.90,
+            )
+            .clamp(0.0, 1.0),
+            market_allowlist_keywords: parse_string_list_env(
+                "EVPOLY_MM_SPORT_MARKET_ALLOWLIST_KEYWORDS",
+            ),
+            market_blacklist_keywords: parse_string_list_env(
+                "EVPOLY_MM_SPORT_MARKET_BLACKLIST_KEYWORDS",
+            ),
+            allowed_sport_league_codes: parse_mm_sport_sport_league_codes_env(
+                "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES",
+            ),
+            blocked_sport_league_codes: parse_mm_sport_sport_league_codes_env(
+                "EVPOLY_MM_SPORT_BLOCKED_SPORT_LEAGUE_CODES",
+            ),
+            blocked_competition_levels: parse_mm_sport_blocked_competition_levels_env(
+                "EVPOLY_MM_SPORT_BLOCKED_COMPETITION_LEVELS",
+            ),
+            reward_min_shares_cap: env_f64("EVPOLY_MM_SPORT_REWARD_MIN_SHARES_CAP", 0.0).max(0.0),
             max_share_ratio: env_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05).clamp(0.01, 0.99),
-            min_top_depth_usd: env_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 100_000.0).max(0.0),
+            min_top_depth_usd: env_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 1_100.0).max(0.0),
             inventory_exit_start_sec: env_u64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28_800)
                 .clamp(300, 172_800),
             pause_after_fill_sec: env_u64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 7_200)
@@ -161,6 +238,19 @@ impl MmSportConfig {
             match_only: env_bool("EVPOLY_MM_SPORT_MATCH_ONLY", true),
             post_only: env_bool("EVPOLY_MM_SPORT_POST_ONLY", true),
             max_markets: env_usize("EVPOLY_MM_SPORT_MAX_MARKETS", 0),
+            polymarket_live_guard_enable: env_bool(
+                "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_ENABLE",
+                true,
+            ),
+            polymarket_live_guard_ws_enable: env_bool(
+                "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_ENABLE",
+                true,
+            ),
+            polymarket_live_guard_ws_stale_ms: env_u64(
+                "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_STALE_MS",
+                600_000,
+            )
+            .clamp(30_000, 3_600_000) as i64,
         }
     }
 }
@@ -182,6 +272,89 @@ fn env_f64(key: &str, default: f64) -> f64 {
         .and_then(|v| v.trim().parse::<f64>().ok())
         .filter(|v| v.is_finite())
         .unwrap_or(default)
+}
+
+fn env_f64_with_alias(key: &str, alias: &str, default: f64) -> f64 {
+    if std::env::var(key).is_ok() {
+        return env_f64(key, default);
+    }
+    if std::env::var(alias).is_ok() {
+        return env_f64(alias, default);
+    }
+    default
+}
+
+fn parse_string_list_env(key: &str) -> Vec<String> {
+    let Some(raw) = std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for value in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let normalized = value.to_ascii_lowercase();
+        if out.iter().any(|existing| existing == &normalized) {
+            continue;
+        }
+        out.push(normalized);
+    }
+    out
+}
+
+fn parse_string_list_from_allowed_env(key: &str, allowed: &[&str]) -> Vec<String> {
+    let parsed = parse_string_list_env(key);
+    if parsed.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for allowed_value in allowed {
+        if parsed.iter().any(|value| value == allowed_value) {
+            out.push((*allowed_value).to_string());
+        }
+    }
+    out
+}
+
+fn parse_mm_sport_sport_league_codes_env(key: &str) -> Vec<String> {
+    const ALLOWED: [&str; 25] = [
+        "american_football",
+        "basketball",
+        "baseball",
+        "hockey",
+        "soccer",
+        "tennis",
+        "golf",
+        "mma",
+        "motorsport",
+        "nfl",
+        "ncaafb",
+        "nba",
+        "wnba",
+        "ncaamb",
+        "ncaawb",
+        "mlb",
+        "nhl",
+        "epl",
+        "uefa_champions_league",
+        "mls",
+        "atp",
+        "wta",
+        "pga_tour",
+        "ufc",
+        "f1",
+    ];
+    parse_string_list_from_allowed_env(key, &ALLOWED)
+}
+
+fn parse_mm_sport_blocked_competition_levels_env(key: &str) -> Vec<String> {
+    const ALLOWED: [&str; 4] = ["low", "medium", "high", "unknown"];
+    parse_string_list_from_allowed_env(key, &ALLOWED)
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -241,6 +414,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn parse_mm_sport_discovery_route_from_env_value() {
+        assert_eq!(
+            MmSportDiscoveryRoute::from_env(None),
+            MmSportDiscoveryRoute::Sports
+        );
+        assert_eq!(
+            MmSportDiscoveryRoute::from_env(Some("nonsports".to_string())),
+            MmSportDiscoveryRoute::NonSports
+        );
+        assert_eq!(
+            MmSportDiscoveryRoute::from_env(Some("non-sport".to_string())),
+            MmSportDiscoveryRoute::NonSports
+        );
+        assert_eq!(
+            MmSportDiscoveryRoute::from_env(Some("dual".to_string())),
+            MmSportDiscoveryRoute::Dual
+        );
+        assert_eq!(
+            MmSportDiscoveryRoute::from_env(Some("unknown".to_string())),
+            MmSportDiscoveryRoute::Sports
+        );
     }
 
     #[test]
@@ -328,5 +525,59 @@ mod tests {
             let cfg = MmSportConfig::from_env();
             assert!(!cfg.post_only);
         });
+    }
+
+    #[test]
+    fn mm_sport_config_reads_route_filters_and_collateral_caps() {
+        with_mm_env(
+            &[
+                ("EVPOLY_MM_SPORT_DISCOVERY_ROUTE", Some("dual")),
+                ("EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", Some("0.40")),
+                (
+                    "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
+                    Some("0.85"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES",
+                    Some("nba,mlb,bad"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_BLOCKED_COMPETITION_LEVELS",
+                    Some("high,unknown,bad"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_MARKET_BLACKLIST_KEYWORDS",
+                    Some("spread,total,spread"),
+                ),
+                ("EVPOLY_MM_SPORT_REWARD_MIN_SHARES_CAP", Some("500")),
+            ],
+            || {
+                let cfg = MmSportConfig::from_env();
+                assert_eq!(cfg.discovery_route, MmSportDiscoveryRoute::Dual);
+                assert!((cfg.multiple_collateral_cap_mult - 0.40).abs() < f64::EPSILON);
+                assert!((cfg.depth_ratio_collateral_cap_mult - 0.85).abs() < f64::EPSILON);
+                assert_eq!(cfg.allowed_sport_league_codes, vec!["nba", "mlb"]);
+                assert_eq!(cfg.blocked_competition_levels, vec!["high", "unknown"]);
+                assert_eq!(cfg.market_blacklist_keywords, vec!["spread", "total"]);
+                assert_eq!(cfg.reward_min_shares_cap, 500.0);
+            },
+        );
+    }
+
+    #[test]
+    fn mm_sport_config_accepts_legacy_usdc_cap_aliases() {
+        with_mm_env(
+            &[
+                ("EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", None),
+                ("EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT", None),
+                ("EVPOLY_MM_SPORT_MULTIPLE_USDC_CAP_MULT", Some("0.35")),
+                ("EVPOLY_MM_SPORT_DEPTH_RATIO_USDC_CAP_MULT", Some("0.75")),
+            ],
+            || {
+                let cfg = MmSportConfig::from_env();
+                assert!((cfg.multiple_collateral_cap_mult - 0.35).abs() < f64::EPSILON);
+                assert!((cfg.depth_ratio_collateral_cap_mult - 0.75).abs() < f64::EPSILON);
+            },
+        );
     }
 }

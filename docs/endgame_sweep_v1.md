@@ -10,22 +10,18 @@
 
 ## Proxy Routing Defaults
 - `BTC/ETH/SOL/XRP` use Coinbase as the primary proxy feed path.
-- `BTC/ETH/SOL/XRP` also require a Binance direction-agreement guard before each alpha tick can trade.
+- `BTC/ETH/SOL/XRP` also require a Binance direction-agreement guard before each alpha checkpoint can trade.
 - `DOGE/BNB/HYPE` use Binance trade proxy feed path.
-- Alpha `submit_proxy_max_age_ms` is multiplied by `3x` for `DOGE/BNB/HYPE`.
+- `DOGE/BNB/HYPE` use a more tolerant alpha freshness guard for Binance-routed submits.
 
-## Alpha-Driven Timing
-At runtime the bot requests one alpha policy per symbol/timeframe/period at `T-3m` before the current period close / next period open.
+## Alpha-Driven Signal
+At runtime the bot requests one EVPlus Alpha signal per symbol/timeframe/period before the current period close / next period open.
 
-Policy includes:
-- `tick_offsets_ms` (`t0/t1/t2` based on `2000,1000,100` ms before close)
-- Alpha may move each offset up to `25%` closer to `T` only, so `2000ms` can become `1700ms` but not `2300ms`.
-- `submit_proxy_max_age_ms` (submit-time stale guard)
+The alpha signal controls the late-window checkpoint policy and submit freshness policy. The public client treats this as an opaque required signal.
 
 Compatibility:
 - SDK v1 clients that do not send `builder_code` still use the same `/v1/alpha/endgame/policy` endpoint.
-- For those legacy shared-token requests, alpha returns the SDK v1-compatible `3000,1000,100` ms base schedule with small symmetric jitter.
-- `main2` requests include the official builder code and keep the `2000,1000,100` near-T policy.
+- `main2` requests include the official builder code and use the v2 alpha signal path.
 
 Config:
 - `EVPOLY_REMOTE_ENDGAME_ALPHA_URL`
@@ -38,9 +34,9 @@ If required policy is unavailable, the period is skipped (fail-closed).
 ## End-to-End Flow
 1. Build symbol proxy feeds (Coinbase primary feeds plus Binance guard/routing feeds).
 2. Compute/restore period base anchor.
-3. Request alpha policy at `T-3m` before close / next period open.
+3. Request alpha signal before close / next period open.
 4. If no valid policy and required mode is enabled, skip period.
-5. For each due alpha tick, require Coinbase/Binance direction agreement for `BTC/ETH/SOL/XRP`.
+5. For each due alpha checkpoint, require Coinbase/Binance direction agreement for `BTC/ETH/SOL/XRP`.
 6. Build direction/probability plan.
 7. Apply mandatory near-base skip gate.
 8. Resolve market with remote-first discovery + local fallback.
@@ -48,7 +44,7 @@ If required policy is unavailable, the period is skipped (fail-closed).
 10. Apply poly price-band / entry-price guards.
 11. Apply EV-safe sizing and cap checks.
 12. Enqueue to arbiter/trader.
-13. Enforce submit-time stale guard from alpha policy.
+13. Enforce submit-time stale guard from alpha signal.
 
 ## Sizing Policy
 Base key: `EVPOLY_ENDGAME_BASE_SIZE_USD` (blank defaults to `50`).
@@ -61,8 +57,8 @@ Multipliers:
 - Mandatory Endgame near-base skip gate fixed at `3.0` bps.
 - `BTC/ETH/SOL/XRP` require Coinbase and Binance to agree on up/down direction versus their period-open proxy base before an Endgame tick can submit.
 - Quote/proxy freshness gates
-- Submit-time stale guard (policy-aware)
-- Safety stop defaults to `0s` so alpha-owned millisecond ticks, including `t-100ms`, can fire.
+- Submit-time stale guard from the alpha signal
+- Safety stop defaults to `0s` so alpha-owned late-window checkpoints can fire.
 - Min entry / price-band gates
 - Per-period and strategy cap gates
 
@@ -76,5 +72,5 @@ Multipliers:
 - `EVPOLY_ENDGAME_ALPHA_REQUIRED`
 - `EVPOLY_REMOTE_ENDGAME_ALPHA_URL`
 - `EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN`
-- `EVPOLY_ENDGAME_TICK_OFFSETS_MS` (local labels/capacity only; alpha owns actual policy)
+- `EVPOLY_ENDGAME_TICK_OFFSETS_MS` (local labels/capacity only; alpha owns the live signal)
 - `EVPOLY_ENDGAME_SAFETY_STOP_SEC` (default `0`)

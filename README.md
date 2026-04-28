@@ -26,9 +26,9 @@ See [LICENSE](LICENSE).
 - `premarket_v1`
 - `endgame_sweep_v1`
 - `evcurve_v1`
-- `sessionband_v1`
+- `sessionband_v1` (S-Band)
 - `evsnipe_v1`
-- `mm_sport_v1`
+- `mm_sport_v1` (MM 2.0)
 
 ## Current Default Runtime Profile
 - Strategy toggles default ON: `premarket`, `endgame`, `evcurve`, `sessionband`, `evsnipe`
@@ -44,9 +44,9 @@ Defaults are defined by runtime config loaders and reflected in `.env.example` /
 - [Premarket v1](docs/premarket_v1.md)
 - [Endgame Sweep v1](docs/endgame_sweep_v1.md)
 - [EVcurve v1](docs/evcurve_v1.md)
-- [SessionBand v1](docs/sessionband_v1.md)
+- [S-Band v1](docs/sessionband_v1.md)
 - [EVSnipe v1](docs/evsnipe_v1.md)
-- [MM Sport v1](docs/mm_sport_v1.md)
+- [MM 2.0](docs/mm_sport_v1.md)
 
 ### Ops guides
 - [Manual endpoint guide](docs/manual_endpoint_guide.md)
@@ -107,10 +107,10 @@ bash scripts/verify_env_coverage.sh --env-file .env
 Remote endpoints still default to `https://alpha.evplus.ai/...` and retry to `https://alpha2.evplus.ai/...` on transport/timeout/429/5xx failure classes.
 
 Timeout policy currently hardcoded in runtime:
-- Premarket ladder alpha: `1000ms`
+- Premarket alpha signal: `1000ms`
 - Endgame alpha: `1000ms`
 - EVcurve alpha: `1000ms`
-- SessionBand alpha: `1000ms`
+- S-Band alpha: `1000ms`
 - EVSnipe remote discovery: `2000ms`
 - Shared timeframe discovery: `2000ms`
 

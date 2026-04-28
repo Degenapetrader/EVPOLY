@@ -99,10 +99,12 @@ pub fn eth_disabled_fallback_market() -> Market {
         end_date_iso_alt: None,
         game_start_time: None,
         start_date: None,
+        sports_market_type: None,
         tokens: None,
         clob_token_ids: None,
         outcomes: None,
         competitive: None,
+        events: None,
     }
 }
 
@@ -121,10 +123,12 @@ pub fn btc_disabled_fallback_market() -> Market {
         end_date_iso_alt: None,
         game_start_time: None,
         start_date: None,
+        sports_market_type: None,
         tokens: None,
         clob_token_ids: None,
         outcomes: None,
         competitive: None,
+        events: None,
     }
 }
 
@@ -143,10 +147,12 @@ pub fn solana_disabled_fallback_market() -> Market {
         end_date_iso_alt: None,
         game_start_time: None,
         start_date: None,
+        sports_market_type: None,
         tokens: None,
         clob_token_ids: None,
         outcomes: None,
         competitive: None,
+        events: None,
     }
 }
 
@@ -165,10 +171,12 @@ pub fn xrp_disabled_fallback_market() -> Market {
         end_date_iso_alt: None,
         game_start_time: None,
         start_date: None,
+        sports_market_type: None,
         tokens: None,
         clob_token_ids: None,
         outcomes: None,
         competitive: None,
+        events: None,
     }
 }
 

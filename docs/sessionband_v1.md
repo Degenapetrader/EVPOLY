@@ -1,15 +1,15 @@
-# SessionBand v1 Guide
+# S-Band v1 Guide
 
 ## What It Does
-`sessionband_v1` is a late-window checkpoint strategy driven by remote alpha decisions.
+`sessionband_v1` is exposed publicly as S-Band. It is a late-window checkpoint strategy driven by remote alpha decisions.
 
 ## Default Scope
 - Symbols: `BTC, ETH, SOL, XRP`
 - Timeframes: `5m, 15m, 1h, 4h`
 - Strategy toggle default: `EVPOLY_STRATEGY_SESSIONBAND_ENABLE=true`
 
-## Hardcoded Checkpoints
-SessionBand currently emits only two checkpoints:
+## Local Checkpoints
+S-Band currently emits only two local checkpoint requests:
 - `tau=2s` decision request at `2050ms` before close
 - `tau=1s` decision request at `1050ms` before close
 - Grace window: `500ms`
@@ -25,6 +25,7 @@ Behavior:
 - Remote alpha unavailable/invalid -> skip (no local alpha decision fallback)
 - Direction mismatch between alpha and runtime side -> skip
 - Market discovery path is remote-first with local fallback
+- The local client treats alpha as an opaque required signal.
 
 ## End-to-End Flow
 1. Build symbol proxy feeds and period base anchor.
@@ -32,7 +33,7 @@ Behavior:
 3. Apply near-base skip gate.
 4. Resolve market (remote-first discovery, local fallback).
 5. Fetch PM quotes/orderbook and apply freshness checks.
-6. Request SessionBand alpha decision for current tau.
+6. Request S-Band alpha signal for current tau.
 7. Enforce alpha-side and price-band consistency checks.
 8. Build local size (alpha does not provide target size).
 9. Apply scope cap, strategy cap, and arbiter gates.

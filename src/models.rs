@@ -23,6 +23,8 @@ pub struct Market {
     pub game_start_time: Option<String>,
     #[serde(rename = "startDate")]
     pub start_date: Option<String>,
+    #[serde(rename = "sportsMarketType")]
+    pub sports_market_type: Option<String>,
     pub active: bool,
     pub closed: bool,
     pub tokens: Option<Vec<Token>>,
@@ -30,6 +32,30 @@ pub struct Market {
     pub clob_token_ids: Option<String>, // JSON string array
     pub outcomes: Option<String>, // JSON string array like "[\"Up\", \"Down\"]"
     pub competitive: Option<f64>,
+    pub events: Option<Vec<GammaEventSummary>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GammaEventSummary {
+    pub slug: Option<String>,
+    #[serde(rename = "gameId")]
+    pub game_id: Option<i64>,
+    #[serde(rename = "startTime")]
+    pub start_time: Option<String>,
+    pub live: Option<bool>,
+    pub period: Option<String>,
+    pub status: Option<String>,
+    pub score: Option<String>,
+    #[serde(rename = "eventState")]
+    pub event_state: Option<GammaEventState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GammaEventState {
+    pub live: Option<bool>,
+    pub period: Option<String>,
+    pub status: Option<String>,
+    pub score: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

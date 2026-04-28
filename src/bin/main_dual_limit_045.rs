@@ -603,10 +603,12 @@ async fn get_or_discover_markets(
                 end_date_iso_alt: None,
                 game_start_time: None,
                 start_date: None,
+                sports_market_type: None,
                 tokens: None,
                 clob_token_ids: None,
                 outcomes: None,
                 competitive: None,
+                events: None,
             }
         });
     seen_ids.insert(btc_market.condition_id.clone());

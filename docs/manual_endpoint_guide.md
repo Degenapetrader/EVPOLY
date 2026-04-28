@@ -140,7 +140,7 @@ curl -sS -X POST http://127.0.0.1:8791/manual/auto-redeem \
 
 ## Operator Endpoints
 - `/manual/positions`: live positions snapshot.
-- `/manual/balance`: USDC balance/allowance plus live position summary.
+- `/manual/balance`: pUSD collateral balance/allowance plus live position summary.
 - `/manual/pnl`: activity cashflow plus live unrealized estimate.
 - `/manual/audit`: run-state audit plus fix suggestions.
 - `/manual/auto-redeem`: read or toggle Polymarket Auto-Redeem approval for the configured wallet.

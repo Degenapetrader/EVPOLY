@@ -865,6 +865,10 @@ mod tests {
         MmSportMarket {
             condition_id: "0xcond".to_string(),
             market_slug: "nba-test-game-2026-04-07".to_string(),
+            is_sports_market: true,
+            polymarket_sports_game_id: None,
+            polymarket_sports_event_slug: None,
+            polymarket_sports_event_state: None,
             reward_rate_per_day: 500.0,
             reward_min_size_shares: 1000.0,
             minimum_tick_size: 0.01,

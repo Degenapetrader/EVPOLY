@@ -21,11 +21,10 @@ The scheduler emits intents about 4 minutes before open:
 - Token: `EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN`
 - Runtime timeout: hardcoded `1000ms`
 
-Ladder behavior:
+Alpha behavior:
 1. Scheduler emits the local intent around `T-4m`.
-2. Runtime sends the local base ladder prices to alpha.
-3. Alpha returns one aligned price shift across all rungs, bounded to about `+/-10%`.
-4. Missing, rejected, malformed, or unavailable alpha ladder -> fail-closed skip for that asset intent.
+2. Runtime requests an EVPlus Alpha signal for the local base ladder.
+3. Missing, rejected, malformed, or unavailable alpha signal -> fail-closed skip for that asset intent.
 
 Market discovery:
 - Shared timeframe discovery is remote-first.
@@ -37,7 +36,7 @@ Premarket base ladder is hardcoded to 6x6 with two timeframe buckets:
 - `15m / 1h / 4h` prices: `0.40, 0.30, 0.24, 0.18, 0.12, 0.06`
 - Weights: `0.23, 0.23, 0.17, 0.14, 0.12, 0.11`
 
-Alpha owns the final ladder prices used for submit. It applies one aligned random shift to the base prices; weights, min-notional sizing, caps, discovery, cancel scheduling, and order placement remain local.
+Alpha owns the final ladder signal used for submit. Weights, min-notional sizing, caps, discovery, cancel scheduling, and order placement remain local.
 
 Mode keys:
 - `EVPOLY_PREMARKET_LADDER_MODE_5M`

@@ -7,9 +7,9 @@ This branch is the public EVPOLY CLOB V2 surface.
 - `premarket_v1`
 - `endgame_sweep_v1`
 - `evcurve_v1`
-- `sessionband_v1`
+- `sessionband_v1` (S-Band)
 - `evsnipe_v1`
-- `mm_sport_v1`
+- `mm_sport_v1` (MM 2.0)
 
 The legacy generic rewards-MM strategy is retired from the public runtime. Historical changelog entries may still mention it.
 
@@ -29,7 +29,7 @@ The legacy generic rewards-MM strategy is retired from the public runtime. Histo
 - Starter profile enables `premarket`, `endgame`, `evcurve`, `sessionband`, and `evsnipe`.
 - `POLY_CLOB_API_URL` should stay on `https://clob-v2.polymarket.com` for the public V2 runtime.
 - Starter profile leaves `mm_sport` off until the operator explicitly enables it.
-- `EVPOLY_MM_SPORT_*` keys are the only public MM strategy controls.
+- `EVPOLY_MM_SPORT_*` keys are the only public MM 2.0 strategy controls.
 - Old generic rewards-MM controls are not part of the public template.
 
 ## Cutover Checklist

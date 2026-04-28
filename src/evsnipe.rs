@@ -1901,12 +1901,14 @@ mod tests {
             end_date_iso_alt: None,
             game_start_time: None,
             start_date: None,
+            sports_market_type: None,
             active: true,
             closed: false,
             tokens: None,
             clob_token_ids: None,
             outcomes: None,
             competitive: None,
+            events: None,
         };
         let parsed = parse_market_rule(
             &market,
@@ -1938,12 +1940,14 @@ mod tests {
             end_date_iso_alt: None,
             game_start_time: None,
             start_date: None,
+            sports_market_type: None,
             active: true,
             closed: false,
             tokens: None,
             clob_token_ids: None,
             outcomes: None,
             competitive: None,
+            events: None,
         };
         let parsed = parse_market_rule(
             &market,
@@ -1973,12 +1977,14 @@ mod tests {
             end_date_iso_alt: None,
             game_start_time: None,
             start_date: None,
+            sports_market_type: None,
             active: true,
             closed: false,
             tokens: None,
             clob_token_ids: None,
             outcomes: None,
             competitive: None,
+            events: None,
         };
         assert_eq!(parse_market_end_ts(&market), Some(1_775_016_000));
     }
@@ -1997,12 +2003,14 @@ mod tests {
             end_date_iso_alt: None,
             game_start_time: None,
             start_date: None,
+            sports_market_type: None,
             active: true,
             closed: false,
             tokens: None,
             clob_token_ids: None,
             outcomes: None,
             competitive: None,
+            events: None,
         };
         assert_eq!(parse_market_end_ts(&market), Some(1_775_087_999));
     }
@@ -2170,12 +2178,14 @@ mod tests {
             end_date_iso_alt: None,
             game_start_time: None,
             start_date: None,
+            sports_market_type: None,
             active: true,
             closed: false,
             tokens: None,
             clob_token_ids: None,
             outcomes: None,
             competitive: None,
+            events: None,
         };
         assert_eq!(detect_symbol(&market).as_deref(), Some("DOGE"));
 

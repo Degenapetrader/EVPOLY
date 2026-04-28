@@ -10,8 +10,14 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-28
-- `endgame_sweep_v1`: aligned local v1 proxy guards while keeping the existing v2 alpha `t0/t1/t2` timing contract (`src/main.rs`, `docs/endgame_sweep_v1.md`, `.env.full.example`).
-  - `BTC/ETH/SOL/XRP` now require Coinbase and Binance to agree on up/down direction versus their period-open proxy bases before a due alpha tick can submit.
+- `mm_sport_v1` / MM 2.0: filled the main2 public-release gaps against the platform reference while preserving the remote alpha dependency (`src/mm/mod.rs`, `src/mm/sports_live_guard.rs`, `src/main.rs`, `src/models.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+  - Added pUSD collateral quote caps for both `multiple` and `depth_ratio` sizing modes with `EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT` and `EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT`; deprecated `*_USDC_*` cap env names remain accepted as aliases.
+  - Added `EVPOLY_MM_SPORT_DISCOVERY_ROUTE=sports|nonsports|dual`, optional league/competition/keyword/reward-floor filters, and condition-id dedupe across route candidates.
+  - Added sports live-game guard support using Gamma event state plus optional Polymarket sports websocket state; sports markets blocked as live/in-progress cancel BUY quotes while still allowing inventory exit logic.
+  - MM 2.0 still requires the EVPlus Alpha market-risk signal before quoting and fails closed on alpha outage/rejection.
+- Public docs/content control: renamed public surfaces to MM 2.0 and S-Band where user-facing, updated pUSD collateral wording, and reduced docs that described exact remote alpha internals (`README.md`, `docs/*.md`, `UI-v2.md`).
+- `endgame_sweep_v1`: aligned local v1 proxy guards while keeping the existing v2 remote-alpha timing contract opaque to the public client (`src/main.rs`, `docs/endgame_sweep_v1.md`, `.env.full.example`).
+  - `BTC/ETH/SOL/XRP` now require Coinbase and Binance to agree on up/down direction versus their period-open proxy bases before a due alpha checkpoint can submit.
   - `HYPE` Endgame routing now uses Binance for all supported timeframes, matching `DOGE/BNB`; the Hyperliquid Endgame proxy path is no longer used.
   - Endgame v1 near-base skip is fixed at `3.0` bps; `EVPOLY_NEAR_BASE_SKIP_BPS` remains available for the other near-base-guarded strategies.
 - `sessionband_v1`: aligned the platform SessionBand sizing/tau surface while keeping main2 remote-alpha-only (`src/sessionband.rs`, `src/main.rs`, `src/trader.rs`, `.env.example`, `.env.full.example`, `docs/sessionband_v1.md`).
@@ -21,7 +27,7 @@ Older entries may reference env keys that were removed in later commits.
   - MM Sport order submit now has a bounded timeout (`EVPOLY_MM_SPORT_ORDER_SUBMIT_TIMEOUT_MS`) so quote loops recover from stuck CLOB submits.
   - MM Sport post-only behavior is env-configurable (`EVPOLY_MM_SPORT_POST_ONLY`, default `true`) while keeping normal discovery, depth-skip alpha, holder-intel, and pair-ratio gates intact.
 - `mm_sport_v1`: made main2 depth-skip alpha requests explicitly CLOB V2 while keeping alpha-service SDK v1 compatibility (`src/main.rs`, `src/bin/alpha_service.rs`, `docs/mm_sport_v1.md`).
-  - main2 now sends `clob_version: "v2"` on `/v1/alpha/mm-sport/depth-skip` requests, so low-depth skip decisions are evaluated against CLOB V2 books.
+  - main2 now sends `clob_version: "v2"` on `/v1/alpha/mm-sport/depth-skip` requests, so MM 2.0 market-risk signals are evaluated against CLOB V2 books.
   - alpha service now keeps separate legacy/default and V2 CLOB clients; old SDK v1/no-flag requests continue to use the legacy-compatible path during migration.
 - `evsnipe_v1`: softened alpha discovery empty-cache behavior (`src/bin/alpha_service.rs`).
   - after the alpha service has refreshed EVSnipe discovery, an empty remote spec list now returns `200` with `specs: []` instead of `503`.
@@ -68,30 +74,30 @@ Older entries may reference env keys that were removed in later commits.
   - removed SessionBand and MM Rewards strategy constants, runtime loops, alpha-service endpoints, admin metadata, env/onboarding keys, per-strategy docs, and MM Rewards helper modules.
   - MM Sport remains active as the only MM strategy; shared MM inventory/status/reconcile code now scopes to `mm_sport_v1`.
   - affects all symbols/timeframes/markets previously owned by `sessionband_v1` and `mm_rewards_v1`; no remote deploy or push was performed.
-- `mm_sport_v1`: moved the hard `$1,000` low-depth market skip into remote alpha (`src/main.rs`, `src/bin/alpha_service.rs`, `.env.example`, `.env.full.example`).
+- `mm_sport_v1`: moved a market-risk gate into remote alpha (`src/main.rs`, `src/bin/alpha_service.rs`, `.env.example`, `.env.full.example`).
   - after each local MM Sport discovery cycle, runtime sends the candidate sports reward markets to `/v1/alpha/mm-sport/depth-skip` and caches the returned skip list until the next discovery refresh.
-  - alpha checks both outcome orderbooks at the passive entry price and returns conditions whose pair depth is below `MM_SPORT_LOW_DEPTH_FLOOR_USD`; failed or missing alpha responses fail closed for new MM Sport entry quotes.
+  - alpha returns the final skip signal for each candidate; failed or missing alpha responses fail closed for new MM Sport entry quotes.
   - local cancel, inventory exit, and invalid-book safety remain local; `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_*` env keys expose the endpoint/token with blank-token fallback to `EVPOLY_ALPHA_KEY`.
 - `evsnipe_v1`: aligned the remote discovery path with the alpha/builder-attribution model while preserving main2 remote-first behavior (`src/evsnipe.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/evsnipe_v1.md`).
   - EVSnipe remote discovery now falls back from `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN` to `EVPOLY_ALPHA_KEY`, sends `x-wallet-address` from `POLY_PROXY_WALLET_ADDRESS`, and includes the configured official builder code in the remote payload.
   - retained main2's remote-first discovery with local fallback and retained the fixed internal EVSnipe in-loop cap; UPDATE's local-first discovery and user-editable `EVPOLY_EVSNIPE_STRATEGY_CAP_USD` were intentionally not ported.
   - ported UPDATE's effective end timestamp helper for close-rule compatibility and kept close-rule specs out of strike-window pruning if they are ever allowed into the EVSnipe watchlist.
 - `evcurve_v1`: aligned EVcurve decision thresholds with UPDATE/main_v2 (`src/evcurve.rs`, `.env.full.example`, `docs/evcurve_v1.md`).
-  - max `p_flip` is now fixed in code at `0.11`, and `EVPOLY_EVCURVE_MAX_FLIP_PROB` env overrides are ignored.
+  - remote-alpha decision thresholds are now fixed in code, and matching public env overrides are ignored.
   - D1 EV-gap threshold is now fixed in code at `0.12`, and `EVPOLY_EVCURVE_D1_EV_GAP` env overrides are ignored.
   - alpha owns the EVcurve decision path, so alpha service binaries must be rebuilt/deployed for this threshold change to take effect remotely.
 - `evcurve_v1`: clarified and cleaned the remote-alpha-only decision path (`src/main.rs`, `.env.example`, `.env.full.example`, `docs/evcurve_v1.md`).
-  - runtime no longer carries placeholder local Plan3/PlanDaily table handles through EVcurve decision calls; non-D1 and D1 candidates are explicitly fetched from `/v1/alpha/evcurve`.
-  - alpha owns Plan3/PlanDaily lookup, `p_flip`, hold-side selection, D1 sub-strategy selection, and max-buy decisioning; checkpoint scheduling, base anchoring, market discovery, sizing/caps, and chase/FAK execution remain local.
+  - runtime no longer carries placeholder local decision-table handles through EVcurve decision calls; EVcurve candidates are explicitly fetched from `/v1/alpha/evcurve`.
+  - alpha owns the EVcurve decision signal; checkpoint scheduling, base anchoring, market discovery, sizing/caps, and chase/FAK execution remain local.
   - env templates now expose `EVPOLY_REMOTE_EVCURVE_ALPHA_URL` and `EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN` with blank-token fallback to `EVPOLY_ALPHA_KEY`.
-- `endgame_sweep_v1`: moved the active `t0/t1/t2` checkpoint policy fully to remote alpha timing (`src/main.rs`, `src/config.rs`, `src/bin/alpha_service.rs`, `.env.example`, `.env.full.example`, `docs/endgame_sweep_v1.md`).
+- `endgame_sweep_v1`: moved the active checkpoint policy fully to remote alpha timing (`src/main.rs`, `src/config.rs`, `src/bin/alpha_service.rs`, `.env.example`, `.env.full.example`, `docs/endgame_sweep_v1.md`).
   - runtime now requests `/v1/alpha/endgame/policy` at `T-3m` before current period close / next period open; market discovery, proxy feeds, direction logic, sizing, caps, and order placement remain local.
-  - alpha defaults to base offsets `2000,1000,100` ms and randomizes each returned offset up to `25%` closer to `T` only, never farther from close.
-  - local `EVPOLY_ENDGAME_TICK_OFFSETS_MS` is now a label/capacity default of `2000,1000,100`, and `EVPOLY_ENDGAME_SAFETY_STOP_SEC` now defaults to `0` so the `t-100ms` alpha tick can fire.
+  - alpha owns the late-window checkpoint signal and submit freshness policy.
+  - local `EVPOLY_ENDGAME_TICK_OFFSETS_MS` is now a label/capacity setting, and `EVPOLY_ENDGAME_SAFETY_STOP_SEC` now defaults to `0` so alpha-owned late-window checkpoints can fire.
 - `premarket_v1`: replaced the remote `should_trade` alpha gate with remote alpha ladder selection (`src/main.rs`, `src/bin/alpha_service.rs`, `.env.example`, `.env.full.example`, `docs/premarket_v1.md`).
   - scheduler, market discovery, sizing, caps, cancel scheduling, and order placement remain local.
   - at the scheduled pre-open intent (`T-4m` path), runtime sends base ladder prices to `/v1/alpha/premarket/ladder`.
-  - alpha returns one aligned random price shift across all rungs, bounded to about `+/-10%`; unavailable or invalid alpha ladder now fail-closed skips that asset intent.
+  - alpha returns the final ladder signal; unavailable or invalid alpha ladder now fail-closed skips that asset intent.
 - `premarket_v1`, `endgame_sweep_v1`, `evcurve_v1`, `sessionband_v1`, `evsnipe_v1`, `mm_rewards_v1`, `mm_sport_v1`: added self-serve EVPOLY alpha access and official builder-attribution gating (`src/main.rs`, `src/api.rs`, `src/bin/alpha_service.rs`, `src/builder_attribution.rs`, `.env.example`, `.env.full.example`).
   - official `POLY_BUILDER_CODE` now has a compiled fallback for normal CLOB V2 order posting.
   - runtime auto-registers `EVPOLY_ALPHA_KEY` from wallet + official builder code when the key is blank.
@@ -143,19 +149,19 @@ Older entries may reference env keys that were removed in later commits.
 - Includes delayed TP worker for `15m/1h/4h` fills.
 
 ### `endgame_sweep_v1`
-- Late-window sweep strategy near close with alpha-owned tick policy (`tick_offsets_ms`, submit stale guard).
+- Late-window sweep strategy near close with an alpha-owned checkpoint and freshness signal.
 - Uses proxy-vs-base direction + guard stack + FAK/limit routing as applicable.
 - Holds to settlement (`no sell ladder`).
 
 ### `evcurve_v1`
-- Uses plan3/plan-daily stats (`p_flip`) vs market ask.
-- Core gate: `p_flip` cap, min samples, curve-derived `max_buy`, min-buy floor.
+- Uses an alpha-owned EVcurve decision signal against the current market.
+- Local runtime owns checkpoint scheduling, market discovery, sizing/caps, and execution.
 - Supports `15m/1h/4h/1d` (`5m` removed from EVcurve runtime path).
 - 1d uses dedicated zero-flip and EV-gap sub-rules.
 
 ### `sessionband_v1`
 - Late-window checkpoint strategy at `tau=2s` and `tau=1s`.
-- Remote alpha owns session/band decisioning through `/v1/alpha/sessionband`.
+- Remote alpha owns the S-Band decision signal through `/v1/alpha/sessionband`.
 - Local runtime owns proxy feeds, base anchoring, market discovery, sizing/caps, and FAK order placement.
 - Remote alpha unavailable/invalid -> skip decision.
 
@@ -451,7 +457,7 @@ Older entries may reference env keys that were removed in later commits.
   - once flat, strategy resumes normal two-sided BUY quoting.
 
 - `mm_sport_v1` normal quoting now enforces a hard pair-level baseline feasibility gate before any side quote (`src/main.rs`):
-  - hardcoded low-depth floor raised from `30,000` to `50,000` USD (`MM_SPORT_LOW_DEPTH_FLOOR_USD`).
+  - hardcoded pair-depth feasibility floor was raised.
   - new baseline gate requires both outcomes to support at least `1.2x` reward-min shares under `max_share_ratio` (default 2%): required external top shares per side = `baseline * (1-r)/r`.
   - if either side fails that baseline ratio gate, bot cancels both sides for the market and waits; quoting resumes only after both sides become feasible again.
   - BUY placement failures from balance/allowance errors now trigger a per-token BUY cooldown backoff (`30s`) before reattempt (`mm_sport_buy_backoff_balance_allowance`), reducing rapid retry spam while preserving normal quoting when capacity recovers.
@@ -590,8 +596,8 @@ Older entries may reference env keys that were removed in later commits.
   - touched code paths: `normalize_market_symbol`, `market_symbol_slug_prefixes`, `h1_symbol_from_market_slug`, `h1_market_slug_matches_target_open_ts` fallback symbol set, and `h1_event_slug_asset_prefix`.
 
 - `endgame_sweep_v1` submit stale allowance now applies a hardcoded symbol multiplier for the new 3 symbols (`src/main.rs`):
-  - runtime now multiplies remote alpha `submit_proxy_max_age_ms` by `3x` for `DOGE`, `BNB`, and `HYPE` before enqueueing endgame requests.
-  - the effective value is now used in arbiter request proxy-age override and endgame execution telemetry payloads (`alpha_submit_proxy_max_age_ms`).
+  - runtime now applies a more tolerant alpha freshness guard for `DOGE`, `BNB`, and `HYPE` before enqueueing endgame requests.
+  - the effective value is now used in arbiter request proxy-age override and endgame execution telemetry payloads.
   - affects endgame proxy-stale gating across enabled endgame timeframes for `DOGE/BNB/HYPE` only; other symbols keep the unscaled remote alpha value.
 
 - `sessionband_v1` fastlane submit dispatch now uses nonblocking worker submit scheduling (`src/main.rs`):
@@ -920,8 +926,8 @@ Older entries may reference env keys that were removed in later commits.
 
 - `endgame_sweep_v1` timing/stale edge is now alpha-policy driven (`src/main.rs`):
   - added remote endgame policy client path (`EVPOLY_REMOTE_ENDGAME_ALPHA_URL`, `EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN`, `EVPOLY_REMOTE_ENDGAME_ALPHA_TIMEOUT_MS`) with required-mode control (`EVPOLY_ENDGAME_ALPHA_REQUIRED`, default true).
-  - strategy now fetches one alpha policy at `t-60s` per `(symbol,timeframe,period)`; policy provides `tick_offsets_ms` and per-period `submit_proxy_max_age_ms`.
-  - endgame tick deadlines now use alpha offsets (local jitter removed from scheduler path), and arbiter submit-time stale guard now uses per-request override from alpha policy.
+  - strategy now fetches one alpha policy before the late window per `(symbol,timeframe,period)`.
+  - endgame checkpoint deadlines and arbiter submit-time stale guard now use the remote alpha policy.
   - added telemetry: `endgame_alpha_policy_requested`, `endgame_alpha_policy_received`, `endgame_alpha_policy_missing`, `endgame_alpha_tick_executed`, `endgame_alpha_stale_guard_blocked`.
 
 - `endgame_sweep_v1` default universe widened in config parser/runtime defaults (`src/config.rs`, `.env.full.example`):
@@ -930,8 +936,7 @@ Older entries may reference env keys that were removed in later commits.
 
 - Alpha service now exposes premarket/endgame alpha endpoints with shared-token + proxy-wallet gating (`src/bin/alpha_service.rs`):
   - new routes: `POST /v1/alpha/premarket/should-trade`, `POST /v1/alpha/endgame/policy`.
-  - premarket returns random gate decisions with configurable yes-probability range (`ALPHA_PREMARKET_YES_MIN`, `ALPHA_PREMARKET_YES_MAX`).
-  - endgame returns randomized policy around base offsets/stale guard (`ALPHA_ENDGAME_BASE_OFFSETS_MS`, `ALPHA_ENDGAME_OFFSET_JITTER_MS`, `ALPHA_ENDGAME_SUBMIT_PROXY_MAX_AGE_BASE_MS`, `ALPHA_ENDGAME_SUBMIT_PROXY_MAX_AGE_JITTER_MS`).
+  - premarket and endgame return required EVPlus Alpha signals without exposing strategy internals to the public client.
   - optional proxy-wallet allowlist added via `ALPHA_ALLOWED_PROXY_WALLETS`; request wallet/header mismatch is rejected.
 
 ### 2026-03-12
@@ -2494,13 +2499,9 @@ Older entries may reference env keys that were removed in later commits.
     - `src/evcurve.rs` config/env additions.
     - `src/main.rs` checkpoint skip (15m t3), t2 curve override gating, and t2 chase-only stop.
 
-- `endgame_sweep_v1` tick schedule (live env):
-  - Removed `t0` (`T-6000ms`) from active endgame ticks.
-  - Updated `.env`:
-    - `EVPOLY_ENDGAME_TICK_OFFSETS_MS=3000,1000,100`
-    - `EVPOLY_ENDGAME_TICK_OFFSETS_SEC=3,1` (fallback only when ms list is unset)
-    - `EVPOLY_ENDGAME_PER_TICK_USD_BY_OFFSET=3000:600,1000:1000,100:1000`
-    - `EVPOLY_ENDGAME_PER_TICK_USD_BY_SYMBOL` remapped to 3 tick slots.
+- `endgame_sweep_v1` checkpoint schedule (live env):
+  - Removed the earliest legacy checkpoint from active Endgame.
+  - Updated `.env` checkpoint offsets and per-checkpoint sizing labels.
 - `sessionband_v1` tau gating:
   - Added optional tau allowlist env parsing in `src/sessionband.rs`:
     - `EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC` (comma-separated seconds, e.g. `1,2`).

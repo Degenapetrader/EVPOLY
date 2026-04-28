@@ -355,10 +355,23 @@ export interface MMRewardsSettings {
 
 export type MMSportQuoteSizeMode = "multiple" | "depth_ratio";
 export type MMSportInventoryExitMode = "normal" | "aggressive" | "no_exit";
+export type MMSportDiscoveryRoute = "sports" | "nonsports" | "dual";
 
 export interface MMSportSettings {
+  discovery_route: MMSportDiscoveryRoute;
   quote_size_mode: MMSportQuoteSizeMode;
+  multiple_collateral_cap_mult: number;
+  depth_ratio_collateral_cap_mult: number;
   min_reward_rate_per_day: number;
+  allowed_sport_league_codes: string;
+  blocked_sport_league_codes: string;
+  blocked_competition_levels: string;
+  market_allowlist_keywords: string;
+  market_blacklist_keywords: string;
+  reward_min_shares_cap: number;
+  polymarket_live_guard_enable: boolean;
+  polymarket_live_guard_ws_enable: boolean;
+  polymarket_live_guard_ws_stale_ms: number;
   pause_after_fill_sec: number;
   inventory_exit_start_hours: number;
   inventory_exit_mode: MMSportInventoryExitMode;

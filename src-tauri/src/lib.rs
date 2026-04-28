@@ -238,6 +238,7 @@ struct DesktopMmSportSettings {
     multiple_collateral_cap_mult: f64,
     depth_ratio_collateral_cap_mult: f64,
     min_reward_rate_per_day: f64,
+    match_only: bool,
     allowed_sport_league_codes: String,
     blocked_sport_league_codes: String,
     blocked_competition_levels: String,
@@ -887,6 +888,10 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 min_reward_rate_per_day: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY",
                     300.0,
+                ),
+                match_only: config_io::env_template_default_bool(
+                    "EVPOLY_MM_SPORT_MATCH_ONLY",
+                    false,
                 ),
                 allowed_sport_league_codes: config_io::env_template_default_string(
                     "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES",
@@ -1809,11 +1814,7 @@ fn desktop_config_to_profile_payload(
         "EVPOLY_MM_SPORT_DISCOVERY_ROUTE".to_string(),
         Value::String(
             normalize_mm_sport_discovery_route(
-                config
-                    .strategy_settings
-                    .mm_sport
-                    .discovery_route
-                    .as_str(),
+                config.strategy_settings.mm_sport.discovery_route.as_str(),
             )
             .to_string(),
         ),
@@ -1848,6 +1849,10 @@ fn desktop_config_to_profile_payload(
     strategy.insert(
         "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY".to_string(),
         number_to_json(config.strategy_settings.mm_sport.min_reward_rate_per_day),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_MATCH_ONLY".to_string(),
+        bool_to_json(config.strategy_settings.mm_sport.match_only),
     );
     strategy.insert(
         "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES".to_string(),
@@ -2333,6 +2338,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "multiple_collateral_cap_mult": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", 0.45)),
                 "depth_ratio_collateral_cap_mult": f64_from_object(&strategy, "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT", config_io::env_template_default_f64("EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT", 0.90)),
                 "min_reward_rate_per_day": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 300.0)),
+                "match_only": bool_from_object(&strategy, "EVPOLY_MM_SPORT_MATCH_ONLY", config_io::env_template_default_bool("EVPOLY_MM_SPORT_MATCH_ONLY", false)),
                 "allowed_sport_league_codes": string_from_object(&strategy, "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES", ""),
                 "blocked_sport_league_codes": string_from_object(&strategy, "EVPOLY_MM_SPORT_BLOCKED_SPORT_LEAGUE_CODES", ""),
                 "blocked_competition_levels": string_from_object(&strategy, "EVPOLY_MM_SPORT_BLOCKED_COMPETITION_LEVELS", ""),

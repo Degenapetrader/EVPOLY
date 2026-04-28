@@ -4587,7 +4587,7 @@ async fn get_wallet_balance(app: AppHandle) -> Result<f64, String> {
     };
     tokio::time::timeout(
         Duration::from_secs(15),
-        wallet_rpc::fetch_usdc_balance_with_fallback(&config_io::DESKTOP_POLYGON_RPC_URLS, &wallet),
+        wallet_rpc::fetch_pusd_balance_with_fallback(&config_io::DESKTOP_POLYGON_RPC_URLS, &wallet),
     )
     .await
     .map_err(|_| "wallet balance refresh timed out".to_string())?

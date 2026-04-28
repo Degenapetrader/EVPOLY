@@ -10,6 +10,9 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-27
+- Remote alpha startup and V2 order acknowledgement hardening (`src/main.rs`, `src/api.rs`).
+  - runtime now performs self-serve alpha auto-onboard before market monitor initialization and remote clients can pick up a newly generated `EVPOLY_ALPHA_KEY` at request time, preventing startup-time blank-token caching from causing repeated remote discovery/alpha `401` skips.
+  - successful V2 order posts that omit an upstream `orderID` now use the local signed-order EIP-712 hash as the tracking order id, preserving pending-order tracking/cancel surfaces when CLOB V2 accepts the order but returns an empty acknowledgement id.
 - `endgame_sweep_v1`, `sessionband_v1`, `evsnipe_v1`, and future latency-critical strategies: added a generic DB hot-window protection layer (`src/main.rs`, `src/tracking_db.rs`).
   - background DB maintenance and terminal `pending_orders` pruning now use jittered schedules, a shared background DB-job gate, and skip startup grace, DB mutex contention, and configurable latency-critical period open/close windows.
   - optional strategy feature snapshots for latency-critical strategies now use a guarded best-effort queue; recovery-critical order identifiers, submit/ack/fill timestamps, lifecycle, cashflow, and pending-order writes remain reliable/blocking.

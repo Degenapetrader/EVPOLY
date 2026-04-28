@@ -4960,6 +4960,15 @@ async fn main() -> Result<()> {
     //     eprintln!("");
     // }
 
+    let remote_alpha_proxy_wallet = config
+        .polymarket
+        .proxy_wallet_address
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string());
+    ensure_alpha_key_auto_onboard(remote_alpha_proxy_wallet.as_deref()).await;
+
     // Initialize components
     let monitor_arc = if core_monitor_runtime_enabled {
         Some(Arc::new(MarketMonitor::new(
@@ -4990,14 +4999,6 @@ async fn main() -> Result<()> {
     let tracking_db_for_entries = tracking_db.clone();
     let trader_for_premarket = trader_clone.clone();
     let api_for_premarket = api.clone();
-    let remote_alpha_proxy_wallet = config
-        .polymarket
-        .proxy_wallet_address
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string());
-    ensure_alpha_key_auto_onboard(remote_alpha_proxy_wallet.as_deref()).await;
     let arbiter = Arc::new(Arbiter::new(ArbiterConfig::from_env()));
     let arbiter_budget_ledger = Arc::new(StdMutex::new(ArbiterBudgetLedger::default()));
     let entry_submit_scope_count_cache: Arc<
@@ -21979,7 +21980,14 @@ async fn send_remote_json_post_once<T: Serialize + ?Sized>(
         .post(url)
         .timeout(Duration::from_millis(timeout_ms))
         .json(payload);
-    if let Some(token) = token {
+    let token_owned = token
+        .map(str::to_string)
+        .or_else(|| env_nonempty_named("EVPOLY_ALPHA_KEY"));
+    if let Some(token) = token_owned
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         request = request.bearer_auth(token);
     }
     let wallet_header_value = wallet_header

@@ -10,6 +10,7 @@ use rust_decimal::Decimal;
 use rust_decimal::RoundingStrategy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -17,10 +18,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // Official SDK imports for proper order signing
+use alloy::dyn_abi::Eip712Domain;
 use alloy::primitives::Address as AlloyAddress;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer as _;
-use alloy::sol_types::SolCall;
+use alloy::sol_types::{SolCall, SolStruct};
 use chrono::{TimeZone, Utc};
 use polymarket_client_sdk_v2::auth::state::Authenticated;
 use polymarket_client_sdk_v2::auth::{Credentials, LocalSigner, Normal};
@@ -215,6 +217,7 @@ pub struct BatchPlaceOrderResult {
 #[derive(Debug)]
 struct PreparedSignedOrder {
     signed_order: ClobSignedOrder,
+    fallback_order_id: Option<String>,
     timing: PlaceOrderHandleTiming,
     effective_order_type: String,
     token_id: String,
@@ -381,6 +384,20 @@ impl PolymarketApi {
         } else {
             Some(trimmed.to_string())
         }
+    }
+
+    fn fallback_order_id_from_signed_order(signed_order: &ClobSignedOrder) -> Option<String> {
+        let order = signed_order.payload.as_v2()?;
+        let config = contract_config(POLYGON, false)?;
+        let exchange = config.exchange_v2.unwrap_or(config.exchange);
+        let domain = Eip712Domain {
+            name: Some(Cow::Borrowed("Polymarket CTF Exchange")),
+            version: Some(Cow::Borrowed("2")),
+            chain_id: Some(U256::from(POLYGON)),
+            verifying_contract: Some(exchange),
+            ..Eip712Domain::default()
+        };
+        Some(format!("{:#x}", order.eip712_signing_hash(&domain)))
     }
 
     pub fn new(
@@ -3582,11 +3599,19 @@ impl PolymarketApi {
             );
         }
 
-        let normalized_order_id = Self::normalize_post_order_id(response.order_id.as_str());
-        if normalized_order_id.is_some() {
+        let upstream_order_id = Self::normalize_post_order_id(response.order_id.as_str());
+        let normalized_order_id = upstream_order_id
+            .clone()
+            .or_else(|| prepared.fallback_order_id.clone());
+        if upstream_order_id.is_some() {
             eprintln!(
                 "✅ Order placed successfully! Order ID: {}",
                 response.order_id
+            );
+        } else if let Some(order_id) = normalized_order_id.as_deref() {
+            warn!(
+                "Order post succeeded without upstream orderID; using local V2 order hash {}",
+                order_id
             );
         } else {
             warn!("Order post succeeded but returned empty orderID from upstream");
@@ -3623,7 +3648,14 @@ impl PolymarketApi {
         handle: &ClobClientHandle,
         orders: &[OrderRequest],
     ) -> Result<(
-        Vec<(PlaceOrderHandleTiming, String, String, String, String)>,
+        Vec<(
+            PlaceOrderHandleTiming,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+        )>,
         Vec<ClobSignedOrder>,
     )> {
         let mut prepared_orders_meta: Vec<(
@@ -3632,6 +3664,7 @@ impl PolymarketApi {
             String,
             String,
             String,
+            Option<String>,
         )> = Vec::with_capacity(orders.len());
         let mut signed_orders: Vec<ClobSignedOrder> = Vec::with_capacity(orders.len());
         for order in orders {
@@ -3642,6 +3675,7 @@ impl PolymarketApi {
                 prepared.token_id,
                 prepared.side,
                 prepared.size,
+                prepared.fallback_order_id.clone(),
             ));
             signed_orders.push(prepared.signed_order);
         }
@@ -3713,7 +3747,7 @@ impl PolymarketApi {
             })
         })?;
         let post_order_ms = post_started.elapsed().as_millis() as i64;
-        for (_, _, token_id, _, _) in prepared_orders_meta.iter() {
+        for (_, _, token_id, _, _, _) in prepared_orders_meta.iter() {
             self.clear_tick_metadata_backoff(token_id.as_str()).await;
         }
         if responses.len() != prepared_orders_meta.len() {
@@ -3726,8 +3760,10 @@ impl PolymarketApi {
         let total_api_ms = started.elapsed().as_millis() as i64;
         let (order_attribution_mode, builder_code_configured) = self.local_order_attribution()?;
         let mut results: Vec<BatchPlaceOrderResult> = Vec::with_capacity(responses.len());
-        for ((timing_base, effective_order_type, token_id, side, size), response) in
-            prepared_orders_meta.into_iter().zip(responses.into_iter())
+        for (
+            (timing_base, effective_order_type, token_id, side, size, fallback_order_id),
+            response,
+        ) in prepared_orders_meta.into_iter().zip(responses.into_iter())
         {
             let timing = PlaceOrderTiming {
                 total_api_ms,
@@ -3749,8 +3785,16 @@ impl PolymarketApi {
                 builder_code_configured,
             };
             if response.success {
-                let normalized_order_id = Self::normalize_post_order_id(response.order_id.as_str());
-                if normalized_order_id.is_none() {
+                let upstream_order_id = Self::normalize_post_order_id(response.order_id.as_str());
+                let normalized_order_id = upstream_order_id.or(fallback_order_id);
+                if response.order_id.trim().is_empty() && normalized_order_id.is_some() {
+                    warn!(
+                        "Batch order post succeeded without upstream orderID; using local V2 order hash (token={}, side={}, size={})",
+                        token_id,
+                        side,
+                        size
+                    );
+                } else if normalized_order_id.is_none() {
                     warn!(
                         "Batch order post succeeded but returned empty orderID from upstream (token={}, side={}, size={})",
                         token_id,
@@ -4174,9 +4218,11 @@ impl PolymarketApi {
             signed
         };
         let build_sign_ms = build_order_ms.saturating_add(sign_ms);
+        let fallback_order_id = Self::fallback_order_id_from_signed_order(&signed_order);
 
         Ok(PreparedSignedOrder {
             signed_order,
+            fallback_order_id,
             timing: PlaceOrderHandleTiming {
                 prewarm_ms,
                 prewarm_cache_hit,
@@ -7654,7 +7700,6 @@ mod tests {
     use super::*;
     use alloy::dyn_abi::Eip712Domain;
     use alloy::primitives::Signature;
-    use alloy::sol_types::SolStruct as _;
     use polymarket_client_sdk_v2::auth::Uuid;
     use polymarket_client_sdk_v2::clob::types::Order as ClobOrder;
     use std::borrow::Cow;
@@ -7833,6 +7878,10 @@ mod tests {
         assert_eq!(
             body_a, body_b,
             "same signed order payload must serialize identically"
+        );
+        assert_eq!(
+            PolymarketApi::fallback_order_id_from_signed_order(&signed_a),
+            Some(format!("{:#x}", hash_a))
         );
     }
 

@@ -140,6 +140,30 @@ pub struct TradingConfig {
 
 const MARKET_CLOSURE_CHECK_INTERVAL_SECONDS_HARDCODED: u64 = 60;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StrategyExecutionSizeMode {
+    Usd,
+    Shares,
+}
+
+impl StrategyExecutionSizeMode {
+    pub fn from_env(value: Option<&str>) -> Self {
+        match value
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("shares") => Self::Shares,
+            _ => Self::Usd,
+        }
+    }
+
+    pub fn uses_share_size(self) -> bool {
+        matches!(self, Self::Shares)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndgameExecutionConfig {
     pub enable: bool,

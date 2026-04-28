@@ -74,7 +74,7 @@ use polymarket_arbitrage_bot::tracking_db::{
     MmSportHolderSnapshotRecord, MmSportMarketRiskRecord, MmSportWalletProfileRecord,
     PendingOrderRecord, StrategyFeatureSnapshotIntentRecord, TrackingDb, TradeEventRecord,
 };
-use polymarket_arbitrage_bot::trader::{EntryExecutionMode, Trader};
+use polymarket_arbitrage_bot::trader::{EntryExecutionMode, LimitBuyExecutionOptions, Trader};
 use polymarket_arbitrage_bot::weekend_policy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -178,6 +178,7 @@ struct ArbiterExecutionRequest {
     rung_id: Option<String>,
     place_sell_orders: bool,
     source_timeframe: Option<String>,
+    limit_buy_options: LimitBuyExecutionOptions,
     timing: ArbiterExecutionTiming,
 }
 
@@ -5996,7 +5997,7 @@ async fn main() -> Result<()> {
                         }
 
                         if let Err(e) = trader_for_submit
-                            .execute_limit_buy(
+                            .execute_limit_buy_with_options(
                                 &request.opportunity,
                                 request.entry_mode,
                                 request.place_sell_orders,
@@ -6004,6 +6005,7 @@ async fn main() -> Result<()> {
                                 request.source_timeframe.as_deref(),
                                 Some(request.intent.strategy_id.as_str()),
                                 Some(request.request_id.as_str()),
+                                request.limit_buy_options,
                             )
                             .await
                         {
@@ -7956,6 +7958,7 @@ async fn main() -> Result<()> {
                             rung_id: Some(format!("tick{}", plan.tick_index)),
                             place_sell_orders: false,
                             source_timeframe: Some(timeframe.as_str().to_string()),
+                            limit_buy_options: LimitBuyExecutionOptions::default(),
                             timing: ArbiterExecutionTiming::new_decision(
                                 chrono::Utc::now().timestamp_millis(),
                             )
@@ -9869,6 +9872,7 @@ async fn main() -> Result<()> {
                                             )),
                                             place_sell_orders: false,
                                             source_timeframe: Some(timeframe.as_str().to_string()),
+                                            limit_buy_options: LimitBuyExecutionOptions::default(),
                                             timing: ArbiterExecutionTiming::new_decision(
                                                 chrono::Utc::now().timestamp_millis(),
                                             ),
@@ -10468,6 +10472,8 @@ async fn main() -> Result<()> {
                                                         source_timeframe: Some(
                                                             timeframe.as_str().to_string(),
                                                         ),
+                                                        limit_buy_options:
+                                                            LimitBuyExecutionOptions::default(),
                                                         timing:
                                                             ArbiterExecutionTiming::new_decision(
                                                                 chrono::Utc::now()
@@ -11063,6 +11069,8 @@ async fn main() -> Result<()> {
                                                     source_timeframe: Some(
                                                         timeframe.as_str().to_string(),
                                                     ),
+                                                    limit_buy_options:
+                                                        LimitBuyExecutionOptions::default(),
                                                     timing: ArbiterExecutionTiming::new_decision(
                                                         chrono::Utc::now().timestamp_millis(),
                                                     ),
@@ -12032,6 +12040,8 @@ async fn main() -> Result<()> {
                                                         source_timeframe: Some(
                                                             timeframe.as_str().to_string(),
                                                         ),
+                                                        limit_buy_options:
+                                                            LimitBuyExecutionOptions::default(),
                                                         timing:
                                                             ArbiterExecutionTiming::new_decision(
                                                                 chrono::Utc::now()
@@ -12519,6 +12529,8 @@ async fn main() -> Result<()> {
                                                 source_timeframe: Some(
                                                     timeframe.as_str().to_string(),
                                                 ),
+                                                limit_buy_options:
+                                                    LimitBuyExecutionOptions::default(),
                                                 timing: ArbiterExecutionTiming::new_decision(
                                                     chrono::Utc::now().timestamp_millis(),
                                                 ),
@@ -13566,9 +13578,12 @@ async fn main() -> Result<()> {
                             if tau_size_mult <= 0.0 {
                                 continue;
                             }
-                            let desired_size_usd = sessionband_cfg_for_loop
-                                .size_usd_for_symbol(symbol.as_str())
-                                * tau_size_mult;
+                            let using_share_size = sessionband_cfg_for_loop.uses_share_size();
+                            let desired_size_usd = sessionband_desired_size_usd(
+                                sessionband_cfg_for_loop.as_ref(),
+                                symbol.as_str(),
+                                tau_size_mult,
+                            );
                             let target_size_usd = desired_size_usd
                                 .min(remaining_scope)
                                 .min(remaining_strategy);
@@ -13590,11 +13605,12 @@ async fn main() -> Result<()> {
                             }
 
                             let request_id = format!(
-                                "sessionband:{}:{}:{}:tau{}:fak",
+                                "sessionband:{}:{}:{}:tau{}:{}",
                                 symbol_key.to_ascii_lowercase(),
                                 timeframe.as_str(),
                                 market_open_ts,
-                                tau_sec
+                                tau_sec,
+                                sessionband_request_mode_suffix(using_share_size)
                             );
                             let strategy_intent = StrategyIntent {
                                 strategy_id: STRATEGY_ID_SESSIONBAND_V1.to_string(),
@@ -13602,7 +13618,10 @@ async fn main() -> Result<()> {
                                 market_open_ts,
                                 token_id: token_id.clone(),
                                 direction,
-                                max_price: band_price_max,
+                                max_price: sessionband_submit_price(
+                                    using_share_size,
+                                    band_price_max,
+                                ),
                                 target_size_usd,
                                 score: edge_bps,
                             };
@@ -13616,7 +13635,7 @@ async fn main() -> Result<()> {
                                         symbol.as_str(),
                                         direction,
                                     ),
-                                    bid_price: best_ask,
+                                    bid_price: sessionband_submit_price(using_share_size, best_ask),
                                     expected_edge_bps: edge_bps,
                                     expected_fill_prob: 0.95,
                                     period_timestamp: market_open_ts_u64,
@@ -13628,6 +13647,7 @@ async fn main() -> Result<()> {
                                 rung_id: Some(format!("s{}_tau{}", session_index, tau_sec)),
                                 place_sell_orders: false,
                                 source_timeframe: Some(timeframe.as_str().to_string()),
+                                limit_buy_options: sessionband_limit_buy_options(using_share_size),
                                 timing: ArbiterExecutionTiming::new_decision(
                                     chrono::Utc::now().timestamp_millis(),
                                 )
@@ -13649,6 +13669,10 @@ async fn main() -> Result<()> {
                                     "tau_trigger_sec": alpha_decision.tau_trigger_sec,
                                     "watch_start_sec": alpha_decision.watch_start_sec,
                                     "trigger_rate_pct": alpha_decision.trigger_rate_pct,
+                                    "execution_size_mode": if using_share_size { "shares" } else { "usd" },
+                                    "entry_price_mode": sessionband_entry_price_mode(using_share_size),
+                                    "force_resting_limit": using_share_size,
+                                    "expiration_ttl_seconds": if using_share_size { Some(60_u64) } else { None },
                                     "lead_pct": lead_pct,
                                     "band_price_min": band_price_min,
                                     "band_price_max": band_price_max,
@@ -14383,6 +14407,7 @@ async fn main() -> Result<()> {
                                 )),
                                 place_sell_orders: false,
                                 source_timeframe: Some(Timeframe::D1.as_str().to_string()),
+                                limit_buy_options: LimitBuyExecutionOptions::default(),
                                 timing: ArbiterExecutionTiming::new_decision(
                                     chrono::Utc::now().timestamp_millis(),
                                 ),
@@ -19299,6 +19324,7 @@ async fn main() -> Result<()> {
                             rung_id: Some(rung_id.clone()),
                             place_sell_orders: false,
                             source_timeframe: Some(intent.timeframe.as_str().to_string()),
+                            limit_buy_options: LimitBuyExecutionOptions::default(),
                             timing: ArbiterExecutionTiming::new_decision(
                                 chrono::Utc::now().timestamp_millis(),
                             ),
@@ -21691,6 +21717,53 @@ struct SessionbandDecisionOutcome {
     band_price_min: Option<f64>,
     band_price_max: Option<f64>,
     score_bps: Option<f64>,
+}
+
+fn sessionband_desired_size_usd(
+    cfg: &sessionband::SessionBandExecutionConfig,
+    symbol: &str,
+    tau_size_mult: f64,
+) -> f64 {
+    if cfg.uses_share_size() {
+        cfg.size_shares_for_symbol(symbol) * tau_size_mult * 0.99
+    } else {
+        cfg.size_usd_for_symbol(symbol) * tau_size_mult
+    }
+}
+
+fn sessionband_request_mode_suffix(using_share_size: bool) -> &'static str {
+    if using_share_size {
+        "limit60"
+    } else {
+        "fak"
+    }
+}
+
+fn sessionband_submit_price(using_share_size: bool, default_price: f64) -> f64 {
+    if using_share_size {
+        0.99
+    } else {
+        default_price
+    }
+}
+
+fn sessionband_limit_buy_options(using_share_size: bool) -> LimitBuyExecutionOptions {
+    if using_share_size {
+        LimitBuyExecutionOptions {
+            force_resting_limit: true,
+            expiration_ttl_seconds: Some(60),
+        }
+    } else {
+        LimitBuyExecutionOptions::default()
+    }
+}
+
+fn sessionband_entry_price_mode(using_share_size: bool) -> &'static str {
+    if using_share_size {
+        "fixed_limit_0.99"
+    } else {
+        "band_price_max"
+    }
 }
 
 #[derive(Debug, Clone)]

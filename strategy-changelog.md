@@ -14,6 +14,9 @@ Older entries may reference env keys that were removed in later commits.
   - `BTC/ETH/SOL/XRP` now require Coinbase and Binance to agree on up/down direction versus their period-open proxy bases before a due alpha tick can submit.
   - `HYPE` Endgame routing now uses Binance for all supported timeframes, matching `DOGE/BNB`; the Hyperliquid Endgame proxy path is no longer used.
   - Endgame v1 near-base skip is fixed at `3.0` bps; `EVPOLY_NEAR_BASE_SKIP_BPS` remains available for the other near-base-guarded strategies.
+- `sessionband_v1`: aligned the platform SessionBand sizing/tau surface while keeping main2 remote-alpha-only (`src/sessionband.rs`, `src/main.rs`, `src/trader.rs`, `.env.example`, `.env.full.example`, `docs/sessionband_v1.md`).
+  - Added optional `EVPOLY_SESSIONBAND_EXECUTION_SIZE_MODE=shares` with local share sizing, fixed `0.99` resting-limit BUY submits, and about 60s TTL; default remains USD/FAK behavior.
+  - Added legacy `EVPOLY_SESSIONBAND_TAU1_ENABLE` / `EVPOLY_SESSIONBAND_TAU2_ENABLE` backfill when `EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC` is unset.
 - `mm_sport_v1`: made quote submission safer and operator-configurable (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
   - MM Sport order submit now has a bounded timeout (`EVPOLY_MM_SPORT_ORDER_SUBMIT_TIMEOUT_MS`) so quote loops recover from stuck CLOB submits.
   - MM Sport post-only behavior is env-configurable (`EVPOLY_MM_SPORT_POST_ONLY`, default `true`) while keeping normal discovery, depth-skip alpha, holder-intel, and pair-ratio gates intact.

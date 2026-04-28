@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::config::StrategyExecutionSizeMode;
 use crate::size_policy;
 use crate::strategy::{Timeframe, STRATEGY_ID_SESSIONBAND_V1};
 
@@ -35,6 +36,8 @@ pub struct SessionBandExecutionConfig {
     pub single_attempt_per_period: bool,
     pub base_anchor_grace_sec: i64,
     pub strategy_cap_usd: f64,
+    pub execution_size_mode: StrategyExecutionSizeMode,
+    pub base_size_shares: f64,
     base_size_usd: f64,
     allowed_tau_sec: Option<HashSet<i64>>,
 }
@@ -47,11 +50,15 @@ impl SessionBandExecutionConfig {
             "EVPOLY_SESSIONBAND_TIMEFRAMES",
             &[Timeframe::M5, Timeframe::M15, Timeframe::H1, Timeframe::H4],
         );
+        let tau2_enabled = env_bool("EVPOLY_SESSIONBAND_TAU2_ENABLE", true);
+        let tau1_enabled = env_bool("EVPOLY_SESSIONBAND_TAU1_ENABLE", true);
         let bands = std::env::var("EVPOLY_SESSIONBAND_BANDS")
             .ok()
             .and_then(|v| parse_bands(v.as_str()))
             .filter(|v| !v.is_empty())
             .unwrap_or_else(default_bands);
+        let allowed_tau_sec = parse_tau_allowlist_env("EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC")
+            .or_else(|| Some(legacy_tau_allowlist(tau1_enabled, tau2_enabled)));
 
         Self {
             enable: env_bool("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true),
@@ -70,8 +77,14 @@ impl SessionBandExecutionConfig {
             ),
             base_anchor_grace_sec: env_i64("EVPOLY_SESSIONBAND_BASE_ANCHOR_GRACE_SEC", 2).max(0),
             strategy_cap_usd: env_f64("EVPOLY_SESSIONBAND_STRATEGY_CAP_USD", 10_000.0).max(1.0),
+            execution_size_mode: StrategyExecutionSizeMode::from_env(
+                std::env::var("EVPOLY_SESSIONBAND_EXECUTION_SIZE_MODE")
+                    .ok()
+                    .as_deref(),
+            ),
+            base_size_shares: env_f64("EVPOLY_SESSIONBAND_BASE_SIZE_SHARES", 5.0).max(0.0),
             base_size_usd: size_policy::base_size_usd_from_env("EVPOLY_SESSIONBAND_BASE_SIZE_USD"),
-            allowed_tau_sec: parse_tau_allowlist_env("EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC"),
+            allowed_tau_sec,
         }
     }
 
@@ -91,9 +104,25 @@ impl SessionBandExecutionConfig {
         size_policy::strategy_symbol_size_usd(self.base_size_usd, symbol).max(1.0)
     }
 
+    pub fn size_mode(&self) -> StrategyExecutionSizeMode {
+        self.execution_size_mode
+    }
+
+    pub fn uses_share_size(&self) -> bool {
+        self.execution_size_mode.uses_share_size()
+    }
+
+    pub fn size_shares_for_symbol(&self, symbol: &str) -> f64 {
+        size_policy::strategy_symbol_scaled_size(self.base_size_shares, symbol).max(0.0)
+    }
+
     pub fn scope_cap_usd(&self, symbol: &str, timeframe: Timeframe) -> f64 {
         let _ = timeframe;
-        self.size_usd_for_symbol(symbol)
+        if self.uses_share_size() {
+            (self.size_shares_for_symbol(symbol) * 0.99).max(0.0)
+        } else {
+            self.size_usd_for_symbol(symbol)
+        }
     }
 
     pub fn band_for_lead_pct(&self, lead_pct: f64) -> Option<LeadPriceBand> {
@@ -209,6 +238,17 @@ fn parse_tau_allowlist_env(key: &str) -> Option<HashSet<i64>> {
     }
 }
 
+fn legacy_tau_allowlist(tau1_enabled: bool, tau2_enabled: bool) -> HashSet<i64> {
+    let mut allowed = HashSet::new();
+    if tau1_enabled {
+        allowed.insert(1);
+    }
+    if tau2_enabled {
+        allowed.insert(2);
+    }
+    allowed
+}
+
 fn normalize_symbol(symbol: &str) -> String {
     match symbol.trim().to_ascii_uppercase().as_str() {
         "SOLANA" => "SOL".to_string(),
@@ -301,6 +341,37 @@ fn env_f64(key: &str, default: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn sessionband_env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_sessionband_env<F: FnOnce()>(updates: &[(&str, Option<&str>)], f: F) {
+        let _guard = sessionband_env_lock()
+            .lock()
+            .expect("sessionband env lock poisoned");
+        let mut previous: Vec<(&str, Option<String>)> = Vec::with_capacity(updates.len());
+        for (name, value) in updates {
+            previous.push((*name, std::env::var(name).ok()));
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+        f();
+        for (name, value) in previous {
+            unsafe {
+                match value {
+                    Some(v) => std::env::set_var(name, v),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
 
     #[test]
     fn band_parser_parses_default_shape() {
@@ -316,24 +387,116 @@ mod tests {
 
     #[test]
     fn size_policy_uses_base_and_symbol_multipliers() {
-        unsafe { std::env::set_var("EVPOLY_SESSIONBAND_BASE_SIZE_USD", "100") };
-        let cfg = SessionBandExecutionConfig::from_env();
-        assert!((cfg.size_usd_for_symbol("BTC") - 100.0).abs() < 1e-9);
-        assert!((cfg.size_usd_for_symbol("ETH") - 80.0).abs() < 1e-9);
-        assert!((cfg.size_usd_for_symbol("SOL") - 50.0).abs() < 1e-9);
-        assert!((cfg.size_usd_for_symbol("XRP") - 50.0).abs() < 1e-9);
-        assert!((cfg.scope_cap_usd("ETH", Timeframe::M5) - 80.0).abs() < 1e-9);
-        assert!((cfg.scope_cap_usd("ETH", Timeframe::H4) - 80.0).abs() < 1e-9);
-        unsafe { std::env::remove_var("EVPOLY_SESSIONBAND_BASE_SIZE_USD") };
+        with_sessionband_env(
+            &[
+                ("EVPOLY_SESSIONBAND_BASE_SIZE_USD", Some("100")),
+                ("EVPOLY_SESSIONBAND_EXECUTION_SIZE_MODE", None),
+            ],
+            || {
+                let cfg = SessionBandExecutionConfig::from_env();
+                assert!((cfg.size_usd_for_symbol("BTC") - 100.0).abs() < 1e-9);
+                assert!((cfg.size_usd_for_symbol("ETH") - 80.0).abs() < 1e-9);
+                assert!((cfg.size_usd_for_symbol("SOL") - 50.0).abs() < 1e-9);
+                assert!((cfg.size_usd_for_symbol("XRP") - 50.0).abs() < 1e-9);
+                assert!((cfg.scope_cap_usd("ETH", Timeframe::M5) - 80.0).abs() < 1e-9);
+                assert!((cfg.scope_cap_usd("ETH", Timeframe::H4) - 80.0).abs() < 1e-9);
+            },
+        );
+    }
+
+    #[test]
+    fn execution_size_mode_defaults_to_usd() {
+        with_sessionband_env(
+            &[
+                ("EVPOLY_SESSIONBAND_EXECUTION_SIZE_MODE", None),
+                ("EVPOLY_SESSIONBAND_BASE_SIZE_SHARES", None),
+            ],
+            || {
+                let cfg = SessionBandExecutionConfig::from_env();
+                assert_eq!(cfg.size_mode(), StrategyExecutionSizeMode::Usd);
+                assert!(!cfg.uses_share_size());
+                assert!((cfg.base_size_shares - 5.0).abs() < 1e-9);
+            },
+        );
+    }
+
+    #[test]
+    fn share_mode_uses_share_base_for_scope_cap() {
+        with_sessionband_env(
+            &[
+                ("EVPOLY_SESSIONBAND_EXECUTION_SIZE_MODE", Some("shares")),
+                ("EVPOLY_SESSIONBAND_BASE_SIZE_SHARES", Some("100")),
+            ],
+            || {
+                let cfg = SessionBandExecutionConfig::from_env();
+                assert_eq!(cfg.size_mode(), StrategyExecutionSizeMode::Shares);
+                assert!(cfg.uses_share_size());
+                assert!((cfg.size_shares_for_symbol("ETH") - 80.0).abs() < 1e-9);
+                assert!((cfg.scope_cap_usd("ETH", Timeframe::M5) - 79.2).abs() < 1e-9);
+                assert!((cfg.scope_cap_usd("ETH", Timeframe::H4) - 79.2).abs() < 1e-9);
+            },
+        );
     }
 
     #[test]
     fn default_timeframes_include_5m() {
-        unsafe { std::env::remove_var("EVPOLY_SESSIONBAND_TIMEFRAMES") };
-        let cfg = SessionBandExecutionConfig::from_env();
-        assert_eq!(
-            cfg.enabled_timeframes(),
-            vec![Timeframe::M5, Timeframe::M15, Timeframe::H1, Timeframe::H4]
+        with_sessionband_env(&[("EVPOLY_SESSIONBAND_TIMEFRAMES", None)], || {
+            let cfg = SessionBandExecutionConfig::from_env();
+            assert_eq!(
+                cfg.enabled_timeframes(),
+                vec![Timeframe::M5, Timeframe::M15, Timeframe::H1, Timeframe::H4]
+            );
+        });
+    }
+
+    #[test]
+    fn default_tau_allowlist_is_one_and_two() {
+        with_sessionband_env(
+            &[
+                ("EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC", None),
+                ("EVPOLY_SESSIONBAND_TAU1_ENABLE", None),
+                ("EVPOLY_SESSIONBAND_TAU2_ENABLE", None),
+            ],
+            || {
+                let cfg = SessionBandExecutionConfig::from_env();
+                assert!(cfg.tau_allowed(1));
+                assert!(cfg.tau_allowed(2));
+                assert!(!cfg.tau_allowed(3));
+            },
+        );
+    }
+
+    #[test]
+    fn explicit_tau_allowlist_overrides_legacy_tau_flags() {
+        with_sessionband_env(
+            &[
+                ("EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC", Some("2")),
+                ("EVPOLY_SESSIONBAND_TAU1_ENABLE", Some("true")),
+                ("EVPOLY_SESSIONBAND_TAU2_ENABLE", Some("false")),
+            ],
+            || {
+                let cfg = SessionBandExecutionConfig::from_env();
+                assert!(!cfg.tau_allowed(1));
+                assert!(cfg.tau_allowed(2));
+                assert!(!cfg.tau_allowed(3));
+            },
+        );
+    }
+
+    #[test]
+    fn legacy_tau_flags_backfill_when_explicit_allowlist_is_missing() {
+        with_sessionband_env(
+            &[
+                ("EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC", None),
+                ("EVPOLY_SESSIONBAND_TAU1_ENABLE", Some("false")),
+                ("EVPOLY_SESSIONBAND_TAU2_ENABLE", Some("true")),
+            ],
+            || {
+                let cfg = SessionBandExecutionConfig::from_env();
+                assert!(!cfg.tau_allowed(1));
+                assert!(cfg.tau_allowed(2));
+                assert!(!cfg.tau_allowed(3));
+            },
         );
     }
 }

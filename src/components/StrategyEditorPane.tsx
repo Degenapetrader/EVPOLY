@@ -67,6 +67,369 @@ function sizePreview(baseSize: number, symbolMultiplier: number, timeframeMultip
   return (baseSize * symbolMultiplier * timeframeMultiplier).toFixed(2);
 }
 
+type MMSportSettings = BotConfig["strategy_settings"]["mm_sport"];
+
+const MM_SPORT_FILTER_CODE_ORDER = [
+  "american_football",
+  "basketball",
+  "baseball",
+  "hockey",
+  "soccer",
+  "tennis",
+  "golf",
+  "mma",
+  "motorsport",
+  "nfl",
+  "ncaafb",
+  "nba",
+  "wnba",
+  "ncaamb",
+  "ncaawb",
+  "mlb",
+  "nhl",
+  "epl",
+  "uefa_champions_league",
+  "mls",
+  "atp",
+  "wta",
+  "pga_tour",
+  "ufc",
+  "f1",
+] as const;
+
+type MMSportFilterCode = (typeof MM_SPORT_FILTER_CODE_ORDER)[number];
+
+const MM_SPORT_FILTER_SECTIONS: Array<{
+  label: string;
+  options: Array<{ code: MMSportFilterCode; label: string }>;
+}> = [
+  {
+    label: "Sports",
+    options: [
+      { code: "american_football", label: "Football" },
+      { code: "basketball", label: "Basketball" },
+      { code: "baseball", label: "Baseball" },
+      { code: "hockey", label: "Hockey" },
+      { code: "soccer", label: "Soccer" },
+      { code: "tennis", label: "Tennis" },
+      { code: "golf", label: "Golf" },
+      { code: "mma", label: "MMA" },
+      { code: "motorsport", label: "Motorsports" },
+    ],
+  },
+  {
+    label: "Leagues",
+    options: [
+      { code: "nfl", label: "NFL" },
+      { code: "ncaafb", label: "NCAAF" },
+      { code: "nba", label: "NBA" },
+      { code: "wnba", label: "WNBA" },
+      { code: "ncaamb", label: "NCAAM" },
+      { code: "ncaawb", label: "NCAAW" },
+      { code: "mlb", label: "MLB" },
+      { code: "nhl", label: "NHL" },
+      { code: "epl", label: "Premier League" },
+      { code: "uefa_champions_league", label: "Champions League" },
+      { code: "mls", label: "MLS" },
+      { code: "atp", label: "ATP" },
+      { code: "wta", label: "WTA" },
+      { code: "pga_tour", label: "PGA Tour" },
+      { code: "ufc", label: "UFC" },
+      { code: "f1", label: "Formula 1" },
+    ],
+  },
+];
+
+const REWARD_CAP_PRESETS = [
+  { label: "Off", value: 0 },
+  { label: "50", value: 50 },
+  { label: "200", value: 200 },
+  { label: "1k", value: 1000 },
+];
+
+function parseCsvEntries(value: string): string[] {
+  const seen = new Set<string>();
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => {
+      if (!entry || seen.has(entry.toLowerCase())) {
+        return false;
+      }
+      seen.add(entry.toLowerCase());
+      return true;
+    });
+}
+
+function serializeCsvEntries(entries: readonly string[]) {
+  return entries.join(",");
+}
+
+function toggleOrderedCsvValue(value: string, code: MMSportFilterCode) {
+  const selected = new Set(parseCsvEntries(value).map((entry) => entry.toLowerCase()));
+  if (selected.has(code)) {
+    selected.delete(code);
+  } else {
+    selected.add(code);
+  }
+  return serializeCsvEntries(MM_SPORT_FILTER_CODE_ORDER.filter((entry) => selected.has(entry)));
+}
+
+function KeywordChipField({
+  value,
+  disabled,
+  onChange,
+  placeholder,
+}: {
+  value: string;
+  disabled: boolean;
+  onChange: (nextValue: string) => void;
+  placeholder: string;
+}) {
+  const [draft, setDraft] = useState("");
+  const entries = useMemo(() => parseCsvEntries(value), [value]);
+
+  const commitDraft = () => {
+    if (disabled) {
+      return;
+    }
+    const additions = parseCsvEntries(draft);
+    if (additions.length === 0) {
+      return;
+    }
+    onChange(serializeCsvEntries([...entries, ...additions]));
+    setDraft("");
+  };
+
+  return (
+    <div className="keyword-chip-field">
+      {entries.length > 0 ? (
+        <div className="keyword-chip-field__chips">
+          {entries.map((entry) => (
+            <span key={entry.toLowerCase()} className="keyword-chip-field__chip">
+              <span>{entry}</span>
+              <button
+                type="button"
+                className="keyword-chip-field__remove"
+                onClick={() =>
+                  onChange(serializeCsvEntries(entries.filter((item) => item !== entry)))
+                }
+                disabled={disabled}
+                aria-label={`Remove ${entry}`}
+              >
+                x
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div className="keyword-chip-field__composer">
+        <input
+          type="text"
+          value={draft}
+          disabled={disabled}
+          placeholder={placeholder}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commitDraft();
+            }
+          }}
+          className="field-input keyword-chip-field__input"
+        />
+        <button
+          type="button"
+          className="keyword-chip-field__add"
+          onClick={commitDraft}
+          disabled={disabled || draft.trim().length === 0}
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MMSportFiltersPanel({
+  mmSport,
+  canEdit,
+  patchMMSport,
+}: {
+  mmSport: MMSportSettings;
+  canEdit: boolean;
+  patchMMSport: (patch: Partial<MMSportSettings>) => void;
+}) {
+  const [scope, setScope] = useState<"allow" | "block">("allow");
+  const isAllow = scope === "allow";
+  const keywordsValue = isAllow
+    ? mmSport.market_allowlist_keywords
+    : mmSport.market_blacklist_keywords;
+  const selectedSportLeagueCodes = parseCsvEntries(
+    isAllow ? mmSport.allowed_sport_league_codes : mmSport.blocked_sport_league_codes
+  ).map((entry) => entry.toLowerCase());
+
+  return (
+    <div className="surface-panel">
+      <div className="surface-panel__header surface-panel__header--split">
+        <div className="surface-panel__copy">
+          <h2 className="surface-panel__title">Filters</h2>
+          <p className="surface-panel__subtitle">
+            What MM 2.0 may quote, with optional exceptions.
+          </p>
+        </div>
+        <div className="filter-scope-tabs" role="tablist" aria-label="Filter scope">
+          {(["allow", "block"] as const).map((value) => {
+            const active = scope === value;
+            return (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                className={`filter-scope-tabs__option ${
+                  active ? "filter-scope-tabs__option--active" : ""
+                }`.trim()}
+                onClick={() => setScope(value)}
+                disabled={!canEdit}
+              >
+                {value === "allow" ? "Allow" : "Block"}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="surface-panel__body grid gap-4">
+        <div className="field">
+          <span className="field-label">Keywords</span>
+          <KeywordChipField
+            value={keywordsValue}
+            disabled={!canEdit}
+            onChange={(nextValue) =>
+              patchMMSport(
+                isAllow
+                  ? { market_allowlist_keywords: nextValue }
+                  : { market_blacklist_keywords: nextValue }
+              )
+            }
+            placeholder={isAllow ? "Add allowed keyword or phrase" : "Add blocked keyword or phrase"}
+          />
+        </div>
+
+        <div className="field">
+          <span className="field-label">Sports / Leagues</span>
+          <div className="mm-filter-sections">
+            {MM_SPORT_FILTER_SECTIONS.map((section) => (
+              <div key={section.label} className="mm-filter-section">
+                <div className="mm-filter-section__label">{section.label}</div>
+                <div className="mm-filter-chip-grid">
+                  {section.options.map((option) => {
+                    const active = selectedSportLeagueCodes.includes(option.code);
+                    return (
+                      <button
+                        key={option.code}
+                        type="button"
+                        className={`mm-filter-chip ${active ? "mm-filter-chip--active" : ""}`.trim()}
+                        disabled={!canEdit}
+                        onClick={() =>
+                          patchMMSport(
+                            isAllow
+                              ? {
+                                  allowed_sport_league_codes: toggleOrderedCsvValue(
+                                    mmSport.allowed_sport_league_codes,
+                                    option.code
+                                  ),
+                                }
+                              : {
+                                  blocked_sport_league_codes: toggleOrderedCsvValue(
+                                    mmSport.blocked_sport_league_codes,
+                                    option.code
+                                  ),
+                                }
+                          )
+                        }
+                      >
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {!isAllow ? (
+          <div className="field">
+            <span className="field-label">Competition Levels</span>
+            <KeywordChipField
+              value={mmSport.blocked_competition_levels}
+              disabled={!canEdit}
+              onChange={(nextValue) =>
+                patchMMSport({ blocked_competition_levels: nextValue })
+              }
+              placeholder="Add blocked competition level"
+            />
+          </div>
+        ) : null}
+
+        <div className="field">
+          <span className="field-label">Match Markets Only</span>
+          {renderBooleanChoice(
+            mmSport.match_only,
+            (next) => patchMMSport({ match_only: next }),
+            !canEdit
+          )}
+        </div>
+
+        <div className="filter-divider" aria-hidden="true" />
+
+        <div className="field">
+          <span className="field-label">Max Reward Floor</span>
+          <div className="reward-cap-row">
+            <input
+              type="number"
+              min="0"
+              step="1"
+              value={mmSport.reward_min_shares_cap}
+              disabled={!canEdit}
+              onChange={(event) =>
+                patchMMSport({
+                  reward_min_shares_cap: parseNonNegative(
+                    event.target.value,
+                    mmSport.reward_min_shares_cap
+                  ),
+                })
+              }
+              className="field-input reward-cap-row__input"
+              aria-label="Max reward floor"
+            />
+            <div className="reward-cap-row__presets" role="group" aria-label="Reward floor presets">
+              {REWARD_CAP_PRESETS.map((preset) => {
+                const active = mmSport.reward_min_shares_cap === preset.value;
+                return (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    className={`reward-cap-preset ${
+                      active ? "reward-cap-preset--active" : ""
+                    }`.trim()}
+                    onClick={() => patchMMSport({ reward_min_shares_cap: preset.value })}
+                    disabled={!canEdit}
+                    aria-pressed={active}
+                  >
+                    {preset.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function StrategyEditorPane({
   selectedStrategy,
   config,
@@ -1420,71 +1783,43 @@ export function StrategyEditorPane({
               </div>
             </div>
 
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Filters & Inventory Exit</h2>
-                  <p className="surface-panel__subtitle">
-                    Choose cleanup behavior and keep MM 2.0 away from unwanted markets.
-                  </p>
-                </div>
-              </div>
-              <div className="surface-panel__body grid gap-5">
-                <div>
-                  <label className="field-label">Inventory Exit Mode</label>
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      ["normal", "Auto"],
-                      ["aggressive", "Aggressive"],
-                      ["no_exit", "Feeling Lucky"],
-                    ].map(([value, label]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        disabled={!canEdit}
-                        onClick={() =>
-                          patchMMSport({
-                            inventory_exit_mode:
-                              value as BotConfig["strategy_settings"]["mm_sport"]["inventory_exit_mode"],
-                          })
-                        }
-                        className={`mode-choice ${
-                          mmSport.inventory_exit_mode === value ? "mode-choice--active" : ""
-                        }`.trim()}
-                      >
-                        {label}
-                      </button>
-                    ))}
+            <div className="space-y-4">
+              <MMSportFiltersPanel
+                mmSport={mmSport}
+                canEdit={canEdit}
+                patchMMSport={patchMMSport}
+              />
+
+              <div className="surface-panel">
+                <div className="surface-panel__header">
+                  <div className="surface-panel__copy">
+                    <h2 className="surface-panel__title">Inventory Exit</h2>
+                    <p className="surface-panel__subtitle">
+                      Choose how MM 2.0 cleans up existing exposure.
+                    </p>
                   </div>
-                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    {mmSport.inventory_exit_mode === "aggressive"
-                      ? "Aggressive starts trying to sell the position immediately after a fill instead of waiting for the normal cooldown."
-                      : mmSport.inventory_exit_mode === "no_exit"
-                        ? "Feeling Lucky disables forced cleanup exits. Inventory can stay open into live play or all the way to settlement, which is closer to speculative gambling than controlled market making."
-                        : "Auto uses the normal cleanup path and best-effort inventory exits, but rare failures can still happen."}
-                  </p>
-                  {mmSport.inventory_exit_mode === "no_exit" ? (
-                    <div className="inline-alert inline-alert--warning">
-                      Feeling Lucky is intentionally high risk. Use it only if you are comfortable
-                      holding sports inventory without forced cleanup.
-                    </div>
-                  ) : null}
                 </div>
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="surface-panel__body grid gap-4">
                   <div>
-                    <label className="field-label">Match Only</label>
+                    <label className="field-label">Inventory Exit Mode</label>
                     <div className="flex flex-wrap gap-2">
                       {[
-                        { value: false, label: "Off" },
-                        { value: true, label: "On" },
-                      ].map(({ value, label }) => (
+                        ["normal", "Auto"],
+                        ["aggressive", "Aggressive"],
+                        ["no_exit", "Feeling Lucky"],
+                      ].map(([value, label]) => (
                         <button
-                          key={label}
+                          key={value}
                           type="button"
                           disabled={!canEdit}
-                          onClick={() => patchMMSport({ match_only: value })}
+                          onClick={() =>
+                            patchMMSport({
+                              inventory_exit_mode:
+                                value as BotConfig["strategy_settings"]["mm_sport"]["inventory_exit_mode"],
+                            })
+                          }
                           className={`mode-choice ${
-                            mmSport.match_only === value ? "mode-choice--active" : ""
+                            mmSport.inventory_exit_mode === value ? "mode-choice--active" : ""
                           }`.trim()}
                         >
                           {label}
@@ -1492,96 +1827,19 @@ export function StrategyEditorPane({
                       ))}
                     </div>
                     <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Off allows sports futures and outrights. On limits discovery to scheduled match-style markets.
+                      {mmSport.inventory_exit_mode === "aggressive"
+                        ? "Aggressive starts trying to sell the position immediately after a fill instead of waiting for the normal cooldown."
+                        : mmSport.inventory_exit_mode === "no_exit"
+                          ? "Feeling Lucky disables forced cleanup exits. Inventory can stay open into live play or all the way to settlement."
+                          : "Auto uses the normal cleanup path and best-effort inventory exits."}
                     </p>
-                  </div>
-                  <div>
-                    <label className="field-label">Allowed Sport Leagues</label>
-                    <input
-                      type="text"
-                      value={mmSport.allowed_sport_league_codes}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({ allowed_sport_league_codes: event.target.value })
-                      }
-                      className="field-input"
-                    />
-                  </div>
-                  <div>
-                    <label className="field-label">Blocked Sport Leagues</label>
-                    <input
-                      type="text"
-                      value={mmSport.blocked_sport_league_codes}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({ blocked_sport_league_codes: event.target.value })
-                      }
-                      className="field-input"
-                    />
+                    {mmSport.inventory_exit_mode === "no_exit" ? (
+                      <div className="inline-alert inline-alert--warning">
+                        Feeling Lucky is high risk because cleanup exits are disabled.
+                      </div>
+                    ) : null}
                   </div>
                 </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="field-label">Keyword Allowlist</label>
-                    <input
-                      type="text"
-                      value={mmSport.market_allowlist_keywords}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({ market_allowlist_keywords: event.target.value })
-                      }
-                      className="field-input"
-                    />
-                  </div>
-                  <div>
-                    <label className="field-label">Keyword Blacklist</label>
-                    <input
-                      type="text"
-                      value={mmSport.market_blacklist_keywords}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({ market_blacklist_keywords: event.target.value })
-                      }
-                      className="field-input"
-                    />
-                  </div>
-                </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="field-label">Blocked Competition Levels</label>
-                    <input
-                      type="text"
-                      value={mmSport.blocked_competition_levels}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({ blocked_competition_levels: event.target.value })
-                      }
-                      className="field-input"
-                    />
-                  </div>
-                  <div>
-                    <label className="field-label">Reward Min Shares Cap</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={mmSport.reward_min_shares_cap}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({
-                          reward_min_shares_cap: parseNonNegative(
-                            event.target.value,
-                            mmSport.reward_min_shares_cap
-                          ),
-                        })
-                      }
-                      className="field-input"
-                    />
-                  </div>
-                </div>
-                <p className="text-sm text-[var(--text-secondary)]">
-                  League fields accept comma-separated codes. Keyword filters apply to every MM 2.0 route.
-                </p>
               </div>
             </div>
           </div>

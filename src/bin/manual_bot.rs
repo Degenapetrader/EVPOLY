@@ -2193,7 +2193,7 @@ async fn start_manual_order(
             balance_usd
         };
         if available_usd <= 0.0 {
-            anyhow::bail!("insufficient usdc balance/allowance for open");
+            anyhow::bail!("insufficient pUSD balance/allowance for open");
         }
         let requested_usd = target_notional_usd.unwrap_or(target_shares * price_hint);
         if requested_usd > available_usd {
@@ -4046,12 +4046,12 @@ async fn handle_manual_balance(
             "allowance": usdc_allowance,
             "error": usdc_error,
             "scope_wallet": configured_wallet,
-            "scope_note": "USDC balance/allowance is fetched for configured trading account; wallet override applies to positions only."
+            "scope_note": "pUSD balance/allowance is fetched for configured trading account; wallet override applies to positions only."
         },
         "positions_summary": summary,
         "estimated_total_equity_usd": estimated_total_equity,
         "ui_summary": ui_summary,
-        "note": "estimated_total_equity_usd = usdc balance + live positions current value"
+        "note": "estimated_total_equity_usd = pUSD balance + live positions current value"
     })))
 }
 

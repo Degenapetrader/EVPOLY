@@ -169,8 +169,8 @@ async fn main() -> Result<()> {
             Err(e) => {
                 eprintln!("\n❌ Failed to place order: {}", e);
                 eprintln!("\n💡 Troubleshooting:");
-                eprintln!("   - Check that you have sufficient USDC balance");
-                eprintln!("   - Check that you have USDC allowance to the Exchange contract");
+                eprintln!("   - Check that you have sufficient pUSD balance");
+                eprintln!("   - Check that you have pUSD allowance to the Exchange contract");
                 eprintln!("   - Verify the token ID is correct");
                 eprintln!("   - Ensure the market is accepting orders");
                 return Err(e);

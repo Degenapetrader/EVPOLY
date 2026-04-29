@@ -228,7 +228,7 @@ Runtime-level changes in this branch:
 
 - Uses `polymarket_client_sdk_v2` with CLOB, CTF, WebSocket, Gamma, and Bridge features.
 - Pins the Rust toolchain to `1.91.0` for the current Alloy/Rust SDK dependency floor.
-- Defaults `POLY_CLOB_API_URL` to `https://clob-v2.polymarket.com`; main2 is CLOB V2 only.
+- Defaults `POLY_CLOB_API_URL` to `https://clob.polymarket.com`; main2 is CLOB V2 only.
 - Uses CLOB V2 order signing through the SDK; V2 signed orders carry `timestamp`, `metadata`, and `builder` through the SDK instead of legacy `nonce`, `feeRateBps`, and `taker` fields.
 - Uses the built-in official builder code for V2 builder attribution. EVPOLY does not send local maker/taker fee bps on orders; Polymarket applies the active builder fee rates attached to that code at match time.
 - Remote submit signing is restricted to non-order relayer flows.
@@ -237,7 +237,7 @@ Runtime-level changes in this branch:
 
 Operational cutover guidance:
 
-1. Run read-only and dry-run tests against `https://clob-v2.polymarket.com`.
+1. Run read-only and dry-run tests against `https://clob.polymarket.com`.
 2. Confirm pUSD balance and allowances before enabling live BUY orders.
 3. Confirm order timing reports `builder_code_configured=true`; leave `POLY_BUILDER_CODE` blank unless overriding the built-in official code.
 4. Confirm active builder fee rates from Polymarket, for example `/fees/builder-fees/<builderCode>`; scheduled fee changes may not be active immediately.

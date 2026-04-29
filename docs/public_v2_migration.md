@@ -27,7 +27,7 @@ The legacy generic rewards-MM strategy is retired from the public runtime. Histo
 ## Env Template Expectations
 
 - Starter profile enables `premarket`, `endgame`, `evcurve`, `sessionband`, and `evsnipe`.
-- `POLY_CLOB_API_URL` should stay on `https://clob-v2.polymarket.com` for the public V2 runtime.
+- `POLY_CLOB_API_URL` should stay on `https://clob.polymarket.com` for the public V2 runtime.
 - Starter profile leaves `mm_sport` off until the operator explicitly enables it.
 - `EVPOLY_MM_SPORT_*` keys are the only public MM 2.0 strategy controls.
 - Old generic rewards-MM controls are not part of the public template.

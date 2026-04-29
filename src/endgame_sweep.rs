@@ -110,6 +110,7 @@ impl EndgameIntentPlan {
             self.buffer_prob,
             self.edge_floor_prob,
             self.bias_multiplier,
+            PolymarketFeeModel::default(),
         )
     }
 }
@@ -129,14 +130,40 @@ pub struct BookAskLevel {
     pub size: f64,
 }
 
-/// Polymarket crypto taker fee curve for binary outcome markets.
-/// effective_rate = fee_rate * (p * (1-p))^exponent
-/// with fee_rate=0.25 and exponent=2.
-pub fn polymarket_taker_fee_rate(p: f64) -> f64 {
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PolymarketFeeModel {
+    pub rate: f64,
+    pub exponent: u32,
+}
+
+impl PolymarketFeeModel {
+    pub fn new(rate: f64, exponent: u32) -> Self {
+        Self {
+            rate: rate.max(0.0),
+            exponent,
+        }
+    }
+}
+
+impl Default for PolymarketFeeModel {
+    fn default() -> Self {
+        Self {
+            rate: 0.0,
+            exponent: 0,
+        }
+    }
+}
+
+/// V2 platform fee curve for binary outcome markets.
+/// effective_rate = market_rate * (p * (1-p))^market_exponent.
+pub fn polymarket_taker_fee_rate(p: f64, fee_model: PolymarketFeeModel) -> f64 {
+    if fee_model.rate <= 0.0 {
+        return 0.0;
+    }
     let p = p.clamp(0.001, 0.999);
     let q = 1.0 - p;
     let pq = p * q;
-    0.25 * pq * pq
+    fee_model.rate * pq.powi(fee_model.exponent.min(12) as i32)
 }
 
 pub fn timeframe_open_ts(now_ts: i64, timeframe: Timeframe) -> i64 {
@@ -304,6 +331,7 @@ pub fn build_intent_plan_for_tick(
     let edge_floor_prob = (edge_floor_bps / 10_000.0).clamp(0.0, 0.20);
     let buffer_base = 0.002 + spread_pct * 0.6 + (1.0 - bias_multiplier).max(0.0) * 0.006;
     let buffer_prob = (buffer_base * (1.0 - 0.35 * near_close_discount)).clamp(0.001, 0.08);
+    let fee_model = PolymarketFeeModel::default();
     let up_pricing = side_pricing_from_probability(
         Direction::Up,
         p_up,
@@ -311,6 +339,7 @@ pub fn build_intent_plan_for_tick(
         buffer_prob,
         edge_floor_prob,
         bias_multiplier,
+        fee_model,
     );
     let down_pricing = side_pricing_from_probability(
         Direction::Down,
@@ -319,6 +348,7 @@ pub fn build_intent_plan_for_tick(
         buffer_prob,
         edge_floor_prob,
         bias_multiplier,
+        fee_model,
     );
     if up_pricing.edge_bps < edge_floor_bps && down_pricing.edge_bps < edge_floor_bps {
         return None;
@@ -347,6 +377,7 @@ pub fn build_intent_plan_for_tick(
             cfg.guard_v3_near_scale,
             cfg.guard_v3_impact_scale,
             cfg.guard_v3_last_tick_guard,
+            fee_model,
         )
     } else {
         ThinFlipGuardDecision {
@@ -514,6 +545,7 @@ fn thin_flip_guard_v3(
     near_scale: f64,
     impact_scale: f64,
     last_tick_guard: bool,
+    fee_model: PolymarketFeeModel,
 ) -> ThinFlipGuardDecision {
     const EARLY_TICK_HARD_BLOCK_MAX_INDEX: usize = 3;
     const EARLY_TICK_HARD_BLOCK_BPS: f64 = 2.5;
@@ -594,7 +626,7 @@ fn thin_flip_guard_v3(
     let near_threshold_bps = (near_mult * sigma_tau_bps * near_scale).max(0.0);
 
     let price = reference_price.clamp(0.01, 0.99);
-    let fee_rate = polymarket_taker_fee_rate(price);
+    let fee_rate = polymarket_taker_fee_rate(price, fee_model);
     let tau_scale = ((tau_seconds.max(1) as f64) / 65.0).sqrt();
     let calibration_margin_prob =
         (0.010 + uncertainty_penalty.max(0.0) * 0.60 + 0.010 * early_factor * tau_scale)
@@ -728,12 +760,13 @@ fn side_pricing_from_probability(
     buffer_prob: f64,
     edge_floor_prob: f64,
     bias_multiplier: f64,
+    fee_model: PolymarketFeeModel,
 ) -> EndgameSidePricing {
     let execution_probability = (fair_probability - uncertainty_penalty).clamp(0.01, 0.99);
-    let fee_prob = polymarket_taker_fee_rate(execution_probability);
+    let fee_prob = polymarket_taker_fee_rate(execution_probability, fee_model);
     let reservation_price = (execution_probability - buffer_prob - fee_prob).clamp(0.01, 0.99);
     let max_price = (reservation_price - edge_floor_prob).clamp(0.01, reservation_price);
-    let fee_at_max_price = polymarket_taker_fee_rate(max_price);
+    let fee_at_max_price = polymarket_taker_fee_rate(max_price, fee_model);
     let edge_bps = ((execution_probability - max_price - fee_at_max_price) * 10_000.0).max(0.0);
     let score = ((edge_bps / 100.0) * bias_multiplier).clamp(0.01, 20.0);
     EndgameSidePricing {
@@ -755,6 +788,7 @@ pub fn ev_safe_execution_sizing(
     max_price: f64,
     target_notional_usd: f64,
     asks: &[BookAskLevel],
+    fee_model: PolymarketFeeModel,
 ) -> Option<EndgameExecutionSizing> {
     if !fair_probability.is_finite()
         || !max_price.is_finite()
@@ -787,7 +821,8 @@ pub fn ev_safe_execution_sizing(
     let edge_floor_prob = (edge_floor_bps / 10_000.0).max(0.0);
     // Keep the running VWAP below a fee-adjusted threshold so partial-taking paths
     // can still satisfy the final fee-aware edge check.
-    let fee_buffer_prob = polymarket_taker_fee_rate(fair_probability.clamp(0.001, 0.999));
+    let fee_buffer_prob =
+        polymarket_taker_fee_rate(fair_probability.clamp(0.001, 0.999), fee_model);
     let required_vwap =
         (fair_probability - edge_floor_prob - fee_buffer_prob).clamp(0.000_001, 0.999_999);
 
@@ -845,7 +880,7 @@ pub fn ev_safe_execution_sizing(
     if !vwap_price.is_finite() || vwap_price <= 0.0 {
         return None;
     }
-    let fee_at_vwap = polymarket_taker_fee_rate(vwap_price);
+    let fee_at_vwap = polymarket_taker_fee_rate(vwap_price, fee_model);
     let edge_bps_at_vwap = ((fair_probability - vwap_price - fee_at_vwap) * 10_000.0).max(0.0);
     if edge_bps_at_vwap + 1e-6 < edge_floor_bps {
         return None;
@@ -905,6 +940,10 @@ fn normal_cdf(x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn legacy_test_fee_model() -> PolymarketFeeModel {
+        PolymarketFeeModel::new(0.25, 2)
+    }
 
     fn test_endgame_cfg() -> EndgameExecutionConfig {
         EndgameExecutionConfig {
@@ -1037,9 +1076,10 @@ mod tests {
 
     #[test]
     fn polymarket_taker_fee_rate_matches_known_points() {
-        let at_50 = polymarket_taker_fee_rate(0.50);
-        let at_60 = polymarket_taker_fee_rate(0.60);
-        let at_90 = polymarket_taker_fee_rate(0.90);
+        let fee_model = legacy_test_fee_model();
+        let at_50 = polymarket_taker_fee_rate(0.50, fee_model);
+        let at_60 = polymarket_taker_fee_rate(0.60, fee_model);
+        let at_90 = polymarket_taker_fee_rate(0.90, fee_model);
         assert!((at_50 - 0.015625).abs() < 1e-9);
         assert!((at_60 - 0.0144).abs() < 1e-9);
         assert!((at_90 - 0.002025).abs() < 1e-9);
@@ -1062,7 +1102,8 @@ mod tests {
             },
         ];
         let sizing =
-            ev_safe_execution_sizing(0.50, 30.0, 0.43, 50.0, &asks).expect("expected sizing");
+            ev_safe_execution_sizing(0.50, 30.0, 0.43, 50.0, &asks, legacy_test_fee_model())
+                .expect("expected sizing");
         assert!(sizing.notional_usd > 0.0);
         assert!(sizing.vwap_price <= 0.43 + 1e-9);
         assert!(sizing.edge_bps_at_vwap >= 30.0);
@@ -1074,7 +1115,14 @@ mod tests {
             price: 0.49,
             size: 200.0,
         }];
-        let sizing = ev_safe_execution_sizing(0.4905, 15.0, 0.50, 50.0, &asks);
+        let sizing = ev_safe_execution_sizing(
+            0.4905,
+            15.0,
+            0.50,
+            50.0,
+            &asks,
+            PolymarketFeeModel::default(),
+        );
         assert!(sizing.is_none());
     }
 
@@ -1085,7 +1133,8 @@ mod tests {
             size: 500.0,
         }];
         // Raw edge is 200 bps, but fee at 0.50 is 156.25 bps, leaving < 50 bps.
-        let sizing = ev_safe_execution_sizing(0.52, 50.0, 0.55, 50.0, &asks);
+        let sizing =
+            ev_safe_execution_sizing(0.52, 50.0, 0.55, 50.0, &asks, legacy_test_fee_model());
         assert!(sizing.is_none());
     }
 
@@ -1133,8 +1182,15 @@ mod tests {
             },
         ];
 
-        let sizing = ev_safe_execution_sizing(0.55, 50.0, 0.45, 50.0, &asks_worst_first)
-            .expect("expected sizing from best-priced ask level");
+        let sizing = ev_safe_execution_sizing(
+            0.55,
+            50.0,
+            0.45,
+            50.0,
+            &asks_worst_first,
+            legacy_test_fee_model(),
+        )
+        .expect("expected sizing from best-priced ask level");
         assert!(sizing.vwap_price <= 0.45);
         assert!(sizing.edge_bps_at_vwap >= 50.0);
     }
@@ -1151,8 +1207,15 @@ mod tests {
                 size: 200.0, // deep but expensive
             },
         ];
-        let sizing = ev_safe_execution_sizing(0.50, 100.0, 0.70, 50.0, &asks)
-            .expect("expected partial sizing instead of full skip");
+        let sizing = ev_safe_execution_sizing(
+            0.50,
+            100.0,
+            0.70,
+            50.0,
+            &asks,
+            PolymarketFeeModel::default(),
+        )
+        .expect("expected partial sizing instead of full skip");
         assert!(sizing.notional_usd > 0.0);
         assert!(sizing.notional_usd < 50.0);
         assert!(sizing.edge_bps_at_vwap >= 99.99);

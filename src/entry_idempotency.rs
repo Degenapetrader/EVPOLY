@@ -257,6 +257,8 @@ pub fn classify_entry_error(message: &str) -> ExecutionErrorClass {
     let balance_or_allowance = msg.contains("not enough balance / allowance")
         || msg.contains("insufficient usdc balance")
         || msg.contains("insufficient usdc allowance")
+        || msg.contains("insufficient pusd balance")
+        || msg.contains("insufficient pusd allowance")
         || (msg.contains("insufficient") && msg.contains("allowance"))
         || (msg.contains("insufficient") && msg.contains("balance"))
         || msg.contains("not enough balance");

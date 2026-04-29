@@ -6,6 +6,7 @@ use base64::Engine as _;
 use hex;
 use log::{error, info, warn};
 use reqwest::{Client, Proxy};
+use rust_decimal::prelude::ToPrimitive;
 use rust_decimal::Decimal;
 use rust_decimal::RoundingStrategy;
 use serde::{Deserialize, Serialize};
@@ -146,6 +147,13 @@ fn next_cursor_from_value(value: &Value) -> Option<String> {
 pub struct ClobClientHandle {
     pub client: ClobClient<Authenticated<Normal>>,
     pub signer: PrivateKeySigner,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ClobFeeModel {
+    pub rate: f64,
+    pub exponent: u32,
+    pub taker_only: bool,
 }
 
 #[derive(Debug, Default)]
@@ -370,6 +378,7 @@ pub struct PolymarketApi {
     tick_metadata_rl_failures_by_token: Arc<tokio::sync::Mutex<HashMap<String, u32>>>,
     tick_metadata_retry_after_ms_global: Arc<tokio::sync::Mutex<i64>>,
     tick_metadata_rl_failures_global: Arc<tokio::sync::Mutex<u32>>,
+    clob_fee_models_by_condition: Arc<tokio::sync::Mutex<HashMap<String, ClobFeeModel>>>,
     ws_state: Arc<tokio::sync::Mutex<Option<SharedPolymarketWsState>>>,
     ws_enabled: bool,
     ws_market_stale_ms: i64,
@@ -455,6 +464,7 @@ impl PolymarketApi {
             tick_metadata_rl_failures_by_token: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             tick_metadata_retry_after_ms_global: Arc::new(tokio::sync::Mutex::new(0)),
             tick_metadata_rl_failures_global: Arc::new(tokio::sync::Mutex::new(0)),
+            clob_fee_models_by_condition: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             ws_state: Arc::new(tokio::sync::Mutex::new(None)),
             ws_enabled,
             ws_market_stale_ms,
@@ -3415,6 +3425,42 @@ impl PolymarketApi {
         self.prewarm_order_metadata(&handle.client, token_id).await
     }
 
+    pub async fn get_clob_fee_model(&self, condition_id: &str) -> Result<ClobFeeModel> {
+        let condition_id = condition_id.trim();
+        if condition_id.is_empty() {
+            anyhow::bail!("condition_id is required for CLOB fee model lookup");
+        }
+        {
+            let cache = self.clob_fee_models_by_condition.lock().await;
+            if let Some(model) = cache.get(condition_id).copied() {
+                return Ok(model);
+            }
+        }
+
+        let handle = self.get_or_create_clob_client().await?;
+        let info = handle
+            .client
+            .clob_market_info(condition_id)
+            .await
+            .map_err(|e| anyhow::anyhow!(e.to_string()))
+            .with_context(|| format!("Failed to fetch CLOB market info for {}", condition_id))?;
+        let model = info
+            .fee_details
+            .as_ref()
+            .map(|fd| ClobFeeModel {
+                rate: fd.rate.to_f64().unwrap_or(0.0).max(0.0),
+                exponent: fd.exponent,
+                taker_only: fd.taker_only,
+            })
+            .unwrap_or_default();
+
+        self.clob_fee_models_by_condition
+            .lock()
+            .await
+            .insert(condition_id.to_string(), model);
+        Ok(model)
+    }
+
     async fn tick_metadata_retry_after_ms(&self, token_id: &str) -> Option<i64> {
         let token_retry_after_ms = self
             .tick_metadata_retry_after_ms_by_token
@@ -4974,9 +5020,9 @@ impl PolymarketApi {
         Ok(tokens_with_balance)
     }
 
-    /// Check USDC balance and allowance for buying tokens
-    /// Returns (usdc_balance, usdc_allowance) as Decimal values
-    /// For BUY orders, you need USDC balance and USDC allowance to the Exchange contract
+    /// Check pUSD collateral balance and allowance for buying tokens.
+    /// Returns (collateral_balance, collateral_allowance) as Decimal values.
+    /// For BUY orders, you need pUSD balance and allowance to the Exchange contract.
     pub async fn check_usdc_balance_allowance(
         &self,
     ) -> Result<(rust_decimal::Decimal, rust_decimal::Decimal)> {
@@ -5013,7 +5059,7 @@ impl PolymarketApi {
         let handle = self
             .get_or_create_clob_client()
             .await
-            .context("Failed to initialize CLOB client for USDC balance check")?;
+            .context("Failed to initialize CLOB client for pUSD balance check")?;
 
         let balance_allowance_result = match handle.client.balance_allowance(build_request()).await
         {
@@ -5023,32 +5069,32 @@ impl PolymarketApi {
                 let first_anyhow = anyhow::anyhow!(first_msg.clone());
                 if Self::should_invalidate_auth_cache(&first_anyhow) {
                     warn!(
-                        "USDC balance check auth failure: {}. Re-authenticating once.",
+                        "pUSD balance check auth failure: {}. Re-authenticating once.",
                         first_msg
                     );
                     self.invalidate_clob_client_cache().await;
                     let fresh_handle = self
                         .get_or_create_clob_client()
                         .await
-                        .context("Failed to re-authenticate CLOB client for USDC balance check")?;
+                        .context("Failed to re-authenticate CLOB client for pUSD balance check")?;
                     match fresh_handle.client.balance_allowance(build_request()).await {
                             Ok(resp) => Ok(resp),
                             Err(second_err) => Err(anyhow::anyhow!(
-                                "Failed to fetch USDC balance and allowance after auth refresh (first_error='{}', second_error='{}')",
+                                "Failed to fetch pUSD balance and allowance after auth refresh (first_error='{}', second_error='{}')",
                                 first_msg,
                                 second_err
                             )),
                         }
                 } else if Self::is_rate_limit_error(&first_anyhow) {
                     Err(anyhow::anyhow!(
-                        "Failed to fetch USDC balance and allowance (rate-limited; skipped immediate retry, first_error='{}')",
+                        "Failed to fetch pUSD balance and allowance (rate-limited; skipped immediate retry, first_error='{}')",
                         first_msg
                     ))
                 } else {
                     match handle.client.balance_allowance(build_request()).await {
                             Ok(resp) => Ok(resp),
                             Err(second_err) => Err(anyhow::anyhow!(
-                                "Failed to fetch USDC balance and allowance after transient retry (first_error='{}', second_error='{}')",
+                                "Failed to fetch pUSD balance and allowance after transient retry (first_error='{}', second_error='{}')",
                                 first_msg,
                                 second_err
                             )),
@@ -5064,7 +5110,7 @@ impl PolymarketApi {
                     let age_ms = now_ms.saturating_sub(cached_ts_ms);
                     if age_ms <= USDC_BALANCE_CACHE_FALLBACK_TTL_MS {
                         warn!(
-                            "USDC balance check failed; using cached balance snapshot age_ms={} error={}",
+                            "pUSD balance check failed; using cached balance snapshot age_ms={} error={}",
                             age_ms, err
                         );
                         return Ok((cached_balance, cached_allowance));
@@ -5102,7 +5148,7 @@ impl PolymarketApi {
                 });
             if max_reported_allowance > allowance {
                 warn!(
-                    "USDC allowance for configured exchange {} missing/zero; using max reported allowance fallback",
+                    "pUSD allowance for configured exchange {} missing/zero; using max reported allowance fallback",
                     exchange_address
                 );
                 allowance = max_reported_allowance;
@@ -6667,9 +6713,9 @@ impl PolymarketApi {
             ))?
         };
 
-        // For BUY orders, check USDC balance and allowance before placing order
+        // For BUY orders, check pUSD collateral balance and allowance before placing order.
         if matches!(side_enum, Side::Buy) {
-            eprintln!("🔍 Checking USDC balance and allowance before BUY order...");
+            eprintln!("🔍 Checking pUSD balance and allowance before BUY order...");
             match self.check_usdc_balance_allowance().await {
                 Ok((usdc_balance, usdc_allowance)) => {
                     let usdc_balance_f64 =
@@ -6679,15 +6725,15 @@ impl PolymarketApi {
                         f64::try_from(usdc_allowance / rust_decimal::Decimal::from(1_000_000u64))
                             .unwrap_or(0.0);
 
-                    eprintln!("   USDC Balance: ${:.2}", usdc_balance_f64);
-                    eprintln!("   USDC Allowance: ${:.2}", usdc_allowance_f64);
+                    eprintln!("   pUSD Balance: ${:.2}", usdc_balance_f64);
+                    eprintln!("   pUSD Allowance: ${:.2}", usdc_allowance_f64);
                     eprintln!("   Order Amount: ${:.2}", amount_decimal);
 
                     if usdc_balance_f64 < f64::try_from(amount_decimal).unwrap_or(0.0) {
                         anyhow::bail!(
-                            "Insufficient USDC balance for BUY order.\n\
+                            "Insufficient pUSD balance for BUY order.\n\
                             Required: ${:.2}, Available: ${:.2}\n\
-                            Please deposit USDC to your proxy wallet: {}",
+                            Please wrap USDC.e to pUSD or deposit pUSD to your proxy wallet: {}",
                             amount_decimal,
                             usdc_balance_f64,
                             self.proxy_wallet_address
@@ -6698,16 +6744,16 @@ impl PolymarketApi {
 
                     if usdc_allowance_f64 < f64::try_from(amount_decimal).unwrap_or(0.0) {
                         eprintln!(
-                            "   ⚠️  USDC allowance (${:.2}) is less than order amount (${:.2})",
+                            "   ⚠️  pUSD allowance (${:.2}) is less than order amount (${:.2})",
                             usdc_allowance_f64, amount_decimal
                         );
-                        eprintln!("   💡 The SDK should auto-approve USDC on first attempt, but if this fails, you may need to approve USDC manually.");
-                        eprintln!("   💡 Run: cargo run --bin test_allowance -- --check (to check USDC approval status)");
+                        eprintln!("   💡 The SDK should auto-approve pUSD on first attempt, but if this fails, you may need to approve pUSD manually.");
+                        eprintln!("   💡 Run: cargo run --bin test_allowance -- --check (to check pUSD approval status)");
                     }
                 }
                 Err(e) => {
                     eprintln!(
-                        "   ⚠️  Could not check USDC balance/allowance: {} (continuing anyway)",
+                        "   ⚠️  Could not check pUSD balance/allowance: {} (continuing anyway)",
                         e
                     );
                 }
@@ -6923,16 +6969,16 @@ impl PolymarketApi {
                     // Return the error - the bot will retry on the next check cycle
                     if is_allowance_error {
                         if matches!(side_enum, Side::Buy) {
-                            // For BUY orders, this is USDC allowance issue
+                            // For BUY orders, this is a pUSD allowance issue.
                             anyhow::bail!(
-                                "Insufficient USDC allowance for BUY order: {}\n\
+                                "Insufficient pUSD allowance for BUY order: {}\n\
                                 Order details: Side=BUY, Amount=${}, Token ID={}\n\
                                 \n\
-                                USDC allowance issue - SDK may need more time to auto-approve USDC.\n\
+                                pUSD allowance issue - SDK may need more time to auto-approve pUSD.\n\
                                 \n\
                                 To fix:\n\
-                                1. Check USDC approval: cargo run --bin test_allowance -- --check\n\
-                                2. Approve USDC manually via Polymarket UI if needed\n\
+                                1. Check pUSD approval: cargo run --bin test_allowance -- --check\n\
+                                2. Approve pUSD manually via Polymarket UI if needed\n\
                                 3. Or wait for SDK to auto-approve (will retry on next cycle)\n\
                                 \n\
                                 This order will be retried on the next check cycle.",

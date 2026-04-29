@@ -8368,11 +8368,34 @@ async fn main() -> Result<()> {
                                 );
                                 continue;
                             }
-                            let (constraints_res, orderbook_res) = tokio::join!(
+                            let (constraints_res, orderbook_res, fee_model_res) = tokio::join!(
                                 api_for_endgame
                                     .get_market_constraints(market.condition_id.as_str()),
-                                api_for_endgame.get_orderbook(token_id.as_str())
+                                api_for_endgame.get_orderbook(token_id.as_str()),
+                                api_for_endgame.get_clob_fee_model(market.condition_id.as_str())
                             );
+                            let endgame_fee_model = match fee_model_res {
+                                Ok(model) => endgame_sweep::PolymarketFeeModel::new(
+                                    model.rate,
+                                    model.exponent,
+                                ),
+                                Err(e) => {
+                                    log_event(
+                                        "endgame_fee_model_unavailable",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                            "timeframe": timeframe.as_str(),
+                                            "market_open_ts": market_open_ts,
+                                            "condition_id": market.condition_id,
+                                            "token_id": token_id,
+                                            "direction": side_label,
+                                            "error": e.to_string(),
+                                            "reason": "missing_v2_fee_model"
+                                        }),
+                                    );
+                                    continue;
+                                }
+                            };
                             let (min_order_size_usd, min_tick_size) = match constraints_res {
                                 Ok(snapshot) => (
                                     f64::try_from(snapshot.minimum_order_size)
@@ -8546,8 +8569,10 @@ async fn main() -> Result<()> {
                                 if !target_shares.is_finite() || target_shares <= 0.0 {
                                     continue;
                                 }
-                                let taker_fee_rate =
-                                    endgame_sweep::polymarket_taker_fee_rate(fixed_limit_price);
+                                let taker_fee_rate = endgame_sweep::polymarket_taker_fee_rate(
+                                    fixed_limit_price,
+                                    endgame_fee_model,
+                                );
                                 let edge_bps_at_vwap = ((pricing.execution_probability
                                     - fixed_limit_price
                                     - taker_fee_rate)
@@ -8566,6 +8591,7 @@ async fn main() -> Result<()> {
                                 pricing.max_price,
                                 divergence_target_notional_usd,
                                 ask_levels.as_slice(),
+                                endgame_fee_model,
                             ) {
                                 sizing
                             } else {
@@ -8580,8 +8606,10 @@ async fn main() -> Result<()> {
                                 if !fallback_shares.is_finite() || fallback_shares <= 0.0 {
                                     continue;
                                 }
-                                let fallback_fee =
-                                    endgame_sweep::polymarket_taker_fee_rate(fallback_price);
+                                let fallback_fee = endgame_sweep::polymarket_taker_fee_rate(
+                                    fallback_price,
+                                    endgame_fee_model,
+                                );
                                 let fallback_edge_bps = ((pricing.execution_probability
                                     - fallback_price
                                     - fallback_fee)

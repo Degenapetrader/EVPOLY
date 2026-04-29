@@ -10,9 +10,13 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-29
+- CLOB V2 production endpoint alignment: updated main2 runtime/env/docs/tool defaults from the pre-cutover `https://clob-v2.polymarket.com` host to Polymarket's production V2 host `https://clob.polymarket.com` (`src/config.rs`, `src/bin/alpha_service.rs`, `src/bin/builder_fees.rs`, `config.json`, `.env.example`, `.env.full.example`, docs).
+  - affects all live order placement and alpha-service MM 2.0 depth-skip requests that rely on built-in/default CLOB URLs; explicit operator env overrides still win.
 - Remote alpha config hardening: normalized stale Premarket `/should-trade` URLs to the current `/ladder` endpoint and added route-contract coverage for all active remote alpha/discovery defaults (`src/main.rs`; desktop wrapper env generation).
   - affects `premarket_v1` generated/runtime env handling; stale desktop profiles or embedded templates no longer point main2 Premarket at the legacy SDK v1 gate response.
   - active remote routes covered: shared timeframe discovery, Premarket ladder, Endgame policy, EVcurve, SessionBand, EVSnipe discovery, and MM 2.0 depth-skip alpha.
+- `endgame_sweep_v1` fee-edge alignment: final candidate sizing and edge checks now fetch V2 CLOB market fee details from `/clob-markets/{condition_id}` and apply the returned rate/exponent model instead of the retired hardcoded taker-fee curve (`src/api.rs`, `src/endgame_sweep.rs`, `src/main.rs`).
+  - affects Endgame candidate acceptance/sizing for all symbols/timeframes; if V2 fee metadata is unavailable, the candidate skips fail-closed for that tick rather than guessing.
 
 ### 2026-04-28
 - `mm_sport_v1` / MM 2.0: allowed reward-eligible sports futures/outrights without CLOB `game_start_time` while preserving started-match protection (`src/main.rs`, `src/mm/mod.rs`, `.env.full.example`).

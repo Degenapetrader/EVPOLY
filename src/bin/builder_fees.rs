@@ -8,7 +8,7 @@ use reqwest::{Client, Method, StatusCode};
 use serde::Serialize;
 use serde_json::Value;
 
-const DEFAULT_CLOB_URL: &str = "https://clob-v2.polymarket.com";
+const DEFAULT_CLOB_URL: &str = "https://clob.polymarket.com";
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum WriteMethod {

@@ -221,17 +221,23 @@ pub async fn fetch_open_orders(
         .map_err(|e| format!("portfolio clob client: {e}"))?
         .authentication_builder(&signer);
     let client = match signature_type {
-        SignatureType::Eoa => auth_builder
-            .signature_type(signature_type)
-            .authenticate()
-            .await
-            .map_err(|e| format!("portfolio clob auth: {e}"))?,
-        SignatureType::Proxy | SignatureType::GnosisSafe => auth_builder
-            .funder(maker_address)
-            .signature_type(signature_type)
-            .authenticate()
-            .await
-            .map_err(|e| format!("portfolio clob auth: {e}"))?,
+        SignatureType::Eoa => tokio::time::timeout(
+            Duration::from_secs(REQUEST_TIMEOUT_SECS),
+            auth_builder.signature_type(signature_type).authenticate(),
+        )
+        .await
+        .map_err(|_| "portfolio clob auth timed out".to_string())?
+        .map_err(|e| format!("portfolio clob auth: {e}"))?,
+        SignatureType::Proxy | SignatureType::GnosisSafe => tokio::time::timeout(
+            Duration::from_secs(REQUEST_TIMEOUT_SECS),
+            auth_builder
+                .funder(maker_address)
+                .signature_type(signature_type)
+                .authenticate(),
+        )
+        .await
+        .map_err(|_| "portfolio clob auth timed out".to_string())?
+        .map_err(|e| format!("portfolio clob auth: {e}"))?,
         _ => return Err("unsupported signature type".to_string()),
     };
 
@@ -240,10 +246,13 @@ pub async fn fetch_open_orders(
     let page_limit = limit.clamp(1, 200);
 
     loop {
-        let page = client
-            .orders(&OrdersRequest::default(), cursor.clone())
-            .await
-            .map_err(|e| format!("portfolio open orders fetch: {e}"))?;
+        let page = tokio::time::timeout(
+            Duration::from_secs(REQUEST_TIMEOUT_SECS),
+            client.orders(&OrdersRequest::default(), cursor.clone()),
+        )
+        .await
+        .map_err(|_| "portfolio open orders fetch timed out".to_string())?
+        .map_err(|e| format!("portfolio open orders fetch: {e}"))?;
         rows.extend(page.data);
         if rows.len() >= page_limit || page.next_cursor == TERMINAL_CURSOR {
             break;

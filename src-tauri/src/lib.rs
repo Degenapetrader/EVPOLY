@@ -766,7 +766,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 ),
                 match_only: config_io::env_template_default_bool(
                     "EVPOLY_MM_SPORT_MATCH_ONLY",
-                    false,
+                    true,
                 ),
                 allowed_sport_league_codes: config_io::env_template_default_string(
                     "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES",

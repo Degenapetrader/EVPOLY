@@ -235,7 +235,7 @@ impl MmSportConfig {
                 .clamp(15, 3_600),
             require_reward_eligible: env_bool("EVPOLY_MM_SPORT_REQUIRE_REWARD_ELIGIBLE", true),
             pregame_only: env_bool("EVPOLY_MM_SPORT_PREGAME_ONLY", true),
-            match_only: env_bool("EVPOLY_MM_SPORT_MATCH_ONLY", false),
+            match_only: env_bool("EVPOLY_MM_SPORT_MATCH_ONLY", true),
             post_only: env_bool("EVPOLY_MM_SPORT_POST_ONLY", true),
             max_markets: env_usize("EVPOLY_MM_SPORT_MAX_MARKETS", 0),
             polymarket_live_guard_enable: env_bool(
@@ -473,7 +473,7 @@ mod tests {
                 let cfg = MmSportConfig::from_env();
                 assert_eq!(cfg.exit_mode, MmSportExitMode::Normal);
                 assert_eq!(cfg.no_exit_side_pause_sec, 3_600);
-                assert!(!cfg.match_only);
+                assert!(cfg.match_only);
             },
         );
     }

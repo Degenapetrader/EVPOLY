@@ -33,6 +33,13 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
 
 ## Safety Controls
 
+- Fresh-entry reward gates:
+  - `EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY=300`
+  - `EVPOLY_MM_SPORT_REQUIRE_REWARD_ELIGIBLE=true`
+  - when reward eligibility is required, fresh BUY quotes require real reward metadata (`reward_min_size_shares > 0` and `reward_max_spread > 0`)
+- Match-market filter:
+  - `EVPOLY_MM_SPORT_MATCH_ONLY=true`
+  - default ON; sports futures/outrights are skipped for fresh entries unless this is explicitly disabled
 - pUSD collateral quote cap:
   - `EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT=0.45`
   - `EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT=0.90`
@@ -53,6 +60,9 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
 - `EVPOLY_STRATEGY_MM_SPORT_ENABLE`
 - `EVPOLY_MM_SPORT_HARD_DISABLE`
 - `EVPOLY_MM_SPORT_DISCOVERY_ROUTE`
+- `EVPOLY_MM_SPORT_MATCH_ONLY`
+- `EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY`
+- `EVPOLY_MM_SPORT_REQUIRE_REWARD_ELIGIBLE`
 - `EVPOLY_MM_SPORT_QUOTE_SIZE_MODE`
 - `EVPOLY_MM_SPORT_QUOTE_SIZE_MULT`
 - `EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT`

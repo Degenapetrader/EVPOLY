@@ -1625,6 +1625,29 @@ fn mm_sport_competition_level_from_raw(raw: Option<f64>) -> &'static str {
     }
 }
 
+fn mm_sport_fresh_entry_reward_rate_allowed(
+    reward_rate_per_day: f64,
+    min_reward_rate_per_day: f64,
+) -> bool {
+    reward_rate_per_day.is_finite() && reward_rate_per_day >= min_reward_rate_per_day.max(0.0)
+}
+
+fn mm_sport_fresh_entry_reward_metadata_allowed(
+    require_reward_eligible: bool,
+    is_sports_market: bool,
+    reward_min_size_shares: f64,
+    reward_max_spread: f64,
+) -> bool {
+    if !(require_reward_eligible || !is_sports_market) {
+        return true;
+    }
+    reward_min_size_shares.is_finite()
+        && reward_min_size_shares > 0.0
+        && reward_max_spread.is_finite()
+        && reward_max_spread > 0.0
+}
+
+#[cfg(test)]
 fn mm_sport_route_allows_market(
     discovery_route: mm::MmSportDiscoveryRoute,
     is_sports_market: bool,
@@ -2250,7 +2273,16 @@ fn mm_sport_build_active_markets(
     }
     for market in fallback_exit_markets_by_condition.values() {
         let condition_key = market.condition_id.trim().to_ascii_lowercase();
-        if condition_key.is_empty() || !seen_conditions.insert(condition_key) {
+        let has_existing_exposure = inventory_condition_ids
+            .iter()
+            .any(|condition_id| condition_id.eq_ignore_ascii_case(condition_key.as_str()))
+            || open_orders_by_condition
+                .keys()
+                .any(|condition_id| condition_id.eq_ignore_ascii_case(condition_key.as_str()));
+        if condition_key.is_empty()
+            || !has_existing_exposure
+            || !seen_conditions.insert(condition_key)
+        {
             continue;
         }
         active_markets.push(market.clone());
@@ -3141,7 +3173,7 @@ async fn mm_sport_discover_markets(
         std::collections::HashMap::new();
     for row in rewards_rows {
         let reward_rate = row.reward_rate_hint();
-        if !reward_rate.is_finite() || reward_rate < cfg.min_reward_rate_per_day {
+        if !mm_sport_fresh_entry_reward_rate_allowed(reward_rate, cfg.min_reward_rate_per_day) {
             report.skipped_low_reward_rate = report.skipped_low_reward_rate.saturating_add(1);
             continue;
         }
@@ -3450,8 +3482,12 @@ async fn mm_sport_discover_markets(
             );
             continue;
         }
-        let require_reward_eligible = cfg.require_reward_eligible || !is_sports_market;
-        if require_reward_eligible && (reward_min_size_shares <= 0.0 || reward_max_spread <= 0.0) {
+        if !mm_sport_fresh_entry_reward_metadata_allowed(
+            cfg.require_reward_eligible,
+            is_sports_market,
+            reward_min_size_shares,
+            reward_max_spread,
+        ) {
             report.skipped_not_reward_eligible =
                 report.skipped_not_reward_eligible.saturating_add(1);
             continue;
@@ -16341,27 +16377,6 @@ async fn main() -> Result<()> {
                             details.market_slug.as_str(),
                             None,
                         );
-                        if !mm_sport_route_allows_market(
-                            mm_sport_cfg_for_loop.discovery_route,
-                            is_sports_market,
-                        ) {
-                            fallback_exit_retry_after_ms_by_condition.insert(
-                                condition_id.to_string(),
-                                now_ms.saturating_add(MM_SPORT_EXIT_FALLBACK_IMMEDIATE_RETRY_MS),
-                            );
-                            continue;
-                        }
-                        let question = details.question.trim();
-                        if is_sports_market
-                            && mm_sport_cfg_for_loop.match_only
-                            && !mm_sport_is_match_market(details.market_slug.as_str(), question)
-                        {
-                            fallback_exit_retry_after_ms_by_condition.insert(
-                                condition_id.to_string(),
-                                now_ms.saturating_add(MM_SPORT_EXIT_FALLBACK_IMMEDIATE_RETRY_MS),
-                            );
-                            continue;
-                        }
                         let game_start_ts_ms =
                             mm_sport_game_start_ts_ms_from_clob(&details).unwrap_or(0);
                         let (up_token_id, down_token_id) =
@@ -16735,19 +16750,6 @@ async fn main() -> Result<()> {
                                 details.market_slug.as_str(),
                                 None,
                             );
-                            if !mm_sport_route_allows_market(
-                                mm_sport_cfg_for_loop.discovery_route,
-                                is_sports_market,
-                            ) {
-                                continue;
-                            }
-                            let question = details.question.trim();
-                            if is_sports_market
-                                && mm_sport_cfg_for_loop.match_only
-                                && !mm_sport_is_match_market(details.market_slug.as_str(), question)
-                            {
-                                continue;
-                            }
                             let game_start_ts_ms =
                                 mm_sport_game_start_ts_ms_from_clob(&details).unwrap_or(0);
                             let (up_token_id, down_token_id) =
@@ -17326,6 +17328,15 @@ async fn main() -> Result<()> {
                         MM_SPORT_SCOPE_SCOUT_ROTATE_MARKETS,
                         mm_sport_scope_scout_offset,
                     );
+                    let discovered_condition_ids_lc = discovered_markets
+                        .iter()
+                        .map(|market| market.condition_id.to_ascii_lowercase())
+                        .collect::<std::collections::HashSet<_>>();
+                    let fallback_exit_only_condition_ids = fallback_exit_markets_by_condition
+                        .keys()
+                        .map(|condition_id| condition_id.to_ascii_lowercase())
+                        .filter(|condition_id| !discovered_condition_ids_lc.contains(condition_id))
+                        .collect::<std::collections::HashSet<_>>();
                     let active_condition_ids = active_markets
                         .iter()
                         .map(|market| market.condition_id.to_ascii_lowercase())
@@ -17472,8 +17483,13 @@ async fn main() -> Result<()> {
                         std::collections::HashSet::new();
 
                     for market in &active_markets {
+                        let condition_key_lc = market.condition_id.trim().to_ascii_lowercase();
+                        let fallback_exit_only =
+                            fallback_exit_only_condition_ids.contains(condition_key_lc.as_str());
                         let condition_has_inventory =
-                            inventory_condition_ids.contains(market.condition_id.as_str());
+                            inventory_condition_ids.iter().any(|condition_id| {
+                                condition_id.eq_ignore_ascii_case(&market.condition_id)
+                            });
                         let entry_pause_until = entry_pause_until_by_condition
                             .get(&market.condition_id)
                             .copied()
@@ -17488,7 +17504,10 @@ async fn main() -> Result<()> {
                             fill_pause_active,
                         );
                         let prestart_quote_halt = market_mode_flags.prestart_quote_halt;
-                        let inventory_exit_mode = market_mode_flags.inventory_exit_mode;
+                        let inventory_exit_mode = market_mode_flags.inventory_exit_mode
+                            || (fallback_exit_only
+                                && condition_has_inventory
+                                && mm_sport_cfg_for_loop.exit_mode != mm::MmSportExitMode::NoExit);
                         let hold_mode = market_mode_flags.hold_mode;
                         let post_pause_inventory_exit_mode =
                             condition_has_inventory && !fill_pause_active;
@@ -17506,9 +17525,24 @@ async fn main() -> Result<()> {
                             .get(&market.condition_id)
                             .cloned()
                             .unwrap_or_default();
-                        let condition_key_lc = market.condition_id.trim().to_ascii_lowercase();
                         if market_rows.is_empty() {
                             quote_expiry_by_condition.remove(condition_key_lc.as_str());
+                        }
+                        if fallback_exit_only && !inventory_exit_mode {
+                            let buy_rows = market_rows
+                                .iter()
+                                .filter(|row| row.side.eq_ignore_ascii_case("BUY"))
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            if !buy_rows.is_empty() {
+                                let _ = mm_sport_cancel_pending_rows(
+                                    &api_for_mm_sport,
+                                    &tracking_db_for_mm_sport,
+                                    buy_rows.as_slice(),
+                                )
+                                .await;
+                            }
+                            continue;
                         }
                         let up_no_exit_side_paused = mm_sport_no_exit_side_pause_active(
                             &no_exit_side_pause_by_token,
@@ -26314,7 +26348,8 @@ mod tests {
             "cond-f".to_string(),
             vec![mm_sport_test_pending_row("cond-f", "cond-f_up")],
         );
-        let inventory_conditions = std::collections::HashSet::from(["cond-e".to_string()]);
+        let inventory_conditions =
+            std::collections::HashSet::from(["cond-e".to_string(), "cond-z".to_string()]);
         let entry_pause =
             std::collections::HashMap::from([("cond-d".to_string(), now_ms + 60_000)]);
         let bust_pause = std::collections::HashMap::new();
@@ -26352,6 +26387,42 @@ mod tests {
         assert!(conditions.contains("cond-z"));
         assert!(conditions.contains("cond-d") && conditions.contains("cond-e"));
         assert!(conditions.contains("cond-c"));
+    }
+
+    #[test]
+    fn mm_sport_active_scope_skips_exit_fallback_without_existing_exposure() {
+        let now_ms = 2_000_000_000_000_i64;
+        let discovered_markets = vec![mm_sport_test_market("cond-a", 900.0, now_ms + 86_400_000)];
+        let mut fallback_exit = std::collections::HashMap::new();
+        fallback_exit.insert(
+            "cond-z".to_string(),
+            mm_sport_test_market("cond-z", 1.0, now_ms + 3_600_000),
+        );
+        let open_orders = std::collections::HashMap::new();
+        let inventory_conditions = std::collections::HashSet::new();
+        let active = mm_sport_build_active_markets(
+            discovered_markets.as_slice(),
+            &fallback_exit,
+            &open_orders,
+            &inventory_conditions,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            now_ms,
+            28_800,
+            2,
+            0,
+            0,
+        );
+
+        let conditions = active
+            .iter()
+            .map(|market| market.condition_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(conditions.contains("cond-a"));
+        assert!(!conditions.contains("cond-z"));
     }
 
     #[test]
@@ -26425,6 +26496,33 @@ mod tests {
         cfg.match_only = match_only;
         cfg.pregame_only = pregame_only;
         cfg
+    }
+
+    #[test]
+    fn mm_sport_fresh_entry_reward_floor_blocks_low_or_invalid_rates() {
+        assert!(mm_sport_fresh_entry_reward_rate_allowed(300.0, 300.0));
+        assert!(mm_sport_fresh_entry_reward_rate_allowed(301.0, 300.0));
+        assert!(!mm_sport_fresh_entry_reward_rate_allowed(299.99, 300.0));
+        assert!(!mm_sport_fresh_entry_reward_rate_allowed(f64::NAN, 300.0));
+    }
+
+    #[test]
+    fn mm_sport_fresh_entry_reward_metadata_requires_real_values_when_enabled() {
+        assert!(mm_sport_fresh_entry_reward_metadata_allowed(
+            true, true, 10.0, 0.03
+        ));
+        assert!(!mm_sport_fresh_entry_reward_metadata_allowed(
+            true, true, 0.0, 0.03
+        ));
+        assert!(!mm_sport_fresh_entry_reward_metadata_allowed(
+            true, true, 10.0, 0.0
+        ));
+        assert!(mm_sport_fresh_entry_reward_metadata_allowed(
+            false, true, 0.0, 0.0
+        ));
+        assert!(!mm_sport_fresh_entry_reward_metadata_allowed(
+            false, false, 0.0, 0.0
+        ));
     }
 
     #[test]

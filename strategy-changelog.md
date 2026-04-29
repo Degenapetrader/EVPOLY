@@ -10,6 +10,9 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-29
+- `mm_sport_v1` / MM 2.0 fresh-entry safety hardening: fresh BUY quote discovery now uses an explicit reward-rate gate and, when `EVPOLY_MM_SPORT_REQUIRE_REWARD_ELIGIBLE=true`, requires real reward metadata (`reward_min_size_shares > 0` and `reward_max_spread > 0`) before a market can be used for new entries (`src/main.rs`, `src/mm/mod.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+  - `EVPOLY_MM_SPORT_MATCH_ONLY` now defaults to `true` again to keep public defaults limited to scheduled match-style sports markets.
+  - fallback-hydrated MM 2.0 markets for existing exposure are treated as exit-only, so inventory can still unwind after a market no longer qualifies for fresh entry by reward, route, or match filters.
 - `premarket_v1` public ladder surface cleanup: removed the local ladder mode env knobs from public templates/docs and made runtime ignore stale `EVPOLY_PREMARKET_LADDER_MODE*` overrides (`src/main.rs`, `.env.example`, `.env.full.example`, `docs/premarket_v1.md`).
   - affects Premarket all symbols/timeframes; the local base ladder remains internal and EVPlus Alpha remains the required source for the final submit ladder.
 - Public remote-alpha content cleanup: removed public env/docs wording for alpha-owned Endgame checkpoint internals and S-Band tau split details while preserving runtime defaults (`.env.example`, `.env.full.example`, `docs/endgame_sweep_v1.md`, `docs/sessionband_v1.md`).

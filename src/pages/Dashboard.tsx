@@ -252,7 +252,7 @@ export function Dashboard() {
             </div>
           ) : (
             <>
-              <label className="field-label">Max exposure (USD)</label>
+              <label className="field-label">Max exposure (pUSD)</label>
               <input
                 type="number"
                 min="0"
@@ -411,7 +411,7 @@ export function Dashboard() {
           <div className="surface-panel__copy">
             <h2 className="surface-panel__title">Operator note</h2>
             <p className="surface-panel__subtitle">
-              Advanced controls stay narrow here. Secrets, remote tokens, and raw diagnostics live in Settings.
+              Advanced controls stay narrow here. Setup, access repair, and raw diagnostics live in Settings.
             </p>
           </div>
         </div>

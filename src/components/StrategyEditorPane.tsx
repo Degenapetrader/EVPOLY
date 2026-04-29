@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 import { SectionPanel } from "./SectionPanel";
 import {
   parseNonNegative,
-  type PremarketLadderBucket,
-  premarketLadderPricesForMode,
   strategyCapValue,
   strategyLabel,
   strategySections,
@@ -91,8 +89,6 @@ export function StrategyEditorPane({
   saveMessage?: string | null;
 }) {
   const [selectedSection, setSelectedSection] = useState<StrategyEditorSection>("general");
-  const [premarketLadderBucket, setPremarketLadderBucket] =
-    useState<PremarketLadderBucket>("m5");
 
   const visibleSections = useMemo(() => strategySections(selectedStrategy), [selectedStrategy]);
   const canEdit = Boolean(activeProfileId);
@@ -119,22 +115,6 @@ export function StrategyEditorPane({
       : config.strategy_settings.mm_sport.inventory_exit_mode === "no_exit"
         ? "Feeling Lucky"
         : "Auto";
-  const premarketLadderModes = {
-    m5: config.strategy_settings.premarket.entry_ladder_mode_5m,
-    non_m5: config.strategy_settings.premarket.entry_ladder_mode_non_m5,
-  } as const;
-  const premarketNormalLadderM5 = premarketLadderPricesForMode("normal", "m5");
-  const premarketNormalLadderNonM5 = premarketLadderPricesForMode("normal", "non_m5");
-  const activePremarketLadderMode = premarketLadderModes[premarketLadderBucket];
-  const activePremarketDefaultLadder =
-    premarketLadderBucket === "m5" ? premarketNormalLadderM5 : premarketNormalLadderNonM5;
-  const activePremarketModeLadder =
-    premarketLadderBucket === "m5"
-      ? premarketLadderPricesForMode(activePremarketLadderMode, "m5")
-      : premarketLadderPricesForMode(activePremarketLadderMode, "non_m5");
-  const activePremarketBucketLabel =
-    premarketLadderBucket === "m5" ? "5m" : "15m / 1h / 4h";
-
   const patchPremarket = (patch: Partial<BotConfig["strategy_settings"]["premarket"]>) =>
     setConfig((current) =>
       updateStrategySettingsSection(current, "premarket", {
@@ -394,7 +374,7 @@ export function StrategyEditorPane({
           </div>
         </div>
         <div className="surface-panel__body">
-          <label className="field-label">Max Exposure (USD)</label>
+          <label className="field-label">Max Exposure (pUSD)</label>
           <input
             type="number"
             min="0"
@@ -572,7 +552,7 @@ export function StrategyEditorPane({
               config.size_policy.symbol_multipliers.btc,
               config.size_policy.evcurve_timeframe_multipliers.h1
             )}{" "}
-            USD
+            pUSD
           </div>
           <div className="metric-detail">
             SOL 4H ={" "}
@@ -581,7 +561,7 @@ export function StrategyEditorPane({
               config.size_policy.symbol_multipliers.sol,
               config.size_policy.evcurve_timeframe_multipliers.h4
             )}{" "}
-            USD
+            pUSD
           </div>
         </div>
       </div>
@@ -607,132 +587,6 @@ export function StrategyEditorPane({
               config.strategy_settings.premarket.timeframes,
               (next) => patchPremarket({ timeframes: next })
             )}
-            <div className="surface-panel xl:col-span-2">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Ladder Mode</h2>
-                  <p className="surface-panel__subtitle">
-                    Set the entry ladder separately for 5m and slower Premarket buckets.
-                  </p>
-                </div>
-              </div>
-              <div className="surface-panel__body space-y-4">
-                <div className="inline-flex w-full flex-wrap rounded-[1rem] border border-[var(--border)] bg-[rgba(8,12,20,0.82)] p-1">
-                  {([
-                    ["m5", "5m", "Fast bucket"],
-                    ["non_m5", "15m / 1h / 4h", "Slower buckets"],
-                  ] as const).map(([bucket, label, detail]) => (
-                    <button
-                      key={bucket}
-                      type="button"
-                      disabled={!canEdit}
-                      onClick={() => setPremarketLadderBucket(bucket)}
-                      className={`flex min-w-[14rem] flex-1 items-center justify-center gap-2 rounded-[0.85rem] px-4 py-3 text-sm font-semibold transition ${
-                        premarketLadderBucket === bucket
-                          ? "bg-[linear-gradient(180deg,#6bb7ff_0%,#4f9dff_100%)] text-[#07111c]"
-                          : "text-[var(--text-secondary)]"
-                      }`.trim()}
-                    >
-                      <span>{label}</span>
-                      <span
-                        className={`text-xs font-medium ${
-                          premarketLadderBucket === bucket
-                            ? "text-[rgba(7,17,28,0.78)]"
-                            : "text-[var(--text-secondary)]"
-                        }`.trim()}
-                      >
-                        {detail}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-
-                <div className="rounded-[1.2rem] border border-[var(--border)] bg-[rgba(10,16,24,0.78)] p-5">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <div className="text-xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
-                        {activePremarketBucketLabel} Ladder
-                      </div>
-                      <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">
-                        Pick how aggressive this timeframe bucket should bid before market open.
-                        Only the buy prices move. The budget split stays fixed at 23%, 23%, 17%,
-                        14%, 12%, and 11%.
-                      </p>
-                    </div>
-                    <div className="rounded-full border border-[var(--border)] bg-[rgba(8,12,20,0.85)] px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em] text-[var(--text-secondary)]">
-                      {activePremarketBucketLabel}
-                    </div>
-                  </div>
-
-                  <div className="mt-4 grid gap-2 md:grid-cols-3">
-                    {([
-                      ["normal", "Normal", "Current"],
-                      ["safe", "Safe", "10% lower"],
-                      ["aggressive", "Aggressive", "10% higher"],
-                    ] as const).map(([value, label, detail]) => (
-                      <button
-                        key={`${premarketLadderBucket}-${value}`}
-                        type="button"
-                        disabled={!canEdit}
-                        onClick={() =>
-                          patchPremarket(
-                            premarketLadderBucket === "m5"
-                              ? { entry_ladder_mode_5m: value }
-                              : { entry_ladder_mode_non_m5: value }
-                          )
-                        }
-                        className={`mode-choice flex items-center justify-center gap-2 ${
-                          activePremarketLadderMode === value ? "mode-choice--active" : ""
-                        }`.trim()}
-                      >
-                        <span>{label}</span>
-                        <span className="text-sm font-medium text-[var(--text-secondary)]">
-                          {detail}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="mt-4 rounded-[1rem] border border-[var(--border)] bg-[rgba(8,12,20,0.9)] p-4">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="text-base font-semibold text-[var(--text-primary)]">
-                        {activePremarketLadderMode === "safe"
-                          ? "Safe Bids 10% Lower"
-                          : activePremarketLadderMode === "aggressive"
-                            ? "Aggressive Bids 10% Higher"
-                            : "Normal Uses The Default Ladder"}
-                      </div>
-                      <div className="text-xs font-medium uppercase tracking-[0.18em] text-[var(--text-secondary)]">
-                        Mode Preview
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-3 lg:grid-cols-3">
-                      <div className="rounded-[0.9rem] border border-[var(--border)] bg-[rgba(10,16,24,0.75)] p-3">
-                        <div className="metric-label">Default Ladder</div>
-                        <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                          {activePremarketDefaultLadder.map((price) => price.toFixed(2)).join(", ")}
-                        </div>
-                      </div>
-                      <div className="rounded-[0.9rem] border border-[var(--border)] bg-[rgba(10,16,24,0.75)] p-3">
-                        <div className="metric-label">Selected Ladder</div>
-                        <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                          {activePremarketModeLadder.map((price) => price.toFixed(2)).join(", ")}
-                        </div>
-                      </div>
-                      <div className="rounded-[0.9rem] border border-[var(--border)] bg-[rgba(10,16,24,0.75)] p-3">
-                        <div className="metric-label">Change Preview</div>
-                        <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
-                          {activePremarketDefaultLadder[0].toFixed(2)} to{" "}
-                          {activePremarketModeLadder[0].toFixed(2)},{" "}
-                          {activePremarketDefaultLadder[1].toFixed(2)} to{" "}
-                          {activePremarketModeLadder[1].toFixed(2)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
           </>
         ) : null}
 
@@ -755,7 +609,7 @@ export function StrategyEditorPane({
                 </div>
               </div>
               <div className="surface-panel__body">
-                <label className="field-label">Per-Period Cap (USD)</label>
+                <label className="field-label">Per-Period Cap (pUSD)</label>
                 <input
                   type="number"
                   min="0"
@@ -786,19 +640,6 @@ export function StrategyEditorPane({
               config.strategy_settings.evcurve.timeframes,
               (next) => patchEVCurve({ timeframes: next })
             )}
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Alpha Signal</h2>
-                  <p className="surface-panel__subtitle">
-                    EVcurve local controls are limited to scope and sizing. Runtime requires an EVPlus Alpha signal before a checkpoint can trade.
-                  </p>
-                </div>
-              </div>
-              <div className="surface-panel__body">
-                <div className="inline-alert">Alpha signal: required</div>
-              </div>
-            </div>
           </>
         ) : null}
 
@@ -811,19 +652,6 @@ export function StrategyEditorPane({
               config.strategy_settings.session_band.timeframes,
               (next) => patchSessionBand({ timeframes: next })
             )}
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Alpha Signal</h2>
-                  <p className="surface-panel__subtitle">
-                    S-Band keeps local scope and sizing controls here. Runtime requires an EVPlus Alpha signal before a checkpoint can trade.
-                  </p>
-                </div>
-              </div>
-              <div className="surface-panel__body">
-                <div className="inline-alert">Alpha signal: required</div>
-              </div>
-            </div>
           </>
         ) : null}
       </div>
@@ -884,51 +712,9 @@ export function StrategyEditorPane({
     }
 
     if (selectedStrategy === "endgame") {
-      const endgame = config.strategy_settings.endgame;
-      const total = endgame.tick0_multiplier + endgame.tick1_multiplier + endgame.tick2_multiplier;
       return (
         <div className="space-y-4">
           {renderSymbolMultiplierCard()}
-          <div className="surface-panel">
-            <div className="surface-panel__header">
-              <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Tick Split</h2>
-                <p className="surface-panel__subtitle">
-                  Split the base size across Tick 0, Tick 1, and Tick 2.
-                </p>
-              </div>
-            </div>
-            <div className="surface-panel__body space-y-4">
-              {([
-                ["tick0_multiplier", "Tick 0"],
-                ["tick1_multiplier", "Tick 1"],
-                ["tick2_multiplier", "Tick 2"],
-              ] as const).map(([key, label]) => (
-                <div key={key}>
-                  <label className="field-label">{label}</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.05"
-                    value={endgame[key]}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchEndgame({
-                        [key]: parseNonNegative(event.target.value, endgame[key]),
-                      } as Partial<BotConfig["strategy_settings"]["endgame"]>)
-                    }
-                    className="field-input"
-                  />
-                </div>
-              ))}
-              <div className="metric-detail">
-                Current total: {(total * 100).toFixed(0)}% | Rail tooltip:{" "}
-                {`${Math.round(endgame.tick0_multiplier * 100)} / ${Math.round(
-                  endgame.tick1_multiplier * 100
-                )} / ${Math.round(endgame.tick2_multiplier * 100)}`}
-              </div>
-            </div>
-          </div>
         </div>
       );
     }
@@ -972,78 +758,8 @@ export function StrategyEditorPane({
     }
 
     if (selectedStrategy === "session_band") {
-      const sessionBand = config.strategy_settings.session_band;
       return (
         <div className="space-y-4">
-          <div className="surface-panel">
-            <div className="surface-panel__header">
-              <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Tau Windows</h2>
-                <p className="surface-panel__subtitle">Control which late windows can trigger and how heavily they size.</p>
-              </div>
-            </div>
-            <div className="surface-panel__body space-y-4">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="field-label">T-2</label>
-                  {renderBooleanChoice(
-                    sessionBand.tau2_enabled,
-                    (next) => patchSessionBand({ tau2_enabled: next }),
-                    !canEdit
-                  )}
-                </div>
-                <div>
-                  <label className="field-label">T-2 Multiplier</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.05"
-                    value={sessionBand.tau2_multiplier}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchSessionBand({
-                        tau2_multiplier: parseNonNegative(
-                          event.target.value,
-                          sessionBand.tau2_multiplier
-                        ),
-                      })
-                    }
-                    className="field-input"
-                  />
-                </div>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="field-label">T-1</label>
-                  {renderBooleanChoice(
-                    sessionBand.tau1_enabled,
-                    (next) => patchSessionBand({ tau1_enabled: next }),
-                    !canEdit
-                  )}
-                </div>
-                <div>
-                  <label className="field-label">T-1 Multiplier</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.05"
-                    value={sessionBand.tau1_multiplier}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchSessionBand({
-                        tau1_multiplier: parseNonNegative(
-                          event.target.value,
-                          sessionBand.tau1_multiplier
-                        ),
-                      })
-                    }
-                    className="field-input"
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-
           {renderSymbolMultiplierCard()}
         </div>
       );

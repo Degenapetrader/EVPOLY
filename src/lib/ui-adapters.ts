@@ -27,7 +27,7 @@ export const STRATEGY_META: Record<
   },
   session_band: {
     label: "S-Band",
-    summary: "Trades late-window S-Band setups from EVPlus Alpha signals.",
+    summary: "Trades late-window S-Band setups with EVPlus checks.",
   },
   evsnipe: {
     label: "EVSnipe",

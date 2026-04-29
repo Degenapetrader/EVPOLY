@@ -34,7 +34,7 @@ Local and remote discovery are aligned to the same EVSnipe filtering model (Poly
 ## Sizing and Caps
 - `EVPOLY_EVSNIPE_SIZE_USD` default `10`
 - `EVPOLY_EVSNIPE_PRE_LEG_RATIO` default `0.30`
-- `EVPOLY_EVSNIPE_STRATEGY_CAP_USD` is ignored by runtime; shared arbiter caps still apply.
+- `EVPOLY_EVSNIPE_STRATEGY_CAP_USD` is honored as the runtime EVSnipe in-loop submit cap; shared arbiter caps still apply.
 
 ## Key Env Knobs
 - `EVPOLY_STRATEGY_EVSNIPE_ENABLE`
@@ -44,5 +44,6 @@ Local and remote discovery are aligned to the same EVSnipe filtering model (Poly
 - `EVPOLY_EVSNIPE_MAX_DAYS_TO_EXPIRY`
 - `EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT`
 - `EVPOLY_EVSNIPE_SIZE_USD`
+- `EVPOLY_EVSNIPE_STRATEGY_CAP_USD`
 - `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL`
 - `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN`

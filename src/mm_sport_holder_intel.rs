@@ -871,6 +871,7 @@ mod tests {
             polymarket_sports_event_state: None,
             reward_rate_per_day: 500.0,
             reward_min_size_shares: 1000.0,
+            reward_max_spread: 0.03,
             minimum_tick_size: 0.01,
             minimum_order_size_usd: 1.0,
             game_start_ts_ms: Utc::now().timestamp_millis() + (4 * 3_600_000),

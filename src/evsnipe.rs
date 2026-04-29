@@ -226,8 +226,12 @@ impl EvsnipeConfig {
                 .max(1)
                 .min(8),
             binance_stale_ms: env_i64("EVPOLY_EVSNIPE_BINANCE_STALE_MS", 1_200).max(200),
-            // Keep the EVSnipe in-loop cap effectively disabled and ignore any stale env override.
-            strategy_cap_usd: EVSNIPE_INTERNAL_STRATEGY_CAP_USD,
+            strategy_cap_usd: env_f64(
+                "EVPOLY_EVSNIPE_STRATEGY_CAP_USD",
+                EVSNIPE_INTERNAL_STRATEGY_CAP_USD,
+            )
+            .max(1.0)
+            .min(EVSNIPE_INTERNAL_STRATEGY_CAP_USD),
             max_inflight_tasks: env_usize("EVPOLY_EVSNIPE_MAX_INFLIGHT_TASKS", 16).max(1),
         }
     }
@@ -1835,7 +1839,7 @@ mod tests {
     }
 
     #[test]
-    fn evsnipe_strategy_cap_env_is_ignored() {
+    fn evsnipe_strategy_cap_env_is_read() {
         with_evsnipe_env(
             &[
                 ("EVPOLY_EVSNIPE_STRATEGY_CAP_USD", Some("25")),
@@ -1843,7 +1847,7 @@ mod tests {
             ],
             || {
                 let cfg = EvsnipeConfig::from_env();
-                assert_eq!(cfg.strategy_cap_usd, EVSNIPE_INTERNAL_STRATEGY_CAP_USD);
+                assert_eq!(cfg.strategy_cap_usd, 25.0);
             },
         );
     }

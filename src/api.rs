@@ -73,6 +73,7 @@ sol! {
 const RELAYER_SUBMIT_SIGNER_URL_DEFAULT: &str =
     "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign/submit";
 const AUTO_REDEEM_OPERATOR_ADDRESS: &str = "0x05cD9922A5d37faE921Fc5Dee280A9dBc4C3b393";
+const POLYMARKET_PUSD_COLLATERAL_ADDRESS: &str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
 const USDC_BALANCE_CACHE_HIT_TTL_MS: i64 = 60_000;
 const USDC_BALANCE_CACHE_FALLBACK_TTL_MS: i64 = 180_000;
 const TICK_METADATA_RL_BACKOFF_BASE_MS: i64 = 1_000;
@@ -7200,11 +7201,13 @@ impl PolymarketApi {
         [hash[0], hash[1], hash[2], hash[3]]
     }
 
+    fn current_collateral_token_address() -> Result<AlloyAddress> {
+        AlloyAddress::parse_checksummed(POLYMARKET_PUSD_COLLATERAL_ADDRESS, None)
+            .context("Failed to parse pUSD address")
+    }
+
     fn encode_redeem_positions_call_data(condition_id: &str) -> Result<String> {
-        // pUSD collateral token address on Polygon.
-        let collateral_token =
-            AlloyAddress::parse_checksummed("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", None)
-                .context("Failed to parse pUSD address")?;
+        let collateral_token = Self::current_collateral_token_address()?;
         let condition_id_clean = condition_id.strip_prefix("0x").unwrap_or(condition_id);
         let condition_id_b256 = B256::from_str(condition_id_clean).context(format!(
             "Failed to parse condition_id to B256: {}",
@@ -7240,10 +7243,7 @@ impl PolymarketApi {
         condition_id: &str,
         pair_amount_shares: f64,
     ) -> Result<String> {
-        // pUSD collateral token address on Polygon.
-        let collateral_token =
-            AlloyAddress::parse_checksummed("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", None)
-                .context("Failed to parse pUSD address")?;
+        let collateral_token = Self::current_collateral_token_address()?;
         let condition_id_clean = condition_id.strip_prefix("0x").unwrap_or(condition_id);
         let condition_id_b256 = B256::from_str(condition_id_clean).context(format!(
             "Failed to parse condition_id to B256: {}",
@@ -7936,6 +7936,38 @@ mod tests {
                 "mergePositions(address,bytes32,bytes32,uint256[],uint256)"
             ),
             [0x9e, 0x72, 0x12, 0xad]
+        );
+    }
+
+    fn first_call_address_arg(call_data: &str) -> AlloyAddress {
+        let clean = call_data.strip_prefix("0x").unwrap_or(call_data);
+        let bytes = hex::decode(clean).expect("valid calldata hex");
+        assert!(bytes.len() >= 36);
+        AlloyAddress::from_slice(&bytes[16..36])
+    }
+
+    #[test]
+    fn redeem_positions_uses_pusd_collateral() {
+        let call_data = PolymarketApi::encode_redeem_positions_call_data(
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .expect("redeem calldata");
+        assert_eq!(
+            first_call_address_arg(call_data.as_str()),
+            PolymarketApi::current_collateral_token_address().expect("pUSD address")
+        );
+    }
+
+    #[test]
+    fn merge_positions_uses_pusd_collateral() {
+        let call_data = PolymarketApi::encode_merge_positions_call_data(
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+            1.0,
+        )
+        .expect("merge calldata");
+        assert_eq!(
+            first_call_address_arg(call_data.as_str()),
+            PolymarketApi::current_collateral_token_address().expect("pUSD address")
         );
     }
 

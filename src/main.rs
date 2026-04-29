@@ -204,6 +204,7 @@ struct MmSportMarket {
     polymarket_sports_event_state: Option<SportsLiveSnapshot>,
     reward_rate_per_day: f64,
     reward_min_size_shares: f64,
+    reward_max_spread: f64,
     minimum_tick_size: f64,
     minimum_order_size_usd: f64,
     game_start_ts_ms: i64,
@@ -459,6 +460,12 @@ fn evsnipe_hit_leg_key(condition_id: &str, leg: EvsnipeHitLeg) -> String {
 
 fn evsnipe_hit_leg_condition_id(leg_key: &str) -> &str {
     leg_key.split(':').next().unwrap_or(leg_key)
+}
+
+fn evsnipe_hit_leg_blocked(state: &EvsnipeRuntimeState, condition_id: &str, leg_key: &str) -> bool {
+    state.fired_conditions.contains(condition_id)
+        || state.fired_hit_legs.contains(leg_key)
+        || state.inflight_hit_legs.contains(leg_key)
 }
 
 fn evsnipe_condition_expiry_ts(end_ts: Option<i64>, now_sec: i64, max_days_to_expiry: u64) -> i64 {
@@ -1645,6 +1652,27 @@ fn mm_sport_fresh_entry_reward_metadata_allowed(
         && reward_min_size_shares > 0.0
         && reward_max_spread.is_finite()
         && reward_max_spread > 0.0
+}
+
+fn mm_sport_fresh_entry_reward_block_reason(
+    market: &MmSportMarket,
+    cfg: &mm::MmSportConfig,
+) -> Option<&'static str> {
+    if !mm_sport_fresh_entry_reward_rate_allowed(
+        market.reward_rate_per_day,
+        cfg.min_reward_rate_per_day,
+    ) {
+        return Some("low_reward_rate");
+    }
+    if !mm_sport_fresh_entry_reward_metadata_allowed(
+        cfg.require_reward_eligible,
+        market.is_sports_market,
+        market.reward_min_size_shares,
+        market.reward_max_spread,
+    ) {
+        return Some("not_reward_eligible");
+    }
+    None
 }
 
 #[cfg(test)]
@@ -3527,6 +3555,7 @@ async fn mm_sport_discover_markets(
                 polymarket_sports_event_state,
                 reward_rate_per_day: reward_rate,
                 reward_min_size_shares,
+                reward_max_spread,
                 minimum_tick_size,
                 minimum_order_size_usd,
                 game_start_ts_ms: effective_game_start_ts_ms,
@@ -15180,9 +15209,11 @@ async fn main() -> Result<()> {
                                 now_ms.saturating_div(1_000),
                                 evsnipe_cfg_for_trade.max_days_to_expiry,
                             );
-                            if state.fired_hit_legs.contains(leg_key.as_str())
-                                || state.inflight_hit_legs.contains(leg_key.as_str())
-                            {
+                            if evsnipe_hit_leg_blocked(
+                                &state,
+                                spec.condition_id.as_str(),
+                                leg_key.as_str(),
+                            ) {
                                 continue;
                             }
                             let already_reserved = state
@@ -16396,6 +16427,10 @@ async fn main() -> Result<()> {
                             .ok()
                             .filter(|v| v.is_finite() && *v > 0.0)
                             .unwrap_or(0.0);
+                        let reward_max_spread = f64::try_from(details.rewards.max_spread)
+                            .ok()
+                            .filter(|v| v.is_finite() && *v > 0.0)
+                            .unwrap_or(0.0);
                         let minimum_tick_size = f64::try_from(details.minimum_tick_size)
                             .ok()
                             .filter(|v| v.is_finite() && *v > 0.0)
@@ -16418,6 +16453,7 @@ async fn main() -> Result<()> {
                                 polymarket_sports_event_state: None,
                                 reward_rate_per_day: 0.0,
                                 reward_min_size_shares,
+                                reward_max_spread,
                                 minimum_tick_size,
                                 minimum_order_size_usd,
                                 game_start_ts_ms,
@@ -16761,6 +16797,10 @@ async fn main() -> Result<()> {
                                 .ok()
                                 .filter(|v| v.is_finite() && *v > 0.0)
                                 .unwrap_or(0.0);
+                            let reward_max_spread = f64::try_from(details.rewards.max_spread)
+                                .ok()
+                                .filter(|v| v.is_finite() && *v > 0.0)
+                                .unwrap_or(0.0);
                             let minimum_tick_size = f64::try_from(details.minimum_tick_size)
                                 .ok()
                                 .filter(|v| v.is_finite() && *v > 0.0)
@@ -16783,6 +16823,7 @@ async fn main() -> Result<()> {
                                     polymarket_sports_event_state: None,
                                     reward_rate_per_day: 0.0,
                                     reward_min_size_shares,
+                                    reward_max_spread,
                                     minimum_tick_size,
                                     minimum_order_size_usd,
                                     game_start_ts_ms,
@@ -17543,6 +17584,42 @@ async fn main() -> Result<()> {
                                 .await;
                             }
                             continue;
+                        }
+                        if !inventory_exit_mode {
+                            if let Some(reason) = mm_sport_fresh_entry_reward_block_reason(
+                                market,
+                                &mm_sport_cfg_for_loop,
+                            ) {
+                                let buy_rows = market_rows
+                                    .iter()
+                                    .filter(|row| row.side.eq_ignore_ascii_case("BUY"))
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                if !buy_rows.is_empty() {
+                                    let _ = mm_sport_cancel_pending_rows(
+                                        &api_for_mm_sport,
+                                        &tracking_db_for_mm_sport,
+                                        buy_rows.as_slice(),
+                                    )
+                                    .await;
+                                }
+                                log_event(
+                                    "mm_sport_skip_fresh_entry_reward_filter",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                        "condition_id": market.condition_id,
+                                        "market_slug": market.market_slug,
+                                        "reason": reason,
+                                        "reward_rate_per_day": market.reward_rate_per_day,
+                                        "min_reward_rate_per_day": mm_sport_cfg_for_loop.min_reward_rate_per_day,
+                                        "reward_min_size_shares": market.reward_min_size_shares,
+                                        "reward_max_spread": market.reward_max_spread,
+                                        "require_reward_eligible": mm_sport_cfg_for_loop.require_reward_eligible,
+                                        "buy_cancel_count": buy_rows.len()
+                                    }),
+                                );
+                                continue;
+                            }
                         }
                         let up_no_exit_side_paused = mm_sport_no_exit_side_pause_active(
                             &no_exit_side_pause_by_token,
@@ -26300,6 +26377,7 @@ mod tests {
             polymarket_sports_event_state: None,
             reward_rate_per_day,
             reward_min_size_shares: 1.0,
+            reward_max_spread: 0.03,
             minimum_tick_size: 0.01,
             minimum_order_size_usd: 1.0,
             game_start_ts_ms,
@@ -26522,6 +26600,56 @@ mod tests {
         ));
         assert!(!mm_sport_fresh_entry_reward_metadata_allowed(
             false, false, 0.0, 0.0
+        ));
+    }
+
+    #[test]
+    fn mm_sport_fresh_entry_reward_block_reason_blocks_low_rate_and_missing_metadata() {
+        let mut cfg = mm::MmSportConfig::default();
+        cfg.min_reward_rate_per_day = 5.0;
+        cfg.require_reward_eligible = true;
+
+        let mut market = mm_sport_test_market("cond-low", 4.99, 2_000_000_000_000);
+        assert_eq!(
+            mm_sport_fresh_entry_reward_block_reason(&market, &cfg),
+            Some("low_reward_rate")
+        );
+
+        market.reward_rate_per_day = 5.0;
+        market.reward_max_spread = 0.0;
+        assert_eq!(
+            mm_sport_fresh_entry_reward_block_reason(&market, &cfg),
+            Some("not_reward_eligible")
+        );
+
+        market.reward_max_spread = 0.03;
+        assert_eq!(
+            mm_sport_fresh_entry_reward_block_reason(&market, &cfg),
+            None
+        );
+    }
+
+    #[test]
+    fn evsnipe_confirmed_condition_blocks_later_pre_leg() {
+        let mut state = EvsnipeRuntimeState::default();
+        state.fired_conditions.insert("cond-a".to_string());
+        let leg_key = evsnipe_hit_leg_key("cond-a", EvsnipeHitLeg::Pre);
+
+        assert!(evsnipe_hit_leg_blocked(&state, "cond-a", leg_key.as_str()));
+    }
+
+    #[test]
+    fn evsnipe_pre_leg_does_not_block_confirm_leg() {
+        let mut state = EvsnipeRuntimeState::default();
+        state
+            .fired_hit_legs
+            .insert(evsnipe_hit_leg_key("cond-a", EvsnipeHitLeg::Pre));
+        let confirm_key = evsnipe_hit_leg_key("cond-a", EvsnipeHitLeg::Confirm);
+
+        assert!(!evsnipe_hit_leg_blocked(
+            &state,
+            "cond-a",
+            confirm_key.as_str()
         ));
     }
 

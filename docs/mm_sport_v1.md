@@ -34,13 +34,15 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
 ## Safety Controls
 
 - Fresh-entry reward gates:
-  - `EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY=300`
+  - `EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY=5`
   - `EVPOLY_MM_SPORT_REQUIRE_REWARD_ELIGIBLE=true`
+  - discovery and the live quote loop both block fresh BUY quotes below the reward floor
   - when reward eligibility is required, fresh BUY quotes require real reward metadata (`reward_min_size_shares > 0` and `reward_max_spread > 0`)
 - Match-market filter:
   - `EVPOLY_MM_SPORT_MATCH_ONLY=true`
   - default ON; sports futures/outrights are skipped for fresh entries unless this is explicitly disabled
 - pUSD collateral quote cap:
+  - `EVPOLY_MM_SPORT_QUOTE_SIZE_MODE=depth_ratio`
   - `EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT=0.45`
   - `EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT=0.90`
 - Live-game guard:
@@ -75,9 +77,13 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
 - `EVPOLY_MM_SPORT_ORDER_SUBMIT_TIMEOUT_MS`
 - `EVPOLY_MM_SPORT_MAX_SHARE_RATIO`
 - `EVPOLY_MM_SPORT_MAX_MARKETS`
+- `EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC`
+- `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC`
+- `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC`
 
 ## Notes
 
 - The legacy generic rewards-MM strategy is not part of the public V2 runtime.
+- Existing inventory and open orders can still be canceled or unwound even when a market no longer qualifies for fresh entry.
 - Prime Line Coverage is platform-only and is not part of MM 2.0 in main2.
 - Review sizing and inventory risk before combining MM 2.0 with heavy directional profiles.

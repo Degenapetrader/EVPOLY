@@ -9,7 +9,7 @@ pub enum MmSportQuoteSizeMode {
 impl MmSportQuoteSizeMode {
     fn from_env(raw: Option<String>) -> Self {
         match raw
-            .unwrap_or_else(|| "multiple".to_string())
+            .unwrap_or_else(|| "depth_ratio".to_string())
             .trim()
             .to_ascii_lowercase()
             .as_str()
@@ -151,9 +151,9 @@ impl MmSportConfig {
         let bust_pause_max_sec =
             env_u64("EVPOLY_MM_SPORT_BUST_PAUSE_MAX_SEC", 300).clamp(bust_pause_min_sec, 7_200);
         let quote_expiry_min_sec =
-            env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", 180).clamp(61, 3_600);
+            env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", 65).clamp(61, 3_600);
         let quote_expiry_max_sec =
-            env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 300).clamp(quote_expiry_min_sec, 7_200);
+            env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 185).clamp(quote_expiry_min_sec, 7_200);
         Self {
             enable: env_bool("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false),
             hard_disable: env_bool("EVPOLY_MM_SPORT_HARD_DISABLE", false),
@@ -163,7 +163,7 @@ impl MmSportConfig {
             ws_stale_ms: env_u64("EVPOLY_MM_SPORT_WS_STALE_MS", 2_500).clamp(250, 30_000) as i64,
             discovery_refresh_sec: 300,
             rewards_page_budget: env_u32("EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET", 8).clamp(1, 200),
-            min_reward_rate_per_day: env_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 300.0)
+            min_reward_rate_per_day: env_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 5.0)
                 .max(0.0),
             discovery_route: MmSportDiscoveryRoute::from_env(
                 std::env::var("EVPOLY_MM_SPORT_DISCOVERY_ROUTE").ok(),
@@ -210,7 +210,7 @@ impl MmSportConfig {
             min_top_depth_usd: env_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 1_100.0).max(0.0),
             inventory_exit_start_sec: env_u64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28_800)
                 .clamp(300, 172_800),
-            pause_after_fill_sec: env_u64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 7_200)
+            pause_after_fill_sec: env_u64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 600)
                 .clamp(60, 86_400),
             no_exit_side_pause_sec: env_u64("EVPOLY_MM_SPORT_NO_EXIT_SIDE_PAUSE_SEC", 3_600)
                 .clamp(60, 86_400),

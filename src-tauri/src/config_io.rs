@@ -112,6 +112,37 @@ fn normalized_mm_market_mode(env_map: &HashMap<String, String>) -> String {
     }
 }
 
+fn normalize_usize_min(env_map: &mut HashMap<String, String>, key: &str, minimum: usize) {
+    let needs_update = env_map
+        .get(key)
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .map(|value| value < minimum)
+        .unwrap_or(true);
+    if needs_update {
+        env_map.insert(key.to_string(), minimum.to_string());
+    }
+}
+
+fn normalize_usize_max(env_map: &mut HashMap<String, String>, key: &str, maximum: usize) {
+    let needs_update = env_map
+        .get(key)
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .map(|value| value > maximum)
+        .unwrap_or(true);
+    if needs_update {
+        env_map.insert(key.to_string(), maximum.to_string());
+    }
+}
+
+fn normalize_redemption_defaults(env_map: &mut HashMap<String, String>) {
+    normalize_usize_min(env_map, "EVPOLY_REDEMPTION_MAX_CONDITIONS_PER_SWEEP", 10);
+    normalize_usize_max(
+        env_map,
+        "EVPOLY_REDEMPTION_AUTO_TRIGGER_PENDING_THRESHOLD",
+        3,
+    );
+}
+
 fn normalize_premarket_alpha_url(value: &str) -> String {
     let trimmed = value.trim();
     let path = trimmed.trim_end_matches('/');
@@ -231,6 +262,7 @@ pub fn generate_env_file(
         "EVPOLY_MM_MARKET_MODE".into(),
         normalized_mm_market_mode(&env_map),
     );
+    normalize_redemption_defaults(&mut env_map);
 
     if env_map
         .get("EVPOLY_ADMIN_API_TOKEN")
@@ -558,6 +590,31 @@ mod tests {
         let content = std::fs::read_to_string(&env_path).expect("read env");
 
         assert!(content.contains("EVPOLY_MM_MARKET_MODE=hybrid"));
+
+        let _ = std::fs::remove_file(env_path);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn generate_env_file_normalizes_legacy_redemption_throughput_defaults() {
+        let mut profile = sample_profile();
+        profile.strategy_config = serde_json::json!({
+            "EVPOLY_REDEMPTION_MAX_CONDITIONS_PER_SWEEP": 3.0,
+            "EVPOLY_REDEMPTION_AUTO_TRIGGER_PENDING_THRESHOLD": 10.0
+        });
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "evpoly-config-io-redemption-defaults-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let env_path =
+            generate_env_file(&profile, &HashMap::new(), &temp_dir).expect("generate env");
+        let content = std::fs::read_to_string(&env_path).expect("read env");
+
+        assert!(content.contains("EVPOLY_REDEMPTION_MAX_CONDITIONS_PER_SWEEP=10"));
+        assert!(content.contains("EVPOLY_REDEMPTION_AUTO_TRIGGER_PENDING_THRESHOLD=3"));
 
         let _ = std::fs::remove_file(env_path);
         let _ = std::fs::remove_dir_all(temp_dir);

@@ -251,7 +251,6 @@ export interface OnboardResult {
   discovery_token?: string;
   premarket_alpha_token?: string;
   endgame_alpha_token?: string;
-  mm_rewards_alpha_token?: string;
   evsnipe_discovery_token?: string;
   admin_api_token?: string;
   [key: string]: unknown;
@@ -467,7 +466,6 @@ export interface BotConfig {
   remote_discovery_token: string;
   remote_premarket_alpha_token: string;
   remote_endgame_alpha_token: string;
-  remote_mm_rewards_alpha_token: string;
   remote_evsnipe_discovery_token: string;
   admin_api_token: string;
 }

@@ -161,7 +161,6 @@ const SAMPLE_CONFIG: BotConfig = {
   remote_discovery_token: "",
   remote_premarket_alpha_token: "",
   remote_endgame_alpha_token: "",
-  remote_mm_rewards_alpha_token: "",
   remote_evsnipe_discovery_token: "",
   admin_api_token: "",
 };

@@ -46,7 +46,7 @@ type WalletSyncState = Arc<Mutex<WalletSyncManager>>;
 
 const DESKTOP_SYMBOL_ORDER: [&str; 7] = ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"];
 const CORE_STRATEGY_SYMBOLS: [&str; 4] = ["BTC", "ETH", "SOL", "XRP"];
-const DESKTOP_SECRET_KEYS: [&str; 11] = [
+const DESKTOP_SECRET_KEYS: [&str; 10] = [
     "POLY_PRIVATE_KEY",
     "RELAYER_API_KEY",
     "RELAYER_API_KEY_ADDRESS",
@@ -55,7 +55,6 @@ const DESKTOP_SECRET_KEYS: [&str; 11] = [
     "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN",
     "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
     "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
-    "EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN",
     "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
     "EVPOLY_ADMIN_API_TOKEN",
 ];
@@ -357,7 +356,6 @@ struct DesktopConfig {
     remote_discovery_token: String,
     remote_premarket_alpha_token: String,
     remote_endgame_alpha_token: String,
-    remote_mm_rewards_alpha_token: String,
     remote_evsnipe_discovery_token: String,
     admin_api_token: String,
 }
@@ -623,7 +621,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
             evcurve: config_io::env_template_default_bool("EVPOLY_STRATEGY_EVCURVE_ENABLE", false),
             session_band: config_io::env_template_default_bool(
                 "EVPOLY_STRATEGY_SESSIONBAND_ENABLE",
-                false,
+                true,
             ),
             evsnipe: config_io::env_template_default_bool("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),
             mm_rewards: config_io::env_template_default_bool(
@@ -969,7 +967,6 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
         remote_discovery_token: String::new(),
         remote_premarket_alpha_token: String::new(),
         remote_endgame_alpha_token: String::new(),
-        remote_mm_rewards_alpha_token: String::new(),
         remote_evsnipe_discovery_token: String::new(),
         admin_api_token: String::new(),
     }
@@ -1049,7 +1046,6 @@ fn has_shared_alpha_source(config: &DesktopConfig) -> bool {
     [
         config.remote_premarket_alpha_token.as_str(),
         config.remote_endgame_alpha_token.as_str(),
-        config.remote_mm_rewards_alpha_token.as_str(),
         config.remote_discovery_token.as_str(),
         config.remote_evsnipe_discovery_token.as_str(),
     ]
@@ -1219,16 +1215,6 @@ fn audit_setup_doctor(config: &DesktopConfig) -> SetupDoctorAudit {
             "Endgame Remote Token",
             "The Endgame remote alpha token is missing and will be regenerated from onboarding.",
             Some("Endgame"),
-        );
-    }
-
-    if config.remote_mm_rewards_alpha_token.trim().is_empty() {
-        push_doctor_missing_generated(
-            &mut audit,
-            "remote_mm_rewards_alpha_token",
-            "MM Rewards Remote Token",
-            "The MM Rewards remote alpha token is missing and will be regenerated from onboarding.",
-            Some("MM Rewards"),
         );
     }
 
@@ -2085,12 +2071,6 @@ fn desktop_config_to_profile_payload(
             config.remote_endgame_alpha_token.trim().to_string(),
         );
     }
-    if !config.remote_mm_rewards_alpha_token.trim().is_empty() {
-        secrets.insert(
-            "EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN".to_string(),
-            config.remote_mm_rewards_alpha_token.trim().to_string(),
-        );
-    }
     if !config.remote_evsnipe_discovery_token.trim().is_empty() {
         secrets.insert(
             "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN".to_string(),
@@ -2222,7 +2202,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
             "premarket": bool_from_object(&strategy, "EVPOLY_STRATEGY_PREMARKET_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_PREMARKET_ENABLE", true)),
             "endgame": bool_from_object(&strategy, "EVPOLY_STRATEGY_ENDGAME_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_ENDGAME_ENABLE", true)),
             "evcurve": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVCURVE_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_EVCURVE_ENABLE", false)),
-            "session_band": bool_from_object(&strategy, "EVPOLY_STRATEGY_SESSIONBAND_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", false)),
+            "session_band": bool_from_object(&strategy, "EVPOLY_STRATEGY_SESSIONBAND_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true)),
             "evsnipe": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVSNIPE_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true)),
             "mm_rewards": bool_from_object(&strategy, "EVPOLY_STRATEGY_MM_REWARDS_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_MM_REWARDS_ENABLE", false)),
             "mm_sport": bool_from_object(&strategy, "EVPOLY_STRATEGY_MM_SPORT_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false))
@@ -2367,7 +2347,6 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "remote_discovery_token": secrets.get("EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN").cloned().unwrap_or_default(),
         "remote_premarket_alpha_token": secrets.get("EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN").cloned().unwrap_or_default(),
         "remote_endgame_alpha_token": secrets.get("EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN").cloned().unwrap_or_default(),
-        "remote_mm_rewards_alpha_token": secrets.get("EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN").cloned().unwrap_or_default(),
         "remote_evsnipe_discovery_token": secrets.get("EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN").cloned().unwrap_or_default(),
         "admin_api_token": secrets.get("EVPOLY_ADMIN_API_TOKEN").cloned().unwrap_or_default()
     }))
@@ -2438,7 +2417,7 @@ fn count_enabled_strategies(profile: &Profile) -> usize {
         ("EVPOLY_STRATEGY_PREMARKET_ENABLE", true),
         ("EVPOLY_STRATEGY_ENDGAME_ENABLE", true),
         ("EVPOLY_STRATEGY_EVCURVE_ENABLE", true),
-        ("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", false),
+        ("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true),
         ("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),
         ("EVPOLY_STRATEGY_MM_REWARDS_ENABLE", false),
         ("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false),
@@ -3891,10 +3870,6 @@ async fn run_setup_doctor(
                 onboarding.endgame_alpha_token.as_deref(),
             ),
             (
-                "remote_mm_rewards_alpha_token",
-                onboarding.mm_rewards_alpha_token.as_deref(),
-            ),
-            (
                 "remote_evsnipe_discovery_token",
                 onboarding.evsnipe_discovery_token.as_deref(),
             ),
@@ -3943,15 +3918,6 @@ async fn run_setup_doctor(
                     if let Some(value) = value {
                         if config.remote_endgame_alpha_token.trim() != value {
                             config.remote_endgame_alpha_token = value.to_string();
-                            config_changed = true;
-                            fixed_keys.push(key.to_string());
-                        }
-                    }
-                }
-                "remote_mm_rewards_alpha_token" => {
-                    if let Some(value) = value {
-                        if config.remote_mm_rewards_alpha_token.trim() != value {
-                            config.remote_mm_rewards_alpha_token = value.to_string();
                             config_changed = true;
                             fixed_keys.push(key.to_string());
                         }
@@ -4554,9 +4520,9 @@ async fn get_home_open_orders_api(
                 _ => None,
             };
             let side = match row.side {
-                polymarket_client_sdk::clob::types::Side::Buy => "BUY",
-                polymarket_client_sdk::clob::types::Side::Sell => "SELL",
-                polymarket_client_sdk::clob::types::Side::Unknown => "UNKNOWN",
+                polymarket_client_sdk_v2::clob::types::Side::Buy => "BUY",
+                polymarket_client_sdk_v2::clob::types::Side::Sell => "SELL",
+                polymarket_client_sdk_v2::clob::types::Side::Unknown => "UNKNOWN",
                 _ => "UNKNOWN",
             };
             serde_json::json!({

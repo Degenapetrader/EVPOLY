@@ -263,7 +263,7 @@ export const DEFAULT_CONFIG: BotConfig = {
     premarket: true,
     endgame: true,
     evcurve: true,
-    session_band: false,
+    session_band: true,
     evsnipe: true,
     mm_rewards: false,
     mm_sport: false,
@@ -296,7 +296,6 @@ export const DEFAULT_CONFIG: BotConfig = {
   remote_discovery_token: "",
   remote_premarket_alpha_token: "",
   remote_endgame_alpha_token: "",
-  remote_mm_rewards_alpha_token: "",
   remote_evsnipe_discovery_token: "",
   admin_api_token: "",
 };

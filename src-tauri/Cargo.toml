@@ -40,6 +40,6 @@ alloy-primitives = "1.0.27"
 alloy-signer = "1.0.27"
 alloy-signer-local = "1.0.27"
 hmac = "0.12"
-polymarket-client-sdk = { version = "0.4.4", features = ["clob"] }
+polymarket_client_sdk_v2 = { version = "=0.5.1", features = ["clob"] }
 secrecy = "0.10"
 sha2 = "0.10"

@@ -1,11 +1,11 @@
 use alloy_primitives::Address;
 use alloy_signer::Signer;
 use alloy_signer_local::LocalSigner;
-use polymarket_client_sdk::clob::types::request::OrdersRequest;
-use polymarket_client_sdk::clob::types::response::OpenOrderResponse;
-use polymarket_client_sdk::clob::types::SignatureType;
-use polymarket_client_sdk::clob::{Client, Config};
-use polymarket_client_sdk::POLYGON;
+use polymarket_client_sdk_v2::clob::types::request::OrdersRequest;
+use polymarket_client_sdk_v2::clob::types::response::OpenOrderResponse;
+use polymarket_client_sdk_v2::clob::types::SignatureType;
+use polymarket_client_sdk_v2::clob::{Client, Config};
+use polymarket_client_sdk_v2::POLYGON;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::str::FromStr;

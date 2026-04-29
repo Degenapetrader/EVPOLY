@@ -794,8 +794,21 @@ fn remote_url_default_named(name: &str) -> Option<&'static str> {
     }
 }
 
+fn normalize_remote_url_named(name: &str, value: String) -> String {
+    if name == "EVPOLY_REMOTE_PREMARKET_ALPHA_URL" {
+        let trimmed = value.trim().trim_end_matches('/');
+        if let Some(prefix) = trimmed.strip_suffix("/v1/alpha/premarket/should-trade") {
+            return format!("{prefix}/v1/alpha/premarket/ladder");
+        }
+        return value.trim().to_string();
+    }
+    value
+}
+
 fn env_nonempty_or_default_named(name: &str) -> Option<String> {
-    env_nonempty_named(name).or_else(|| remote_url_default_named(name).map(str::to_string))
+    env_nonempty_named(name)
+        .map(|value| normalize_remote_url_named(name, value))
+        .or_else(|| remote_url_default_named(name).map(str::to_string))
 }
 
 fn alpha_bearer_token_named(name: &str) -> Option<String> {
@@ -25632,6 +25645,62 @@ mod tests {
             || {
                 assert_eq!(admin_api_bind(), "127.0.0.1:9787");
             },
+        );
+    }
+
+    #[test]
+    fn remote_alpha_defaults_match_current_routes() {
+        let expected = [
+            (
+                "EVPOLY_REMOTE_MARKET_DISCOVERY_URL",
+                "https://alpha.evplus.ai/v1/discovery/timeframe",
+            ),
+            (
+                "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
+                "https://alpha.evplus.ai/v1/alpha/premarket/ladder",
+            ),
+            (
+                "EVPOLY_REMOTE_ENDGAME_ALPHA_URL",
+                "https://alpha.evplus.ai/v1/alpha/endgame/policy",
+            ),
+            (
+                "EVPOLY_REMOTE_EVCURVE_ALPHA_URL",
+                "https://alpha.evplus.ai/v1/alpha/evcurve",
+            ),
+            (
+                "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
+                "https://alpha.evplus.ai/v1/alpha/sessionband",
+            ),
+            (
+                "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL",
+                "https://alpha.evplus.ai/v1/discovery/evsnipe",
+            ),
+            (
+                "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL",
+                "https://alpha.evplus.ai/v1/alpha/mm-sport/depth-skip",
+            ),
+        ];
+
+        for (key, url) in expected {
+            assert_eq!(remote_url_default_named(key), Some(url), "{key}");
+        }
+    }
+
+    #[test]
+    fn premarket_alpha_url_normalizes_legacy_gate_route() {
+        assert_eq!(
+            normalize_remote_url_named(
+                "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
+                "https://alpha.evplus.ai/v1/alpha/premarket/should-trade".to_string()
+            ),
+            "https://alpha.evplus.ai/v1/alpha/premarket/ladder"
+        );
+        assert_eq!(
+            normalize_remote_url_named(
+                "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
+                "https://alpha2.evplus.ai/v1/alpha/premarket/should-trade/".to_string()
+            ),
+            "https://alpha2.evplus.ai/v1/alpha/premarket/ladder"
         );
     }
 

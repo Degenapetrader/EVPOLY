@@ -9,6 +9,11 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-04-29
+- Remote alpha config hardening: normalized stale Premarket `/should-trade` URLs to the current `/ladder` endpoint and added route-contract coverage for all active remote alpha/discovery defaults (`src/main.rs`; desktop wrapper env generation).
+  - affects `premarket_v1` generated/runtime env handling; stale desktop profiles or embedded templates no longer point main2 Premarket at the legacy SDK v1 gate response.
+  - active remote routes covered: shared timeframe discovery, Premarket ladder, Endgame policy, EVcurve, SessionBand, EVSnipe discovery, and MM 2.0 depth-skip alpha.
+
 ### 2026-04-28
 - `mm_sport_v1` / MM 2.0: allowed reward-eligible sports futures/outrights without CLOB `game_start_time` while preserving started-match protection (`src/main.rs`, `src/mm/mod.rs`, `.env.full.example`).
   - `EVPOLY_MM_SPORT_MATCH_ONLY` now defaults to `false`, so sports futures such as NBA champion markets are discoverable by default.

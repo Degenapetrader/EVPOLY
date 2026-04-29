@@ -45,6 +45,9 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
   - `EVPOLY_MM_SPORT_QUOTE_SIZE_MODE=depth_ratio`
   - `EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT=0.45`
   - `EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT=0.90`
+- Inventory exit loss guard:
+  - `EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS=10`
+  - exit SELL quotes are lifted to the configured floor below tracked average entry price
 - Live-game guard:
   - `EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_ENABLE=true`
   - `EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_ENABLE=true`
@@ -78,6 +81,7 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
 - `EVPOLY_MM_SPORT_MAX_SHARE_RATIO`
 - `EVPOLY_MM_SPORT_MAX_MARKETS`
 - `EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC`
+- `EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS`
 - `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC`
 - `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC`
 

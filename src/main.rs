@@ -1968,6 +1968,34 @@ fn mm_sport_passive_exit_price(best_ask: f64, tick_size: f64) -> f64 {
     best_ask.clamp(tick, 1.0 - tick)
 }
 
+fn mm_sport_inventory_exit_price_floor(
+    avg_entry_price: Option<f64>,
+    max_loss_cents: f64,
+    tick_size: f64,
+) -> Option<f64> {
+    let entry = avg_entry_price.filter(|price| price.is_finite() && *price > 0.0)?;
+    let tick = mm_sport_one_tick(tick_size);
+    let raw_floor = entry - (max_loss_cents.max(0.0) / 100.0);
+    let rounded_floor = ((raw_floor.max(tick) / tick) - 1e-9).ceil() * tick;
+    Some(rounded_floor.clamp(tick, 1.0 - tick))
+}
+
+fn mm_sport_apply_inventory_exit_price_floor(
+    plan: &mut MmSportExitOrderPlan,
+    avg_entry_price: Option<f64>,
+    max_loss_cents: f64,
+    tick_size: f64,
+) -> Option<(f64, f64)> {
+    let floor = mm_sport_inventory_exit_price_floor(avg_entry_price, max_loss_cents, tick_size)?;
+    if plan.submit_exit_price.is_finite() && plan.submit_exit_price + 1e-9 < floor {
+        let previous = plan.submit_exit_price;
+        plan.submit_exit_price = floor;
+        Some((previous, floor))
+    } else {
+        None
+    }
+}
+
 fn mm_sport_price_close(a: f64, b: f64, tick_size: f64) -> bool {
     let eps = (tick_size.max(0.000001) * 0.25).max(1e-9);
     (a - b).abs() <= eps
@@ -18903,7 +18931,16 @@ async fn main() -> Result<()> {
                                 } else {
                                     None
                                 };
-                                let exit_order_plan = mm_sport_exit_order_plan(
+                                let inventory_exit_avg_entry_price = tracking_db_for_mm_sport
+                                    .get_entry_fill_avg_price_for_strategy_condition_token(
+                                        STRATEGY_ID_MM_SPORT_V1,
+                                        market.condition_id.as_str(),
+                                        token_id.as_str(),
+                                    )
+                                    .ok()
+                                    .flatten()
+                                    .map(|(price, _units)| price);
+                                let mut exit_order_plan = mm_sport_exit_order_plan(
                                     mm_sport_cfg_for_loop.exit_mode,
                                     now_ms_local,
                                     market.game_start_ts_ms,
@@ -18912,6 +18949,32 @@ async fn main() -> Result<()> {
                                     market.minimum_tick_size,
                                     second_best_bid,
                                 );
+                                if let Some((original_exit_price, min_exit_price)) =
+                                    mm_sport_apply_inventory_exit_price_floor(
+                                        &mut exit_order_plan,
+                                        inventory_exit_avg_entry_price,
+                                        mm_sport_cfg_for_loop.inventory_exit_max_loss_cents,
+                                        market.minimum_tick_size,
+                                    )
+                                {
+                                    log_event(
+                                        "mm_sport_inventory_exit_price_floor_applied",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                            "condition_id": market.condition_id,
+                                            "market_slug": market.market_slug,
+                                            "token_id": token_id,
+                                            "avg_entry_price": inventory_exit_avg_entry_price,
+                                            "max_loss_cents": mm_sport_cfg_for_loop.inventory_exit_max_loss_cents,
+                                            "min_exit_price": min_exit_price,
+                                            "original_exit_price": original_exit_price,
+                                            "submit_exit_price": exit_order_plan.submit_exit_price,
+                                            "force_exit_mode": exit_order_plan.force_exit_mode,
+                                            "aggressive_mode": exit_order_plan.aggressive_mode,
+                                            "submit_post_only": exit_order_plan.submit_post_only
+                                        }),
+                                    );
+                                }
                                 if exit_order_plan.force_exit_mode {
                                     log_event(
                                         "mm_sport_inventory_exit_force_mode",
@@ -26228,6 +26291,22 @@ mod tests {
             game_start_ts_ms,
             game_start_ts_ms
         ));
+    }
+
+    #[test]
+    fn mm_sport_inventory_exit_price_floor_raises_underwater_exit_plan() {
+        let mut plan = MmSportExitOrderPlan {
+            submit_exit_price: 0.38,
+            submit_post_only: false,
+            force_exit_mode: true,
+            aggressive_mode: false,
+            target_level: 2,
+        };
+        let adjustment =
+            mm_sport_apply_inventory_exit_price_floor(&mut plan, Some(0.55), 10.0, 0.01);
+        assert_eq!(adjustment, Some((0.38, 0.45)));
+        assert!((plan.submit_exit_price - 0.45).abs() < 1e-9);
+        assert!(!plan.submit_post_only);
     }
 
     #[test]

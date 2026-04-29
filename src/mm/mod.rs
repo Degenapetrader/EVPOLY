@@ -116,6 +116,7 @@ pub struct MmSportConfig {
     pub max_share_ratio: f64,
     pub min_top_depth_usd: f64,
     pub inventory_exit_start_sec: u64,
+    pub inventory_exit_max_loss_cents: f64,
     pub pause_after_fill_sec: u64,
     pub no_exit_side_pause_sec: u64,
     pub bust_window_ms: i64,
@@ -210,6 +211,11 @@ impl MmSportConfig {
             min_top_depth_usd: env_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 1_100.0).max(0.0),
             inventory_exit_start_sec: env_u64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28_800)
                 .clamp(300, 172_800),
+            inventory_exit_max_loss_cents: env_f64(
+                "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS",
+                10.0,
+            )
+            .clamp(0.0, 99.0),
             pause_after_fill_sec: env_u64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 600)
                 .clamp(60, 86_400),
             no_exit_side_pause_sec: env_u64("EVPOLY_MM_SPORT_NO_EXIT_SIDE_PAUSE_SEC", 3_600)
@@ -500,12 +506,17 @@ mod tests {
                 ("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", Some("600.0")),
                 ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", Some("90.0")),
                 ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", Some("180.0")),
+                (
+                    "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS",
+                    Some("12.5"),
+                ),
             ],
             || {
                 let cfg = MmSportConfig::from_env();
                 assert_eq!(cfg.pause_after_fill_sec, 600);
                 assert_eq!(cfg.quote_expiry_min_sec, 90);
                 assert_eq!(cfg.quote_expiry_max_sec, 180);
+                assert!((cfg.inventory_exit_max_loss_cents - 12.5).abs() < 1e-9);
             },
         );
     }

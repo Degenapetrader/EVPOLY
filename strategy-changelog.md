@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-29
+- `mm_sport_v1` / MM 2.0 inventory-exit loss guard: added `EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS` default `10` and applies it before inventory-exit SELL placement (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+  - affects MM 2.0 inventory cleanup for all discovered markets; when tracked average entry exists, exit SELL quotes are lifted to avoid quoting more than the configured cents below entry.
 - Redemption sweep defaults: increased the runtime default `EVPOLY_REDEMPTION_MAX_CONDITIONS_PER_SWEEP` from `3` to `10` and lowered `EVPOLY_REDEMPTION_AUTO_TRIGGER_PENDING_THRESHOLD` from `5` to `3` (`src/trader.rs`, `.env.full.example`).
   - affects auto-redeem throughput after market resolution; live sweep still uses pUSD/CTF V2 redeem calls and respects the per-condition retry cooldown.
   - explicit `EVPOLY_REDEMPTION_MAX_CONDITIONS_PER_MANUAL_SWEEP` values can remain below the scheduled sweep cap for cautious manual/API recovery.

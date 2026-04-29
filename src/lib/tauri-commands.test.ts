@@ -97,7 +97,6 @@ const SAMPLE_CONFIG: BotConfig = {
     },
     evcurve: {
       timeframes: ["15m", "1h", "4h", "1d"],
-      max_flip_prob: 0.15,
       min_buy_price: 0.6,
       d1_enabled: true,
       d1_cap_usd: 10000,

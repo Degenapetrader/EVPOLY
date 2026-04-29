@@ -844,8 +844,10 @@ export function StrategyEditorPane({
         </div>
       </div>
       <div className="surface-panel__body">
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-          {Object.entries(config.size_policy.premarket_timeframe_multipliers).map(([key, value]) => (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {(["m5", "m15", "h1", "h4"] as const).map((key) => {
+            const value = config.size_policy.premarket_timeframe_multipliers[key];
+            return (
             <div key={key}>
               <label className="field-label">{timeframeLabel(key)}</label>
               <input
@@ -856,14 +858,15 @@ export function StrategyEditorPane({
                 disabled={!canEdit}
                 onChange={(event) =>
                   updatePremarketTimeframeMultiplier(
-                    key as keyof BotConfig["size_policy"]["premarket_timeframe_multipliers"],
+                    key,
                     parseNonNegative(event.target.value, value)
                   )
                 }
                 className="field-input"
               />
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>

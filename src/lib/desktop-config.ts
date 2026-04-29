@@ -127,7 +127,6 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
   },
   evcurve: {
     timeframes: ["15m", "1h", "4h", "1d"],
-    max_flip_prob: 0.15,
     min_buy_price: 0.6,
     d1_enabled: true,
     d1_cap_usd: 10000,
@@ -159,10 +158,10 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
   },
   mm_sport: {
     discovery_route: "sports",
-    quote_size_mode: "multiple",
+    quote_size_mode: "depth_ratio",
     multiple_collateral_cap_mult: 0.45,
     depth_ratio_collateral_cap_mult: 0.9,
-    min_reward_rate_per_day: 300,
+    min_reward_rate_per_day: 5,
     match_only: true,
     allowed_sport_league_codes: "",
     blocked_sport_league_codes: "",
@@ -173,13 +172,13 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     polymarket_live_guard_enable: true,
     polymarket_live_guard_ws_enable: true,
     polymarket_live_guard_ws_stale_ms: 600000,
-    pause_after_fill_sec: 7200,
+    pause_after_fill_sec: 600,
     inventory_exit_start_hours: 8,
     inventory_exit_mode: "normal",
     max_share_ratio: 0.05,
     min_top_depth_usd: 1100,
-    quote_expiry_min_sec: 180,
-    quote_expiry_max_sec: 300,
+    quote_expiry_min_sec: 65,
+    quote_expiry_max_sec: 185,
   },
 };
 

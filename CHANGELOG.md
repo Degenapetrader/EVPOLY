@@ -1,5 +1,9 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.1.0 - 2026-04-29
+- Added MM 2.0 inventory-exit max-loss control and Tauri config mapping.
+- Bumped Linux app/updater version to 2.1.0.
+
 ## Linux-v2.0.1 - 2026-04-28
 - Updated the Home strategy rail UI to match the hosted platform controls.
 - Hid MM Rewards from the visible strategy list.

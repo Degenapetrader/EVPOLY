@@ -9753,7 +9753,7 @@ impl Trader {
         std::env::var("EVPOLY_REDEMPTION_AUTO_TRIGGER_PENDING_THRESHOLD")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(5)
+            .unwrap_or(3)
             .clamp(1, 10_000)
     }
 
@@ -9821,7 +9821,7 @@ impl Trader {
         std::env::var("EVPOLY_REDEMPTION_MAX_CONDITIONS_PER_SWEEP")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(3)
+            .unwrap_or(10)
             .clamp(1, 128)
     }
 
@@ -9830,7 +9830,7 @@ impl Trader {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or_else(Self::redemption_max_conditions_per_sweep)
-            .clamp(Self::redemption_max_conditions_per_sweep(), 512)
+            .clamp(1, 512)
     }
 
     fn redemption_condition_retry_seconds() -> u64 {
@@ -15603,6 +15603,20 @@ mod tests {
         assert_eq!(Trader::merge_max_conditions_per_sweep(), 0);
         unsafe {
             std::env::remove_var("EVPOLY_MERGE_MAX_CONDITIONS_PER_SWEEP");
+        }
+    }
+
+    #[test]
+    fn manual_redemption_sweep_cap_can_be_lower_than_scheduled_cap() {
+        unsafe {
+            std::env::set_var("EVPOLY_REDEMPTION_MAX_CONDITIONS_PER_SWEEP", "10");
+            std::env::set_var("EVPOLY_REDEMPTION_MAX_CONDITIONS_PER_MANUAL_SWEEP", "3");
+        }
+        assert_eq!(Trader::redemption_max_conditions_per_sweep(), 10);
+        assert_eq!(Trader::redemption_max_conditions_per_manual_sweep(), 3);
+        unsafe {
+            std::env::remove_var("EVPOLY_REDEMPTION_MAX_CONDITIONS_PER_MANUAL_SWEEP");
+            std::env::remove_var("EVPOLY_REDEMPTION_MAX_CONDITIONS_PER_SWEEP");
         }
     }
 

@@ -10,6 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-04-29
+- `premarket_v1` public ladder surface cleanup: removed the local ladder mode env knobs from public templates/docs and made runtime ignore stale `EVPOLY_PREMARKET_LADDER_MODE*` overrides (`src/main.rs`, `.env.example`, `.env.full.example`, `docs/premarket_v1.md`).
+  - affects Premarket all symbols/timeframes; the local base ladder remains internal and EVPlus Alpha remains the required source for the final submit ladder.
+- Public remote-alpha content cleanup: removed public env/docs wording for alpha-owned Endgame checkpoint internals and S-Band tau split details while preserving runtime defaults (`.env.example`, `.env.full.example`, `docs/endgame_sweep_v1.md`, `docs/sessionband_v1.md`).
+  - affects public operator surfaces only; Endgame and S-Band still require EVPlus Alpha decisions before live submits.
 - CLOB V2 production endpoint alignment: updated main2 runtime/env/docs/tool defaults from the pre-cutover `https://clob-v2.polymarket.com` host to Polymarket's production V2 host `https://clob.polymarket.com` (`src/config.rs`, `src/bin/alpha_service.rs`, `src/bin/builder_fees.rs`, `config.json`, `.env.example`, `.env.full.example`, docs).
   - affects all live order placement and alpha-service MM 2.0 depth-skip requests that rely on built-in/default CLOB URLs; explicit operator env overrides still win.
 - Remote alpha config hardening: normalized stale Premarket `/should-trade` URLs to the current `/ladder` endpoint and added route-contract coverage for all active remote alpha/discovery defaults (`src/main.rs`; desktop wrapper env generation).

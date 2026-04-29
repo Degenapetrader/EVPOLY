@@ -8,13 +8,8 @@
 - Timeframes: `5m, 15m, 1h, 4h`
 - Strategy toggle default: `EVPOLY_STRATEGY_SESSIONBAND_ENABLE=true`
 
-## Local Checkpoints
-S-Band currently emits only two local checkpoint requests:
-- `tau=2s` decision request at `2050ms` before close
-- `tau=1s` decision request at `1050ms` before close
-- Grace window: `500ms`
-
-No other tau checkpoints are emitted.
+## Checkpoint Model
+S-Band requests an EVPlus Alpha decision during the late close window. The public client treats the exact checkpoint policy as an opaque required signal.
 
 ## Alpha + Discovery Behavior
 - Remote alpha endpoint: `EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL`
@@ -29,7 +24,7 @@ Behavior:
 
 ## End-to-End Flow
 1. Build symbol proxy feeds and period base anchor.
-2. Wait for checkpoint crossing (`tau=2`, `tau=1`).
+2. Wait for the late-window checkpoint crossing.
 3. Apply near-base skip gate.
 4. Resolve market (remote-first discovery, local fallback).
 5. Fetch PM quotes/orderbook and apply freshness checks.
@@ -51,8 +46,6 @@ Optional share execution mode:
 
 Multipliers:
 - Symbol: `BTC=1.0`, `ETH=0.8`, `SOL/XRP=0.5`
-- Tau split: `tau=2 -> 30%`, `tau=1 -> 70%`
-- If `EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC` is unset, legacy `EVPOLY_SESSIONBAND_TAU1_ENABLE` / `EVPOLY_SESSIONBAND_TAU2_ENABLE` flags backfill the tau allowlist.
 
 ## Key Env Knobs
 - `EVPOLY_STRATEGY_SESSIONBAND_ENABLE`

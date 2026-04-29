@@ -22340,44 +22340,14 @@ fn premarket_submit_cap_per_token() -> usize {
     48
 }
 
-const PREMARKET_LADDER_MODE_NORMAL: &str = "normal";
-const PREMARKET_LADDER_MODE_SAFE: &str = "safe";
-const PREMARKET_LADDER_MODE_AGGRESSIVE: &str = "aggressive";
+#[cfg(test)]
 const PREMARKET_LADDER_MODE_ENV_KEY_SHARED: &str = "EVPOLY_PREMARKET_LADDER_MODE";
+#[cfg(test)]
 const PREMARKET_LADDER_MODE_ENV_KEY_5M: &str = "EVPOLY_PREMARKET_LADDER_MODE_5M";
+#[cfg(test)]
 const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_5M";
+#[cfg(test)]
 const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_M5";
-
-fn normalize_premarket_ladder_mode(value: Option<String>, env_key: &str) -> &'static str {
-    match value.map(|raw| raw.trim().to_ascii_lowercase()).as_deref() {
-        Some(PREMARKET_LADDER_MODE_SAFE) => PREMARKET_LADDER_MODE_SAFE,
-        Some(PREMARKET_LADDER_MODE_AGGRESSIVE) => PREMARKET_LADDER_MODE_AGGRESSIVE,
-        Some(PREMARKET_LADDER_MODE_NORMAL) | None => PREMARKET_LADDER_MODE_NORMAL,
-        Some(other) => {
-            warn!(
-                "{}='{}' is invalid; using '{}'",
-                env_key, other, PREMARKET_LADDER_MODE_NORMAL
-            );
-            PREMARKET_LADDER_MODE_NORMAL
-        }
-    }
-}
-
-fn premarket_ladder_mode_for_timeframe(timeframe: Timeframe) -> &'static str {
-    match timeframe {
-        Timeframe::M5 => normalize_premarket_ladder_mode(
-            env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_5M)
-                .or_else(|| env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)),
-            PREMARKET_LADDER_MODE_ENV_KEY_5M,
-        ),
-        _ => normalize_premarket_ladder_mode(
-            env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
-                .or_else(|| env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY))
-                .or_else(|| env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)),
-            PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
-        ),
-    }
-}
 
 fn premarket_default_ladder_prices(timeframe: Timeframe) -> &'static [f64] {
     const DEFAULT_M5: [f64; 6] = [0.31, 0.26, 0.22, 0.16, 0.09, 0.03];
@@ -22401,31 +22371,12 @@ fn premarket_fixed_ladder_max_rungs() -> usize {
         .max(premarket_default_ladder_prices(Timeframe::H4).len())
 }
 
-fn round_up_price_to_cent(value: f64) -> f64 {
-    (((value * 100.0) - 1e-9).ceil() / 100.0).clamp(0.01, 0.99)
-}
-
 fn round_nearest_price_to_cent(value: f64) -> f64 {
     ((value * 100.0).round() / 100.0).clamp(0.01, 0.99)
 }
 
-fn premarket_fixed_ladder_prices_for_mode(timeframe: Timeframe, mode: &str) -> Vec<f64> {
-    let factor = match mode {
-        PREMARKET_LADDER_MODE_SAFE => 0.90,
-        PREMARKET_LADDER_MODE_AGGRESSIVE => 1.10,
-        _ => 1.0,
-    };
-    premarket_default_ladder_prices(timeframe)
-        .iter()
-        .map(|price| round_up_price_to_cent(price * factor))
-        .collect()
-}
-
 fn premarket_fixed_ladder_prices(timeframe: Timeframe) -> Vec<f64> {
-    premarket_fixed_ladder_prices_for_mode(
-        timeframe,
-        premarket_ladder_mode_for_timeframe(timeframe),
-    )
+    premarket_default_ladder_prices(timeframe).to_vec()
 }
 
 #[cfg(test)]
@@ -25999,10 +25950,8 @@ mod tests {
 
     #[test]
     fn premarket_fixed_ladder_shape_matches_plan() {
-        let prices_m5 =
-            premarket_fixed_ladder_prices_for_mode(Timeframe::M5, PREMARKET_LADDER_MODE_NORMAL);
-        let prices_non_m5 =
-            premarket_fixed_ladder_prices_for_mode(Timeframe::M15, PREMARKET_LADDER_MODE_NORMAL);
+        let prices_m5 = premarket_fixed_ladder_prices(Timeframe::M5);
+        let prices_non_m5 = premarket_fixed_ladder_prices(Timeframe::M15);
         let weights = premarket_fixed_ladder_weights();
         assert_eq!(prices_m5.len(), 6);
         assert_eq!(prices_non_m5.len(), 6);
@@ -26011,17 +25960,6 @@ mod tests {
         assert_eq!(prices_m5[5], 0.03);
         assert_eq!(prices_non_m5[0], 0.40);
         assert_eq!(prices_non_m5[5], 0.06);
-        assert_eq!(
-            premarket_fixed_ladder_prices_for_mode(Timeframe::M5, PREMARKET_LADDER_MODE_SAFE),
-            vec![0.28, 0.24, 0.20, 0.15, 0.09, 0.03]
-        );
-        assert_eq!(
-            premarket_fixed_ladder_prices_for_mode(
-                Timeframe::M15,
-                PREMARKET_LADDER_MODE_AGGRESSIVE
-            ),
-            vec![0.44, 0.33, 0.27, 0.20, 0.14, 0.07]
-        );
         let sum_weights: f64 = weights.iter().sum();
         assert!((sum_weights - 1.0).abs() < 1e-9);
         assert!((weights[0] - 0.23).abs() < 1e-9);
@@ -26085,10 +26023,16 @@ mod tests {
     }
 
     #[test]
-    fn premarket_ignores_legacy_csv_ladder_envs() {
+    fn premarket_ignores_local_ladder_override_envs() {
         with_admin_env(
             &[
-                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, Some("normal")),
+                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, Some("safe")),
+                (PREMARKET_LADDER_MODE_ENV_KEY_5M, Some("aggressive")),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, Some("safe")),
+                (
+                    PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
+                    Some("aggressive"),
+                ),
                 (
                     "EVPOLY_PREMARKET_FIXED_LADDER_PRICES",
                     Some("0.99,0.99,0.99,0.99,0.99,0.99"),
@@ -26097,51 +26041,16 @@ mod tests {
             ],
             || {
                 assert_eq!(
+                    premarket_fixed_ladder_prices(Timeframe::M5),
+                    vec![0.31, 0.26, 0.22, 0.16, 0.09, 0.03]
+                );
+                assert_eq!(
                     premarket_fixed_ladder_prices(Timeframe::M15),
                     vec![0.40, 0.30, 0.24, 0.18, 0.12, 0.06]
                 );
                 assert_eq!(
                     premarket_fixed_ladder_weights(),
                     &[0.23, 0.23, 0.17, 0.14, 0.12, 0.11]
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn premarket_bucket_modes_use_split_env_keys_with_shared_fallback() {
-        with_admin_env(
-            &[
-                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, Some("safe")),
-                (PREMARKET_LADDER_MODE_ENV_KEY_5M, Some("aggressive")),
-                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, None),
-            ],
-            || {
-                assert_eq!(
-                    premarket_fixed_ladder_prices(Timeframe::M5),
-                    vec![0.35, 0.29, 0.25, 0.18, 0.10, 0.04]
-                );
-                assert_eq!(
-                    premarket_fixed_ladder_prices(Timeframe::M15),
-                    vec![0.36, 0.27, 0.22, 0.17, 0.11, 0.06]
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn premarket_bucket_modes_accept_legacy_non_m5_key() {
-        with_admin_env(
-            &[
-                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, None),
-                (PREMARKET_LADDER_MODE_ENV_KEY_5M, None),
-                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, None),
-                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, Some("safe")),
-            ],
-            || {
-                assert_eq!(
-                    premarket_fixed_ladder_prices(Timeframe::M15),
-                    vec![0.36, 0.27, 0.22, 0.17, 0.11, 0.06]
                 );
             },
         );

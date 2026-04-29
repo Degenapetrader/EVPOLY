@@ -51,7 +51,7 @@ Base key: `EVPOLY_ENDGAME_BASE_SIZE_USD` (blank defaults to `50`).
 
 Multipliers:
 - Symbol: `BTC=1.0`, `ETH=0.8`, `SOL/XRP/DOGE/BNB/HYPE=0.5`
-- Tick split: `tick0=20%`, `tick1=40%`, `tick2=40%`
+- Checkpoint size weights use fixed runtime defaults while alpha owns the live checkpoint policy.
 
 ## Core Guards
 - Mandatory Endgame near-base skip gate fixed at `3.0` bps.
@@ -72,5 +72,4 @@ Multipliers:
 - `EVPOLY_ENDGAME_ALPHA_REQUIRED`
 - `EVPOLY_REMOTE_ENDGAME_ALPHA_URL`
 - `EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN`
-- `EVPOLY_ENDGAME_TICK_OFFSETS_MS` (local labels/capacity only; alpha owns the live signal)
 - `EVPOLY_ENDGAME_SAFETY_STOP_SEC` (default `0`)

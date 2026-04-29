@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { check } from "@tauri-apps/plugin-updater";
 import { AppShell } from "../components/AppShell";
@@ -38,6 +38,7 @@ import {
   getActiveProfileId,
   getLinuxResumeOffer,
   getSavedConfig,
+  getTradeStats,
   lockSession,
   restartBot,
   runSetupDoctor,
@@ -48,6 +49,7 @@ import {
   type GeoAccessStatus,
   type PendingLinuxResumeOffer,
   type SetupDoctorResult,
+  type TradeStats,
 } from "../lib/tauri-commands";
 
 function getErrorText(err: unknown, fallback: string): string {
@@ -72,6 +74,59 @@ function formatRelativeTime(value: string): string {
 function formatPusdAmount(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) return "--";
   return value.toFixed(2);
+}
+
+function metricClass(value: number | null | undefined): string {
+  return value === null || value === undefined
+    ? "home-overview__metric home-overview__metric--placeholder"
+    : "home-overview__metric";
+}
+
+function metricToneClass(value: number | null | undefined): string {
+  const base = metricClass(value);
+  if (value === null || value === undefined || value === 0) return base;
+  return value > 0
+    ? `${base} home-overview__metric--positive`
+    : `${base} home-overview__metric--negative`;
+}
+
+function clampPercent(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(100, Math.max(0, value));
+}
+
+function PerformanceSparkline({ points }: { points: TradeStats["pnl_history"] }) {
+  if (points.length < 2) {
+    return (
+      <div className="situation-sparkline situation-sparkline--empty">
+        <span>Feed pending</span>
+      </div>
+    );
+  }
+
+  const values = points.map((point) => point.pnl);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = Math.max(max - min, 1);
+  const width = 240;
+  const height = 76;
+  const xStep = width / Math.max(points.length - 1, 1);
+  const coords = values.map((value, index) => {
+    const x = index * xStep;
+    const y = height - ((value - min) / range) * height;
+    return [x, y] as const;
+  });
+  const linePath = coords
+    .map(([x, y], index) => `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`)
+    .join(" ");
+  const fillPath = `${linePath} L ${width} ${height} L 0 ${height} Z`;
+
+  return (
+    <svg className="situation-sparkline" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="PnL history">
+      <path className="situation-sparkline__fill" d={fillPath} />
+      <path className="situation-sparkline__line" d={linePath} />
+    </svg>
+  );
 }
 
 function strategyKeyFromRoute(strategySlug?: string): StrategyKey | null {
@@ -127,6 +182,7 @@ export function Home() {
   const [pendingResumeOffer, setPendingResumeOffer] = useState<PendingLinuxResumeOffer | null>(null);
   const [resumeLoading, setResumeLoading] = useState(false);
   const [portfolioFeedSeed, setPortfolioFeedSeed] = useState(0);
+  const [tradeStats, setTradeStats] = useState<TradeStats | null>(null);
   const [railDraftValues, setRailDraftValues] = useState<Record<StrategyKey, string>>(() =>
     Object.fromEntries(
       STRATEGIES.map((strategy) => [strategy.key, String(strategySizeValue(DEFAULT_CONFIG, strategy.key))])
@@ -232,6 +288,32 @@ export function Home() {
       cancelled = true;
     };
   }, [configLoaded]);
+
+  useEffect(() => {
+    let active = true;
+    let interval: ReturnType<typeof setInterval> | null = null;
+
+    const load = async () => {
+      try {
+        const nextStats = await getTradeStats();
+        if (active) {
+          setTradeStats(nextStats);
+        }
+      } catch {
+        if (active) {
+          setTradeStats(null);
+        }
+      }
+    };
+
+    void load();
+    interval = setInterval(() => void load(), 10_000);
+
+    return () => {
+      active = false;
+      if (interval) clearInterval(interval);
+    };
+  }, [activeProfileId, portfolioFeedSeed]);
 
   const dirty = useMemo(() => JSON.stringify(config) !== savedSnapshot, [config, savedSnapshot]);
   const displayError = actionError || overviewError;
@@ -691,100 +773,180 @@ export function Home() {
     </div>
   );
 
-  const renderOverview = () => (
-    <div className="page-stack">
-      <div className="grid gap-4 xl:grid-cols-5">
-        <SectionPanel title="Portfolio" subtitle="Total account value across cash and open positions.">
-          <div className="text-4xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
-            {formatUsd(overview?.total_equity)}
-          </div>
-          <div className="mt-3 text-sm text-[var(--text-secondary)]">
-            Open positions:{" "}
-            <span className="text-[var(--text-primary)]">{formatUsd(overview?.portfolio_value)}</span>
-          </div>
-          {overview?.portfolio_value_error ? (
-            <div className="mt-3 inline-alert inline-alert--warning">
-              {overview.portfolio_value_error}
-            </div>
-          ) : null}
-        </SectionPanel>
+  const renderOverview = () => {
+    const availableBalance = overview?.available_balance ?? null;
+    const openExposure = overview?.portfolio_value ?? null;
+    const totalEquity =
+      overview?.total_equity ??
+      (availableBalance !== null && openExposure !== null
+        ? availableBalance + openExposure
+        : null);
+    const capitalBase =
+      (availableBalance ?? 0) + (openExposure ?? 0) > 0
+        ? (availableBalance ?? 0) + (openExposure ?? 0)
+        : 0;
+    const capitalBalanceSharePct =
+      capitalBase > 0 ? clampPercent(((availableBalance ?? 0) / capitalBase) * 100) : 0;
+    const capitalOpenSharePct =
+      capitalBase > 0 ? clampPercent(((openExposure ?? 0) / capitalBase) * 100) : 0;
+    const latencySamples = overview?.ack_sample_count ?? 0;
+    const latencyWarnings = overview?.ack_warning_count_recent ?? 0;
+    const latencyHealth =
+      latencySamples > 0
+        ? clampPercent(Math.round(((latencySamples - latencyWarnings) / latencySamples) * 100))
+        : null;
+    const latencyRingStyle = {
+      "--latency-health": `${latencyHealth ?? 0}%`,
+    } as CSSProperties;
+    const rewardsUpdated = overview?.liquidity_rewards_as_of_utc
+      ? `Updated ${formatRelativeTime(overview.liquidity_rewards_as_of_utc)}`
+      : "";
+    const feedLabel = tradeStats ? "Synced" : "Pending";
 
-        <SectionPanel title="Available Balance" subtitle="Free pUSD collateral available from the active wallet.">
-          <div className="flex items-baseline gap-2 text-[var(--text-primary)]">
-            <span className="text-4xl font-semibold tracking-[-0.04em]">
-              {formatPusdAmount(overview?.available_balance)}
-            </span>
-            <span className="text-base font-semibold text-[var(--text-secondary)]">pUSD</span>
-          </div>
-          <div className="mt-3 text-sm text-[var(--text-secondary)]">
-            Ready for new orders from the active trading wallet.
-          </div>
-          {overview?.available_balance_error ? (
-            <div className="mt-3 inline-alert inline-alert--warning">
-              {overview.available_balance_error}
-            </div>
-          ) : null}
-        </SectionPanel>
+    return (
+      <div className="page-stack overview-operator">
+        <div className="home-overview-grid">
+          <div className="home-overview-grid__capital">
+            <SectionPanel title="Capital" subtitle="Wallet snapshot and current exposure.">
+              <div className="situation-card-body situation-card-body--capital">
+                <div className="home-capital-card__grid">
+                  <div className="home-capital-card__slot">
+                    <div className="home-capital-card__label">Portfolio</div>
+                    <div className={metricClass(totalEquity)}>
+                      {totalEquity === null ? "Unavailable" : formatUsd(totalEquity)}
+                    </div>
+                  </div>
+                  <div className="home-capital-card__slot">
+                    <div className="home-capital-card__label">pUSD Balance</div>
+                    <div className="home-overview__metric-row">
+                      <span className={metricClass(availableBalance)}>
+                        {availableBalance === null ? "N/A" : formatPusdAmount(availableBalance)}
+                      </span>
+                      <span className="home-overview__unit">pUSD</span>
+                    </div>
+                    <div className="home-capital-card__wrap-balance">pUSD checked live</div>
+                  </div>
+                </div>
 
-        <SectionPanel title="PnL Today (UTC)" subtitle="Realized result for the current UTC day.">
-          <div className="text-4xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
-            {formatUsd(overview?.pnl_today_utc)}
-          </div>
-          <div className="mt-3 text-sm text-[var(--text-secondary)]">
-            {overview?.active_strategy_count ?? 0} active strategies
-          </div>
-        </SectionPanel>
+                <div className="capital-exposure">
+                  <div className="capital-exposure__row">
+                    <span>Open exposure</span>
+                    <strong>{openExposure === null ? "Pending" : formatUsd(openExposure)}</strong>
+                  </div>
+                  <div className="capital-exposure__track" aria-hidden="true">
+                    <span
+                      className="capital-exposure__balance"
+                      style={{ width: `${capitalBalanceSharePct}%` }}
+                    />
+                    <span
+                      className="capital-exposure__open"
+                      style={{ width: `${capitalOpenSharePct}%` }}
+                    />
+                  </div>
+                </div>
 
-        <SectionPanel
-          title="Liquidity Rewards"
-          subtitle="Polymarket liquidity rewards from the active trading wallet."
-        >
-          <div className="text-4xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
-            {formatUsd(overview?.liquidity_rewards_today)}
+                <div className="home-overview__detail">
+                  {overview?.available_balance_error ||
+                    overview?.portfolio_value_error ||
+                    "Live wallet snapshot"}
+                </div>
+              </div>
+            </SectionPanel>
           </div>
-          <div className="mt-3 text-sm text-[var(--text-secondary)]">
-            Today (UTC)
-          </div>
-          <div className="mt-1 text-sm text-[var(--text-secondary)]">
-            Since Using EVPoly:{" "}
-            <span className="text-[var(--text-primary)]">
-              {formatUsd(overview?.liquidity_rewards_lifetime)}
-            </span>
-          </div>
-          {overview?.liquidity_rewards_as_of_utc ? (
-            <div className="mt-1 text-xs text-[var(--text-tertiary)]">
-              Updated {formatRelativeTime(overview.liquidity_rewards_as_of_utc)}
-            </div>
-          ) : null}
-          {overview?.liquidity_rewards_error ? (
-            <div className="mt-3 inline-alert inline-alert--warning">
-              {overview.liquidity_rewards_error}
-            </div>
-          ) : null}
-        </SectionPanel>
 
-        <SectionPanel title="Latency" subtitle="Average acknowledgement latency across recorded entry acknowledgements.">
-          <div className="text-4xl font-semibold tracking-[-0.04em] text-[var(--text-primary)]">
-            {overview?.avg_ack_latency_ms !== null && overview?.avg_ack_latency_ms !== undefined
-              ? `${overview.avg_ack_latency_ms.toFixed(1)} ms`
-              : "--"}
+          <div className="home-overview-grid__metric">
+            <SectionPanel title="Profit/Loss" subtitle="Polymarket account movement for the current UTC day.">
+              <div className="situation-card-body situation-card-body--pnl">
+                <div className="situation-pnl-main">
+                  <div className="home-capital-card__label">Today</div>
+                  <div className={metricToneClass(overview?.pnl_today_utc)}>
+                    {overview?.pnl_today_utc === null || overview?.pnl_today_utc === undefined
+                      ? "N/A"
+                      : formatUsd(overview.pnl_today_utc)}
+                  </div>
+                  <div className="situation-inline-metrics">
+                    <span>
+                      Total <strong>{formatUsd(tradeStats?.total_pnl ?? null)}</strong>
+                    </span>
+                    <span>
+                      Feed <strong>{feedLabel}</strong>
+                    </span>
+                  </div>
+                </div>
+                <PerformanceSparkline points={tradeStats?.pnl_history ?? []} />
+                <div className="home-overview__detail home-overview__detail--nowrap">
+                  {overview?.active_strategy_count ?? 0} active strategies
+                </div>
+              </div>
+            </SectionPanel>
           </div>
-          <div className="mt-3 text-sm text-[var(--text-secondary)]">
-            {overview?.ack_sample_count ?? 0} samples
-            {(overview?.ack_warning_count_recent ?? 0) > 0
-              ? ` | ${overview?.ack_warning_count_recent ?? 0} recent warnings`
-              : ""}
+
+          <div className="home-overview-grid__metric">
+            <SectionPanel title="Liquidity Rewards" subtitle="Maker rewards credited to the active wallet.">
+              <div className="situation-card-body">
+                <div className="home-capital-card__label">Today</div>
+                <div className={metricClass(overview?.liquidity_rewards_today)}>
+                  {overview?.liquidity_rewards_today === null ||
+                  overview?.liquidity_rewards_today === undefined
+                    ? "Unavailable"
+                    : formatUsd(overview.liquidity_rewards_today)}
+                </div>
+                <div className="situation-meter situation-meter--reward" aria-hidden="true">
+                  <span
+                    style={{
+                      width:
+                        overview?.liquidity_rewards_today && overview.liquidity_rewards_today > 0
+                          ? "42%"
+                          : "8%",
+                    }}
+                  />
+                </div>
+                <div className="home-overview__detail home-overview__detail--nowrap">
+                  {overview?.liquidity_rewards_error
+                    ? overview.liquidity_rewards_error
+                    : `Lifetime ${formatUsd(overview?.liquidity_rewards_lifetime ?? null)}${
+                        rewardsUpdated ? ` | ${rewardsUpdated}` : ""
+                      }`}
+                </div>
+              </div>
+            </SectionPanel>
           </div>
-        </SectionPanel>
+
+          <div className="home-overview-grid__metric">
+            <SectionPanel title="Latency" subtitle="Acknowledgement speed across entries.">
+              <div className="situation-card-body situation-card-body--latency">
+                <div>
+                  <div className="home-capital-card__label">Avg Ack Time</div>
+                  <div className={metricClass(overview?.avg_ack_latency_ms)}>
+                    {overview?.avg_ack_latency_ms !== null && overview?.avg_ack_latency_ms !== undefined
+                      ? `${overview.avg_ack_latency_ms.toFixed(1)} ms`
+                      : "N/A"}
+                  </div>
+                  <div className="home-overview__detail">
+                    {latencySamples} samples
+                    {latencyWarnings > 0 ? ` | ${latencyWarnings} slow` : ""}
+                  </div>
+                </div>
+                <div
+                  className="situation-health-ring"
+                  style={latencyRingStyle}
+                  aria-label="Latency health"
+                >
+                  <strong>{latencyHealth === null ? "--" : `${latencyHealth}%`}</strong>
+                </div>
+              </div>
+            </SectionPanel>
+          </div>
+        </div>
+
+        <HomePortfolioTabs
+          key={`${activeProfileId ?? "none"}-${portfolioFeedSeed}`}
+          botState={overview?.bot_state}
+          onOpenLogs={() => setLogsOpen(true)}
+        />
       </div>
-
-      <HomePortfolioTabs
-        key={`${activeProfileId ?? "none"}-${portfolioFeedSeed}`}
-        botState={overview?.bot_state}
-        onOpenLogs={() => setLogsOpen(true)}
-      />
-    </div>
-  );
+    );
+  };
 
   return (
     <AppShell

@@ -355,10 +355,6 @@ export function Config() {
           (typeof result.endgame_alpha_token === "string" &&
             result.endgame_alpha_token.trim()) ||
           config.remote_endgame_alpha_token,
-        remote_mm_rewards_alpha_token:
-          (typeof result.mm_rewards_alpha_token === "string" &&
-            result.mm_rewards_alpha_token.trim()) ||
-          config.remote_mm_rewards_alpha_token,
         remote_evsnipe_discovery_token:
           (typeof result.evsnipe_discovery_token === "string" &&
             result.evsnipe_discovery_token.trim()) ||
@@ -837,16 +833,6 @@ export function Config() {
                     setConfig((current) => ({
                       ...current,
                       remote_endgame_alpha_token: value,
-                    }))
-                  }
-                />
-                <Field
-                  label="MM Rewards alpha token"
-                  value={config.remote_mm_rewards_alpha_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({
-                      ...current,
-                      remote_mm_rewards_alpha_token: value,
                     }))
                   }
                 />

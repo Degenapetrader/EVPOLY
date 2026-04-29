@@ -10,7 +10,6 @@ EVPoly Setup Doctor checks the baseline setup fields a healthy profile should ha
 - remote market discovery token
 - Premarket alpha token
 - Endgame alpha token
-- MM Rewards alpha token
 - EVSnipe discovery token
 - effective EVCurve / SessionBand shared alpha coverage
 - relayer API key
@@ -25,7 +24,6 @@ That includes:
 - shared discovery token
 - Premarket alpha token
 - Endgame alpha token
-- MM Rewards alpha token
 - EVSnipe discovery token
 
 EVPoly automatically reuses the remote signer token for primary order signing unless onboarding provides a separate internal override token.

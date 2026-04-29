@@ -66,7 +66,6 @@ pub struct OnboardResult {
     pub discovery_token: Option<String>,
     pub premarket_alpha_token: Option<String>,
     pub endgame_alpha_token: Option<String>,
-    pub mm_rewards_alpha_token: Option<String>,
     pub evsnipe_discovery_token: Option<String>,
     pub admin_api_token: Option<String>,
 }
@@ -183,8 +182,6 @@ pub async fn run_onboarding(
         premarket_alpha_token: first_nonempty(&[runtime.get("remote_premarket_alpha_token")])
             .or_else(|| shared_alpha_token.clone()),
         endgame_alpha_token: first_nonempty(&[runtime.get("remote_endgame_alpha_token")])
-            .or_else(|| shared_alpha_token.clone()),
-        mm_rewards_alpha_token: first_nonempty(&[runtime.get("remote_mm_rewards_alpha_token")])
             .or_else(|| shared_alpha_token.clone()),
         evsnipe_discovery_token: first_nonempty(&[
             runtime.get("remote_evsnipe_discovery_token"),

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod auth;
 pub mod bot_manager;
 pub mod config_io;
@@ -244,6 +246,7 @@ struct DesktopMmSportSettings {
     polymarket_live_guard_ws_stale_ms: f64,
     pause_after_fill_sec: f64,
     inventory_exit_start_hours: f64,
+    inventory_exit_max_loss_cents: f64,
     inventory_exit_mode: String,
     max_share_ratio: f64,
     min_top_depth_usd: f64,
@@ -807,6 +810,10 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC",
                     28800.0,
                 ) / 3600.0,
+                inventory_exit_max_loss_cents: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS",
+                    10.0,
+                ),
                 inventory_exit_mode: normalize_mm_sport_exit_mode(
                     config_io::env_template_default_string("EVPOLY_MM_SPORT_EXIT_MODE")
                         .as_deref()
@@ -1735,6 +1742,15 @@ fn desktop_config_to_profile_payload(
         number_to_json(config.strategy_settings.mm_sport.inventory_exit_start_hours * 3600.0),
     );
     strategy.insert(
+        "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS".to_string(),
+        number_to_json(
+            config
+                .strategy_settings
+                .mm_sport
+                .inventory_exit_max_loss_cents,
+        ),
+    );
+    strategy.insert(
         "EVPOLY_MM_SPORT_EXIT_MODE".to_string(),
         Value::String(
             normalize_mm_sport_exit_mode(
@@ -2130,6 +2146,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "polymarket_live_guard_ws_stale_ms": f64_from_object(&strategy, "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_STALE_MS", config_io::env_template_default_f64("EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_STALE_MS", 600000.0)),
                 "pause_after_fill_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 600.0)),
                 "inventory_exit_start_hours": f64_from_object(&strategy, "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28800.0)) / 3600.0,
+                "inventory_exit_max_loss_cents": f64_from_object(&strategy, "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS", config_io::env_template_default_f64("EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS", 10.0)),
                 "inventory_exit_mode": normalize_mm_sport_exit_mode(
                     string_from_object(&strategy, "EVPOLY_MM_SPORT_EXIT_MODE", "normal").as_str()
                 ),

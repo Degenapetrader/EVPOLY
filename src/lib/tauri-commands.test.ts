@@ -144,6 +144,7 @@ const SAMPLE_CONFIG: BotConfig = {
       polymarket_live_guard_ws_stale_ms: 600000,
       pause_after_fill_sec: 7200,
       inventory_exit_start_hours: 8,
+      inventory_exit_max_loss_cents: 10,
       inventory_exit_mode: "normal",
       max_share_ratio: 0.05,
       min_top_depth_usd: 1100,

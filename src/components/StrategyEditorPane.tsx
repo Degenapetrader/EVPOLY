@@ -1827,6 +1827,29 @@ export function StrategyEditorPane({
                       </div>
                     ) : null}
                   </div>
+                  <div>
+                    <label className="field-label">Max Loss (Cents)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={mmSport.inventory_exit_max_loss_cents}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({
+                          inventory_exit_max_loss_cents: parseNonNegative(
+                            event.target.value,
+                            mmSport.inventory_exit_max_loss_cents
+                          ),
+                        })
+                      }
+                      className="field-input"
+                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Exit quotes will not be placed more than this many cents below the tracked
+                      average entry price.
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>

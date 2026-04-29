@@ -370,6 +370,7 @@ export interface MMSportSettings {
   polymarket_live_guard_ws_stale_ms: number;
   pause_after_fill_sec: number;
   inventory_exit_start_hours: number;
+  inventory_exit_max_loss_cents: number;
   inventory_exit_mode: MMSportInventoryExitMode;
   max_share_ratio: number;
   min_top_depth_usd: number;

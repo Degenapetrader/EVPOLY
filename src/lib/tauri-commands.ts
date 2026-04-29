@@ -313,7 +313,6 @@ export interface EndgameSettings {
 
 export interface EVCurveSettings {
   timeframes: string[];
-  max_flip_prob: number;
   min_buy_price: number;
   d1_enabled: boolean;
   d1_cap_usd: number;

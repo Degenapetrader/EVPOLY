@@ -18,7 +18,6 @@ import {
   VISIBLE_STRATEGIES,
   DEFAULT_CONFIG,
   formatUsd,
-  formatEndgameSplitTooltip,
   mergeConfig,
   parseNonNegative,
   setEVSnipePreHitEnabled,
@@ -74,7 +73,7 @@ function formatPusdAmount(value: number | null | undefined): string {
 function strategyKeyFromRoute(strategySlug?: string): StrategyKey | null {
   if (!strategySlug) return null;
   return (
-    STRATEGIES.find((strategy) => strategy.key === strategySlug)?.key ?? null
+    VISIBLE_STRATEGIES.find((strategy) => strategy.key === strategySlug)?.key ?? null
   );
 }
 
@@ -431,7 +430,7 @@ export function Home() {
                   title={strategyTooltip(strategy.key)}
                 >
                   <span className="strategy-rail__label">
-                    {strategy.key === "endgame" ? "Endgame V1" : strategy.label}
+                    {strategy.label}
                   </span>
                   <span className="strategy-rail__link-chevron" aria-hidden="true">
                     &rsaquo;
@@ -470,11 +469,7 @@ export function Home() {
                     disabled={!canOperate}
                     className="field-input field-input--compact"
                     placeholder={suffix}
-                    title={
-                      strategy.key === "endgame"
-                        ? `Split ${formatEndgameSplitTooltip(config)}`
-                        : controlTitle
-                    }
+                    title={controlTitle}
                   />
                   {strategy.key === "mm_sport" ? (
                     <button

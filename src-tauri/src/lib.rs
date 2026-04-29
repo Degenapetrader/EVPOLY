@@ -174,10 +174,6 @@ struct DesktopPremarketSettings {
     active_cap_per_asset: f64,
     #[serde(default = "default_premarket_timeframes")]
     timeframes: Vec<String>,
-    #[serde(default = "default_premarket_ladder_mode_5m")]
-    entry_ladder_mode_5m: String,
-    #[serde(default = "default_premarket_ladder_mode_non_m5")]
-    entry_ladder_mode_non_m5: String,
     cancel_after_open_sec: DesktopPremarketCancelAfterOpen,
 }
 
@@ -471,15 +467,14 @@ fn csv_from_object(obj: &Map<String, Value>, key: &str, fallback: &[&str]) -> Ve
     )
 }
 
-const PREMARKET_LADDER_MODE_NORMAL: &str = "normal";
-const PREMARKET_LADDER_MODE_SAFE: &str = "safe";
-const PREMARKET_LADDER_MODE_AGGRESSIVE: &str = "aggressive";
 const PREMARKET_LADDER_MODE_ENV_KEY_5M: &str = "EVPOLY_PREMARKET_LADDER_MODE_5M";
 const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_5M";
 const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_M5";
 const PREMARKET_LADDER_MODE_ENV_KEY_SHARED: &str = "EVPOLY_PREMARKET_LADDER_MODE";
 const WEEKEND_POLICY_ENV_KEY: &str = "EVPOLY_WEEKEND_POLICY";
-const PREMARKET_LEGACY_LADDER_KEYS: [&str; 4] = [
+const PREMARKET_LEGACY_LADDER_KEYS: [&str; 6] = [
+    PREMARKET_LADDER_MODE_ENV_KEY_5M,
+    PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
     PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
     PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
     "EVPOLY_PREMARKET_FIXED_LADDER_PRICES",
@@ -499,16 +494,6 @@ fn default_weekend_policy() -> String {
     )
 }
 
-fn default_premarket_ladder_mode(env_key: &str) -> String {
-    normalize_premarket_ladder_safety_mode(
-        config_io::env_template_default_string(env_key).as_deref(),
-    )
-}
-
-fn default_premarket_ladder_mode_5m() -> String {
-    default_premarket_ladder_mode(PREMARKET_LADDER_MODE_ENV_KEY_5M)
-}
-
 fn default_premarket_timeframes() -> Vec<String> {
     csv_list(
         config_io::env_template_default_string("EVPOLY_PREMARKET_TIMEFRAMES"),
@@ -516,92 +501,7 @@ fn default_premarket_timeframes() -> Vec<String> {
     )
 }
 
-fn default_premarket_ladder_mode_non_m5() -> String {
-    default_premarket_ladder_mode(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
-}
-
-fn normalize_premarket_ladder_safety_mode(value: Option<&str>) -> String {
-    match value.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(raw) if raw.eq_ignore_ascii_case(PREMARKET_LADDER_MODE_SAFE) => {
-            PREMARKET_LADDER_MODE_SAFE.to_string()
-        }
-        Some(raw) if raw.eq_ignore_ascii_case(PREMARKET_LADDER_MODE_AGGRESSIVE) => {
-            PREMARKET_LADDER_MODE_AGGRESSIVE.to_string()
-        }
-        _ => PREMARKET_LADDER_MODE_NORMAL.to_string(),
-    }
-}
-
-#[cfg(test)]
-fn premarket_default_ladder_prices_m5() -> Vec<f64> {
-    vec![0.31, 0.26, 0.22, 0.16, 0.09, 0.03]
-}
-
-#[cfg(test)]
-fn premarket_default_ladder_prices_non_m5() -> Vec<f64> {
-    vec![0.40, 0.30, 0.24, 0.18, 0.12, 0.06]
-}
-
-#[cfg(test)]
-fn premarket_default_ladder_weights() -> Vec<f64> {
-    vec![0.23, 0.23, 0.17, 0.14, 0.12, 0.11]
-}
-
-#[cfg(test)]
-fn premarket_mode_factor(mode: &str) -> f64 {
-    match mode {
-        PREMARKET_LADDER_MODE_SAFE => 0.90,
-        PREMARKET_LADDER_MODE_AGGRESSIVE => 1.10,
-        _ => 1.0,
-    }
-}
-
-#[cfg(test)]
-fn round_up_to_cent(value: f64) -> f64 {
-    (((value * 100.0) - 1e-9).ceil() / 100.0).clamp(0.01, 0.99)
-}
-
-#[cfg(test)]
-fn premarket_ladder_prices_for_mode(mode: &str, defaults: &[f64]) -> Vec<f64> {
-    let factor = premarket_mode_factor(mode);
-    defaults
-        .into_iter()
-        .map(|price| round_up_to_cent(*price * factor))
-        .collect()
-}
-
-fn infer_premarket_ladder_mode(strategy: &Map<String, Value>, env_key: &str) -> String {
-    normalize_premarket_ladder_safety_mode(
-        strategy
-            .get(env_key)
-            .and_then(Value::as_str)
-            .or_else(|| {
-                (env_key == PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
-                    .then(|| strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY))
-                    .flatten()
-                    .and_then(Value::as_str)
-            })
-            .or_else(|| {
-                strategy
-                    .get(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)
-                    .and_then(Value::as_str)
-            }),
-    )
-}
-
-fn infer_premarket_ladder_mode_5m(strategy: &Map<String, Value>) -> String {
-    infer_premarket_ladder_mode(strategy, PREMARKET_LADDER_MODE_ENV_KEY_5M)
-}
-
-fn infer_premarket_ladder_mode_non_m5(strategy: &Map<String, Value>) -> String {
-    infer_premarket_ladder_mode(strategy, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
-}
-
 fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8) -> DesktopConfig {
-    let sessionband_allowed_tau = csv_list(
-        config_io::env_template_default_string("EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC"),
-        &["2", "1"],
-    );
     DesktopConfig {
         private_key: String::new(),
         eoa_wallet,
@@ -624,10 +524,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 true,
             ),
             evsnipe: config_io::env_template_default_bool("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),
-            mm_rewards: config_io::env_template_default_bool(
-                "EVPOLY_STRATEGY_MM_REWARDS_ENABLE",
-                false,
-            ),
+            mm_rewards: false,
             mm_sport: config_io::env_template_default_bool(
                 "EVPOLY_STRATEGY_MM_SPORT_ENABLE",
                 false,
@@ -651,10 +548,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
             evsnipe: 100000.0,
         },
         mm_tuning: DesktopMmTuning {
-            rewards_min_share_multiple: config_io::env_template_default_f64(
-                "EVPOLY_MM_REWARD_MIN_TARGET_MULT",
-                1.0,
-            ),
+            rewards_min_share_multiple: 1.0,
             sport_quote_size_multiplier: config_io::env_template_default_f64(
                 "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT",
                 1.2,
@@ -728,8 +622,6 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     100.0,
                 ),
                 timeframes: default_premarket_timeframes(),
-                entry_ladder_mode_5m: default_premarket_ladder_mode_5m(),
-                entry_ladder_mode_non_m5: default_premarket_ladder_mode_non_m5(),
                 cancel_after_open_sec: DesktopPremarketCancelAfterOpen {
                     m5: config_io::env_template_default_f64(
                         "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC",
@@ -758,18 +650,9 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_ENDGAME_PER_PERIOD_CAP_USD",
                     10000.0,
                 ),
-                tick0_multiplier: config_io::env_template_default_f64(
-                    "EVPOLY_ENDGAME_TICK0_MULTIPLIER",
-                    0.20,
-                ),
-                tick1_multiplier: config_io::env_template_default_f64(
-                    "EVPOLY_ENDGAME_TICK1_MULTIPLIER",
-                    0.40,
-                ),
-                tick2_multiplier: config_io::env_template_default_f64(
-                    "EVPOLY_ENDGAME_TICK2_MULTIPLIER",
-                    0.40,
-                ),
+                tick0_multiplier: 0.20,
+                tick1_multiplier: 0.40,
+                tick2_multiplier: 0.40,
             },
             evcurve: DesktopEvcurveSettings {
                 timeframes: csv_list(
@@ -799,16 +682,10 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_SESSIONBAND_FLIP_THRESHOLD_PCT",
                     2.0,
                 ),
-                tau2_enabled: sessionband_allowed_tau.iter().any(|value| value == "2"),
-                tau1_enabled: sessionband_allowed_tau.iter().any(|value| value == "1"),
-                tau2_multiplier: config_io::env_template_default_f64(
-                    "EVPOLY_SESSIONBAND_TAU2_MULTIPLIER",
-                    0.30,
-                ),
-                tau1_multiplier: config_io::env_template_default_f64(
-                    "EVPOLY_SESSIONBAND_TAU1_MULTIPLIER",
-                    0.70,
-                ),
+                tau2_enabled: true,
+                tau1_enabled: true,
+                tau2_multiplier: 0.30,
+                tau1_multiplier: 0.70,
             },
             evsnipe: DesktopEvsnipeSettings {
                 pre_hit_enabled: true,
@@ -1042,17 +919,6 @@ fn wallet_address_from_private_key(private_key: &str) -> Result<String, String> 
     Ok(format!("{:#x}", wallet.address()))
 }
 
-fn has_shared_alpha_source(config: &DesktopConfig) -> bool {
-    [
-        config.remote_premarket_alpha_token.as_str(),
-        config.remote_endgame_alpha_token.as_str(),
-        config.remote_discovery_token.as_str(),
-        config.remote_evsnipe_discovery_token.as_str(),
-    ]
-    .iter()
-    .any(|value| !value.trim().is_empty())
-}
-
 fn distinct_order_signer_primary_token(remote_signer_token: &str, primary_token: &str) -> String {
     let remote = remote_signer_token.trim();
     let primary = primary_token.trim();
@@ -1178,64 +1044,47 @@ fn audit_setup_doctor(config: &DesktopConfig) -> SetupDoctorAudit {
         );
     }
 
-    if config.remote_signer_token.trim().is_empty() {
-        push_doctor_missing_generated(
-            &mut audit,
+    for (value, key, label, strategy) in [
+        (
+            config.remote_signer_token.as_str(),
             "remote_signer_token",
-            "Signer Token",
-            "The remote signer token is missing and will be regenerated from onboarding. EVPoly automatically reuses it for primary order signing unless onboarding provides a separate internal override token.",
+            "EVPlus Order Access",
             None,
-        );
-    }
-
-    if config.remote_discovery_token.trim().is_empty() {
-        push_doctor_missing_generated(
-            &mut audit,
+        ),
+        (
+            config.remote_discovery_token.as_str(),
             "remote_discovery_token",
-            "Remote Discovery Token",
-            "The shared remote discovery token is missing and will be regenerated from onboarding.",
+            "EVPlus Market Access",
             None,
-        );
-    }
-
-    if config.remote_premarket_alpha_token.trim().is_empty() {
-        push_doctor_missing_generated(
-            &mut audit,
+        ),
+        (
+            config.remote_premarket_alpha_token.as_str(),
             "remote_premarket_alpha_token",
-            "Premarket Remote Token",
-            "The Premarket remote alpha token is missing and will be regenerated from onboarding.",
-            Some("Premarket"),
-        );
-    }
-
-    if config.remote_endgame_alpha_token.trim().is_empty() {
-        push_doctor_missing_generated(
-            &mut audit,
+            "Premarket EVPlus Access",
+            Some("premarket"),
+        ),
+        (
+            config.remote_endgame_alpha_token.as_str(),
             "remote_endgame_alpha_token",
-            "Endgame Remote Token",
-            "The Endgame remote alpha token is missing and will be regenerated from onboarding.",
-            Some("Endgame"),
-        );
-    }
-
-    if config.remote_evsnipe_discovery_token.trim().is_empty() {
-        push_doctor_missing_generated(
-            &mut audit,
+            "Endgame EVPlus Access",
+            Some("endgame"),
+        ),
+        (
+            config.remote_evsnipe_discovery_token.as_str(),
             "remote_evsnipe_discovery_token",
-            "EVSnipe Discovery Token",
-            "The EVSnipe discovery token is missing and will be regenerated from onboarding.",
-            Some("EVSnipe"),
-        );
-    }
-
-    if !has_shared_alpha_source(config) {
-        push_doctor_missing_generated(
-            &mut audit,
-            "shared_alpha_source",
-            "Shared Alpha Token",
-            "The shared remote alpha source is missing, so EVCurve and SessionBand cannot backfill their runtime tokens.",
-            Some("EVCurve / SessionBand"),
-        );
+            "EVSnipe EVPlus Access",
+            Some("evsnipe"),
+        ),
+    ] {
+        if value.trim().is_empty() {
+            push_doctor_missing_generated(
+                &mut audit,
+                key,
+                label,
+                "Setup Doctor will refresh EVPlus access automatically.",
+                strategy,
+            );
+        }
     }
 
     if audit.items.is_empty() {
@@ -1499,7 +1348,7 @@ fn desktop_config_to_profile_payload(
     );
     strategy.insert(
         "EVPOLY_STRATEGY_MM_REWARDS_ENABLE".to_string(),
-        bool_to_json(config.strategies.mm_rewards),
+        bool_to_json(false),
     );
     strategy.insert(
         "EVPOLY_STRATEGY_MM_SPORT_ENABLE".to_string(),
@@ -1535,7 +1384,7 @@ fn desktop_config_to_profile_payload(
     );
     strategy.insert(
         "EVPOLY_MM_REWARD_MIN_TARGET_MULT".to_string(),
-        number_to_json(config.mm_tuning.rewards_min_share_multiple),
+        number_to_json(1.0),
     );
     strategy.insert(
         "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT".to_string(),
@@ -1552,26 +1401,6 @@ fn desktop_config_to_profile_payload(
     strategy.insert(
         "EVPOLY_PREMARKET_TIMEFRAMES".to_string(),
         Value::String(config.strategy_settings.premarket.timeframes.join(",")),
-    );
-    strategy.insert(
-        PREMARKET_LADDER_MODE_ENV_KEY_5M.to_string(),
-        Value::String(normalize_premarket_ladder_safety_mode(Some(
-            config
-                .strategy_settings
-                .premarket
-                .entry_ladder_mode_5m
-                .as_str(),
-        ))),
-    );
-    strategy.insert(
-        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5.to_string(),
-        Value::String(normalize_premarket_ladder_safety_mode(Some(
-            config
-                .strategy_settings
-                .premarket
-                .entry_ladder_mode_non_m5
-                .as_str(),
-        ))),
     );
     strategy.insert(
         "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC".to_string(),
@@ -1595,15 +1424,15 @@ fn desktop_config_to_profile_payload(
     );
     strategy.insert(
         "EVPOLY_ENDGAME_TICK0_MULTIPLIER".to_string(),
-        number_to_json(config.strategy_settings.endgame.tick0_multiplier),
+        number_to_json(0.20),
     );
     strategy.insert(
         "EVPOLY_ENDGAME_TICK1_MULTIPLIER".to_string(),
-        number_to_json(config.strategy_settings.endgame.tick1_multiplier),
+        number_to_json(0.40),
     );
     strategy.insert(
         "EVPOLY_ENDGAME_TICK2_MULTIPLIER".to_string(),
-        number_to_json(config.strategy_settings.endgame.tick2_multiplier),
+        number_to_json(0.40),
     );
     strategy.insert(
         "EVPOLY_EVCURVE_TIMEFRAMES".to_string(),
@@ -1693,37 +1522,17 @@ fn desktop_config_to_profile_payload(
         "EVPOLY_SESSIONBAND_FLIP_THRESHOLD_PCT".to_string(),
         number_to_json(config.strategy_settings.session_band.flip_threshold_pct),
     );
-    let allowed_tau_csv = [
-        config
-            .strategy_settings
-            .session_band
-            .tau2_enabled
-            .then_some("2"),
-        config
-            .strategy_settings
-            .session_band
-            .tau1_enabled
-            .then_some("1"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(",");
     strategy.insert(
         "EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC".to_string(),
-        Value::String(if allowed_tau_csv.is_empty() {
-            "2,1".to_string()
-        } else {
-            allowed_tau_csv
-        }),
+        Value::String("2,1".to_string()),
     );
     strategy.insert(
         "EVPOLY_SESSIONBAND_TAU2_MULTIPLIER".to_string(),
-        number_to_json(config.strategy_settings.session_band.tau2_multiplier),
+        number_to_json(0.30),
     );
     strategy.insert(
         "EVPOLY_SESSIONBAND_TAU1_MULTIPLIER".to_string(),
-        number_to_json(config.strategy_settings.session_band.tau1_multiplier),
+        number_to_json(0.70),
     );
     strategy.insert(
         "EVPOLY_EVSNIPE_PRE_TRIGGER_BPS".to_string(),
@@ -2173,11 +1982,6 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
     } else {
         evsnipe_saved_ratio
     };
-    let sessionband_allowed_tau =
-        csv_from_object(&strategy, "EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC", &["2", "1"]);
-    let sessionband_tau2_enabled = sessionband_allowed_tau.iter().any(|value| value == "2");
-    let sessionband_tau1_enabled = sessionband_allowed_tau.iter().any(|value| value == "1");
-
     let remote_signer_token = secrets
         .get("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN")
         .cloned()
@@ -2204,7 +2008,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
             "evcurve": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVCURVE_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_EVCURVE_ENABLE", false)),
             "session_band": bool_from_object(&strategy, "EVPOLY_STRATEGY_SESSIONBAND_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true)),
             "evsnipe": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVSNIPE_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true)),
-            "mm_rewards": bool_from_object(&strategy, "EVPOLY_STRATEGY_MM_REWARDS_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_MM_REWARDS_ENABLE", false)),
+            "mm_rewards": false,
             "mm_sport": bool_from_object(&strategy, "EVPOLY_STRATEGY_MM_SPORT_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false))
         },
         "sizing": {
@@ -2226,7 +2030,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
             "evsnipe": f64_from_object(&sizing, "EVPOLY_ARB_STRAT_EVSNIPE_MAX_USD", 100000.0)
         },
         "mm_tuning": {
-            "rewards_min_share_multiple": f64_from_object(&strategy, "EVPOLY_MM_REWARD_MIN_TARGET_MULT", config_io::env_template_default_f64("EVPOLY_MM_REWARD_MIN_TARGET_MULT", 1.0)),
+            "rewards_min_share_multiple": 1.0,
             "sport_quote_size_multiplier": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2))
         },
         "size_policy": {
@@ -2258,8 +2062,6 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "tp_enabled": bool_from_object(&strategy, "EVPOLY_PREMARKET_TP_ENABLE", config_io::env_template_default_bool("EVPOLY_PREMARKET_TP_ENABLE", true)),
                 "active_cap_per_asset": f64_from_object(&strategy, "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET", config_io::env_template_default_f64("EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET", 100.0)),
                 "timeframes": csv_from_object(&strategy, "EVPOLY_PREMARKET_TIMEFRAMES", &["5m", "15m", "1h", "4h"]),
-                "entry_ladder_mode_5m": infer_premarket_ladder_mode_5m(&strategy),
-                "entry_ladder_mode_non_m5": infer_premarket_ladder_mode_non_m5(&strategy),
                 "cancel_after_open_sec": {
                     "m5": f64_from_object(&strategy, "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC", config_io::env_template_default_f64("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC", 20.0)),
                     "m15": f64_from_object(&strategy, "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_15M_SEC", config_io::env_template_default_f64("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_15M_SEC", 15.0)),
@@ -2270,9 +2072,9 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
             "endgame": {
                 "timeframes": csv_from_object(&strategy, "EVPOLY_ENDGAME_TIMEFRAMES", &["5m", "15m", "1h", "4h"]),
                 "per_period_cap_usd": f64_from_object(&sizing, "EVPOLY_ENDGAME_PER_PERIOD_CAP_USD", config_io::env_template_default_f64("EVPOLY_ENDGAME_PER_PERIOD_CAP_USD", 10000.0)),
-                "tick0_multiplier": f64_from_object(&strategy, "EVPOLY_ENDGAME_TICK0_MULTIPLIER", config_io::env_template_default_f64("EVPOLY_ENDGAME_TICK0_MULTIPLIER", 0.20)),
-                "tick1_multiplier": f64_from_object(&strategy, "EVPOLY_ENDGAME_TICK1_MULTIPLIER", config_io::env_template_default_f64("EVPOLY_ENDGAME_TICK1_MULTIPLIER", 0.40)),
-                "tick2_multiplier": f64_from_object(&strategy, "EVPOLY_ENDGAME_TICK2_MULTIPLIER", config_io::env_template_default_f64("EVPOLY_ENDGAME_TICK2_MULTIPLIER", 0.40))
+                "tick0_multiplier": 0.20,
+                "tick1_multiplier": 0.40,
+                "tick2_multiplier": 0.40
             },
             "evcurve": {
                 "timeframes": csv_from_object(&strategy, "EVPOLY_EVCURVE_TIMEFRAMES", &["15m", "1h", "4h", "1d"]),
@@ -2284,10 +2086,10 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
             "session_band": {
                 "timeframes": csv_from_object(&strategy, "EVPOLY_SESSIONBAND_TIMEFRAMES", &["5m", "15m", "1h", "4h"]),
                 "flip_threshold_pct": f64_from_object(&strategy, "EVPOLY_SESSIONBAND_FLIP_THRESHOLD_PCT", config_io::env_template_default_f64("EVPOLY_SESSIONBAND_FLIP_THRESHOLD_PCT", 2.0)),
-                "tau2_enabled": sessionband_tau2_enabled,
-                "tau1_enabled": sessionband_tau1_enabled,
-                "tau2_multiplier": f64_from_object(&strategy, "EVPOLY_SESSIONBAND_TAU2_MULTIPLIER", config_io::env_template_default_f64("EVPOLY_SESSIONBAND_TAU2_MULTIPLIER", 0.30)),
-                "tau1_multiplier": f64_from_object(&strategy, "EVPOLY_SESSIONBAND_TAU1_MULTIPLIER", config_io::env_template_default_f64("EVPOLY_SESSIONBAND_TAU1_MULTIPLIER", 0.70))
+                "tau2_enabled": true,
+                "tau1_enabled": true,
+                "tau2_multiplier": 0.30,
+                "tau1_multiplier": 0.70
             },
             "evsnipe": {
                 "pre_hit_enabled": evsnipe_ratio > 0.0,
@@ -4876,11 +4678,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_desktop_config, desktop_config_to_profile_payload, infer_premarket_ladder_mode_5m,
-        infer_premarket_ladder_mode_non_m5, merge_config_object, merge_desktop_secrets,
-        premarket_default_ladder_prices_m5, premarket_default_ladder_prices_non_m5,
-        premarket_default_ladder_weights, premarket_ladder_prices_for_mode,
-        profile_to_desktop_config, remove_legacy_premarket_ladder_keys,
+        default_desktop_config, desktop_config_to_profile_payload, merge_config_object,
+        merge_desktop_secrets, profile_to_desktop_config, remove_legacy_premarket_ladder_keys,
         simulation_mode_from_profile, PREMARKET_LADDER_MODE_ENV_KEY_5M,
         PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
         PREMARKET_LADDER_MODE_ENV_KEY_SHARED, WEEKEND_POLICY_ENV_KEY,
@@ -4977,27 +4776,19 @@ mod tests {
     }
 
     #[test]
-    fn desktop_profile_payload_writes_premarket_ladder_mode() {
+    fn desktop_profile_payload_omits_premarket_ladder_mode() {
         let mut config = default_desktop_config(
             "0x1111111111111111111111111111111111111111".to_string(),
             "0x2222222222222222222222222222222222222222".to_string(),
             1,
         );
         config.strategy_settings.premarket.timeframes = vec!["15m".to_string(), "1h".to_string()];
-        config.strategy_settings.premarket.entry_ladder_mode_5m = "safe".to_string();
-        config.strategy_settings.premarket.entry_ladder_mode_non_m5 = "aggressive".to_string();
 
         let (strategy, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
         let strategy = strategy.as_object().expect("strategy object");
 
-        assert_eq!(
-            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_5M),
-            Some(&serde_json::json!("safe"))
-        );
-        assert_eq!(
-            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5),
-            Some(&serde_json::json!("aggressive"))
-        );
+        assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_5M));
+        assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5));
         assert_eq!(
             strategy.get("EVPOLY_PREMARKET_TIMEFRAMES"),
             Some(&serde_json::json!("15m,1h"))
@@ -5019,6 +4810,60 @@ mod tests {
         assert_eq!(
             strategy.get(WEEKEND_POLICY_ENV_KEY),
             Some(&serde_json::json!("pause"))
+        );
+    }
+
+    #[test]
+    fn desktop_profile_payload_forces_hidden_public_controls_to_defaults() {
+        let mut config = default_desktop_config(
+            "0x1111111111111111111111111111111111111111".to_string(),
+            "0x2222222222222222222222222222222222222222".to_string(),
+            1,
+        );
+        config.strategies.mm_rewards = true;
+        config.mm_tuning.rewards_min_share_multiple = 9.0;
+        config.strategy_settings.endgame.tick0_multiplier = 9.0;
+        config.strategy_settings.endgame.tick1_multiplier = 9.0;
+        config.strategy_settings.endgame.tick2_multiplier = 9.0;
+        config.strategy_settings.session_band.tau2_enabled = false;
+        config.strategy_settings.session_band.tau1_enabled = false;
+        config.strategy_settings.session_band.tau2_multiplier = 9.0;
+        config.strategy_settings.session_band.tau1_multiplier = 9.0;
+
+        let (strategy, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        let strategy = strategy.as_object().expect("strategy object");
+
+        assert_eq!(
+            strategy.get("EVPOLY_STRATEGY_MM_REWARDS_ENABLE"),
+            Some(&serde_json::json!(false))
+        );
+        assert_eq!(
+            strategy.get("EVPOLY_MM_REWARD_MIN_TARGET_MULT"),
+            Some(&serde_json::json!(1.0))
+        );
+        assert_eq!(
+            strategy.get("EVPOLY_ENDGAME_TICK0_MULTIPLIER"),
+            Some(&serde_json::json!(0.20))
+        );
+        assert_eq!(
+            strategy.get("EVPOLY_ENDGAME_TICK1_MULTIPLIER"),
+            Some(&serde_json::json!(0.40))
+        );
+        assert_eq!(
+            strategy.get("EVPOLY_ENDGAME_TICK2_MULTIPLIER"),
+            Some(&serde_json::json!(0.40))
+        );
+        assert_eq!(
+            strategy.get("EVPOLY_SESSIONBAND_ALLOWED_TAU_SEC"),
+            Some(&serde_json::json!("2,1"))
+        );
+        assert_eq!(
+            strategy.get("EVPOLY_SESSIONBAND_TAU2_MULTIPLIER"),
+            Some(&serde_json::json!(0.30))
+        );
+        assert_eq!(
+            strategy.get("EVPOLY_SESSIONBAND_TAU1_MULTIPLIER"),
+            Some(&serde_json::json!(0.70))
         );
     }
 
@@ -5061,7 +4906,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_legacy_premarket_ladder_keys_clears_old_csv_fields() {
+    fn remove_legacy_premarket_ladder_keys_clears_all_ladder_fields() {
         let mut strategy_config = serde_json::json!({
             PREMARKET_LADDER_MODE_ENV_KEY_SHARED: "safe",
             PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: "safe",
@@ -5078,14 +4923,8 @@ mod tests {
         assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY));
         assert!(!strategy.contains_key("EVPOLY_PREMARKET_FIXED_LADDER_PRICES"));
         assert!(!strategy.contains_key("EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS"));
-        assert_eq!(
-            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_5M),
-            Some(&serde_json::json!("aggressive"))
-        );
-        assert_eq!(
-            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5),
-            Some(&serde_json::json!("normal"))
-        );
+        assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_5M));
+        assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5));
     }
 
     #[test]
@@ -5124,53 +4963,6 @@ mod tests {
         assert_eq!(
             merged["EVPOLY_STRATEGY_MM_REWARDS_ENABLE"],
             serde_json::json!(true)
-        );
-    }
-
-    #[test]
-    fn infer_premarket_ladder_modes_read_split_envs_with_shared_fallback() {
-        let mut strategy = serde_json::Map::new();
-        strategy.insert(
-            PREMARKET_LADDER_MODE_ENV_KEY_5M.to_string(),
-            serde_json::json!("safe"),
-        );
-        strategy.insert(
-            PREMARKET_LADDER_MODE_ENV_KEY_NON_M5.to_string(),
-            serde_json::json!("aggressive"),
-        );
-        assert_eq!(infer_premarket_ladder_mode_5m(&strategy), "safe");
-        assert_eq!(infer_premarket_ladder_mode_non_m5(&strategy), "aggressive");
-
-        let mut legacy_non_m5 = serde_json::Map::new();
-        legacy_non_m5.insert(
-            PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY.to_string(),
-            serde_json::json!("safe"),
-        );
-        assert_eq!(infer_premarket_ladder_mode_non_m5(&legacy_non_m5), "safe");
-
-        let mut shared_only = serde_json::Map::new();
-        shared_only.insert(
-            PREMARKET_LADDER_MODE_ENV_KEY_SHARED.to_string(),
-            serde_json::json!("safe"),
-        );
-        assert_eq!(infer_premarket_ladder_mode_5m(&shared_only), "safe");
-        assert_eq!(infer_premarket_ladder_mode_non_m5(&shared_only), "safe");
-
-        let missing = serde_json::Map::new();
-        assert_eq!(infer_premarket_ladder_mode_5m(&missing), "normal");
-        assert_eq!(infer_premarket_ladder_mode_non_m5(&missing), "normal");
-
-        let safe_m5 =
-            premarket_ladder_prices_for_mode("safe", &premarket_default_ladder_prices_m5());
-        assert_eq!(safe_m5, vec![0.28, 0.24, 0.20, 0.15, 0.09, 0.03]);
-        let aggressive_non_m5 = premarket_ladder_prices_for_mode(
-            "aggressive",
-            &premarket_default_ladder_prices_non_m5(),
-        );
-        assert_eq!(aggressive_non_m5, vec![0.44, 0.33, 0.27, 0.20, 0.14, 0.07]);
-        assert_eq!(
-            premarket_default_ladder_weights(),
-            vec![0.23, 0.23, 0.17, 0.14, 0.12, 0.11]
         );
     }
 }

@@ -1,6 +1,5 @@
 import type {
   BotConfig,
-  PremarketLadderSafetyMode,
   StrategySettings,
   WeekendPolicy,
 } from "./tauri-commands";
@@ -25,13 +24,13 @@ export const STRATEGIES = [
     key: "evcurve",
     label: "EVCurve",
     summary: "Trades curve-based setups when the price path lines up.",
-    tooltip: "Curve-based entries when price and Alpha signal align.",
+    tooltip: "Curve-based entries when price and EVPlus checks align.",
   },
   {
     key: "session_band",
     label: "S-Band",
-    summary: "Trades late-window S-Band setups from EVPlus Alpha signals.",
-    tooltip: "Late-window S-Band entries with local sizing and Alpha signal checks.",
+    summary: "Trades late-window S-Band setups with EVPlus checks.",
+    tooltip: "Late-window S-Band entries with local sizing and EVPlus checks.",
   },
   {
     key: "evsnipe",
@@ -96,49 +95,8 @@ function mmSportUsesDepthRatio(config: BotConfig) {
   return config.strategy_settings.mm_sport.quote_size_mode === "depth_ratio";
 }
 
-export const PREMARKET_DEFAULT_LADDER_PRICES_M5 = [0.31, 0.26, 0.22, 0.16, 0.09, 0.03] as const;
-export const PREMARKET_DEFAULT_LADDER_PRICES_NON_M5 = [0.4, 0.3, 0.24, 0.18, 0.12, 0.06] as const;
-export const PREMARKET_DEFAULT_LADDER_WEIGHTS = [0.23, 0.23, 0.17, 0.14, 0.12, 0.11] as const;
-
-export type PremarketLadderBucket = "m5" | "non_m5";
-
-const PREMARKET_LADDER_MODE_FACTORS: Record<PremarketLadderSafetyMode, number> = {
-  normal: 1,
-  safe: 0.9,
-  aggressive: 1.1,
-};
-
-function normalizePremarketLadderSafetyMode(
-  value: string | undefined
-): PremarketLadderSafetyMode {
-  const normalized = value?.trim().toLowerCase();
-  if (normalized === "safe") return "safe";
-  if (normalized === "aggressive") return "aggressive";
-  return "normal";
-}
-
 function normalizeWeekendPolicy(value: string | undefined): WeekendPolicy {
   return value?.trim().toLowerCase() === "pause" ? "pause" : "off";
-}
-
-function roundUpToCent(value: number) {
-  return Math.min(0.99, Math.max(0.01, Math.ceil(value * 100 - 1e-9) / 100));
-}
-
-function premarketDefaultPricesForBucket(bucket: PremarketLadderBucket): readonly number[] {
-  return bucket === "m5" ? PREMARKET_DEFAULT_LADDER_PRICES_M5 : PREMARKET_DEFAULT_LADDER_PRICES_NON_M5;
-}
-
-export function premarketLadderPricesForMode(
-  mode: PremarketLadderSafetyMode,
-  bucket: PremarketLadderBucket
-): number[] {
-  const factor = PREMARKET_LADDER_MODE_FACTORS[mode];
-  return premarketDefaultPricesForBucket(bucket).map((price) => roundUpToCent(price * factor));
-}
-
-export function premarketLadderWeights(): number[] {
-  return [...PREMARKET_DEFAULT_LADDER_WEIGHTS];
 }
 
 export interface DashboardStrategyEditorState {
@@ -153,8 +111,6 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     tp_enabled: true,
     active_cap_per_asset: 100,
     timeframes: ["5m", "15m", "1h", "4h"],
-    entry_ladder_mode_5m: "normal",
-    entry_ladder_mode_non_m5: "normal",
     cancel_after_open_sec: {
       m5: 20,
       m15: 15,
@@ -308,6 +264,7 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
     strategies: {
       ...DEFAULT_CONFIG.strategies,
       ...saved?.strategies,
+      mm_rewards: false,
     },
     sizing: {
       ...DEFAULT_CONFIG.sizing,
@@ -347,12 +304,6 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
           saved?.strategy_settings?.premarket?.timeframes?.length
             ? saved.strategy_settings.premarket.timeframes
             : DEFAULT_CONFIG.strategy_settings.premarket.timeframes,
-        entry_ladder_mode_5m: normalizePremarketLadderSafetyMode(
-          saved?.strategy_settings?.premarket?.entry_ladder_mode_5m
-        ),
-        entry_ladder_mode_non_m5: normalizePremarketLadderSafetyMode(
-          saved?.strategy_settings?.premarket?.entry_ladder_mode_non_m5
-        ),
         cancel_after_open_sec: {
           ...DEFAULT_CONFIG.strategy_settings.premarket.cancel_after_open_sec,
           ...saved?.strategy_settings?.premarket?.cancel_after_open_sec,
@@ -640,13 +591,13 @@ export function strategySections(strategy: StrategyKey): StrategyEditorSection[]
 }
 
 export function strategySizeLabel(strategy: StrategyKey, config?: BotConfig): string {
-  if (strategy === "evsnipe") return "Size Per Hit (USD)";
+  if (strategy === "evsnipe") return "Size Per Hit (pUSD)";
   if (strategy === "mm_rewards") return "Min Share Multiple";
   if (strategy === "endgame") return "Base Size (Shares)";
   if (strategy === "mm_sport") {
     return config && mmSportUsesDepthRatio(config) ? "Max Share Ratio" : "Quote Size Multiplier";
   }
-  return "Base Size (USD)";
+  return "Base Size (pUSD)";
 }
 
 export function strategySizeValue(config: BotConfig, strategy: StrategyKey): number {
@@ -692,20 +643,20 @@ export function strategyControlSuffix(strategy: StrategyKey, config?: BotConfig)
     case "endgame":
       return "SHARE";
     default:
-      return "USD";
+      return "pUSD";
   }
 }
 
 export function strategyControlTooltip(config: BotConfig, strategy: StrategyKey): string {
   switch (strategy) {
     case "premarket":
-      return "Per-entry ladder base for Premarket.";
+      return "Base pUSD budget for Premarket entries.";
     case "endgame":
-      return `Endgame split ${formatEndgameSplitTooltip(config)}.`;
+      return "Base share size for Endgame.";
     case "evcurve":
-      return "Curve-entry base for each EVCurve setup.";
+      return "Base pUSD budget for each EVCurve setup.";
     case "session_band":
-      return "Per-band entry base for S-Band.";
+      return "Base pUSD budget for S-Band entries.";
     case "evsnipe":
       return "Size used for each EVSnipe hit leg.";
     case "mm_rewards":
@@ -717,13 +668,6 @@ export function strategyControlTooltip(config: BotConfig, strategy: StrategyKey)
     default:
       return "Strategy control";
   }
-}
-
-export function formatEndgameSplitTooltip(config: BotConfig): string {
-  const settings = config.strategy_settings.endgame;
-  return [settings.tick0_multiplier, settings.tick1_multiplier, settings.tick2_multiplier]
-    .map((value) => `${Math.round(value * 100)}`)
-    .join(" / ");
 }
 
 export function strategyTimeframeOptions(strategy: StrategyKey): readonly Timeframe[] {

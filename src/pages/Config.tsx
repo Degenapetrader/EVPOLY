@@ -233,12 +233,14 @@ export function Config() {
   const setupReady = Boolean(
     config.private_key.trim() && (config.sig_type === 0 || config.proxy_wallet.trim())
   );
-  const onboardingReady = Boolean(
-    setupReady &&
-      (config.remote_signer_token.trim() ||
-        config.remote_discovery_token.trim() ||
-        config.relayer_api_key.trim())
+  const runtimeAccessReady = Boolean(
+    config.remote_signer_token.trim() &&
+      config.remote_discovery_token.trim() &&
+      config.remote_premarket_alpha_token.trim() &&
+      config.remote_endgame_alpha_token.trim() &&
+      config.remote_evsnipe_discovery_token.trim()
   );
+  const onboardingReady = Boolean(setupReady && runtimeAccessReady);
 
   const railItems = [
     { label: "Home", to: "/home" },
@@ -484,7 +486,7 @@ export function Config() {
               <div className="status-strip__copy">
                 {onboardingReady
                   ? "This profile is ready to trade. Save changes any time you update the private key, proxy wallet, or relayer fields."
-                  : "Set the wallet mode, private key, proxy wallet when needed, and required tokens before running onboarding."}
+                  : "Set the wallet mode, private key, proxy wallet when needed, and relayer fields before running onboarding."}
               </div>
             </div>
 
@@ -798,54 +800,12 @@ export function Config() {
         {tab === "security" ? (
           <div className="page-split xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.92fr)]">
             <SectionPanel
-              title="Runtime tokens"
-              subtitle="Keep signer, discovery, and strategy tokens in the active profile. Admin API token is managed internally."
+              title="Runtime Access"
+              subtitle="App access is generated during onboarding and stored in the active profile."
             >
-              <div className="grid gap-4 xl:grid-cols-2">
-                <Field
-                  label="Remote signer token"
-                  value={config.remote_signer_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({ ...current, remote_signer_token: value }))
-                  }
-                />
-                <Field
-                  label="Remote discovery token"
-                  value={config.remote_discovery_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({ ...current, remote_discovery_token: value }))
-                  }
-                />
-                <Field
-                  label="Premarket alpha token"
-                  value={config.remote_premarket_alpha_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({
-                      ...current,
-                      remote_premarket_alpha_token: value,
-                    }))
-                  }
-                />
-                <Field
-                  label="Endgame alpha token"
-                  value={config.remote_endgame_alpha_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({
-                      ...current,
-                      remote_endgame_alpha_token: value,
-                    }))
-                  }
-                />
-                <Field
-                  label="EVSnipe discovery token"
-                  value={config.remote_evsnipe_discovery_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({
-                      ...current,
-                      remote_evsnipe_discovery_token: value,
-                    }))
-                  }
-                />
+              <div className="text-sm leading-6 text-[var(--text-secondary)]">
+                No manual access-token setup is needed for public profiles. Run onboarding again if
+                this profile cannot connect.
               </div>
             </SectionPanel>
 

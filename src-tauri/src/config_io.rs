@@ -22,6 +22,9 @@ pub(crate) const DESKTOP_POLYGON_RPC_URLS: [&str; 6] = [
 pub(crate) const DEFAULT_MM_MARKET_MODE: &str = "auto";
 
 const CORE_ENV_TEMPLATE: &str = include_str!("../core-contract/.env.example");
+const PREMARKET_ALPHA_URL_KEY: &str = "EVPOLY_REMOTE_PREMARKET_ALPHA_URL";
+const LEGACY_PREMARKET_SHOULD_TRADE_PATH: &str = "/v1/alpha/premarket/should-trade";
+const CURRENT_PREMARKET_LADDER_PATH: &str = "/v1/alpha/premarket/ladder";
 
 fn parse_env_template(template: &str) -> HashMap<String, String> {
     let mut env_map = HashMap::new();
@@ -109,6 +112,21 @@ fn normalized_mm_market_mode(env_map: &HashMap<String, String>) -> String {
     }
 }
 
+fn normalize_premarket_alpha_url(value: &str) -> String {
+    let trimmed = value.trim();
+    let path = trimmed.trim_end_matches('/');
+    if let Some(prefix) = path.strip_suffix(LEGACY_PREMARKET_SHOULD_TRADE_PATH) {
+        return format!("{prefix}{CURRENT_PREMARKET_LADDER_PATH}");
+    }
+    trimmed.to_string()
+}
+
+fn normalize_remote_alpha_urls(env_map: &mut HashMap<String, String>) {
+    if let Some(value) = env_map.get_mut(PREMARKET_ALPHA_URL_KEY) {
+        *value = normalize_premarket_alpha_url(value);
+    }
+}
+
 pub fn generate_env_file(
     profile: &Profile,
     secrets: &HashMap<String, String>,
@@ -151,6 +169,8 @@ pub fn generate_env_file(
     for (k, v) in secrets {
         env_map.insert(k.clone(), v.clone());
     }
+
+    normalize_remote_alpha_urls(&mut env_map);
 
     let shared_alpha_token = [
         "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
@@ -406,6 +426,45 @@ mod tests {
     }
 
     #[test]
+    fn core_env_template_uses_current_remote_alpha_routes() {
+        let defaults = super::core_env_defaults();
+        let expected = [
+            (
+                "EVPOLY_REMOTE_MARKET_DISCOVERY_URL",
+                "https://alpha.evplus.ai/v1/discovery/timeframe",
+            ),
+            (
+                "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
+                "https://alpha.evplus.ai/v1/alpha/premarket/ladder",
+            ),
+            (
+                "EVPOLY_REMOTE_ENDGAME_ALPHA_URL",
+                "https://alpha.evplus.ai/v1/alpha/endgame/policy",
+            ),
+            (
+                "EVPOLY_REMOTE_EVCURVE_ALPHA_URL",
+                "https://alpha.evplus.ai/v1/alpha/evcurve",
+            ),
+            (
+                "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
+                "https://alpha.evplus.ai/v1/alpha/sessionband",
+            ),
+            (
+                "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL",
+                "https://alpha.evplus.ai/v1/discovery/evsnipe",
+            ),
+            (
+                "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL",
+                "https://alpha.evplus.ai/v1/alpha/mm-sport/depth-skip",
+            ),
+        ];
+
+        for (key, url) in expected {
+            assert_eq!(defaults.get(key).map(String::as_str), Some(url), "{key}");
+        }
+    }
+
+    #[test]
     fn generate_env_file_reuses_shared_alpha_token_for_missing_strategy_tokens() {
         let profile = sample_profile();
         let mut secrets = HashMap::new();
@@ -428,6 +487,32 @@ mod tests {
         assert!(content.contains("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN=shared-alpha-token"));
         assert!(content.contains("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN=shared-alpha-token"));
         assert!(content.contains("EVPOLY_MM_MARKET_MODE=auto"));
+
+        let _ = std::fs::remove_file(env_path);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn generate_env_file_normalizes_legacy_premarket_alpha_url() {
+        let mut profile = sample_profile();
+        profile.strategy_config = serde_json::json!({
+            "EVPOLY_REMOTE_PREMARKET_ALPHA_URL": "https://alpha.evplus.ai/v1/alpha/premarket/should-trade"
+        });
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "evpoly-config-io-alpha-url-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let env_path =
+            generate_env_file(&profile, &HashMap::new(), &temp_dir).expect("generate env");
+        let content = std::fs::read_to_string(&env_path).expect("read env");
+
+        assert!(content.contains(
+            "EVPOLY_REMOTE_PREMARKET_ALPHA_URL=https://alpha.evplus.ai/v1/alpha/premarket/ladder"
+        ));
+        assert!(!content.contains("/v1/alpha/premarket/should-trade"));
 
         let _ = std::fs::remove_file(env_path);
         let _ = std::fs::remove_dir_all(temp_dir);

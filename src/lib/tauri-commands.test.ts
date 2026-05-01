@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import {
   createProfile,
+  derivePolymarketFunderAddresses,
   deriveWalletAddress,
   desktopMagicFinish,
   desktopMagicStart,
@@ -241,6 +242,15 @@ describe("tauri command payload contracts", () => {
     await deriveWalletAddress("0xprivate");
     expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(invokeMock).toHaveBeenCalledWith("derive_wallet_address", {
+      privateKey: "0xprivate",
+      private_key: "0xprivate",
+    });
+  });
+
+  it("sends compatible payload keys for derive_polymarket_funder_addresses", async () => {
+    await derivePolymarketFunderAddresses("0xprivate");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("derive_polymarket_funder_addresses", {
       privateKey: "0xprivate",
       private_key: "0xprivate",
     });

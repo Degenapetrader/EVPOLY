@@ -10,6 +10,12 @@ export interface Profile {
   created_at: string;
 }
 
+export interface PolymarketFunderAddresses {
+  eoa_wallet: string;
+  proxy_wallet: string | null;
+  safe_wallet: string;
+}
+
 export interface LogLine {
   timestamp: string;
   level: "INFO" | "WARN" | "ERROR";
@@ -690,6 +696,14 @@ export const getGeoAccessStatus = (): Promise<GeoAccessStatus> =>
 
 export const deriveWalletAddress = (privateKey: string): Promise<string> =>
   invoke("derive_wallet_address", {
+    privateKey,
+    private_key: privateKey,
+  });
+
+export const derivePolymarketFunderAddresses = (
+  privateKey: string
+): Promise<PolymarketFunderAddresses> =>
+  invoke("derive_polymarket_funder_addresses", {
     privateKey,
     private_key: privateKey,
   });

@@ -24,6 +24,7 @@ import { OFFICIAL_LINKS } from "../lib/official-links";
 import {
   createProfile,
   deleteProfile,
+  derivePolymarketFunderAddresses,
   deriveWalletAddress,
   exportConfig,
   getActiveProfileId,
@@ -211,7 +212,6 @@ export function Config() {
   const [magicLoading, setMagicLoading] = useState(false);
   const [walletProfileMessage, setWalletProfileMessage] = useState<string | null>(null);
   const [importPrivateKey, setImportPrivateKey] = useState("");
-  const [importProxyWallet, setImportProxyWallet] = useState("");
   const [importSigType, setImportSigType] = useState("2");
   const [importLoading, setImportLoading] = useState(false);
   const [showImportPrivateKey, setShowImportPrivateKey] = useState(false);
@@ -460,7 +460,6 @@ export function Config() {
   const handleCreateImportedWalletProfile = async () => {
     const privateKey = importPrivateKey.trim();
     const signatureType = Number(importSigType);
-    const proxyWallet = signatureType === 0 ? "" : importProxyWallet.trim();
     if (!privateKey) {
       setWalletProfileMessage("Enter a private key.");
       return;
@@ -469,26 +468,31 @@ export function Config() {
       setWalletProfileMessage("Choose a valid wallet mode.");
       return;
     }
-    if (signatureType !== 0 && !proxyWallet) {
-      setWalletProfileMessage("Enter the proxy or safe wallet address for this private key.");
-      return;
-    }
 
     setImportLoading(true);
     setWalletProfileMessage(null);
     setSaveMessage(null);
     try {
-      const derivedSigner = await deriveWalletAddress(privateKey);
-      const profileName = importedProfileName(derivedSigner, profiles);
+      const funders = await derivePolymarketFunderAddresses(privateKey);
+      const proxyWallet =
+        signatureType === 0
+          ? ""
+          : signatureType === 1
+            ? funders.proxy_wallet || ""
+            : funders.safe_wallet;
+      if (signatureType !== 0 && !proxyWallet) {
+        setWalletProfileMessage("Could not derive the proxy or safe wallet for this private key.");
+        return;
+      }
+      const profileName = importedProfileName(funders.eoa_wallet, profiles);
       await saveNewWalletProfile({
         profileName,
         privateKey,
-        eoaWallet: derivedSigner,
+        eoaWallet: funders.eoa_wallet,
         signatureType,
         proxyWallet,
       });
       setImportPrivateKey("");
-      setImportProxyWallet("");
       setShowImportPrivateKey(false);
       const message = "Imported private key profile created and selected. Onboarding credentials are ready.";
       setWalletProfileMessage(message);
@@ -830,11 +834,9 @@ export function Config() {
                           />
                         </div>
                         {Number(importSigType) !== 0 ? (
-                          <Field
-                            label="Proxy / Safe Wallet Address"
-                            value={importProxyWallet}
-                            onChange={setImportProxyWallet}
-                          />
+                          <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
+                            Proxy/Safe funder address is derived locally during import.
+                          </div>
                         ) : null}
                         <button
                           type="button"

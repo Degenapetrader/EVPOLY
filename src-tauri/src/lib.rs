@@ -3386,7 +3386,7 @@ fn set_active_profile(profiles: State<'_, ProfileState>, id: String) -> Result<(
 // ── Bot ──────────────────────────────────────────────────────────────
 
 #[tauri::command]
-fn start_bot(
+async fn start_bot(
     app: AppHandle,
     bot: State<'_, BotState>,
     profiles: State<'_, ProfileState>,
@@ -3396,18 +3396,9 @@ fn start_bot(
     simulation: bool,
 ) -> Result<(), String> {
     geo_access::ensure_geo_start_allowed()?;
-    let (env_path, config_path, wallet_sync_config) = {
-        let pm = profiles.lock().map_err(|e| e.to_string())?;
-        let profile = persist_active_profile_simulation_mode(&pm, simulation)?;
-        let auth = auth.lock().map_err(|e| e.to_string())?;
-        let (env_path, config_path) =
-            build_runtime_paths_for_profile(&profile, &auth, &data_dir.0)?;
-        (
-            env_path,
-            config_path,
-            wallet_sync_config_for_profile(&profile),
-        )
-    };
+    let (profile, env_path, config_path) =
+        prepare_active_profile_runtime_paths(&profiles, &auth, &data_dir.0, simulation).await?;
+    let wallet_sync_config = wallet_sync_config_for_profile(&profile);
     bot.lock()
         .map_err(|e| e.to_string())?
         .start(&app, env_path, config_path, simulation)?;
@@ -3438,7 +3429,7 @@ fn stop_bot(
 }
 
 #[tauri::command]
-fn restart_bot(
+async fn restart_bot(
     app: AppHandle,
     bot: State<'_, BotState>,
     profiles: State<'_, ProfileState>,
@@ -3448,18 +3439,9 @@ fn restart_bot(
     simulation: bool,
 ) -> Result<(), String> {
     geo_access::ensure_geo_start_allowed()?;
-    let (env_path, config_path, wallet_sync_config) = {
-        let pm = profiles.lock().map_err(|e| e.to_string())?;
-        let profile = persist_active_profile_simulation_mode(&pm, simulation)?;
-        let auth = auth.lock().map_err(|e| e.to_string())?;
-        let (env_path, config_path) =
-            build_runtime_paths_for_profile(&profile, &auth, &data_dir.0)?;
-        (
-            env_path,
-            config_path,
-            wallet_sync_config_for_profile(&profile),
-        )
-    };
+    let (profile, env_path, config_path) =
+        prepare_active_profile_runtime_paths(&profiles, &auth, &data_dir.0, simulation).await?;
+    let wallet_sync_config = wallet_sync_config_for_profile(&profile);
     wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
     bot.lock()
         .map_err(|e| e.to_string())?
@@ -3637,9 +3619,15 @@ async fn ensure_generated_credentials(config: &mut DesktopConfig) -> Result<Vec<
     let derived_eoa = wallet_address_from_private_key(private_key)?;
     config.eoa_wallet = derived_eoa.clone();
     let wallet_binding = wallet_binding_for_config(config, derived_eoa.as_str())?;
-    let wallet_changed = config.wallet_binding.trim() != wallet_binding;
+    let current_wallet_binding = config.wallet_binding.trim();
+    let wallet_binding_missing = current_wallet_binding.is_empty();
+    let wallet_changed = !wallet_binding_missing && current_wallet_binding != wallet_binding;
     let credentials_missing =
         config.alpha_key.trim().is_empty() || clean_relayer_remote_signer_token(config).is_empty();
+
+    if wallet_binding_missing {
+        config.wallet_binding = wallet_binding.clone();
+    }
 
     if wallet_changed {
         config.alpha_key.clear();
@@ -3733,6 +3721,39 @@ async fn ensure_generated_credentials(config: &mut DesktopConfig) -> Result<Vec<
     };
 
     Ok(fixed_keys)
+}
+
+async fn prepare_active_profile_runtime_paths(
+    profiles: &ProfileState,
+    auth: &AuthState,
+    data_dir: &Path,
+    simulation: bool,
+) -> Result<(Profile, PathBuf, PathBuf), String> {
+    let mut profile = {
+        let pm = profiles.lock().map_err(|e| e.to_string())?;
+        persist_active_profile_simulation_mode(&pm, simulation)?
+    };
+    let mut config = {
+        let auth_guard = auth.lock().map_err(|e| e.to_string())?;
+        let value = profile_to_desktop_config(&profile, &auth_guard)?;
+        serde_json::from_value::<DesktopConfig>(value).map_err(|e| e.to_string())?
+    };
+    let fixed_keys = ensure_generated_credentials(&mut config).await?;
+    let (env_path, config_path) =
+        save_profile_and_build_runtime(profiles, auth, data_dir, &mut profile, &config)?;
+    if !fixed_keys.is_empty() {
+        append_desktop_debug_line(
+            data_dir,
+            "ONBOARD",
+            format!(
+                "start prepared profile={} generated={}",
+                profile.id,
+                fixed_keys.join(",")
+            )
+            .as_str(),
+        );
+    }
+    Ok((profile, env_path, config_path))
 }
 
 #[tauri::command]

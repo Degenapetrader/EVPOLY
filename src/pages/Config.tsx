@@ -334,8 +334,8 @@ export function Config() {
     setSaveMessage(null);
     try {
       const result = await completeDesktopMagicWalletOnboarding(magicEmail, activeProfileId);
-      if (!isSafeReady(result.safeStatus) || !result.safeAddress) {
-        setMagicMessage("Wallet created, but the Polymarket safe is not ready yet.");
+      if (!result.safeAddress) {
+        setMagicMessage("Wallet created, but the Polymarket safe address is not available yet.");
         return;
       }
 
@@ -370,8 +370,11 @@ export function Config() {
       setSavedSnapshot(JSON.stringify(persisted));
       setMagicEmail("");
       await refreshProfiles();
-      setMagicMessage("Wallet saved. Onboarding credentials are ready.");
-      setSaveMessage("Wallet saved. Onboarding credentials are ready.");
+      const message = isSafeReady(result.safeStatus)
+        ? "Wallet saved. Onboarding credentials are ready."
+        : `Wallet saved. Polymarket safe status: ${toStatusLabel(result.safeStatus || "pending")}.`;
+      setMagicMessage(message);
+      setSaveMessage(message);
     } catch (err) {
       setMagicMessage(getErrorText(err, "failed to create Magic wallet"));
     } finally {
@@ -765,83 +768,7 @@ export function Config() {
         ) : null}
 
         {tab === "security" ? (
-          <div className="page-split xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.92fr)]">
-            <SectionPanel
-              title="Runtime tokens"
-              subtitle="Normal setup uses the clean EVPOLY alpha key and relayer remote signer token. Per-strategy fields are legacy advanced overrides."
-            >
-              <div className="grid gap-4 xl:grid-cols-2">
-                <Field
-                  label="EVPOLY Alpha Key"
-                  value={config.alpha_key}
-                  onChange={(value) =>
-                    setConfig((current) => ({ ...current, alpha_key: value }))
-                  }
-                />
-                <Field
-                  label="Relayer remote signer token"
-                  value={config.relayer_remote_signer_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({ ...current, relayer_remote_signer_token: value }))
-                  }
-                />
-                <Field
-                  label="Relayer submit signer URL"
-                  value={config.relayer_submit_signer_url}
-                  onChange={(value) =>
-                    setConfig((current) => ({ ...current, relayer_submit_signer_url: value }))
-                  }
-                />
-                <Field
-                  label="Legacy remote discovery token"
-                  value={config.remote_discovery_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({ ...current, remote_discovery_token: value }))
-                  }
-                />
-                <Field
-                  label="Legacy Premarket alpha token"
-                  value={config.remote_premarket_alpha_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({
-                      ...current,
-                      remote_premarket_alpha_token: value,
-                    }))
-                  }
-                />
-                <Field
-                  label="Legacy Endgame alpha token"
-                  value={config.remote_endgame_alpha_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({
-                      ...current,
-                      remote_endgame_alpha_token: value,
-                    }))
-                  }
-                />
-                <Field
-                  label="Legacy MM Rewards alpha token"
-                  value={config.remote_mm_rewards_alpha_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({
-                      ...current,
-                      remote_mm_rewards_alpha_token: value,
-                    }))
-                  }
-                />
-                <Field
-                  label="Legacy EVSnipe discovery token"
-                  value={config.remote_evsnipe_discovery_token}
-                  onChange={(value) =>
-                    setConfig((current) => ({
-                      ...current,
-                      remote_evsnipe_discovery_token: value,
-                    }))
-                  }
-                />
-              </div>
-            </SectionPanel>
-
+          <div className="page-stack">
             <SectionPanel
               title="Import and export"
               subtitle="Move encrypted profiles between desktops with the current desktop password."

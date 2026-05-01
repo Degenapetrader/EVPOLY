@@ -1324,6 +1324,28 @@ fn simulation_mode_from_profile(profile: &Profile) -> bool {
         .unwrap_or_else(|| config_io::env_template_default_bool("APP_SIMULATION", false))
 }
 
+fn bot_status_label(status: bot_manager::BotStatus) -> String {
+    match status {
+        bot_manager::BotStatus::Stopped => "stopped".to_string(),
+        bot_manager::BotStatus::Starting => "starting".to_string(),
+        bot_manager::BotStatus::Running => "running".to_string(),
+        bot_manager::BotStatus::Stopping => "stopping".to_string(),
+        bot_manager::BotStatus::Error(e) => format!("error:{e}"),
+    }
+}
+
+fn active_profile_bot_state(
+    global_state: &str,
+    active_profile_id: Option<&str>,
+    running_profile_id: Option<&str>,
+) -> String {
+    match running_profile_id {
+        Some(running_id) if active_profile_id == Some(running_id) => global_state.to_string(),
+        Some(_) => "stopped".to_string(),
+        None => global_state.to_string(),
+    }
+}
+
 fn persist_profile_simulation_mode(
     pm: &ProfileManager,
     profile_id: &str,
@@ -3058,15 +3080,10 @@ async fn build_home_overview_payload(
     let bot_snapshot = {
         let manager = bot.lock().map_err(|e| e.to_string())?;
         (
-            match manager.get_status() {
-                bot_manager::BotStatus::Stopped => "stopped".to_string(),
-                bot_manager::BotStatus::Starting => "starting".to_string(),
-                bot_manager::BotStatus::Running => "running".to_string(),
-                bot_manager::BotStatus::Stopping => "stopping".to_string(),
-                bot_manager::BotStatus::Error(err) => format!("error:{err}"),
-            },
+            bot_status_label(manager.get_status()),
             manager.simulation_mode(),
             manager.last_activity_at(),
+            manager.running_profile_id(),
         )
     };
     let wallet_sync_status = wallet_sync.lock().map_err(|e| e.to_string())?.status();
@@ -3082,11 +3099,26 @@ async fn build_home_overview_payload(
             .unwrap_or((0.0, 0, None, 0));
     let recent_unknown_ack_count = count_unknown_ack_warnings(&data_dir.0, 160) as u64;
 
-    let maybe_profile = {
+    let (active_profile_id, maybe_profile, live_profile_name) = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
-        pm.get_active_profile_id()
-            .and_then(|id| pm.get_profile(&id))
+        let active_id = pm.get_active_profile_id();
+        let active_profile = active_id.as_ref().and_then(|id| pm.get_profile(id));
+        let live_name = bot_snapshot
+            .3
+            .as_ref()
+            .and_then(|id| pm.get_profile(id))
+            .map(|profile| profile.name);
+        (active_id, active_profile, live_name)
     };
+    let active_bot_state = active_profile_bot_state(
+        bot_snapshot.0.as_str(),
+        active_profile_id.as_deref(),
+        bot_snapshot.3.as_deref(),
+    );
+    let global_bot_busy = matches!(bot_snapshot.0.as_str(), "starting" | "running" | "stopping");
+    let other_profile_running = bot_snapshot.3.as_deref().is_some()
+        && bot_snapshot.3.as_deref() != active_profile_id.as_deref()
+        && global_bot_busy;
 
     let Some(profile) = maybe_profile else {
         return Ok(serde_json::json!({
@@ -3099,7 +3131,11 @@ async fn build_home_overview_payload(
             "liquidity_rewards_lifetime": Value::Null,
             "liquidity_rewards_as_of_utc": Value::Null,
             "liquidity_rewards_error": Value::Null,
-            "bot_state": bot_snapshot.0,
+            "bot_state": active_bot_state,
+            "global_bot_state": bot_snapshot.0,
+            "live_profile_id": bot_snapshot.3,
+            "live_profile_name": live_profile_name,
+            "other_profile_running": other_profile_running,
             "mode": "dry_run",
             "active_strategy_count": 0,
             "wallet_sync": wallet_sync_status.clone(),
@@ -3200,7 +3236,11 @@ async fn build_home_overview_payload(
         "liquidity_rewards_lifetime": liquidity_rewards_lifetime,
         "liquidity_rewards_as_of_utc": liquidity_rewards_as_of_utc,
         "liquidity_rewards_error": liquidity_rewards_error,
-        "bot_state": bot_snapshot.0,
+        "bot_state": active_bot_state,
+        "global_bot_state": bot_snapshot.0,
+        "live_profile_id": bot_snapshot.3,
+        "live_profile_name": live_profile_name,
+        "other_profile_running": other_profile_running,
         "mode": mode,
         "active_strategy_count": count_enabled_strategies(&profile),
         "wallet_sync": wallet_sync_status.clone(),
@@ -3427,9 +3467,13 @@ async fn start_bot(
     let (profile, env_path, config_path) =
         prepare_active_profile_runtime_paths(&profiles, &auth, &data_dir.0, simulation).await?;
     let wallet_sync_config = wallet_sync_config_for_profile(&profile);
-    bot.lock()
-        .map_err(|e| e.to_string())?
-        .start(&app, env_path, config_path, simulation)?;
+    bot.lock().map_err(|e| e.to_string())?.start(
+        &app,
+        profile.id.clone(),
+        env_path,
+        config_path,
+        simulation,
+    )?;
     if simulation {
         wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
     } else {
@@ -3471,9 +3515,13 @@ async fn restart_bot(
         prepare_active_profile_runtime_paths(&profiles, &auth, &data_dir.0, simulation).await?;
     let wallet_sync_config = wallet_sync_config_for_profile(&profile);
     wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
-    bot.lock()
-        .map_err(|e| e.to_string())?
-        .restart(&app, env_path, config_path, simulation)?;
+    bot.lock().map_err(|e| e.to_string())?.restart(
+        &app,
+        profile.id.clone(),
+        env_path,
+        config_path,
+        simulation,
+    )?;
     if simulation {
         wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
     } else {
@@ -3492,18 +3540,23 @@ async fn restart_bot(
 }
 
 #[tauri::command]
-fn get_bot_status(bot: State<'_, BotState>) -> String {
-    match bot
+fn get_bot_status(bot: State<'_, BotState>, profiles: State<'_, ProfileState>) -> String {
+    let (global_state, running_profile_id) = match bot.lock() {
+        Ok(manager) => (
+            bot_status_label(manager.get_status()),
+            manager.running_profile_id(),
+        ),
+        Err(_) => ("error:lock failed".to_string(), None),
+    };
+    let active_profile_id = profiles
         .lock()
-        .map(|bm| bm.get_status())
-        .unwrap_or(bot_manager::BotStatus::Error("lock failed".into()))
-    {
-        bot_manager::BotStatus::Stopped => "stopped".to_string(),
-        bot_manager::BotStatus::Starting => "starting".to_string(),
-        bot_manager::BotStatus::Running => "running".to_string(),
-        bot_manager::BotStatus::Stopping => "stopping".to_string(),
-        bot_manager::BotStatus::Error(e) => format!("error:{e}"),
-    }
+        .ok()
+        .and_then(|pm| pm.get_active_profile_id());
+    active_profile_bot_state(
+        global_state.as_str(),
+        active_profile_id.as_deref(),
+        running_profile_id.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -3617,9 +3670,13 @@ fn restart_bot_with_runtime_paths(
     simulation: bool,
 ) -> Result<(), String> {
     wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
-    bot.lock()
-        .map_err(|e| e.to_string())?
-        .restart(app, env_path, config_path, simulation)?;
+    bot.lock().map_err(|e| e.to_string())?.restart(
+        app,
+        profile.id.clone(),
+        env_path,
+        config_path,
+        simulation,
+    )?;
     if simulation {
         wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
     } else if let Err(err) = wallet_sync
@@ -4914,7 +4971,7 @@ pub fn run() {
                         let bs = app.state::<BotState>();
                         let ws = app.state::<WalletSyncState>();
                         let configs =
-                            || -> Option<(PathBuf, PathBuf, bool, WalletSyncRuntimeConfig)> {
+                            || -> Option<(String, PathBuf, PathBuf, bool, WalletSyncRuntimeConfig)> {
                                 let pm = ps.lock().ok()?;
                                 let auth = auth.lock().ok()?;
                                 let profile = active_profile(&pm).ok()?;
@@ -4922,20 +4979,21 @@ pub fn run() {
                                 let (env_path, config_path) =
                                     build_runtime_paths_for_profile(&profile, &auth, &dd.0).ok()?;
                                 Some((
+                                    profile.id.clone(),
                                     env_path,
                                     config_path,
                                     simulation,
                                     wallet_sync_config_for_profile(&profile),
                                 ))
                             };
-                        if let Some((env_path, config_path, simulation, wallet_sync_config)) =
+                        if let Some((profile_id, env_path, config_path, simulation, wallet_sync_config)) =
                             configs()
                         {
                             if geo_access::ensure_geo_start_allowed().is_err() {
                                 return;
                             }
                             if let Ok(bm) = bs.lock() {
-                                if bm.start(app, env_path, config_path, simulation).is_ok() {
+                                if bm.start(app, profile_id, env_path, config_path, simulation).is_ok() {
                                     if simulation {
                                         if let Ok(manager) = ws.lock() {
                                             let _ = manager.stop();

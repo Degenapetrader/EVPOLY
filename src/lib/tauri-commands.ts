@@ -79,6 +79,10 @@ export interface HomeOverview {
   liquidity_rewards_as_of_utc: string | null;
   liquidity_rewards_error: string | null;
   bot_state: string;
+  global_bot_state: string;
+  live_profile_id: string | null;
+  live_profile_name: string | null;
+  other_profile_running: boolean;
   mode: "live" | "dry_run" | string;
   active_strategy_count: number;
   wallet_sync: WalletSyncStatus;

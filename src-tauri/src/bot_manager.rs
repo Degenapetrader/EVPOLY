@@ -45,6 +45,7 @@ struct BotInner {
     status: BotStatus,
     child: Option<CommandChild>,
     env_path: Option<PathBuf>,
+    running_profile_id: Option<String>,
     stop_requested: bool,
     simulation: bool,
 }
@@ -63,6 +64,7 @@ impl BotManager {
                 status: BotStatus::Stopped,
                 child: None,
                 env_path: None,
+                running_profile_id: None,
                 stop_requested: false,
                 simulation: false,
             })),
@@ -73,6 +75,7 @@ impl BotManager {
     pub fn start(
         &self,
         app_handle: &AppHandle,
+        profile_id: String,
         env_path: PathBuf,
         config_path: PathBuf,
         simulation: bool,
@@ -84,6 +87,7 @@ impl BotManager {
             return Err(format!("bot is busy ({:?})", inner.status));
         }
         inner.status = BotStatus::Starting;
+        inner.running_profile_id = Some(profile_id);
         inner.stop_requested = false;
 
         let mut args = vec![
@@ -182,6 +186,7 @@ impl BotManager {
                             inner.stop_requested = false;
                             inner.simulation = false;
                             if was_stopping || stop_requested || payload.code == Some(0) {
+                                inner.running_profile_id = None;
                                 inner.status = BotStatus::Stopped;
                             } else {
                                 inner.status = BotStatus::Error(exit_line);
@@ -235,12 +240,13 @@ impl BotManager {
     pub fn restart(
         &self,
         app_handle: &AppHandle,
+        profile_id: String,
         env_path: PathBuf,
         config_path: PathBuf,
         simulation: bool,
     ) -> Result<(), String> {
         self.stop()?;
-        self.start(app_handle, env_path, config_path, simulation)
+        self.start(app_handle, profile_id, env_path, config_path, simulation)
     }
 
     pub fn is_running(&self) -> bool {
@@ -256,6 +262,14 @@ impl BotManager {
             .lock()
             .map(|inner| inner.status.clone())
             .unwrap_or(BotStatus::Error("lock failed".into()))
+    }
+
+    pub fn running_profile_id(&self) -> Option<String> {
+        self.reconcile_runtime_state();
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.running_profile_id.clone())
     }
 
     pub fn get_log_buffer(&self) -> Arc<Mutex<LogBuffer>> {
@@ -452,6 +466,7 @@ fn finalize_stop(inner: &mut BotInner) {
         config_io::cleanup_env_file(&path);
     }
     inner.child = None;
+    inner.running_profile_id = None;
     inner.simulation = false;
     inner.status = BotStatus::Stopped;
 }

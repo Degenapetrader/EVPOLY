@@ -40,6 +40,7 @@ import {
   restartBot,
   runSetupDoctor,
   saveConfig,
+  setActiveProfile,
   startBot,
   stopBot,
   type BotConfig,
@@ -258,6 +259,8 @@ export function Home() {
   const displayError = actionError || overviewError;
   const canOperate = Boolean(activeProfileId && configLoaded);
   const botRunning = overview?.bot_state === "running";
+  const otherProfileRunning = Boolean(overview?.other_profile_running && overview.live_profile_id);
+  const liveProfileLabel = overview?.live_profile_name?.trim() || "live profile";
 
   const handleUpdate = async () => {
     if (!pendingUpdate || updateDownloading) return;
@@ -280,6 +283,20 @@ export function Home() {
     await loadProfileConfig(profileId);
     await refreshOverview();
     setPortfolioFeedSeed((current) => current + 1);
+  };
+
+  const handleOpenLiveProfile = async () => {
+    if (!overview?.live_profile_id) return;
+    setActionLoading(true);
+    try {
+      await setActiveProfile(overview.live_profile_id);
+      await handleProfileSwitch(overview.live_profile_id);
+      setActionError(null);
+    } catch (err) {
+      setActionError(getErrorText(err, "failed to open live profile"));
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const handleLock = async () => {
@@ -871,32 +888,46 @@ export function Home() {
           <button type="button" onClick={() => void handleLock()} className="ui-button">
             Lock
           </button>
-          <button
-            type="button"
-            onClick={handleStart}
-            disabled={actionLoading || !canOperate || botRunning}
-            className={`ui-button ui-button--primary ${
-              botRunning ? "ui-button--running-disabled" : ""
-            }`.trim()}
-          >
-            Start
-          </button>
-          <button
-            type="button"
-            onClick={handleRestart}
-            disabled={actionLoading || !canOperate}
-            className="ui-button ui-button--accent"
-          >
-            Restart
-          </button>
-          <button
-            type="button"
-            onClick={handleStop}
-            disabled={actionLoading}
-            className="ui-button ui-button--danger"
-          >
-            Stop
-          </button>
+          {otherProfileRunning ? (
+            <button
+              type="button"
+              onClick={() => void handleOpenLiveProfile()}
+              disabled={actionLoading}
+              className="ui-button ui-button--accent"
+              title={`Switch to ${liveProfileLabel}`}
+            >
+              Open Live Profile
+            </button>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={handleStart}
+                disabled={actionLoading || !canOperate || botRunning}
+                className={`ui-button ui-button--primary ${
+                  botRunning ? "ui-button--running-disabled" : ""
+                }`.trim()}
+              >
+                Start
+              </button>
+              <button
+                type="button"
+                onClick={handleRestart}
+                disabled={actionLoading || !canOperate}
+                className="ui-button ui-button--accent"
+              >
+                Restart
+              </button>
+              <button
+                type="button"
+                onClick={handleStop}
+                disabled={actionLoading}
+                className="ui-button ui-button--danger"
+              >
+                Stop
+              </button>
+            </>
+          )}
         </div>
       }
       banner={

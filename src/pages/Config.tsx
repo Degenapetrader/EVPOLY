@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-shell";
 import { AppShell } from "../components/AppShell";
 import { InfoPill } from "../components/InfoPill";
 import { LogsDrawer } from "../components/LogsDrawer";
 import { OfficialLinks } from "../components/OfficialLinks";
-import { ProfileSwitcher } from "../components/ProfileSwitcher";
+import { ProfileSwitcher, type WalletProfileAction } from "../components/ProfileSwitcher";
 import { SectionPanel } from "../components/SectionPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { useAppContext } from "../App";
@@ -42,7 +42,7 @@ import {
 } from "../lib/tauri-commands";
 
 type SettingsTab = "setup" | "profiles" | "security" | "diagnostics";
-type CreateWalletMethod = "magic" | "private_key";
+type CreateWalletMethod = WalletProfileAction;
 
 const TAB_LABELS: Record<SettingsTab, string> = {
   setup: "Setup",
@@ -196,6 +196,7 @@ function importedProfileName(address: string, profiles: Profile[]): string {
 
 export function Config() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { activeProfileId, setActiveProfileId, setAuthenticated } = useAppContext();
   const { status } = useBotStatus();
   const { overview } = useHomeOverview();
@@ -259,6 +260,15 @@ export function Config() {
       }
     })();
   }, [loadProfileConfig, setActiveProfileId]);
+
+  useEffect(() => {
+    const state = location.state as { createWalletMethod?: CreateWalletMethod } | null;
+    if (state?.createWalletMethod === "magic" || state?.createWalletMethod === "private_key") {
+      setCreateWalletMethod(state.createWalletMethod);
+      setTab("setup");
+      setWalletProfileMessage(null);
+    }
+  }, [location.state]);
 
   const dirty = useMemo(() => JSON.stringify(config) !== savedSnapshot, [config, savedSnapshot]);
   const enabledStrategies = VISIBLE_STRATEGIES.filter((strategy) => config.strategies[strategy.key]);
@@ -518,8 +528,10 @@ export function Config() {
     }
   };
 
-  const handleOpenCreateWallet = () => {
+  const handleOpenCreateWallet = (method: CreateWalletMethod) => {
+    setCreateWalletMethod(method);
     setTab("setup");
+    setWalletProfileMessage(null);
   };
 
   const handleRunWalletSyncNow = async () => {
@@ -759,7 +771,11 @@ export function Config() {
                     {walletProfileMessage ? (
                       <div className="inline-alert inline-alert--warning">{walletProfileMessage}</div>
                     ) : null}
-                    <div className="segmented-control" role="tablist" aria-label="Wallet profile creation method">
+                    <div
+                      className="segmented-control segmented-control--two"
+                      role="tablist"
+                      aria-label="Wallet profile creation method"
+                    >
                       {[
                         ["magic", "Email OTP"],
                         ["private_key", "Private Key"],

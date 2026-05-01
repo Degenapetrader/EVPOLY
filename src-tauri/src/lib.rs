@@ -20,12 +20,15 @@ use crate::liquidity_rewards::{LiquidityRewardsCacheEntry, LiquidityRewardsQuery
 use crate::profile_manager::{Profile, ProfileManager};
 use crate::wallet_sync::{WalletSyncManager, WalletSyncRuntimeConfig};
 
+use alloy_primitives::Address as AlloyAddress;
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use ethers_signers::{LocalWallet, Signer};
+use polymarket_client_sdk_v2::{derive_proxy_wallet, derive_safe_wallet, POLYGON};
 use std::collections::HashMap;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -415,6 +418,13 @@ struct SetupDoctorResult {
     bot_restarted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     popup: Option<SetupDoctorPopup>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct DerivedPolymarketFunders {
+    eoa_wallet: String,
+    proxy_wallet: Option<String>,
+    safe_wallet: String,
 }
 
 #[derive(Default)]
@@ -955,6 +965,24 @@ fn wallet_address_from_private_key(private_key: &str) -> Result<String, String> 
         .parse()
         .map_err(|e| format!("invalid private key: {e}"))?;
     Ok(format!("{:#x}", wallet.address()))
+}
+
+fn polymarket_funders_from_private_key(
+    private_key: &str,
+) -> Result<DerivedPolymarketFunders, String> {
+    let eoa_wallet = wallet_address_from_private_key(private_key)?;
+    let eoa_address = AlloyAddress::from_str(eoa_wallet.as_str())
+        .map_err(|e| format!("parse signer address: {e}"))?;
+    let proxy_wallet = derive_proxy_wallet(eoa_address, POLYGON).map(|address| address.to_string());
+    let safe_wallet = derive_safe_wallet(eoa_address, POLYGON)
+        .map(|address| address.to_string())
+        .ok_or_else(|| "safe wallet derivation is unsupported on this chain".to_string())?;
+
+    Ok(DerivedPolymarketFunders {
+        eoa_wallet,
+        proxy_wallet,
+        safe_wallet,
+    })
 }
 
 fn bound_wallet_for_config(config: &DesktopConfig, eoa_wallet: &str) -> Result<String, String> {
@@ -4630,6 +4658,13 @@ fn derive_wallet_address(private_key: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn derive_polymarket_funder_addresses(
+    private_key: String,
+) -> Result<DerivedPolymarketFunders, String> {
+    polymarket_funders_from_private_key(private_key.as_str())
+}
+
+#[tauri::command]
 async fn run_wallet_sync_now(
     profiles: State<'_, ProfileState>,
     wallet_sync: State<'_, WalletSyncState>,
@@ -5016,6 +5051,7 @@ pub fn run() {
             get_wallet_sync_status,
             get_geo_access_status,
             derive_wallet_address,
+            derive_polymarket_funder_addresses,
             run_wallet_sync_now,
             get_data_dir_path,
             open_logs_folder,
@@ -5031,10 +5067,11 @@ pub fn run() {
 mod tests {
     use super::{
         default_desktop_config, desktop_config_to_profile_payload, merge_config_object,
-        merge_desktop_secrets, profile_to_desktop_config, remove_legacy_premarket_ladder_keys,
-        simulation_mode_from_profile, PREMARKET_LADDER_MODE_ENV_KEY_5M,
-        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
-        PREMARKET_LADDER_MODE_ENV_KEY_SHARED, WEEKEND_POLICY_ENV_KEY,
+        merge_desktop_secrets, polymarket_funders_from_private_key, profile_to_desktop_config,
+        remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
+        PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
+        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
+        WEEKEND_POLICY_ENV_KEY,
     };
     use crate::{auth::AppAuth, config_io, profile_manager::Profile};
     use std::collections::HashMap;
@@ -5308,6 +5345,27 @@ mod tests {
         assert_eq!(
             merged["EVPOLY_STRATEGY_MM_REWARDS_ENABLE"],
             serde_json::json!(true)
+        );
+    }
+
+    #[test]
+    fn polymarket_funder_derivation_matches_sdk_vectors() {
+        let derived = polymarket_funders_from_private_key(
+            "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+        )
+        .expect("derive funders");
+
+        assert_eq!(
+            derived.eoa_wallet.to_lowercase(),
+            "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266"
+        );
+        assert_eq!(
+            derived.proxy_wallet.as_deref().map(str::to_lowercase),
+            Some("0x365f0ca36ae1f641e02fe3b7743673da42a13a70".to_string())
+        );
+        assert_eq!(
+            derived.safe_wallet.to_lowercase(),
+            "0xd93b25cb943d14d0d34fbaf01fc93a0f8b5f6e47"
         );
     }
 }

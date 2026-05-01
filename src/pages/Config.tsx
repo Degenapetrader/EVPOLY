@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-shell";
 import { AppShell } from "../components/AppShell";
-import { GeoAccessDialog } from "../components/GeoAccessDialog";
 import { InfoPill } from "../components/InfoPill";
 import { LogsDrawer } from "../components/LogsDrawer";
 import { OfficialLinks } from "../components/OfficialLinks";
@@ -13,6 +12,7 @@ import { useAppContext } from "../App";
 import { useBotStatus } from "../hooks/useBotStatus";
 import { useHomeOverview } from "../hooks/useHomeOverview";
 import { useWalletSyncStatus } from "../hooks/useWalletSyncStatus";
+import { completeDesktopMagicWalletOnboarding } from "../lib/desktop-magic-onboarding";
 import {
   DEFAULT_CONFIG,
   VISIBLE_STRATEGIES,
@@ -23,22 +23,19 @@ import {
 import { OFFICIAL_LINKS } from "../lib/official-links";
 import {
   createProfile,
+  deriveWalletAddress,
   exportConfig,
   getActiveProfileId,
   getDataDirPath,
-  getGeoAccessStatus,
   getSavedConfig,
   importConfig,
   listProfiles,
   lockSession,
   openLogsFolder,
-  runOnboarding,
   runWalletSyncNow,
   saveConfig,
   setActiveProfile,
   type BotConfig,
-  type GeoAccessStatus,
-  type OnboardResult,
   type Profile,
 } from "../lib/tauri-commands";
 
@@ -94,6 +91,11 @@ function walletModeHelp(sigType: number): string {
   if (sigType === 1) return "Use this if you signed up for Polymarket with email.";
   if (sigType === 2) return "Use this if you signed up for Polymarket with a Web3 wallet.";
   return "Use this if you want to pay gas fees yourself.";
+}
+
+function isSafeReady(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return ["ready", "deployed", "active", "ok"].includes(normalized);
 }
 
 const WALLET_MODE_OPTIONS = [
@@ -175,8 +177,9 @@ export function Config() {
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
-  const [onboardLoading, setOnboardLoading] = useState(false);
-  const [onboardResult, setOnboardResult] = useState<OnboardResult | null>(null);
+  const [magicEmail, setMagicEmail] = useState("");
+  const [magicLoading, setMagicLoading] = useState(false);
+  const [magicMessage, setMagicMessage] = useState<string | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [exportPw, setExportPw] = useState("");
   const [importPw, setImportPw] = useState("");
@@ -187,7 +190,6 @@ export function Config() {
   const [createSigType, setCreateSigType] = useState("1");
   const [dataDir, setDataDir] = useState<string>("");
   const [savedSnapshot, setSavedSnapshot] = useState<string>(JSON.stringify(DEFAULT_CONFIG));
-  const [geoDialogStatus, setGeoDialogStatus] = useState<GeoAccessStatus | null>(null);
 
   const refreshProfiles = useCallback(async () => {
     const nextProfiles = await listProfiles();
@@ -317,94 +319,63 @@ export function Config() {
     }
   };
 
-  const performRunOnboarding = async () => {
-    setOnboardLoading(true);
+  const handleCreateMagicWallet = async () => {
+    if (!activeProfileId) {
+      setMagicMessage("Create or activate a profile first.");
+      return;
+    }
+    if (!magicEmail.trim()) {
+      setMagicMessage("Enter an email address.");
+      return;
+    }
+
+    setMagicLoading(true);
+    setMagicMessage(null);
     setSaveMessage(null);
     try {
-      if (!activeProfileId) {
-        throw new Error("Create a profile first in the Profiles tab.");
+      const result = await completeDesktopMagicWalletOnboarding(magicEmail, activeProfileId);
+      if (!isSafeReady(result.safeStatus) || !result.safeAddress) {
+        setMagicMessage("Wallet created, but the Polymarket safe is not ready yet.");
+        return;
       }
-      if (!config.private_key.trim()) {
-        throw new Error("Private key is required before onboarding.");
+
+      const derivedSigner = await deriveWalletAddress(result.privateKey);
+      if (
+        result.signerAddress &&
+        derivedSigner.trim().toLowerCase() !== result.signerAddress.trim().toLowerCase()
+      ) {
+        throw new Error("Exported Magic private key does not match the provisioned signer.");
       }
-      if ((config.sig_type === 1 || config.sig_type === 2) && !config.proxy_wallet.trim()) {
-        throw new Error("Proxy wallet address is required for proxy or safe mode.");
-      }
-      const result = await runOnboarding(
-        config.private_key,
-        config.sig_type,
-        config.proxy_wallet.trim()
-      );
-      const nextRemoteSignerToken =
-        (typeof result.relayer_remote_signer_token === "string" &&
-          result.relayer_remote_signer_token.trim()) ||
-        (typeof result.remote_signer_token === "string" && result.remote_signer_token.trim()) ||
-        (typeof result.signer_token === "string" && result.signer_token.trim()) ||
-        config.relayer_remote_signer_token ||
-        config.remote_signer_token;
+
+      const saved = mergeConfig(await getSavedConfig(activeProfileId));
       const nextConfig = {
-        ...config,
-        eoa_wallet:
-          (typeof result.eoa_wallet === "string" && result.eoa_wallet.trim()) ||
-          config.eoa_wallet,
-        alpha_key:
-          (typeof result.alpha_key === "string" && result.alpha_key.trim()) ||
-          config.alpha_key,
-        relayer_remote_signer_token: nextRemoteSignerToken,
-        relayer_submit_signer_url:
-          (typeof result.relayer_submit_signer_url === "string" &&
-            result.relayer_submit_signer_url.trim()) ||
-          config.relayer_submit_signer_url,
-        wallet_binding:
-          (typeof result.wallet_binding === "string" && result.wallet_binding.trim()) ||
-          config.wallet_binding,
-        onboarding_status: "credentials_ready",
-        approval_status:
-          (typeof result.approval_status === "string" && result.approval_status.trim()) ||
-          config.approval_status,
+        ...saved,
+        private_key: result.privateKey,
+        eoa_wallet: derivedSigner,
+        sig_type: result.signatureType,
+        proxy_wallet: result.safeAddress,
+        alpha_key: "",
+        relayer_remote_signer_token: "",
+        relayer_submit_signer_url: "",
+        wallet_binding: "",
+        onboarding_status: "wallet_saved",
+        approval_status: "",
         remote_signer_token: "",
         order_signer_primary_token_internal: "",
-        admin_api_token:
-          (typeof result.admin_api_token === "string" && result.admin_api_token.trim()) ||
-          config.admin_api_token,
       };
-      setOnboardResult(result);
-      setConfig(nextConfig);
-      setSaveLoading(true);
-      try {
-        await saveConfig(activeProfileId, nextConfig);
-        setSavedSnapshot(JSON.stringify(nextConfig));
-        await refreshProfiles();
-        setSaveMessage("Onboarding finished and saved.");
-      } catch (saveErr) {
-        setSaveMessage(
-          getErrorText(saveErr, "onboarding finished but failed to save the profile")
-        );
-      } finally {
-        setSaveLoading(false);
-      }
-    } catch (err) {
-      setSaveMessage(getErrorText(err, "failed to run onboarding"));
-    } finally {
-      setOnboardLoading(false);
-    }
-  };
 
-  const handleRunOnboarding = async () => {
-    try {
-      const status = await getGeoAccessStatus();
-      if (status.status === "blocked") {
-        setGeoDialogStatus(status);
-        setSaveMessage(status.reason);
-        return;
-      }
-      if (status.status === "unknown") {
-        setGeoDialogStatus(status);
-        return;
-      }
-      await performRunOnboarding();
+      await saveConfig(activeProfileId, nextConfig);
+      const persisted = mergeConfig(await getSavedConfig(activeProfileId));
+      setConfig(persisted);
+      setSavedSnapshot(JSON.stringify(persisted));
+      setMagicEmail("");
+      await refreshProfiles();
+      setMagicMessage("Wallet saved. Onboarding credentials are ready.");
+      setSaveMessage("Wallet saved. Onboarding credentials are ready.");
     } catch (err) {
-      setSaveMessage(getErrorText(err, "failed to verify access restrictions"));
+      setMagicMessage(getErrorText(err, "failed to create Magic wallet"));
+    } finally {
+      setMagicLoading(false);
     }
   };
 
@@ -420,6 +391,10 @@ export function Config() {
     } catch (err) {
       setSaveMessage(getErrorText(err, "failed to create profile"));
     }
+  };
+
+  const handleOpenCreateWallet = () => {
+    setTab("setup");
   };
 
   const handleRunWalletSyncNow = async () => {
@@ -444,7 +419,11 @@ export function Config() {
       description="Manage wallet setup, profiles, security, logs, and diagnostics."
       meta={
         <div className="flex flex-wrap items-center justify-end gap-3">
-          <ProfileSwitcher activeProfileId={activeProfileId} onSwitch={(id) => void handleProfileSwitch(id)} />
+          <ProfileSwitcher
+            activeProfileId={activeProfileId}
+            onSwitch={(id) => void handleProfileSwitch(id)}
+            onCreateWallet={handleOpenCreateWallet}
+          />
           <StatusBadge status={status} />
           <button type="button" onClick={() => void handleLock()} className="ui-button">
             Lock
@@ -496,7 +475,7 @@ export function Config() {
             <div className="page-split xl:grid-cols-[minmax(0,1.2fr)_minmax(20rem,0.8fr)]">
               <SectionPanel
                 title="Wallet and Onboarding"
-                subtitle="Set the wallet mode, keys, and relayer fields the runtime needs before you run onboarding."
+                subtitle="Set the wallet mode, keys, and relayer fields the runtime needs before saving setup."
               >
                 <div className="grid gap-4 xl:grid-cols-2">
                   <Field
@@ -590,31 +569,14 @@ export function Config() {
                     </div>
                   </div>
 
-                  <div className="flex flex-wrap gap-3">
-                    <button
-                      type="button"
-                      onClick={() => void handleRunOnboarding()}
-                      disabled={onboardLoading}
-                      className="ui-button"
-                    >
-                      {onboardLoading ? "Running..." : "Run Onboarding"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => navigate("/settings/create-wallet")}
-                      className="ui-button"
-                    >
-                      Create wallet with email
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleSave}
-                      disabled={saveLoading || !configLoaded}
-                      className="ui-button ui-button--primary"
-                    >
-                      {saveLoading ? "Saving..." : "Save Setup"}
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSave}
+                    disabled={saveLoading || !configLoaded}
+                    className="ui-button ui-button--primary"
+                  >
+                    {saveLoading ? "Saving..." : "Save Setup"}
+                  </button>
                 </div>
               </SectionPanel>
 
@@ -661,43 +623,35 @@ export function Config() {
                             .join(", ")}.`
                         : "No strategies are enabled yet."}
                     </div>
+                  </div>
+                </SectionPanel>
 
-                    {onboardResult ? (
-                      <div className="surface-panel surface-panel--subtle">
-                        <div className="surface-panel__body space-y-2">
-                          <div className="metric-label">Latest onboarding result</div>
-                          <div className="text-sm leading-6 text-[var(--text-secondary)]">
-                            Returned fields were merged into the profile and saved automatically.
-                          </div>
-                          <div className="diagnostics-summary">
-                            {[
-                              onboardResult.eoa_wallet
-                                ? { label: "EOA", value: onboardResult.eoa_wallet }
-                                : null,
-                              onboardResult.bound_wallet
-                                ? {
-                                    label: "Bound wallet",
-                                    value: String(onboardResult.bound_wallet),
-                                  }
-                                : null,
-                              onboardResult.discovery_token
-                                ? { label: "Discovery", value: "Received" }
-                                : null,
-                            ]
-                              .filter(
-                                (item): item is { label: string; value: string } =>
-                                  Boolean(item)
-                              )
-                              .map((item) => (
-                                <div key={item.label} className="diagnostics-summary__item">
-                                  <div className="diagnostics-summary__label">{item.label}</div>
-                                  <div className="diagnostics-summary__value">{item.value}</div>
-                                </div>
-                              ))}
-                          </div>
-                        </div>
-                      </div>
+                <SectionPanel
+                  title="Create Wallet"
+                  subtitle="Create a local signing wallet with Magic email OTP."
+                >
+                  <div className="space-y-4">
+                    {magicMessage ? (
+                      <div className="inline-alert inline-alert--warning">{magicMessage}</div>
                     ) : null}
+                    <div>
+                      <label className="field-label">Email</label>
+                      <input
+                        type="email"
+                        value={magicEmail}
+                        onChange={(event) => setMagicEmail(event.target.value)}
+                        className="field-input"
+                        autoComplete="email"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleCreateMagicWallet()}
+                      disabled={magicLoading}
+                      className="ui-button ui-button--primary"
+                    >
+                      {magicLoading ? "Creating..." : "Create Wallet"}
+                    </button>
                   </div>
                 </SectionPanel>
               </div>
@@ -1082,21 +1036,6 @@ export function Config() {
           </div>
         </SectionPanel>
       </div>
-
-      {geoDialogStatus ? (
-        <GeoAccessDialog
-          status={geoDialogStatus}
-          onContinue={
-            geoDialogStatus.status === "unknown"
-              ? () => {
-                  setGeoDialogStatus(null);
-                  void performRunOnboarding();
-                }
-              : undefined
-          }
-          onClose={() => setGeoDialogStatus(null)}
-        />
-      ) : null}
 
       <LogsDrawer open={logsOpen} onClose={() => setLogsOpen(false)} />
     </AppShell>

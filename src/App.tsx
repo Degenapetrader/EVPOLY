@@ -3,7 +3,6 @@ import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { Login } from "./pages/Login";
 import { Home } from "./pages/Home";
 import { Config } from "./pages/Config";
-import { MagicCreateWallet } from "./pages/MagicCreateWallet";
 
 interface AppState {
   isAuthenticated: boolean;
@@ -70,11 +69,7 @@ function App() {
           />
           <Route
             path="/settings/create-wallet"
-            element={
-              <ProtectedRoute>
-                <MagicCreateWallet />
-              </ProtectedRoute>
-            }
+            element={<Navigate to="/settings" replace />}
           />
           <Route path="/config" element={<Navigate to="/settings" replace />} />
           <Route path="*" element={<Navigate to="/" replace />} />

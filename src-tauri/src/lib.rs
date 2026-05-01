@@ -74,6 +74,8 @@ const DESKTOP_SECRET_KEYS: &[&str] = &[
     "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN",
     "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
     "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
+    "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
+    "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
     "EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN",
     "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
     "EVPOLY_ADMIN_API_TOKEN",
@@ -84,7 +86,6 @@ const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
 const DESKTOP_INSTANCE_LOCK_NAME: &str = "desktop-instance.lock";
 #[cfg(target_os = "linux")]
 const DESKTOP_ACTIVATE_SOCKET_NAME: &str = "desktop-activate.sock";
-const DEFAULT_DESKTOP_MAGIC_BRIDGE_BASE_URL: &str = "https://api-web.evplus.ai";
 
 struct DesktopInstanceGuard {
     _file: std::fs::File,
@@ -1407,28 +1408,6 @@ fn ensure_admin_api_token(value: &str) -> String {
     } else {
         trimmed.to_string()
     }
-}
-
-fn desktop_install_id(data_dir: &Path) -> Result<String, String> {
-    let path = data_dir.join("desktop-install-id");
-    if let Ok(value) = std::fs::read_to_string(&path) {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-    let install_id = format!("evpoly-desktop-{}", Uuid::new_v4());
-    std::fs::write(&path, install_id.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(install_id)
-}
-
-fn desktop_magic_bridge_base_url() -> String {
-    std::env::var("EVPOLY_DESKTOP_MAGIC_BRIDGE_BASE_URL")
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| value.starts_with("https://") || value.starts_with("http://"))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_DESKTOP_MAGIC_BRIDGE_BASE_URL.to_string())
 }
 
 fn merge_config_object(existing: &Value, updates: &Value) -> Value {
@@ -3657,7 +3636,7 @@ fn prepare_linux_update_install(
 ) -> Result<Option<PendingResumeOffer>, String> {
     #[cfg(target_os = "linux")]
     {
-        let profile_id = profiles
+        let active_profile_id = profiles
             .lock()
             .map_err(|e| e.to_string())?
             .get_active_profile_id();
@@ -3669,6 +3648,7 @@ fn prepare_linux_update_install(
             }
 
             let simulation = manager.simulation_mode().unwrap_or(false);
+            let profile_id = manager.running_profile_id().or(active_profile_id);
             let offer = PendingResumeOffer {
                 reason: "linux_update".to_string(),
                 simulation,
@@ -3905,12 +3885,14 @@ async fn ensure_generated_credentials(config: &mut DesktopConfig) -> Result<Vec<
 
     let derived_eoa = wallet_address_from_private_key(private_key)?;
     config.eoa_wallet = derived_eoa.clone();
+    let bound_wallet = bound_wallet_for_config(config, derived_eoa.as_str())?;
     let wallet_binding = wallet_binding_for_config(config, derived_eoa.as_str())?;
     let current_wallet_binding = config.wallet_binding.trim();
     let wallet_binding_missing = current_wallet_binding.is_empty();
     let wallet_changed = !wallet_binding_missing && current_wallet_binding != wallet_binding;
-    let credentials_missing =
-        config.alpha_key.trim().is_empty() || clean_relayer_remote_signer_token(config).is_empty();
+    let alpha_missing = config.alpha_key.trim().is_empty();
+    let relayer_missing = clean_relayer_remote_signer_token(config).is_empty();
+    let credentials_missing = alpha_missing || relayer_missing;
 
     if wallet_binding_missing {
         config.wallet_binding = wallet_binding.clone();
@@ -3929,12 +3911,31 @@ async fn ensure_generated_credentials(config: &mut DesktopConfig) -> Result<Vec<
     let mut fixed_keys = Vec::new();
     if credentials_missing || wallet_changed {
         geo_access::ensure_geo_start_allowed()?;
-        let onboarding = onboard::run_onboarding(
-            config.private_key.as_str(),
-            config.sig_type,
-            config.proxy_wallet.as_str(),
-        )
-        .await?;
+        let onboarding = if !relayer_missing && !wallet_changed {
+            let alpha_key = onboard::run_alpha_onboarding_for_wallet(bound_wallet.as_str()).await?;
+            onboard::OnboardResult {
+                alpha_key: Some(alpha_key),
+                wallet_binding: Some(wallet_binding.clone()),
+                approval_status: Some(if matches!(config.sig_type, 1 | 2) {
+                    "not_checked".to_string()
+                } else {
+                    "not_required".to_string()
+                }),
+                ..Default::default()
+            }
+        } else {
+            onboard::run_onboarding_with_existing_alpha(
+                config.private_key.as_str(),
+                config.sig_type,
+                config.proxy_wallet.as_str(),
+                if alpha_missing || wallet_changed {
+                    None
+                } else {
+                    Some(config.alpha_key.as_str())
+                },
+            )
+            .await?
+        };
 
         if let Some(value) = onboarding
             .eoa_wallet
@@ -4115,8 +4116,11 @@ async fn run_setup_doctor(
 
     let (bot_was_running, bot_simulation) = {
         let manager = bot.lock().map_err(|e| e.to_string())?;
+        let running_profile_id = manager.running_profile_id();
+        let active_profile_running =
+            manager.is_running() && running_profile_id.as_deref() == Some(profile.id.as_str());
         (
-            manager.is_running(),
+            active_profile_running,
             manager
                 .simulation_mode()
                 .unwrap_or_else(|| simulation_mode_from_profile(&profile)),
@@ -4159,6 +4163,14 @@ async fn run_setup_doctor(
         .iter()
         .any(|key| key != "eoa_wallet");
     if needs_remote_regeneration {
+        let alpha_missing = initial_audit
+            .missing_generated_keys
+            .iter()
+            .any(|key| key == "alpha_key");
+        let relayer_missing = initial_audit
+            .missing_generated_keys
+            .iter()
+            .any(|key| key == "relayer_remote_signer_token");
         let geo_status = geo_access::current_geo_access_status();
         if geo_status.status == "blocked" {
             return Ok(doctor_result(
@@ -4182,13 +4194,33 @@ async fn run_setup_doctor(
             ));
         }
 
-        let onboarding = match onboard::run_onboarding(
-            config.private_key.as_str(),
-            config.sig_type,
-            config.proxy_wallet.as_str(),
-        )
-        .await
-        {
+        let onboarding = match if !relayer_missing {
+            let bound_wallet = bound_wallet_for_config(&config, config.eoa_wallet.as_str())?;
+            let wallet_binding = wallet_binding_for_config(&config, config.eoa_wallet.as_str())?;
+            let alpha_key = onboard::run_alpha_onboarding_for_wallet(bound_wallet.as_str()).await?;
+            Ok(onboard::OnboardResult {
+                alpha_key: Some(alpha_key),
+                wallet_binding: Some(wallet_binding),
+                approval_status: Some(if matches!(config.sig_type, 1 | 2) {
+                    "not_checked".to_string()
+                } else {
+                    "not_required".to_string()
+                }),
+                ..Default::default()
+            })
+        } else {
+            onboard::run_onboarding_with_existing_alpha(
+                config.private_key.as_str(),
+                config.sig_type,
+                config.proxy_wallet.as_str(),
+                if alpha_missing {
+                    None
+                } else {
+                    Some(config.alpha_key.as_str())
+                },
+            )
+            .await
+        } {
             Ok(result) => result,
             Err(err) => {
                 return Ok(doctor_result(
@@ -5077,85 +5109,6 @@ async fn run_onboarding(
     serde_json::to_value(result).map_err(|e| e.to_string())
 }
 
-async fn post_desktop_magic_bridge(
-    operation: &str,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let base_url = desktop_magic_bridge_base_url();
-    let url = format!("{base_url}/v1/desktop/magic/{operation}");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("build Magic bridge client: {e}"))?;
-    let response = client
-        .post(url.as_str())
-        .header("accept", "application/json")
-        .header("content-type", "application/json")
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| format!("Magic bridge request failed: {e}"))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| format!("Magic bridge response read failed: {e}"))?;
-    if !status.is_success() {
-        return Err(format!("Magic bridge returned {}: {}", status, body));
-    }
-    serde_json::from_str::<serde_json::Value>(&body)
-        .map_err(|e| format!("parse Magic bridge response: {e}"))
-}
-
-#[tauri::command]
-async fn desktop_magic_start(
-    data_dir: State<'_, AppDataDir>,
-    email: String,
-    profile_id: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let email = email.trim();
-    if email.is_empty() {
-        return Err("email is required".to_string());
-    }
-    let install_id = desktop_install_id(&data_dir.0)?;
-    post_desktop_magic_bridge(
-        "start",
-        serde_json::json!({
-            "email": email,
-            "desktop_install_id": install_id,
-            "local_profile_id": profile_id.unwrap_or_default(),
-        }),
-    )
-    .await
-}
-
-#[tauri::command]
-async fn desktop_magic_finish(
-    desktop_onboard_session_id: String,
-    did_token: String,
-    rsa_public_key: String,
-) -> Result<serde_json::Value, String> {
-    if desktop_onboard_session_id.trim().is_empty() {
-        return Err("desktop onboarding session is required".to_string());
-    }
-    if did_token.trim().is_empty() {
-        return Err("Magic DID token is required".to_string());
-    }
-    if rsa_public_key.trim().is_empty() {
-        return Err("RSA public key is required".to_string());
-    }
-    post_desktop_magic_bridge(
-        "finish",
-        serde_json::json!({
-            "desktop_onboard_session_id": desktop_onboard_session_id.trim(),
-            "did_token": did_token.trim(),
-            "rsa_public_key": rsa_public_key.trim(),
-            "rsa_algorithm": "RSA-OAEP",
-        }),
-    )
-    .await
-}
-
 // ── App entry ────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -5257,11 +5210,19 @@ pub fn run() {
                         let configs =
                             || -> Option<(String, PathBuf, PathBuf, bool, WalletSyncRuntimeConfig)> {
                                 let pm = ps.lock().ok()?;
-                                let auth = auth.lock().ok()?;
                                 let profile = active_profile(&pm).ok()?;
                                 let simulation = simulation_mode_from_profile(&profile);
-                                let (env_path, config_path) =
-                                    build_runtime_paths_for_profile(&profile, &auth, &dd.0).ok()?;
+                                drop(pm);
+                                let (profile, env_path, config_path) =
+                                    tauri::async_runtime::block_on(
+                                        prepare_active_profile_runtime_paths(
+                                            &ps,
+                                            &auth,
+                                            &dd.0,
+                                            simulation,
+                                        ),
+                                    )
+                                    .ok()?;
                                 Some((
                                     profile.id.clone(),
                                     env_path,
@@ -5396,8 +5357,6 @@ pub fn run() {
             open_logs_folder,
             download_linux_update_deb,
             run_onboarding,
-            desktop_magic_start,
-            desktop_magic_finish,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

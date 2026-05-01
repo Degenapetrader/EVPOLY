@@ -271,25 +271,6 @@ export interface OnboardResult {
   [key: string]: unknown;
 }
 
-export interface DesktopMagicStartResult {
-  desktop_onboard_session_id?: string;
-  publishable_key?: string;
-  magic_publishable_key?: string;
-  magic?: {
-    publishable_key?: string;
-  };
-  [key: string]: unknown;
-}
-
-export interface DesktopMagicFinishResult {
-  encrypted_private_key?: string;
-  signer_address?: string;
-  signature_type?: number;
-  safe_address?: string;
-  safe_status?: string;
-  [key: string]: unknown;
-}
-
 export type SetupDoctorStatus = "ready" | "fixed" | "needs_you" | "failed";
 export type SetupDoctorItemStatus =
   | "ok"
@@ -725,30 +706,6 @@ export const runOnboarding = (
     signature_type: sigType,
     proxyWallet,
     proxy_wallet: proxyWallet,
-  });
-
-export const desktopMagicStart = (
-  email: string,
-  profileId?: string | null
-): Promise<DesktopMagicStartResult> =>
-  invoke("desktop_magic_start", {
-    email,
-    profileId: profileId ?? null,
-    profile_id: profileId ?? null,
-  });
-
-export const desktopMagicFinish = (
-  desktopOnboardSessionId: string,
-  didToken: string,
-  rsaPublicKey: string
-): Promise<DesktopMagicFinishResult> =>
-  invoke("desktop_magic_finish", {
-    desktopOnboardSessionId,
-    desktop_onboard_session_id: desktopOnboardSessionId,
-    didToken,
-    did_token: didToken,
-    rsaPublicKey,
-    rsa_public_key: rsaPublicKey,
   });
 
 export const runSetupDoctor = (): Promise<SetupDoctorResult> =>

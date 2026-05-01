@@ -6,7 +6,7 @@ import {
   type Profile,
 } from "../lib/tauri-commands";
 
-export type WalletProfileAction = "magic" | "private_key";
+export type WalletProfileAction = "private_key";
 
 function truncateAddress(addr: string): string {
   if (addr.length <= 12) return addr;
@@ -140,23 +140,16 @@ export function ProfileSwitcher({
               No profiles found
             </div>
           )}
-          <div className="grid grid-cols-2 gap-2 border-t border-[var(--border)] p-2">
-            <button
-              type="button"
-              onClick={() => handleCreateWallet("magic")}
-              className="ui-button ui-button--accent ui-button--compact w-full min-w-0 justify-center px-2"
-            >
-              <span aria-hidden="true" className="text-base leading-none">
-                +
-              </span>
-              <span className="truncate">New Wallet</span>
-            </button>
+          <div className="border-t border-[var(--border)] p-2">
             <button
               type="button"
               onClick={() => handleCreateWallet("private_key")}
               className="ui-button ui-button--compact w-full min-w-0 justify-center px-2"
             >
-              <span className="truncate">Import Key</span>
+              <span aria-hidden="true" className="text-base leading-none">
+                +
+              </span>
+              <span className="truncate">Import Private Key</span>
             </button>
           </div>
         </div>

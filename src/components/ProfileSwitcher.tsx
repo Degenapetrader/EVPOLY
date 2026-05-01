@@ -6,6 +6,8 @@ import {
   type Profile,
 } from "../lib/tauri-commands";
 
+export type WalletProfileAction = "magic" | "private_key";
+
 function truncateAddress(addr: string): string {
   if (addr.length <= 12) return addr;
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
@@ -18,7 +20,7 @@ export function ProfileSwitcher({
 }: {
   activeProfileId: string | null;
   onSwitch: (id: string) => void;
-  onCreateWallet?: () => void;
+  onCreateWallet?: (method: WalletProfileAction) => void;
 }) {
   const navigate = useNavigate();
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -73,13 +75,13 @@ export function ProfileSwitcher({
     setOpen(false);
   };
 
-  const handleCreateWallet = () => {
+  const handleCreateWallet = (method: WalletProfileAction) => {
     setOpen(false);
     if (onCreateWallet) {
-      onCreateWallet();
+      onCreateWallet(method);
       return;
     }
-    navigate("/settings");
+    navigate("/settings", { state: { createWalletMethod: method } });
   };
 
   return (
@@ -138,16 +140,23 @@ export function ProfileSwitcher({
               No profiles found
             </div>
           )}
-          <div className="border-t border-[var(--border)] p-2">
+          <div className="grid grid-cols-2 gap-2 border-t border-[var(--border)] p-2">
             <button
               type="button"
-              onClick={handleCreateWallet}
-              className="ui-button w-full justify-center"
+              onClick={() => handleCreateWallet("magic")}
+              className="ui-button ui-button--accent ui-button--compact w-full min-w-0 justify-center px-2"
             >
               <span aria-hidden="true" className="text-base leading-none">
                 +
               </span>
-              Create New Wallet Profile
+              <span className="truncate">New Wallet</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleCreateWallet("private_key")}
+              className="ui-button ui-button--compact w-full min-w-0 justify-center px-2"
+            >
+              <span className="truncate">Import Key</span>
             </button>
           </div>
         </div>

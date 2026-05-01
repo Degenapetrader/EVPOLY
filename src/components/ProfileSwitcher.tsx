@@ -147,7 +147,7 @@ export function ProfileSwitcher({
               <span aria-hidden="true" className="text-base leading-none">
                 +
               </span>
-              Create Wallet
+              Create New Wallet Profile
             </button>
           </div>
         </div>

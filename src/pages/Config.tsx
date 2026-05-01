@@ -23,6 +23,7 @@ import {
 import { OFFICIAL_LINKS } from "../lib/official-links";
 import {
   createProfile,
+  deleteProfile,
   deriveWalletAddress,
   exportConfig,
   getActiveProfileId,
@@ -162,6 +163,22 @@ function summarizeWalletSyncResult(result: string | null) {
       : null,
     values.get("source") ? { label: "Source", value: values.get("source") as string } : null,
   ].filter((item): item is { label: string; value: string } => Boolean(item));
+}
+
+function magicProfileName(email: string, profiles: Profile[]): string {
+  const localPart = email.split("@")[0]?.trim() || "Wallet";
+  const base = `Magic ${localPart}`.slice(0, 40);
+  const existingNames = new Set(profiles.map((profile) => profile.name.toLowerCase()));
+  if (!existingNames.has(base.toLowerCase())) {
+    return base;
+  }
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `${base} ${index}`;
+    if (!existingNames.has(candidate.toLowerCase())) {
+      return candidate;
+    }
+  }
+  return `${base} ${Date.now()}`;
 }
 
 export function Config() {
@@ -320,10 +337,6 @@ export function Config() {
   };
 
   const handleCreateMagicWallet = async () => {
-    if (!activeProfileId) {
-      setMagicMessage("Create or activate a profile first.");
-      return;
-    }
     if (!magicEmail.trim()) {
       setMagicMessage("Enter an email address.");
       return;
@@ -332,10 +345,13 @@ export function Config() {
     setMagicLoading(true);
     setMagicMessage(null);
     setSaveMessage(null);
+    let createdProfileId: string | null = null;
+    let activatedProfile = false;
     try {
-      const result = await completeDesktopMagicWalletOnboarding(magicEmail, activeProfileId);
+      const email = magicEmail.trim();
+      const result = await completeDesktopMagicWalletOnboarding(email, null);
       if (!result.safeAddress) {
-        setMagicMessage("Wallet created, but the Polymarket safe address is not available yet.");
+        setMagicMessage("Wallet was not saved because the Polymarket safe address is not available yet.");
         return;
       }
 
@@ -347,7 +363,10 @@ export function Config() {
         throw new Error("Exported Magic private key does not match the provisioned signer.");
       }
 
-      const saved = mergeConfig(await getSavedConfig(activeProfileId));
+      const profileName = magicProfileName(email, profiles);
+      const created = await createProfile(profileName, result.safeAddress, result.signatureType);
+      createdProfileId = created.id;
+      const saved = mergeConfig(await getSavedConfig(created.id));
       const nextConfig = {
         ...saved,
         private_key: result.privateKey,
@@ -364,18 +383,29 @@ export function Config() {
         order_signer_primary_token_internal: "",
       };
 
-      await saveConfig(activeProfileId, nextConfig);
-      const persisted = mergeConfig(await getSavedConfig(activeProfileId));
+      await saveConfig(created.id, nextConfig);
+      const persisted = mergeConfig(await getSavedConfig(created.id));
+      await setActiveProfile(created.id);
+      activatedProfile = true;
+      setActiveProfileId(created.id);
       setConfig(persisted);
       setSavedSnapshot(JSON.stringify(persisted));
       setMagicEmail("");
       await refreshProfiles();
       const message = isSafeReady(result.safeStatus)
-        ? "Wallet saved. Onboarding credentials are ready."
-        : `Wallet saved. Polymarket safe status: ${toStatusLabel(result.safeStatus || "pending")}.`;
+        ? "New wallet profile created and selected. Onboarding credentials are ready."
+        : `New wallet profile created and selected. Polymarket safe status: ${toStatusLabel(result.safeStatus || "pending")}.`;
       setMagicMessage(message);
       setSaveMessage(message);
     } catch (err) {
+      if (createdProfileId && !activatedProfile) {
+        try {
+          await deleteProfile(createdProfileId);
+          await refreshProfiles();
+        } catch {
+          // Best effort cleanup for a profile created during a failed Magic save.
+        }
+      }
       setMagicMessage(getErrorText(err, "failed to create Magic wallet"));
     } finally {
       setMagicLoading(false);
@@ -630,8 +660,8 @@ export function Config() {
                 </SectionPanel>
 
                 <SectionPanel
-                  title="Create Wallet"
-                  subtitle="Create a local signing wallet with Magic email OTP."
+                  title="Create New Wallet Profile"
+                  subtitle="Create a separate local signing wallet with Magic email OTP."
                 >
                   <div className="space-y-4">
                     {magicMessage ? (
@@ -647,13 +677,16 @@ export function Config() {
                         autoComplete="email"
                       />
                     </div>
+                    <div className="text-sm leading-6 text-[var(--text-secondary)]">
+                      Creates a separate profile. Existing profiles are not changed.
+                    </div>
                     <button
                       type="button"
                       onClick={() => void handleCreateMagicWallet()}
                       disabled={magicLoading}
                       className="ui-button ui-button--primary"
                     >
-                      {magicLoading ? "Creating..." : "Create Wallet"}
+                      {magicLoading ? "Creating..." : "Create New Wallet Profile"}
                     </button>
                   </div>
                 </SectionPanel>

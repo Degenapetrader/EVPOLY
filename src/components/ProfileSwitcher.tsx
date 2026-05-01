@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   listProfiles,
   setActiveProfile,
@@ -13,10 +14,13 @@ function truncateAddress(addr: string): string {
 export function ProfileSwitcher({
   activeProfileId,
   onSwitch,
+  onCreateWallet,
 }: {
   activeProfileId: string | null;
   onSwitch: (id: string) => void;
+  onCreateWallet?: () => void;
 }) {
+  const navigate = useNavigate();
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [open, setOpen] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -67,6 +71,15 @@ export function ProfileSwitcher({
       );
     }
     setOpen(false);
+  };
+
+  const handleCreateWallet = () => {
+    setOpen(false);
+    if (onCreateWallet) {
+      onCreateWallet();
+      return;
+    }
+    navigate("/settings");
   };
 
   return (
@@ -125,6 +138,18 @@ export function ProfileSwitcher({
               No profiles found
             </div>
           )}
+          <div className="border-t border-[var(--border)] p-2">
+            <button
+              type="button"
+              onClick={handleCreateWallet}
+              className="ui-button w-full justify-center"
+            >
+              <span aria-hidden="true" className="text-base leading-none">
+                +
+              </span>
+              Create Wallet
+            </button>
+          </div>
         </div>
       )}
       {loadError || switchError ? (

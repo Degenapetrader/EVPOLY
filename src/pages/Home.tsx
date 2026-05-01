@@ -260,13 +260,16 @@ export function Home() {
   const canOperate = Boolean(activeProfileId && configLoaded);
   const botRunning = overview?.bot_state === "running";
   const otherProfileRunning = Boolean(overview?.other_profile_running && overview.live_profile_id);
+  const globalBotBusy = ["starting", "running", "stopping"].includes(
+    overview?.global_bot_state ?? overview?.bot_state ?? ""
+  );
   const liveProfileLabel = overview?.live_profile_name?.trim() || "live profile";
 
   const handleUpdate = async () => {
     if (!pendingUpdate || updateDownloading) return;
     setUpdateDownloading(true);
     try {
-      if (botRunning) {
+      if (globalBotBusy) {
         await stopBot();
         await refreshOverview();
       }

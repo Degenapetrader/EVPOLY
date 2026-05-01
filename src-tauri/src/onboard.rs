@@ -123,6 +123,14 @@ async fn run_alpha_onboarding(
     Ok(alpha_key.to_string())
 }
 
+pub async fn run_alpha_onboarding_for_wallet(bound_wallet: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(ONBOARD_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("build onboard client: {e}"))?;
+    run_alpha_onboarding(&client, bound_wallet).await
+}
+
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct OnboardResult {
     pub eoa_wallet: Option<String>,
@@ -146,6 +154,15 @@ pub async fn run_onboarding(
     private_key: &str,
     signature_type: u8,
     proxy_wallet: &str,
+) -> Result<OnboardResult, String> {
+    run_onboarding_with_existing_alpha(private_key, signature_type, proxy_wallet, None).await
+}
+
+pub async fn run_onboarding_with_existing_alpha(
+    private_key: &str,
+    signature_type: u8,
+    proxy_wallet: &str,
+    existing_alpha_key: Option<&str>,
 ) -> Result<OnboardResult, String> {
     let key = private_key.trim();
     if key.is_empty() {
@@ -234,7 +251,13 @@ pub async fn run_onboarding(
         ));
     }
 
-    let alpha_key = run_alpha_onboarding(&client, &bind_wallet).await?;
+    let alpha_key = match existing_alpha_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => value.to_string(),
+        None => run_alpha_onboarding(&client, &bind_wallet).await?,
+    };
     let shared_alpha_token = first_nonempty(&[
         runtime.get("remote_alpha_token"),
         runtime.get("remote_discovery_token"),

@@ -102,6 +102,24 @@ jobs:
           releaseDraft: false
           prerelease: false
 
+      - name: Publish Windows updater manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $manifestDir = Join-Path $env:RUNNER_TEMP "evpoly-windows-updater"
+          New-Item -ItemType Directory -Force -Path $manifestDir | Out-Null
+          gh release download "${{ github.ref_name }}" --pattern latest.json --dir $manifestDir
+          $manifestPath = Join-Path $manifestDir "latest.json"
+          if (!(Test-Path -LiteralPath $manifestPath)) {
+            throw "latest.json was not published to the tagged Windows release"
+          }
+          if (gh release view UI-latest *> $null) {
+            gh release upload UI-latest "$manifestPath#latest.json" --clobber
+          } else {
+            gh release create UI-latest "$manifestPath#latest.json" --title "EVPoly Desktop latest" --notes "Stable updater manifest for EVPoly Desktop releases." --prerelease
+          }
+
       - name: NSIS install smoke
         shell: pwsh
         run: ./scripts/smoke-installer.ps1

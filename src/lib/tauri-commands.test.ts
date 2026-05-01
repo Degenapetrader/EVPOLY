@@ -10,6 +10,9 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import {
   createProfile,
+  deriveWalletAddress,
+  desktopMagicFinish,
+  desktopMagicStart,
   exportConfig,
   getGeoAccessStatus,
   getSavedConfig,
@@ -153,12 +156,19 @@ const SAMPLE_CONFIG: BotConfig = {
     },
   },
   simulation: true,
+  alpha_key: "",
   relayer_api_key: "",
   relayer_api_key_address: "",
+  relayer_remote_signer_token: "",
+  relayer_submit_signer_url: "",
+  wallet_binding: "",
+  onboarding_status: "",
+  approval_status: "",
   remote_signer_token: "",
   remote_discovery_token: "",
   remote_premarket_alpha_token: "",
   remote_endgame_alpha_token: "",
+  remote_mm_rewards_alpha_token: "",
   remote_evsnipe_discovery_token: "",
   admin_api_token: "",
 };
@@ -201,6 +211,38 @@ describe("tauri command payload contracts", () => {
       signature_type: 1,
       proxyWallet: "0xproxy",
       proxy_wallet: "0xproxy",
+    });
+  });
+
+  it("sends compatible payload keys for desktop Magic start", async () => {
+    await desktopMagicStart("user@example.com", "profile-1");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("desktop_magic_start", {
+      email: "user@example.com",
+      profileId: "profile-1",
+      profile_id: "profile-1",
+    });
+  });
+
+  it("sends compatible payload keys for desktop Magic finish", async () => {
+    await desktopMagicFinish("session-1", "did-token", "public-key");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("desktop_magic_finish", {
+      desktopOnboardSessionId: "session-1",
+      desktop_onboard_session_id: "session-1",
+      didToken: "did-token",
+      did_token: "did-token",
+      rsaPublicKey: "public-key",
+      rsa_public_key: "public-key",
+    });
+  });
+
+  it("sends compatible payload keys for derive_wallet_address", async () => {
+    await deriveWalletAddress("0xprivate");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("derive_wallet_address", {
+      privateKey: "0xprivate",
+      private_key: "0xprivate",
     });
   });
 

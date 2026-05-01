@@ -245,6 +245,11 @@ export interface Position {
 export interface OnboardResult {
   eoa_wallet?: string;
   bound_wallet?: string;
+  wallet_binding?: string;
+  alpha_key?: string;
+  relayer_remote_signer_token?: string;
+  relayer_submit_signer_url?: string;
+  approval_status?: string;
   remote_signer_token?: string;
   signer_token?: string;
   order_signer_primary_token?: string;
@@ -253,6 +258,25 @@ export interface OnboardResult {
   endgame_alpha_token?: string;
   evsnipe_discovery_token?: string;
   admin_api_token?: string;
+  [key: string]: unknown;
+}
+
+export interface DesktopMagicStartResult {
+  desktop_onboard_session_id?: string;
+  publishable_key?: string;
+  magic_publishable_key?: string;
+  magic?: {
+    publishable_key?: string;
+  };
+  [key: string]: unknown;
+}
+
+export interface DesktopMagicFinishResult {
+  encrypted_private_key?: string;
+  signer_address?: string;
+  signature_type?: number;
+  safe_address?: string;
+  safe_status?: string;
   [key: string]: unknown;
 }
 
@@ -463,13 +487,20 @@ export interface BotConfig {
   size_policy: SizePolicySettings;
   strategy_settings: StrategySettings;
   simulation: boolean;
+  alpha_key: string;
   relayer_api_key: string;
   relayer_api_key_address: string;
+  relayer_remote_signer_token: string;
+  relayer_submit_signer_url: string;
+  wallet_binding: string;
+  onboarding_status: string;
+  approval_status: string;
   remote_signer_token: string;
   order_signer_primary_token_internal?: string;
   remote_discovery_token: string;
   remote_premarket_alpha_token: string;
   remote_endgame_alpha_token: string;
+  remote_mm_rewards_alpha_token: string;
   remote_evsnipe_discovery_token: string;
   admin_api_token: string;
 }
@@ -657,6 +688,12 @@ export const runWalletSyncNow = (): Promise<WalletSyncStatus> =>
 export const getGeoAccessStatus = (): Promise<GeoAccessStatus> =>
   invoke("get_geo_access_status");
 
+export const deriveWalletAddress = (privateKey: string): Promise<string> =>
+  invoke("derive_wallet_address", {
+    privateKey,
+    private_key: privateKey,
+  });
+
 // Onboarding
 export const runOnboarding = (
   privateKey: string,
@@ -670,6 +707,30 @@ export const runOnboarding = (
     signature_type: sigType,
     proxyWallet,
     proxy_wallet: proxyWallet,
+  });
+
+export const desktopMagicStart = (
+  email: string,
+  profileId?: string | null
+): Promise<DesktopMagicStartResult> =>
+  invoke("desktop_magic_start", {
+    email,
+    profileId: profileId ?? null,
+    profile_id: profileId ?? null,
+  });
+
+export const desktopMagicFinish = (
+  desktopOnboardSessionId: string,
+  didToken: string,
+  rsaPublicKey: string
+): Promise<DesktopMagicFinishResult> =>
+  invoke("desktop_magic_finish", {
+    desktopOnboardSessionId,
+    desktop_onboard_session_id: desktopOnboardSessionId,
+    didToken,
+    did_token: didToken,
+    rsaPublicKey,
+    rsa_public_key: rsaPublicKey,
   });
 
 export const runSetupDoctor = (): Promise<SetupDoctorResult> =>

@@ -3,9 +3,15 @@
 use ethers_signers::{LocalWallet, Signer};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 const DEFAULT_ONBOARD_API_BASE: &str = "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com";
+const DEFAULT_RELAYER_SUBMIT_SIGNER_URL: &str =
+    "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign/submit";
+const DEFAULT_ALPHA_ONBOARD_URL: &str = "https://alpha.evplus.ai/v1/onboard";
+const OFFICIAL_BUILDER_CODE: &str =
+    "0xb8d6bf0c9ec3c806c30fcb0e8da931f2940a5141cf420394c4b1d82ae7c6d415";
 const ONBOARD_TIMEOUT_SECS: u64 = 10;
 
 fn wallet_address_hex(wallet: &LocalWallet) -> String {
@@ -33,6 +39,38 @@ fn derive_order_signer_primary_token(
     first_nonempty(&[runtime.get("order_signer_token")]).or_else(|| remote_signer_token.clone())
 }
 
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+pub fn wallet_binding_fingerprint(
+    eoa_wallet: &str,
+    signature_type: u8,
+    bound_wallet: &str,
+) -> String {
+    let normalized = format!(
+        "{}|{}|{}",
+        eoa_wallet.trim().to_ascii_lowercase(),
+        signature_type,
+        bound_wallet.trim().to_ascii_lowercase()
+    );
+    let digest = Sha256::digest(normalized.as_bytes());
+    bytes_to_hex(&digest)
+}
+
+fn optional_non_default_url(value: Option<String>, default_value: &str) -> Option<String> {
+    value
+        .map(|entry| entry.trim().trim_end_matches('/').to_string())
+        .filter(|entry| !entry.is_empty())
+        .filter(|entry| !entry.eq_ignore_ascii_case(default_value.trim_end_matches('/')))
+}
+
 async fn post_json(client: &reqwest::Client, url: &str, payload: &Value) -> Result<Value, String> {
     let response = client
         .post(url)
@@ -56,10 +94,44 @@ async fn post_json(client: &reqwest::Client, url: &str, payload: &Value) -> Resu
     serde_json::from_str::<Value>(&body).map_err(|e| format!("parse onboard response: {e}"))
 }
 
+async fn run_alpha_onboarding(
+    client: &reqwest::Client,
+    bound_wallet: &str,
+) -> Result<String, String> {
+    let wallet = bound_wallet.trim();
+    if wallet.is_empty() {
+        return Err("wallet is required for alpha onboarding".to_string());
+    }
+
+    let payload = serde_json::json!({
+        "wallet": wallet,
+        "builder_code": OFFICIAL_BUILDER_CODE,
+        "client_version": env!("CARGO_PKG_VERSION"),
+        "install_id": format!("evpoly-desktop-{}", wallet.to_ascii_lowercase()),
+    });
+    let response = post_json(client, DEFAULT_ALPHA_ONBOARD_URL, &payload).await?;
+    let ok = response.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let alpha_key = response
+        .get("alpha_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("alpha onboard response missing alpha_key: {}", response))?;
+    if !ok {
+        return Err(format!("alpha onboard rejected response: {}", response));
+    }
+    Ok(alpha_key.to_string())
+}
+
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct OnboardResult {
     pub eoa_wallet: Option<String>,
     pub bound_wallet: Option<String>,
+    pub wallet_binding: Option<String>,
+    pub alpha_key: Option<String>,
+    pub relayer_remote_signer_token: Option<String>,
+    pub relayer_submit_signer_url: Option<String>,
+    pub approval_status: Option<String>,
     pub remote_signer_token: Option<String>,
     pub signer_token: Option<String>,
     pub order_signer_primary_token: Option<String>,
@@ -162,16 +234,37 @@ pub async fn run_onboarding(
         ));
     }
 
+    let alpha_key = run_alpha_onboarding(&client, &bind_wallet).await?;
     let shared_alpha_token = first_nonempty(&[
         runtime.get("remote_alpha_token"),
         runtime.get("remote_discovery_token"),
     ]);
     let order_signer_primary_token =
         derive_order_signer_primary_token(&runtime, &remote_signer_token);
+    let relayer_submit_signer_url = optional_non_default_url(
+        first_nonempty(&[
+            runtime.get("relayer_submit_signer_url"),
+            runtime.get("submit_signer_url"),
+        ]),
+        DEFAULT_RELAYER_SUBMIT_SIGNER_URL,
+    );
 
     let mut result = OnboardResult {
-        eoa_wallet: Some(derived_eoa),
+        eoa_wallet: Some(derived_eoa.clone()),
         bound_wallet: Some(bind_wallet.clone()),
+        wallet_binding: Some(wallet_binding_fingerprint(
+            derived_eoa.as_str(),
+            signature_type,
+            bind_wallet.as_str(),
+        )),
+        alpha_key: Some(alpha_key),
+        relayer_remote_signer_token: remote_signer_token.clone(),
+        relayer_submit_signer_url,
+        approval_status: Some(if matches!(signature_type, 1 | 2) {
+            "not_checked".to_string()
+        } else {
+            "not_required".to_string()
+        }),
         remote_signer_token: remote_signer_token.clone(),
         signer_token: remote_signer_token,
         order_signer_primary_token,
@@ -205,7 +298,10 @@ pub async fn run_onboarding(
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_order_signer_primary_token, onboard_url, wallet_address_hex};
+    use super::{
+        derive_order_signer_primary_token, onboard_url, optional_non_default_url,
+        wallet_address_hex, wallet_binding_fingerprint,
+    };
     use ethers_signers::LocalWallet;
     use serde_json::json;
 
@@ -258,6 +354,43 @@ mod tests {
         assert_eq!(
             derive_order_signer_primary_token(&runtime, &remote_signer_token),
             Some("primary-token".to_string())
+        );
+    }
+
+    #[test]
+    fn wallet_binding_fingerprint_normalizes_wallet_case() {
+        assert_eq!(
+            wallet_binding_fingerprint(
+                "0xABC0000000000000000000000000000000000000",
+                2,
+                "0xDEF0000000000000000000000000000000000000",
+            ),
+            wallet_binding_fingerprint(
+                "0xabc0000000000000000000000000000000000000",
+                2,
+                "0xdef0000000000000000000000000000000000000",
+            )
+        );
+    }
+
+    #[test]
+    fn optional_non_default_url_drops_default_submit_signer_url() {
+        assert_eq!(
+            optional_non_default_url(
+                Some(
+                    "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign/submit"
+                        .to_string()
+                ),
+                "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign/submit",
+            ),
+            None
+        );
+        assert_eq!(
+            optional_non_default_url(
+                Some("https://example.test/sign/submit".to_string()),
+                "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign/submit",
+            ),
+            Some("https://example.test/sign/submit".to_string())
         );
     }
 }

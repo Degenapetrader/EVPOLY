@@ -233,14 +233,11 @@ export function Config() {
   const setupReady = Boolean(
     config.private_key.trim() && (config.sig_type === 0 || config.proxy_wallet.trim())
   );
-  const runtimeAccessReady = Boolean(
-    config.remote_signer_token.trim() &&
-      config.remote_discovery_token.trim() &&
-      config.remote_premarket_alpha_token.trim() &&
-      config.remote_endgame_alpha_token.trim() &&
-      config.remote_evsnipe_discovery_token.trim()
+  const onboardingReady = Boolean(
+    setupReady &&
+      config.alpha_key.trim() &&
+      (config.relayer_remote_signer_token.trim() || config.remote_signer_token.trim())
   );
-  const onboardingReady = Boolean(setupReady && runtimeAccessReady);
 
   const railItems = [
     { label: "Home", to: "/home" },
@@ -263,9 +260,14 @@ export function Config() {
     setSaveMessage(null);
     try {
       await saveConfig(activeProfileId, config);
-      const snapshot = JSON.stringify(config);
-      setSavedSnapshot(snapshot);
-      setSaveMessage("Settings saved.");
+      const saved = mergeConfig(await getSavedConfig(activeProfileId));
+      setConfig(saved);
+      setSavedSnapshot(JSON.stringify(saved));
+      setSaveMessage(
+        saved.alpha_key.trim() && saved.relayer_remote_signer_token.trim()
+          ? "Settings saved. Onboarding credentials are ready."
+          : "Settings saved."
+      );
     } catch (err) {
       setSaveMessage(getErrorText(err, "failed to save settings"));
     } finally {
@@ -328,39 +330,40 @@ export function Config() {
       if ((config.sig_type === 1 || config.sig_type === 2) && !config.proxy_wallet.trim()) {
         throw new Error("Proxy wallet address is required for proxy or safe mode.");
       }
-        const result = await runOnboarding(config.private_key, config.sig_type, config.proxy_wallet.trim());
-        const nextRemoteSignerToken =
-          (typeof result.remote_signer_token === "string" && result.remote_signer_token.trim()) ||
-          (typeof result.signer_token === "string" && result.signer_token.trim()) ||
-          config.remote_signer_token;
-        const nextOrderSignerPrimaryToken =
-          (typeof result.order_signer_primary_token === "string" &&
-            result.order_signer_primary_token.trim()) ||
-          "";
-        const nextConfig = {
-          ...config,
-          eoa_wallet:
-            (typeof result.eoa_wallet === "string" && result.eoa_wallet.trim()) || config.eoa_wallet,
-          remote_signer_token: nextRemoteSignerToken,
-          order_signer_primary_token_internal:
-            nextOrderSignerPrimaryToken && nextOrderSignerPrimaryToken !== nextRemoteSignerToken
-              ? nextOrderSignerPrimaryToken
-              : "",
-          remote_discovery_token:
-            (typeof result.discovery_token === "string" && result.discovery_token.trim()) ||
-            config.remote_discovery_token,
-        remote_premarket_alpha_token:
-          (typeof result.premarket_alpha_token === "string" &&
-            result.premarket_alpha_token.trim()) ||
-          config.remote_premarket_alpha_token,
-        remote_endgame_alpha_token:
-          (typeof result.endgame_alpha_token === "string" &&
-            result.endgame_alpha_token.trim()) ||
-          config.remote_endgame_alpha_token,
-        remote_evsnipe_discovery_token:
-          (typeof result.evsnipe_discovery_token === "string" &&
-            result.evsnipe_discovery_token.trim()) ||
-          config.remote_evsnipe_discovery_token,
+      const result = await runOnboarding(
+        config.private_key,
+        config.sig_type,
+        config.proxy_wallet.trim()
+      );
+      const nextRemoteSignerToken =
+        (typeof result.relayer_remote_signer_token === "string" &&
+          result.relayer_remote_signer_token.trim()) ||
+        (typeof result.remote_signer_token === "string" && result.remote_signer_token.trim()) ||
+        (typeof result.signer_token === "string" && result.signer_token.trim()) ||
+        config.relayer_remote_signer_token ||
+        config.remote_signer_token;
+      const nextConfig = {
+        ...config,
+        eoa_wallet:
+          (typeof result.eoa_wallet === "string" && result.eoa_wallet.trim()) ||
+          config.eoa_wallet,
+        alpha_key:
+          (typeof result.alpha_key === "string" && result.alpha_key.trim()) ||
+          config.alpha_key,
+        relayer_remote_signer_token: nextRemoteSignerToken,
+        relayer_submit_signer_url:
+          (typeof result.relayer_submit_signer_url === "string" &&
+            result.relayer_submit_signer_url.trim()) ||
+          config.relayer_submit_signer_url,
+        wallet_binding:
+          (typeof result.wallet_binding === "string" && result.wallet_binding.trim()) ||
+          config.wallet_binding,
+        onboarding_status: "credentials_ready",
+        approval_status:
+          (typeof result.approval_status === "string" && result.approval_status.trim()) ||
+          config.approval_status,
+        remote_signer_token: "",
+        order_signer_primary_token_internal: "",
         admin_api_token:
           (typeof result.admin_api_token === "string" && result.admin_api_token.trim()) ||
           config.admin_api_token,
@@ -486,7 +489,7 @@ export function Config() {
               <div className="status-strip__copy">
                 {onboardingReady
                   ? "This profile is ready to trade. Save changes any time you update the private key, proxy wallet, or relayer fields."
-                  : "Set the wallet mode, private key, proxy wallet when needed, and relayer fields before running onboarding."}
+                  : "Set the wallet mode, private key, and proxy wallet when needed. Save will generate EVPOLY alpha and relayer signer credentials automatically."}
               </div>
             </div>
 
@@ -586,22 +589,32 @@ export function Config() {
                       </span>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void handleRunOnboarding()}
-                    disabled={onboardLoading}
-                    className="ui-button"
-                  >
-                    {onboardLoading ? "Running..." : "Run Onboarding"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSave}
-                    disabled={saveLoading || !configLoaded}
-                    className="ui-button ui-button--primary"
-                  >
-                    {saveLoading ? "Saving..." : "Save Setup"}
-                  </button>
+
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      type="button"
+                      onClick={() => void handleRunOnboarding()}
+                      disabled={onboardLoading}
+                      className="ui-button"
+                    >
+                      {onboardLoading ? "Running..." : "Run Onboarding"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => navigate("/settings/create-wallet")}
+                      className="ui-button"
+                    >
+                      Create wallet with email
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSave}
+                      disabled={saveLoading || !configLoaded}
+                      className="ui-button ui-button--primary"
+                    >
+                      {saveLoading ? "Saving..." : "Save Setup"}
+                    </button>
+                  </div>
                 </div>
               </SectionPanel>
 
@@ -800,12 +813,78 @@ export function Config() {
         {tab === "security" ? (
           <div className="page-split xl:grid-cols-[minmax(0,1fr)_minmax(24rem,0.92fr)]">
             <SectionPanel
-              title="Runtime Access"
-              subtitle="App access is generated during onboarding and stored in the active profile."
+              title="Runtime tokens"
+              subtitle="Normal setup uses the clean EVPOLY alpha key and relayer remote signer token. Per-strategy fields are legacy advanced overrides."
             >
-              <div className="text-sm leading-6 text-[var(--text-secondary)]">
-                No manual access-token setup is needed for public profiles. Run onboarding again if
-                this profile cannot connect.
+              <div className="grid gap-4 xl:grid-cols-2">
+                <Field
+                  label="EVPOLY Alpha Key"
+                  value={config.alpha_key}
+                  onChange={(value) =>
+                    setConfig((current) => ({ ...current, alpha_key: value }))
+                  }
+                />
+                <Field
+                  label="Relayer remote signer token"
+                  value={config.relayer_remote_signer_token}
+                  onChange={(value) =>
+                    setConfig((current) => ({ ...current, relayer_remote_signer_token: value }))
+                  }
+                />
+                <Field
+                  label="Relayer submit signer URL"
+                  value={config.relayer_submit_signer_url}
+                  onChange={(value) =>
+                    setConfig((current) => ({ ...current, relayer_submit_signer_url: value }))
+                  }
+                />
+                <Field
+                  label="Legacy remote discovery token"
+                  value={config.remote_discovery_token}
+                  onChange={(value) =>
+                    setConfig((current) => ({ ...current, remote_discovery_token: value }))
+                  }
+                />
+                <Field
+                  label="Legacy Premarket alpha token"
+                  value={config.remote_premarket_alpha_token}
+                  onChange={(value) =>
+                    setConfig((current) => ({
+                      ...current,
+                      remote_premarket_alpha_token: value,
+                    }))
+                  }
+                />
+                <Field
+                  label="Legacy Endgame alpha token"
+                  value={config.remote_endgame_alpha_token}
+                  onChange={(value) =>
+                    setConfig((current) => ({
+                      ...current,
+                      remote_endgame_alpha_token: value,
+                    }))
+                  }
+                />
+                <Field
+                  label="Legacy MM Rewards alpha token"
+                  value={config.remote_mm_rewards_alpha_token}
+                  onChange={(value) =>
+                    setConfig((current) => ({
+                      ...current,
+                      remote_mm_rewards_alpha_token: value,
+                    }))
+                  }
+                />
+                <Field
+                  label="Legacy EVSnipe discovery token"
+                  value={config.remote_evsnipe_discovery_token}
+                  onChange={(value) =>
+                    setConfig((current) => ({
+                      ...current,
+                      remote_evsnipe_discovery_token: value,
+                    }))
+                  }
+                />
               </div>
             </SectionPanel>
 

@@ -25,7 +25,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: data: https://polymarket-upload.s3.us-east-2.amazonaws.com https://polymarket.com https://*.polymarket.com; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' http://ipc.localhost https://api.github.com https://github.com https://objects.githubusercontent.com https://github-releases.githubusercontent.com https://release-assets.githubusercontent.com https://*.githubusercontent.com https://data-api.polymarket.com;"
+      "csp": "default-src 'self'; img-src 'self' asset: data: https://polymarket-upload.s3.us-east-2.amazonaws.com https://polymarket.com https://*.polymarket.com https://*.magic.link; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' http://ipc.localhost https://api.github.com https://github.com https://objects.githubusercontent.com https://github-releases.githubusercontent.com https://release-assets.githubusercontent.com https://*.githubusercontent.com https://data-api.polymarket.com https://*.magic.link; frame-src 'self' https://*.magic.link;"
     }
   },
   "bundle": {

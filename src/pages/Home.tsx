@@ -657,49 +657,40 @@ export function Home() {
                   {enabled ? "On" : "Off"}
                 </button>
 
-                <div className="strategy-rail__field" title={controlTitle}>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    value={railDraftValues[strategy.key] ?? String(value)}
-                    aria-label={`${strategy.label} ${strategySizeLabel(strategy.key, config)}`}
-                    onChange={(event) => updateRailDraftValue(strategy.key, event.target.value)}
-                    onBlur={() => commitRailDraftValue(strategy.key)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.currentTarget.blur();
-                      }
-                    }}
-                    disabled={!canOperate}
-                    className="field-input field-input--compact"
-                    placeholder={suffix}
-                    title={controlTitle}
-                  />
-                  {strategy.key === "mm_sport" ? (
-                    <button
-                      type="button"
-                      className="strategy-rail__field-suffix strategy-rail__field-suffix--toggle"
+                {strategy.key === "mm_sport" ? (
+                  <div
+                    className="strategy-rail__field"
+                    title="Open MM 2.0 settings to edit Sport and Non-S sizing profiles."
+                  >
+                    <div className="field-input field-input--compact" aria-label="MM 2.0 sizing profiles">
+                      Sport {config.strategy_settings.mm_sport.max_share_ratio.toFixed(2)} / Non-S{" "}
+                      {config.strategy_settings.mm_sport.nonsport_max_share_ratio.toFixed(2)}
+                    </div>
+                    <span className="strategy-rail__field-suffix">DEPTH</span>
+                  </div>
+                ) : (
+                  <div className="strategy-rail__field" title={controlTitle}>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={railDraftValues[strategy.key] ?? String(value)}
+                      aria-label={`${strategy.label} ${strategySizeLabel(strategy.key, config)}`}
+                      onChange={(event) => updateRailDraftValue(strategy.key, event.target.value)}
+                      onBlur={() => commitRailDraftValue(strategy.key)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.currentTarget.blur();
+                        }
+                      }}
                       disabled={!canOperate}
-                      onClick={() =>
-                        setConfig((current) =>
-                          updateStrategySettingsSection(current, "mm_sport", {
-                            ...current.strategy_settings.mm_sport,
-                            quote_size_mode:
-                              current.strategy_settings.mm_sport.quote_size_mode === "multiple"
-                                ? "depth_ratio"
-                                : "multiple",
-                          })
-                        )
-                      }
-                      title="Click to toggle Multiple / Depth Ratio"
-                    >
-                      {suffix}
-                    </button>
-                  ) : (
+                      className="field-input field-input--compact"
+                      placeholder={suffix}
+                      title={controlTitle}
+                    />
                     <span className="strategy-rail__field-suffix">{suffix}</span>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
 
               {showPreHitRow ? (

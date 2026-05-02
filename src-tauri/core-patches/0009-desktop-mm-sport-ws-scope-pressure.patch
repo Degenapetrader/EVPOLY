@@ -23,10 +23,14 @@ index 58c3b92..fbf227c 100644
          let asset_ids = shard_vec(asset_ids_all.as_slice(), shard_idx, shard_count);
          let market_ids = shard_vec(market_ids_all.as_slice(), shard_idx, shard_count);
  
-@@ -1181,7 +1188,15 @@ async fn run_market_loop(
+@@ -1181,7 +1188,19 @@ async fn run_market_loop(
                                  shard_vec(next_asset_ids_all.as_slice(), shard_idx, shard_count);
                              let next_market_ids =
                                  shard_vec(next_market_ids_all.as_slice(), shard_idx, shard_count);
++                            let next_asset_ids =
++                                merged_target_superset(asset_ids.as_slice(), next_asset_ids);
++                            let next_market_ids =
++                                merged_target_superset(market_ids.as_slice(), next_market_ids);
 -                            if next_asset_ids != asset_ids || next_market_ids != market_ids {
 +                            let target_changed =
 +                                next_asset_ids != asset_ids || next_market_ids != market_ids;
@@ -65,10 +69,14 @@ index 58c3b92..fbf227c 100644
                              }
                          }
                          Err(e) => {
-@@ -1239,7 +1272,15 @@ async fn run_market_loop(
+@@ -1239,7 +1272,19 @@ async fn run_market_loop(
                                  shard_vec(next_asset_ids_all.as_slice(), shard_idx, shard_count);
                              let next_market_ids =
                                  shard_vec(next_market_ids_all.as_slice(), shard_idx, shard_count);
++                            let next_asset_ids =
++                                merged_target_superset(asset_ids.as_slice(), next_asset_ids);
++                            let next_market_ids =
++                                merged_target_superset(market_ids.as_slice(), next_market_ids);
 -                            if next_asset_ids != asset_ids || next_market_ids != market_ids {
 +                            let target_changed =
 +                                next_asset_ids != asset_ids || next_market_ids != market_ids;
@@ -107,9 +115,13 @@ index 58c3b92..fbf227c 100644
                              }
                          }
                          Err(e) => {
-@@ -1304,6 +1363,29 @@ async fn run_market_loop(
+@@ -1304,6 +1363,33 @@ async fn run_market_loop(
                              let next_market_ids =
                                  shard_vec(next_market_ids_all.as_slice(), shard_idx, shard_count);
++                            let next_asset_ids =
++                                merged_target_superset(asset_ids.as_slice(), next_asset_ids);
++                            let next_market_ids =
++                                merged_target_superset(market_ids.as_slice(), next_market_ids);
                              if next_asset_ids != asset_ids || next_market_ids != market_ids {
 +                                let target_added =
 +                                    target_change_has_additions(asset_ids.as_slice(), next_asset_ids.as_slice())
@@ -166,10 +178,12 @@ index 58c3b92..fbf227c 100644
          if market_ids.is_empty() {
              state.set_user_connected(false);
              sleep(Duration::from_secs(cfg.refresh_sec)).await;
-@@ -1879,7 +1969,10 @@ async fn run_user_loop(
+@@ -1879,7 +1969,12 @@ async fn run_user_loop(
                      .await
                      {
                          Ok((_, next_market_ids, next_tracked_markets)) => {
++                            let next_market_ids =
++                                merged_target_superset(market_ids.as_slice(), next_market_ids);
 -                            if next_market_ids != market_ids {
 +                            let target_changed = next_market_ids != market_ids;
 +                            let target_added =
@@ -199,10 +213,12 @@ index 58c3b92..fbf227c 100644
                              }
                          }
                          Err(e) => {
-@@ -1926,7 +2033,10 @@ async fn run_user_loop(
+@@ -1926,7 +2033,12 @@ async fn run_user_loop(
                      .await
                      {
                          Ok((_, next_market_ids, next_tracked_markets)) => {
++                            let next_market_ids =
++                                merged_target_superset(market_ids.as_slice(), next_market_ids);
 -                            if next_market_ids != market_ids {
 +                            let target_changed = next_market_ids != market_ids;
 +                            let target_added =
@@ -232,9 +248,11 @@ index 58c3b92..fbf227c 100644
                              }
                          }
                          Err(e) => {
-@@ -1979,6 +2103,22 @@ async fn run_user_loop(
+@@ -1979,6 +2103,24 @@ async fn run_user_loop(
                      {
                          Ok((_, next_market_ids, next_tracked_markets)) => {
++                            let next_market_ids =
++                                merged_target_superset(market_ids.as_slice(), next_market_ids);
                              if next_market_ids != market_ids {
 +                                if !target_change_has_additions(
 +                                    market_ids.as_slice(),
@@ -264,7 +282,7 @@ index 58c3b92..fbf227c 100644
          state.set_user_connected(false);
          state.prune_stale(cfg.prune_after_ms).await;
          if !refresh_reconnect {
-@@ -2204,6 +2346,32 @@ fn symmetric_delta_bps<T: Ord>(left: &[T], right: &[T]) -> u32 {
+@@ -2204,6 +2346,42 @@ fn symmetric_delta_bps<T: Ord>(left: &[T], right: &[T]) -> u32 {
      u32::try_from(bps).ok().unwrap_or(u32::MAX)
  }
  
@@ -283,6 +301,16 @@ index 58c3b92..fbf227c 100644
 +        }
 +    }
 +    false
++}
++
++fn merged_target_superset<T: Ord + Clone>(current: &[T], mut next: Vec<T>) -> Vec<T> {
++    if current.is_empty() {
++        return next;
++    }
++    next.extend_from_slice(current);
++    next.sort();
++    next.dedup();
++    next
 +}
 +
 +fn merge_target_superset<T: Ord>(current: &mut Vec<T>, next: Vec<T>) {
@@ -305,7 +333,7 @@ index 3bddae4..8c8d7b7 100644
  ## Change Log
  
  ### 2026-05-02
-+- `mm_sport_v1` / MM 2.0 WS FIFO subscription pressure guard: scope refreshes now keep a sticky in-process superset of subscribed assets/markets, reconnect market/user streams only when the next target set adds new IDs, defer shrink-only changes, and explicitly drop old WS streams before reconnecting (`src/polymarket_ws.rs`).
++- `mm_sport_v1` / MM 2.0 WS FIFO subscription pressure guard: scope refreshes now keep a sticky in-process superset of subscribed assets/markets, merge mixed add/remove target changes into the active superset before reconnecting, defer shrink-only changes, and explicitly drop old WS streams before reconnecting (`src/polymarket_ws.rs`).
 +  - affects MM 2.0 Sport, Non-S, and Dual FIFO visibility; new open-order markets still trigger prompt subscription, while normal quote-loop scope shrink/toggle noise no longer creates repeated Polymarket WS connections.
  - `mm_sport_v1` / MM 2.0 desktop SaaS parity fixes: hardened the Non-S/Dual guard backport so top-bid entry checks use external orderbook bids after removing our own BUY depth, one-sided `NoExit` entries honor the same top-bid floor, sponsored-reward exclusion fails closed when its source endpoint is unavailable, and WS scope debounce no longer sleeps inside the stream select loop (`src/main.rs`, `src/polymarket_ws.rs`).
    - affects MM 2.0 Sport, Non-S, and Dual routes; FIFO stream ingestion continues while repeated scope changes are debounced, and sponsor-filter outage cannot reuse cached markets when sponsored rewards are explicitly disallowed.

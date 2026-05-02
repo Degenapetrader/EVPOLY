@@ -96,6 +96,40 @@ function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value));
 }
 
+function mmSportRailSizing(config: BotConfig): { label: string; suffix: string } {
+  const sportMode = config.strategy_settings.mm_sport.quote_size_mode;
+  const nonsportMode = config.strategy_settings.mm_sport.nonsport_quote_size_mode;
+  const formatProfile = (
+    shortLabel: string,
+    mode: typeof sportMode,
+    depthRatio: number,
+    multiple: number,
+    mixed: boolean
+  ) => {
+    if (mode === "depth_ratio") {
+      return `${shortLabel} ${depthRatio.toFixed(2)}${mixed ? "D" : ""}`;
+    }
+    return `${shortLabel} ${multiple.toFixed(2)}x`;
+  };
+  const mixed = sportMode !== nonsportMode;
+  const sport = formatProfile(
+    "S",
+    sportMode,
+    config.strategy_settings.mm_sport.max_share_ratio,
+    config.mm_tuning.sport_quote_size_multiplier,
+    mixed
+  );
+  const nonsport = formatProfile(
+    "N",
+    nonsportMode,
+    config.strategy_settings.mm_sport.nonsport_max_share_ratio,
+    config.mm_tuning.nonsport_quote_size_multiplier,
+    mixed
+  );
+  const suffix = mixed ? "MIXED" : sportMode === "depth_ratio" ? "DEPTH" : "MULT";
+  return { label: `${sport} / ${nonsport}`, suffix };
+}
+
 function PerformanceSparkline({ points }: { points: TradeStats["pnl_history"] }) {
   if (points.length < 2) {
     return (
@@ -615,6 +649,8 @@ export function Home() {
           const controlTitle = strategyControlTooltip(config, strategy.key);
           const showPreHitRow = strategy.key === "evsnipe";
           const preHitEnabled = config.strategy_settings.evsnipe.pre_hit_enabled;
+          const mmSportSizing =
+            strategy.key === "mm_sport" ? mmSportRailSizing(config) : null;
 
           return (
             <div
@@ -663,10 +699,9 @@ export function Home() {
                     title="Open MM 2.0 settings to edit Sport and Non-S sizing profiles."
                   >
                     <div className="field-input field-input--compact" aria-label="MM 2.0 sizing profiles">
-                      Sport {config.strategy_settings.mm_sport.max_share_ratio.toFixed(2)} / Non-S{" "}
-                      {config.strategy_settings.mm_sport.nonsport_max_share_ratio.toFixed(2)}
+                      {mmSportSizing?.label}
                     </div>
-                    <span className="strategy-rail__field-suffix">DEPTH</span>
+                    <span className="strategy-rail__field-suffix">{mmSportSizing?.suffix}</span>
                   </div>
                 ) : (
                   <div className="strategy-rail__field" title={controlTitle}>

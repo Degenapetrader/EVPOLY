@@ -1,0 +1,1076 @@
+diff --git a/.env.example b/.env.example
+index f16521b..8917ed8 100644
+--- a/.env.example
++++ b/.env.example
+@@ -96,6 +96,7 @@ EVPOLY_TRACE_ENTRY_EXECUTION_TIMING=false
+ EVPOLY_MM_SPORT_HARD_DISABLE=false
+ EVPOLY_MM_SPORT_EVENT_DRIVEN_ENABLE=true
+ EVPOLY_MM_SPORT_WS_STALE_MS=600
++EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS=5000
+ EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY=5
+ EVPOLY_MM_SPORT_DISCOVERY_ROUTE=sports
+ EVPOLY_MM_SPORT_QUOTE_SIZE_MODE=depth_ratio
+diff --git a/.env.full.example b/.env.full.example
+index fb03da1..d6b844e 100644
+--- a/.env.full.example
++++ b/.env.full.example
+@@ -1084,6 +1084,7 @@ EVPOLY_MM_SPORT_HARD_DISABLE=false
+ EVPOLY_MM_SPORT_POLL_MS=250
+ EVPOLY_MM_SPORT_EVENT_DRIVEN_ENABLE=true
+ EVPOLY_MM_SPORT_WS_STALE_MS=600
++EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS=5000
+ EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET=8
+ EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY=5
+ EVPOLY_MM_SPORT_DISCOVERY_ROUTE=sports
+diff --git a/docs/mm_sport_v1.md b/docs/mm_sport_v1.md
+index 6cf78c2..c075023 100644
+--- a/docs/mm_sport_v1.md
++++ b/docs/mm_sport_v1.md
+@@ -79,6 +79,7 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
+ - `EVPOLY_MM_SPORT_POST_ONLY`
+ - `EVPOLY_MM_SPORT_ORDER_SUBMIT_TIMEOUT_MS`
+ - `EVPOLY_MM_SPORT_MAX_SHARE_RATIO`
++- `EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS`
+ - `EVPOLY_MM_SPORT_MAX_MARKETS`
+ - `EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC`
+ - `EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS`
+diff --git a/src/main.rs b/src/main.rs
+index 57ca570..33a4eaa 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -250,6 +250,10 @@ struct MmSportDiscoveryReport {
+     rate_limited_condition_ids: Vec<String>,
+ }
+ 
++// Deprecated: the legacy queue guard is disabled and kept only as a marker while
++// the strict slot FIFO guard replaces it. Do not use it for cancellation
++// decisions; it is a snapshot heuristic and can treat added behind-us depth as
++// useful queue-ahead protection.
+ #[derive(Debug, Clone)]
+ struct MmSportQueueGuard {
+     condition_id: String,
+@@ -260,6 +264,53 @@ struct MmSportQueueGuard {
+     last_book_ms: i64,
+ }
+ 
++#[derive(Debug, Clone)]
++struct MmSportFifoGuard {
++    condition_id: String,
++    token_id: String,
++    side: String,
++    price: f64,
++    live_shares: f64,
++    same_price_ahead_worst: f64,
++    better_price_ahead: f64,
++    last_book_ms: i64,
++}
++
++fn mm_sport_update_fifo_guard(
++    guard: &mut MmSportFifoGuard,
++    condition_id: &str,
++    token_id: &str,
++    side: &str,
++    price: f64,
++    live_shares: f64,
++    same_price_ahead: f64,
++    better_price_ahead: f64,
++    book_ms: i64,
++    tick_size: f64,
++) {
++    let same_slot = mm_sport_price_close(guard.price, price, tick_size)
++        && guard.condition_id.eq_ignore_ascii_case(condition_id)
++        && guard.token_id.eq_ignore_ascii_case(token_id)
++        && guard.side.eq_ignore_ascii_case(side);
++    guard.condition_id = condition_id.to_string();
++    guard.token_id = token_id.to_string();
++    guard.side = side.to_string();
++    guard.price = price;
++    guard.same_price_ahead_worst = if same_slot {
++        let previous_same_ahead = guard.same_price_ahead_worst.max(0.0);
++        if previous_same_ahead.is_finite() && same_price_ahead.is_finite() {
++            previous_same_ahead.min(same_price_ahead)
++        } else {
++            same_price_ahead
++        }
++    } else {
++        same_price_ahead
++    };
++    guard.live_shares = live_shares;
++    guard.better_price_ahead = better_price_ahead;
++    guard.last_book_ms = book_ms;
++}
++
+ #[derive(Default, Debug, Clone, Copy)]
+ struct ArbiterBatchEnqueueStats {
+     sent: usize,
+@@ -2021,10 +2072,12 @@ const MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MIN_MS: i64 = 5_000;
+ const MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MAX_MS: i64 = 5 * 60 * 1_000;
+ const MM_SPORT_RATIO_RESUME_MULTIPLIER: f64 = 0.9;
+ const MM_SPORT_RATIO_RESUME_CONSECUTIVE_CHECKS: u8 = 2;
++const MM_SPORT_LEGACY_QUEUE_GUARD_ENABLE: bool = false;
+ const MM_SPORT_COLLATERAL_BALANCE_REFRESH_MS: i64 = 5_000;
+ const MM_SPORT_COLLATERAL_BALANCE_ERROR_LOG_COOLDOWN_MS: i64 = 30_000;
+ const MM_SPORT_COLLATERAL_ALLOWANCE_ZERO_FALLBACK_LOG_COOLDOWN_MS: i64 = 30_000;
+ const MM_SPORT_CANCEL_UNRESOLVED_WARN_COOLDOWN_MS: i64 = 30_000;
++const MM_SPORT_FIFO_GUARD_REPORT_INTERVAL_MS: i64 = 30_000;
+ const MM_SPORT_NO_EXIT_SIDE_PAUSE_STATE_KEY: &str = "mm_sport_no_exit_side_pauses";
+ const MM_SPORT_RUNTIME_STATE_UPDATED_BY: &str = "mm_sport";
+ const MM_SPORT_NO_EXIT_HOLD_LOG_COOLDOWN_MS: i64 = 300_000;
+@@ -2615,6 +2668,134 @@ fn mm_sport_own_bid_depth_at_or_above(
+         })
+ }
+ 
++fn mm_sport_bid_depth_above(
++    orderbook: &polymarket_arbitrage_bot::models::OrderBook,
++    target_price: f64,
++    tick_size: f64,
++) -> (f64, f64) {
++    orderbook
++        .bids
++        .iter()
++        .filter_map(|entry| {
++            let price = f64::try_from(entry.price).ok()?;
++            let size = f64::try_from(entry.size).ok()?;
++            if !price.is_finite()
++                || !size.is_finite()
++                || price <= 0.0
++                || size <= 0.0
++                || price < target_price
++                || mm_sport_price_close(price, target_price, tick_size)
++            {
++                return None;
++            }
++            Some((size, price * size))
++        })
++        .fold((0.0, 0.0), |(shares_acc, usd_acc), (shares, usd)| {
++            (shares_acc + shares, usd_acc + usd)
++        })
++}
++
++fn mm_sport_bid_depth_at_price(
++    orderbook: &polymarket_arbitrage_bot::models::OrderBook,
++    target_price: f64,
++    tick_size: f64,
++) -> (f64, f64) {
++    orderbook
++        .bids
++        .iter()
++        .filter_map(|entry| {
++            let price = f64::try_from(entry.price).ok()?;
++            let size = f64::try_from(entry.size).ok()?;
++            if !price.is_finite()
++                || !size.is_finite()
++                || price <= 0.0
++                || size <= 0.0
++                || !mm_sport_price_close(price, target_price, tick_size)
++            {
++                return None;
++            }
++            Some((size, price * size))
++        })
++        .fold((0.0, 0.0), |(shares_acc, usd_acc), (shares, usd)| {
++            (shares_acc + shares, usd_acc + usd)
++        })
++}
++
++fn mm_sport_own_bid_depth_above(
++    buy_rows: &[PendingOrderRecord],
++    live_shares_by_order_id: Option<&std::collections::HashMap<String, f64>>,
++    target_price: f64,
++    tick_size: f64,
++) -> (f64, f64) {
++    buy_rows
++        .iter()
++        .filter(|row| {
++            row.price.is_finite()
++                && row.price > 0.0
++                && row.price >= target_price
++                && !mm_sport_price_close(row.price, target_price, tick_size)
++        })
++        .filter_map(|row| {
++            let shares = live_shares_by_order_id
++                .and_then(|live| live.get(row.order_id.trim()).copied())
++                .or_else(|| mm_sport_size_shares_from_pending(row))?;
++            (shares.is_finite() && shares > 0.0).then_some((shares, shares * row.price))
++        })
++        .fold((0.0, 0.0), |(shares_acc, usd_acc), (shares, usd)| {
++            (shares_acc + shares, usd_acc + usd)
++        })
++}
++
++fn mm_sport_own_bid_depth_at_price(
++    buy_rows: &[PendingOrderRecord],
++    live_shares_by_order_id: Option<&std::collections::HashMap<String, f64>>,
++    target_price: f64,
++    tick_size: f64,
++) -> (f64, f64) {
++    buy_rows
++        .iter()
++        .filter(|row| {
++            row.price.is_finite()
++                && row.price > 0.0
++                && mm_sport_price_close(row.price, target_price, tick_size)
++        })
++        .filter_map(|row| {
++            let shares = live_shares_by_order_id
++                .and_then(|live| live.get(row.order_id.trim()).copied())
++                .or_else(|| mm_sport_size_shares_from_pending(row))?;
++            (shares.is_finite() && shares > 0.0).then_some((shares, shares * row.price))
++        })
++        .fold((0.0, 0.0), |(shares_acc, usd_acc), (shares, usd)| {
++            (shares_acc + shares, usd_acc + usd)
++        })
++}
++
++fn mm_sport_external_bid_queue_components(
++    orderbook: &polymarket_arbitrage_bot::models::OrderBook,
++    buy_rows: &[PendingOrderRecord],
++    live_shares_by_order_id: Option<&std::collections::HashMap<String, f64>>,
++    target_price: f64,
++    tick_size: f64,
++) -> (f64, f64) {
++    let (visible_same_shares, _) = mm_sport_bid_depth_at_price(orderbook, target_price, tick_size);
++    let (own_same_shares, _) =
++        mm_sport_own_bid_depth_at_price(buy_rows, live_shares_by_order_id, target_price, tick_size);
++    let (visible_better_shares, _) = mm_sport_bid_depth_above(orderbook, target_price, tick_size);
++    let (own_better_shares, _) =
++        mm_sport_own_bid_depth_above(buy_rows, live_shares_by_order_id, target_price, tick_size);
++    let same_external = if visible_same_shares + 1e-9 >= own_same_shares {
++        (visible_same_shares - own_same_shares).max(0.0)
++    } else {
++        visible_same_shares.max(0.0)
++    };
++    let better_external = if visible_better_shares + 1e-9 >= own_better_shares {
++        (visible_better_shares - own_better_shares).max(0.0)
++    } else {
++        visible_better_shares.max(0.0)
++    };
++    (same_external, better_external)
++}
++
+ fn mm_sport_own_ask_depth_at_or_below(
+     sell_rows: &[PendingOrderRecord],
+     live_shares_by_order_id: Option<&std::collections::HashMap<String, f64>>,
+@@ -15538,11 +15719,12 @@ async fn main() -> Result<()> {
+             );
+         } else {
+             eprintln!(
+-                "🏀 MM Sport enabled (poll_ms={}, event_driven={}, event_fallback_poll_ms={}, ws_stale_ms={}, discovery_refresh_sec={}, rewards_page_budget={}, min_reward_rate_per_day={:.2}, quote_size_mode={}, exit_mode={}, quote_size_mult={:.3}, pair_baseline_quote_size_mult={:.3}, max_share_ratio={:.3}, min_top_depth_usd={:.2}, pause_after_fill_sec={}, no_exit_side_pause_sec={}, bust_window_ms={}, bust_shares_1s={:.2}, bust_pause_sec=[{},{}], ratio_breach_cancel_cooldown_ms={}, ratio_pause_sec={}, post_only={}, quote_expiry_sec=[{},{}], require_reward_eligible={}, pregame_only={}, match_only={}, max_markets={})",
++                "🏀 MM Sport enabled (poll_ms={}, event_driven={}, event_fallback_poll_ms={}, ws_stale_ms={}, fifo_ws_gap_cancel_ms={}, discovery_refresh_sec={}, rewards_page_budget={}, min_reward_rate_per_day={:.2}, quote_size_mode={}, exit_mode={}, quote_size_mult={:.3}, pair_baseline_quote_size_mult={:.3}, max_share_ratio={:.3}, min_top_depth_usd={:.2}, pause_after_fill_sec={}, no_exit_side_pause_sec={}, bust_window_ms={}, bust_shares_1s={:.2}, bust_pause_sec=[{},{}], ratio_breach_cancel_cooldown_ms={}, ratio_pause_sec={}, post_only={}, quote_expiry_sec=[{},{}], require_reward_eligible={}, pregame_only={}, match_only={}, max_markets={})",
+                 mm_sport_cfg.poll_ms,
+                 mm_sport_cfg.event_driven_enable,
+                 mm_sport_cfg.event_fallback_poll_ms,
+                 mm_sport_cfg.ws_stale_ms,
++                mm_sport_cfg.fifo_ws_gap_cancel_ms,
+                 mm_sport_cfg.discovery_refresh_sec,
+                 mm_sport_cfg.rewards_page_budget,
+                 mm_sport_cfg.min_reward_rate_per_day,
+@@ -15607,6 +15789,12 @@ async fn main() -> Result<()> {
+                     String,
+                     MmSportQueueGuard,
+                 > = std::collections::HashMap::new();
++                let mut fifo_guard_by_order_id: std::collections::HashMap<
++                    String,
++                    MmSportFifoGuard,
++                > = std::collections::HashMap::new();
++                let mut last_fifo_guard_report_ms = 0_i64;
++                let mut last_fifo_guard_report: Value = Value::Null;
+                 let mut no_exit_side_pause_by_token: std::collections::HashMap<
+                     String,
+                     MmSportNoExitSidePauseState,
+@@ -16602,6 +16790,8 @@ async fn main() -> Result<()> {
+                         .retain(|order_id, _| active_pending_order_ids.contains(order_id));
+                     queue_guard_by_order_id
+                         .retain(|order_id, _| active_pending_order_ids.contains(order_id));
++                    fifo_guard_by_order_id
++                        .retain(|order_id, _| active_pending_order_ids.contains(order_id));
+ 
+                     if mm_sport_cfg_for_loop.event_driven_enable && api_for_mm_sport.ws_enabled() {
+                         let mut active_order_ids: std::collections::HashSet<String> =
+@@ -17163,85 +17353,87 @@ async fn main() -> Result<()> {
+                                 visible_ratio_breached = true;
+                             }
+ 
+-                            for row in token_buy_rows {
+-                                let order_id = row.order_id.trim();
+-                                if order_id.is_empty() {
+-                                    continue;
+-                                }
+-                                let live_shares = live_shares_by_order_id
+-                                    .get(order_id)
+-                                    .copied()
+-                                    .or_else(|| mm_sport_size_shares_from_pending(row))
+-                                    .unwrap_or(0.0)
+-                                    .max(0.0);
+-                                if !live_shares.is_finite() || live_shares <= 0.0 {
+-                                    queue_guard_by_order_id.remove(order_id);
+-                                    continue;
+-                                }
+-                                if row.price + (tick_size * 0.5) < submit_bid_price {
+-                                    continue;
+-                                }
+-                                let (own_visible_for_row, external_visible_for_row, _) =
+-                                    mm_sport_external_bid_depth_at_or_above(
+-                                        &book,
+-                                        token_buy_rows.as_slice(),
+-                                        Some(&live_shares_by_order_id),
+-                                        row.price,
+-                                        tick_size,
+-                                    );
+-                                let guard = queue_guard_by_order_id
+-                                    .entry(order_id.to_string())
+-                                    .or_insert(MmSportQueueGuard {
+-                                        condition_id: condition_id.clone(),
+-                                        token_id: token_id.clone(),
+-                                        price: row.price,
+-                                        live_shares,
+-                                        ahead_shares: external_visible_for_row,
+-                                        last_book_ms: now_ms,
+-                                    });
+-                                if !mm_sport_price_close(guard.price, row.price, tick_size)
+-                                    || !guard
+-                                        .condition_id
+-                                        .eq_ignore_ascii_case(condition_id.as_str())
+-                                    || !guard.token_id.eq_ignore_ascii_case(token_id.as_str())
+-                                {
+-                                    guard.condition_id = condition_id.clone();
+-                                    guard.token_id = token_id.clone();
+-                                    guard.price = row.price;
+-                                    guard.ahead_shares = external_visible_for_row;
+-                                } else {
+-                                    let current_ahead = guard.ahead_shares.max(0.0);
+-                                    if !current_ahead.is_finite() {
++                            if MM_SPORT_LEGACY_QUEUE_GUARD_ENABLE {
++                                for row in token_buy_rows {
++                                    let order_id = row.order_id.trim();
++                                    if order_id.is_empty() {
++                                        continue;
++                                    }
++                                    let live_shares = live_shares_by_order_id
++                                        .get(order_id)
++                                        .copied()
++                                        .or_else(|| mm_sport_size_shares_from_pending(row))
++                                        .unwrap_or(0.0)
++                                        .max(0.0);
++                                    if !live_shares.is_finite() || live_shares <= 0.0 {
++                                        queue_guard_by_order_id.remove(order_id);
++                                        continue;
++                                    }
++                                    if row.price + (tick_size * 0.5) < submit_bid_price {
++                                        continue;
++                                    }
++                                    let (own_visible_for_row, external_visible_for_row, _) =
++                                        mm_sport_external_bid_depth_at_or_above(
++                                            &book,
++                                            token_buy_rows.as_slice(),
++                                            Some(&live_shares_by_order_id),
++                                            row.price,
++                                            tick_size,
++                                        );
++                                    let guard = queue_guard_by_order_id
++                                        .entry(order_id.to_string())
++                                        .or_insert(MmSportQueueGuard {
++                                            condition_id: condition_id.clone(),
++                                            token_id: token_id.clone(),
++                                            price: row.price,
++                                            live_shares,
++                                            ahead_shares: external_visible_for_row,
++                                            last_book_ms: now_ms,
++                                        });
++                                    if !mm_sport_price_close(guard.price, row.price, tick_size)
++                                        || !guard
++                                            .condition_id
++                                            .eq_ignore_ascii_case(condition_id.as_str())
++                                        || !guard.token_id.eq_ignore_ascii_case(token_id.as_str())
++                                    {
++                                        guard.condition_id = condition_id.clone();
++                                        guard.token_id = token_id.clone();
++                                        guard.price = row.price;
+                                         guard.ahead_shares = external_visible_for_row;
+                                     } else {
+-                                        guard.ahead_shares =
+-                                            current_ahead.min(external_visible_for_row);
++                                        let current_ahead = guard.ahead_shares.max(0.0);
++                                        if !current_ahead.is_finite() {
++                                            guard.ahead_shares = external_visible_for_row;
++                                        } else {
++                                            guard.ahead_shares =
++                                                current_ahead.min(external_visible_for_row);
++                                        }
+                                     }
+-                                }
+-                                guard.live_shares = live_shares;
+-                                guard.last_book_ms = now_ms;
++                                    guard.live_shares = live_shares;
++                                    guard.last_book_ms = now_ms;
+ 
+-                                let front_ratio = mm_sport_target_share_ratio(
+-                                    own_visible_for_row,
+-                                    guard.ahead_shares,
+-                                );
+-                                if front_ratio
+-                                    .map(|ratio| ratio > ratio_limit + 1e-9)
+-                                    .unwrap_or(true)
+-                                {
+-                                    front_ratio_breached = true;
++                                    let front_ratio = mm_sport_target_share_ratio(
++                                        own_visible_for_row,
++                                        guard.ahead_shares,
++                                    );
++                                    if front_ratio
++                                        .map(|ratio| ratio > ratio_limit + 1e-9)
++                                        .unwrap_or(true)
++                                    {
++                                        front_ratio_breached = true;
++                                    }
++                                    queue_details.push(json!({
++                                        "order_id": order_id,
++                                        "token_id": token_id,
++                                        "price": row.price,
++                                        "best_bid": best_bid,
++                                        "submit_bid_price": submit_bid_price,
++                                        "live_shares": live_shares,
++                                        "visible_own_shares": own_visible_for_row,
++                                        "ahead_shares": guard.ahead_shares,
++                                        "front_ratio": front_ratio
++                                    }));
+                                 }
+-                                queue_details.push(json!({
+-                                    "order_id": order_id,
+-                                    "token_id": token_id,
+-                                    "price": row.price,
+-                                    "best_bid": best_bid,
+-                                    "submit_bid_price": submit_bid_price,
+-                                    "live_shares": live_shares,
+-                                    "visible_own_shares": own_visible_for_row,
+-                                    "ahead_shares": guard.ahead_shares,
+-                                    "front_ratio": front_ratio
+-                                }));
+                             }
+                             token_details.push(json!({
+                                 "token_id": token_id,
+@@ -17380,6 +17572,7 @@ async fn main() -> Result<()> {
+                                     "max_share_ratio": ratio_limit,
+                                     "visible_ratio_breached": visible_ratio_breached,
+                                     "front_ratio_breached": front_ratio_breached,
++                                    "legacy_queue_guard_enabled": MM_SPORT_LEGACY_QUEUE_GUARD_ENABLE,
+                                     "ratio_blocked": true,
+                                     "ratio_cancel_cooldown_ms": mm_sport_cfg_for_loop.ratio_breach_cancel_cooldown_ms,
+                                     "ratio_cancel_executed": can_cancel_on_ratio,
+@@ -17408,6 +17601,411 @@ async fn main() -> Result<()> {
+                     }
+                     last_watchdog_pause_reason_by_condition = watchdog_pause_state_this_pass;
+ 
++                    if mm_sport_cfg_for_loop.event_driven_enable && api_for_mm_sport.ws_enabled() {
++                        let ratio_limit = mm_sport_cfg_for_loop.max_share_ratio.clamp(0.01, 0.99);
++                        let fifo_ws_gap_cancel_ms =
++                            mm_sport_cfg_for_loop.fifo_ws_gap_cancel_ms.max(500);
++                        let mut fifo_report_condition_count = 0usize;
++                        let mut fifo_report_token_count = 0usize;
++                        let mut fifo_report_scanned_orders = 0usize;
++                        let mut fifo_report_safe_orders = 0usize;
++                        let mut fifo_report_ws_gap_orders = 0usize;
++                        let mut fifo_report_front_ratio_orders = 0usize;
++                        let mut fifo_report_front_ratio_missing = 0usize;
++                        let mut fifo_report_zero_live_orders = 0usize;
++                        let mut fifo_report_inventory_exit_excluded = 0usize;
++                        let mut fifo_report_non_entry_excluded = 0usize;
++                        let mut fifo_report_cancel_attempted = 0usize;
++                        let mut fifo_report_cancel_resolved = 0usize;
++                        let mut fifo_report_cancel_unresolved = 0usize;
++                        let mut fifo_report_cancel_blocked_cooldown = 0usize;
++                        let mut fifo_report_max_front_ratio: Option<f64> = None;
++                        let mut fifo_report_min_ahead_worst: Option<f64> = None;
++                        let mut fifo_report_max_ws_age_ms = 0_i64;
++                        let mut fifo_report_riskiest_orders: Vec<Value> = Vec::new();
++                        for (condition_id, rows) in &open_orders_by_condition {
++                            if rows.is_empty() {
++                                continue;
++                            }
++                            let tick_size = market_by_condition
++                                .get(condition_id)
++                                .map(|market| market.minimum_tick_size)
++                                .or_else(|| known_tick_size_by_condition.get(condition_id).copied())
++                                .filter(|value| value.is_finite() && *value > 0.0)
++                                .unwrap_or(0.01);
++                            let mut buy_rows_by_token: std::collections::HashMap<
++                                String,
++                                Vec<PendingOrderRecord>,
++                            > = std::collections::HashMap::new();
++                            for row in rows {
++                                if row.side.eq_ignore_ascii_case("SELL") {
++                                    fifo_report_inventory_exit_excluded =
++                                        fifo_report_inventory_exit_excluded.saturating_add(1);
++                                    continue;
++                                }
++                                if !row.side.eq_ignore_ascii_case("BUY")
++                                    || !row.entry_mode.eq_ignore_ascii_case("MM_SPORT")
++                                    || row.order_id.trim().is_empty()
++                                    || row.token_id.trim().is_empty()
++                                    || !row.price.is_finite()
++                                    || row.price <= 0.0
++                                {
++                                    fifo_report_non_entry_excluded =
++                                        fifo_report_non_entry_excluded.saturating_add(1);
++                                    continue;
++                                }
++                                buy_rows_by_token
++                                    .entry(row.token_id.trim().to_string())
++                                    .or_default()
++                                    .push(row.clone());
++                            }
++                            if buy_rows_by_token.is_empty() {
++                                continue;
++                            }
++                            fifo_report_condition_count =
++                                fifo_report_condition_count.saturating_add(1);
++                            fifo_report_token_count =
++                                fifo_report_token_count.saturating_add(buy_rows_by_token.len());
++                            let mut cancel_rows = Vec::new();
++                            let mut cancel_order_ids = std::collections::HashSet::new();
++                            let mut fifo_details = Vec::new();
++                            for (token_id, buy_rows) in buy_rows_by_token {
++                                let Some(snapshot) = polymarket_ws_for_mm_sport
++                                    .get_orderbook_snapshot(
++                                        token_id.as_str(),
++                                        fifo_ws_gap_cancel_ms,
++                                    )
++                                    .await
++                                else {
++                                    let last_market_msg_ms =
++                                        polymarket_ws_for_mm_sport.last_market_msg_ms();
++                                    let ws_age_ms = if last_market_msg_ms > 0 {
++                                        if now_ms >= last_market_msg_ms {
++                                            now_ms - last_market_msg_ms
++                                        } else {
++                                            0
++                                        }
++                                    } else {
++                                        i64::MAX
++                                    };
++                                    for row in &buy_rows {
++                                        let order_id = row.order_id.trim();
++                                        if order_id.is_empty() {
++                                            continue;
++                                        }
++                                        fifo_report_scanned_orders =
++                                            fifo_report_scanned_orders.saturating_add(1);
++                                        fifo_report_ws_gap_orders =
++                                            fifo_report_ws_gap_orders.saturating_add(1);
++                                        fifo_report_max_ws_age_ms =
++                                            fifo_report_max_ws_age_ms.max(ws_age_ms);
++                                        fifo_guard_by_order_id.remove(order_id);
++                                    }
++                                    continue;
++                                };
++                                let ws_age_ms = if now_ms >= snapshot.updated_ms {
++                                    now_ms - snapshot.updated_ms
++                                } else {
++                                    0
++                                };
++                                fifo_report_max_ws_age_ms =
++                                    fifo_report_max_ws_age_ms.max(ws_age_ms);
++                                let mut live_shares_by_order_id: std::collections::HashMap<
++                                    String,
++                                    f64,
++                                > = std::collections::HashMap::new();
++                                for row in &buy_rows {
++                                    let order_id = row.order_id.trim();
++                                    if order_id.is_empty() {
++                                        continue;
++                                    }
++                                    let mut live_shares =
++                                        mm_sport_size_shares_from_pending(row).unwrap_or(0.0);
++                                    if mm_sport_is_exchange_order_id(order_id) {
++                                        if let Some(status) = polymarket_ws_for_mm_sport
++                                            .get_order_status(
++                                                order_id,
++                                                mm_sport_cfg_for_loop.ws_stale_ms,
++                                            )
++                                            .await
++                                        {
++                                            let original = f64::try_from(status.original_size)
++                                                .ok()
++                                                .unwrap_or(0.0)
++                                                .max(0.0);
++                                            let matched = f64::try_from(status.size_matched)
++                                                .ok()
++                                                .unwrap_or(0.0)
++                                                .max(0.0);
++                                            let ws_live = (original - matched).max(0.0);
++                                            if ws_live.is_finite() {
++                                                live_shares = ws_live;
++                                            }
++                                        }
++                                    }
++                                    if live_shares.is_finite() && live_shares > 0.0 {
++                                        live_shares_by_order_id
++                                            .insert(order_id.to_string(), live_shares);
++                                    }
++                                }
++                                for row in &buy_rows {
++                                    let order_id = row.order_id.trim();
++                                    if order_id.is_empty() {
++                                        continue;
++                                    }
++                                    fifo_report_scanned_orders =
++                                        fifo_report_scanned_orders.saturating_add(1);
++                                    let live_shares = live_shares_by_order_id
++                                        .get(order_id)
++                                        .copied()
++                                        .or_else(|| mm_sport_size_shares_from_pending(row))
++                                        .unwrap_or(0.0)
++                                        .max(0.0);
++                                    if !live_shares.is_finite() || live_shares <= 0.0 {
++                                        fifo_report_zero_live_orders =
++                                            fifo_report_zero_live_orders.saturating_add(1);
++                                        fifo_guard_by_order_id.remove(order_id);
++                                        continue;
++                                    }
++                                    let (same_external, better_external) =
++                                        mm_sport_external_bid_queue_components(
++                                            &snapshot.orderbook,
++                                            buy_rows.as_slice(),
++                                            Some(&live_shares_by_order_id),
++                                            row.price,
++                                            tick_size,
++                                        );
++                                    let guard = fifo_guard_by_order_id
++                                        .entry(order_id.to_string())
++                                        .or_insert(MmSportFifoGuard {
++                                            condition_id: condition_id.clone(),
++                                            token_id: token_id.clone(),
++                                            side: "BUY".to_string(),
++                                            price: row.price,
++                                            live_shares,
++                                            same_price_ahead_worst: same_external,
++                                            better_price_ahead: better_external,
++                                            last_book_ms: snapshot.updated_ms,
++                                        });
++                                    mm_sport_update_fifo_guard(
++                                        guard,
++                                        condition_id.as_str(),
++                                        token_id.as_str(),
++                                        "BUY",
++                                        row.price,
++                                        live_shares,
++                                        same_external,
++                                        better_external,
++                                        snapshot.updated_ms,
++                                        tick_size,
++                                    );
++
++                                    let (own_same_shares, _) = mm_sport_own_bid_depth_at_price(
++                                        buy_rows.as_slice(),
++                                        Some(&live_shares_by_order_id),
++                                        row.price,
++                                        tick_size,
++                                    );
++                                    let front_shares = own_same_shares.max(live_shares);
++                                    let ahead_worst = guard.same_price_ahead_worst.max(0.0)
++                                        + guard.better_price_ahead.max(0.0);
++                                    let front_ratio =
++                                        mm_sport_target_share_ratio(front_shares, ahead_worst);
++                                    if let Some(ratio) = front_ratio {
++                                        fifo_report_max_front_ratio = Some(
++                                            fifo_report_max_front_ratio
++                                                .map(|prev| prev.max(ratio))
++                                                .unwrap_or(ratio),
++                                        );
++                                    } else {
++                                        fifo_report_front_ratio_missing =
++                                            fifo_report_front_ratio_missing.saturating_add(1);
++                                    }
++                                    if ahead_worst.is_finite() {
++                                        fifo_report_min_ahead_worst = Some(
++                                            fifo_report_min_ahead_worst
++                                                .map(|prev| prev.min(ahead_worst))
++                                                .unwrap_or(ahead_worst),
++                                        );
++                                    }
++                                    fifo_report_riskiest_orders.push(json!({
++                                        "condition_id": condition_id,
++                                        "token_id": token_id.as_str(),
++                                        "order_id": order_id,
++                                        "price": row.price,
++                                        "live_shares": live_shares,
++                                        "front_shares": front_shares,
++                                        "same_price_ahead_worst": guard.same_price_ahead_worst,
++                                        "better_price_ahead": guard.better_price_ahead,
++                                        "ahead_worst": ahead_worst,
++                                        "front_ratio": front_ratio,
++                                        "max_share_ratio": ratio_limit,
++                                        "ws_age_ms": ws_age_ms
++                                    }));
++                                    let front_ratio_breached = front_ratio
++                                        .map(|ratio| ratio > ratio_limit + 1e-9)
++                                        .unwrap_or(true);
++                                    if front_ratio_breached {
++                                        fifo_report_front_ratio_orders =
++                                            fifo_report_front_ratio_orders.saturating_add(1);
++                                        if cancel_order_ids.insert(order_id.to_string()) {
++                                            cancel_rows.push(row.clone());
++                                        }
++                                        fifo_details.push(json!({
++                                            "reason": "front_ratio",
++                                            "condition_id": condition_id,
++                                            "token_id": token_id.as_str(),
++                                            "order_id": order_id,
++                                            "side": "BUY",
++                                            "price": row.price,
++                                            "live_shares": live_shares,
++                                            "own_same_shares": own_same_shares,
++                                            "front_shares": front_shares,
++                                            "same_price_ahead_worst": guard.same_price_ahead_worst,
++                                            "better_price_ahead": guard.better_price_ahead,
++                                            "ahead_worst": ahead_worst,
++                                            "front_ratio": front_ratio,
++                                            "max_share_ratio": ratio_limit,
++                                            "ws_age_ms": ws_age_ms,
++                                            "fifo_ws_gap_cancel_ms": fifo_ws_gap_cancel_ms
++                                        }));
++                                    } else {
++                                        fifo_report_safe_orders =
++                                            fifo_report_safe_orders.saturating_add(1);
++                                    }
++                                }
++                            }
++                            if cancel_rows.is_empty() {
++                                continue;
++                            }
++                            ratio_blocked_conditions.insert(condition_id.clone());
++                            ratio_recovery_streak_by_condition.insert(condition_id.clone(), 0);
++                            let pause_ms = i64::try_from(
++                                mm_sport_cfg_for_loop.ratio_pause_sec.saturating_mul(1_000),
++                            )
++                            .ok()
++                            .unwrap_or(i64::MAX);
++                            let pause_until_ms = now_ms.saturating_add(pause_ms);
++                            let entry = ratio_pause_until_by_condition
++                                .entry(condition_id.clone())
++                                .or_insert(0);
++                            if pause_until_ms > *entry {
++                                *entry = pause_until_ms;
++                            }
++                            let can_cancel_on_fifo = last_ratio_cancel_ms_by_condition
++                                .get(condition_id)
++                                .map(|last| {
++                                    now_ms.saturating_sub(*last)
++                                        >= mm_sport_cfg_for_loop.ratio_breach_cancel_cooldown_ms
++                                })
++                                .unwrap_or(true);
++                            fifo_report_cancel_attempted =
++                                fifo_report_cancel_attempted.saturating_add(cancel_rows.len());
++                            let canceled = if can_cancel_on_fifo {
++                                let canceled = mm_sport_cancel_pending_rows(
++                                    &api_for_mm_sport,
++                                    &tracking_db_for_mm_sport,
++                                    cancel_rows.as_slice(),
++                                )
++                                .await;
++                                last_ratio_cancel_ms_by_condition
++                                    .insert(condition_id.clone(), now_ms);
++                                for row in &cancel_rows {
++                                    fifo_guard_by_order_id.remove(row.order_id.trim());
++                                }
++                                canceled
++                            } else {
++                                fifo_report_cancel_blocked_cooldown =
++                                    fifo_report_cancel_blocked_cooldown
++                                        .saturating_add(cancel_rows.len());
++                                0
++                            };
++                            if can_cancel_on_fifo {
++                                fifo_report_cancel_resolved =
++                                    fifo_report_cancel_resolved.saturating_add(canceled);
++                                fifo_report_cancel_unresolved = fifo_report_cancel_unresolved
++                                    .saturating_add(cancel_rows.len().saturating_sub(canceled));
++                            }
++                            log_event(
++                                "mm_sport_fifo_guard_cancel",
++                                json!({
++                                    "strategy_id": STRATEGY_ID_MM_SPORT_V1,
++                                    "condition_id": condition_id,
++                                    "quote_size_mode": mm_sport_cfg_for_loop.quote_size_mode.as_str(),
++                                    "max_share_ratio": ratio_limit,
++                                    "fifo_ws_gap_cancel_ms": fifo_ws_gap_cancel_ms,
++                                    "ratio_pause_sec": mm_sport_cfg_for_loop.ratio_pause_sec,
++                                    "ratio_pause_until_ms": pause_until_ms,
++                                    "attempted_cancel_count": cancel_rows.len(),
++                                    "resolved_cancel_count": canceled,
++                                    "cancel_executed": can_cancel_on_fifo,
++                                    "details": fifo_details
++                                }),
++                            );
++                        }
++                        if last_fifo_guard_report_ms <= 0
++                            || now_ms.saturating_sub(last_fifo_guard_report_ms)
++                                >= MM_SPORT_FIFO_GUARD_REPORT_INTERVAL_MS
++                        {
++                            last_fifo_guard_report_ms = now_ms;
++                            fifo_report_riskiest_orders.sort_by(|a, b| {
++                                let a_ratio = a
++                                    .get("front_ratio")
++                                    .and_then(|value| value.as_f64())
++                                    .unwrap_or(-1.0);
++                                let b_ratio = b
++                                    .get("front_ratio")
++                                    .and_then(|value| value.as_f64())
++                                    .unwrap_or(-1.0);
++                                b_ratio.total_cmp(&a_ratio)
++                            });
++                            fifo_report_riskiest_orders.truncate(5);
++                            let last_market_msg_ms =
++                                polymarket_ws_for_mm_sport.last_market_msg_ms();
++                            let market_ws_age_ms = if last_market_msg_ms > 0 {
++                                if now_ms >= last_market_msg_ms {
++                                    now_ms - last_market_msg_ms
++                                } else {
++                                    0
++                                }
++                            } else {
++                                i64::MAX
++                            };
++                            let report_payload = json!({
++                                "strategy_id": STRATEGY_ID_MM_SPORT_V1,
++                                "enabled": true,
++                                "event_driven": mm_sport_cfg_for_loop.event_driven_enable,
++                                "ws_enabled": api_for_mm_sport.ws_enabled(),
++                                "inventory_exit_guard_applied": false,
++                                "inventory_exit_excluded_orders": fifo_report_inventory_exit_excluded,
++                                "non_entry_excluded_orders": fifo_report_non_entry_excluded,
++                                "open_order_conditions": open_orders_by_condition.len(),
++                                "guard_tracked_orders": fifo_guard_by_order_id.len(),
++                                "scanned_conditions": fifo_report_condition_count,
++                                "scanned_tokens": fifo_report_token_count,
++                                "scanned_orders": fifo_report_scanned_orders,
++                                "safe_orders": fifo_report_safe_orders,
++                                "zero_live_orders": fifo_report_zero_live_orders,
++                                "ws_gap_orders": fifo_report_ws_gap_orders,
++                                "front_ratio_breach_orders": fifo_report_front_ratio_orders,
++                                "front_ratio_missing_orders": fifo_report_front_ratio_missing,
++                                "max_front_ratio": fifo_report_max_front_ratio,
++                                "min_ahead_worst": fifo_report_min_ahead_worst,
++                                "max_share_ratio": ratio_limit,
++                                "fifo_ws_gap_cancel_ms": fifo_ws_gap_cancel_ms,
++                                "market_ws_age_ms": market_ws_age_ms,
++                                "max_orderbook_ws_age_ms": fifo_report_max_ws_age_ms,
++                                "cancel_attempted_orders": fifo_report_cancel_attempted,
++                                "cancel_resolved_orders": fifo_report_cancel_resolved,
++                                "cancel_unresolved_orders": fifo_report_cancel_unresolved,
++                                "cancel_blocked_cooldown_orders": fifo_report_cancel_blocked_cooldown,
++                                "riskiest_orders": fifo_report_riskiest_orders
++                            });
++                            last_fifo_guard_report = report_payload.clone();
++                            log_event("mm_sport_fifo_guard_report", report_payload);
++                        }
++                    }
++
+                     if mm_sport_scope_scout_rotated_at_ms <= 0 {
+                         mm_sport_scope_scout_rotated_at_ms = now_ms;
+                     } else if now_ms.saturating_sub(mm_sport_scope_scout_rotated_at_ms)
+@@ -19952,6 +20550,8 @@ async fn main() -> Result<()> {
+                                 "no_exit_side_paused_tokens": no_exit_side_pause_by_token.len(),
+                                 "ratio_blocked_markets": ratio_blocked_conditions.len(),
+                                 "queue_guard_orders": queue_guard_by_order_id.len(),
++                                "fifo_guard_orders": fifo_guard_by_order_id.len(),
++                                "fifo_guard_last_report": last_fifo_guard_report.clone(),
+                                 "tracked_order_expiries": order_expiry_ms_by_order_id.len(),
+                                 "inventory_tokens": inventory_by_token.len(),
+                             }),
+@@ -26930,6 +27530,133 @@ mod tests {
+         assert!((external_usd - 14.85).abs() < 1e-9);
+     }
+ 
++    #[test]
++    fn mm_sport_external_bid_queue_components_splits_same_and_better_levels() {
++        let orderbook = polymarket_arbitrage_bot::models::OrderBook {
++            bids: vec![
++                polymarket_arbitrage_bot::models::OrderBookEntry {
++                    price: rust_decimal::Decimal::new(60, 2),
++                    size: rust_decimal::Decimal::new(10, 0),
++                },
++                polymarket_arbitrage_bot::models::OrderBookEntry {
++                    price: rust_decimal::Decimal::new(59, 2),
++                    size: rust_decimal::Decimal::new(20, 0),
++                },
++            ],
++            asks: vec![],
++        };
++        let own_row = polymarket_arbitrage_bot::tracking_db::PendingOrderRecord {
++            order_id: "own-59".to_string(),
++            trade_key: "test".to_string(),
++            token_id: "token".to_string(),
++            condition_id: Some("condition".to_string()),
++            timeframe: "1d".to_string(),
++            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
++            asset_symbol: Some("SPORT".to_string()),
++            entry_mode: "mm_sport".to_string(),
++            period_timestamp: 0,
++            price: 0.59,
++            size_usd: 2.95,
++            side: "BUY".to_string(),
++            status: "OPEN".to_string(),
++        };
++        let (same_external, better_external) =
++            mm_sport_external_bid_queue_components(&orderbook, &[own_row], None, 0.59, 0.01);
++        assert!((same_external - 15.0).abs() < 1e-9);
++        assert!((better_external - 10.0).abs() < 1e-9);
++    }
++
++    #[test]
++    fn mm_sport_update_fifo_guard_keeps_stable_slot_same_price_ahead_monotonic() {
++        let mut guard = MmSportFifoGuard {
++            condition_id: "condition".to_string(),
++            token_id: "token".to_string(),
++            side: "BUY".to_string(),
++            price: 0.59,
++            live_shares: 10.0,
++            same_price_ahead_worst: 15.0,
++            better_price_ahead: 2.0,
++            last_book_ms: 100,
++        };
++
++        mm_sport_update_fifo_guard(
++            &mut guard,
++            "condition",
++            "token",
++            "BUY",
++            0.59,
++            9.0,
++            30.0,
++            3.0,
++            200,
++            0.01,
++        );
++        assert!((guard.same_price_ahead_worst - 15.0).abs() < 1e-9);
++        assert!((guard.better_price_ahead - 3.0).abs() < 1e-9);
++        assert!((guard.live_shares - 9.0).abs() < 1e-9);
++        assert_eq!(guard.last_book_ms, 200);
++
++        mm_sport_update_fifo_guard(
++            &mut guard,
++            "condition",
++            "token",
++            "BUY",
++            0.59,
++            9.0,
++            7.0,
++            4.0,
++            300,
++            0.01,
++        );
++        assert!((guard.same_price_ahead_worst - 7.0).abs() < 1e-9);
++        assert!((guard.better_price_ahead - 4.0).abs() < 1e-9);
++        assert_eq!(guard.last_book_ms, 300);
++    }
++
++    #[test]
++    fn mm_sport_update_fifo_guard_resets_same_price_ahead_on_slot_change() {
++        let mut guard = MmSportFifoGuard {
++            condition_id: "condition".to_string(),
++            token_id: "token".to_string(),
++            side: "BUY".to_string(),
++            price: 0.59,
++            live_shares: 10.0,
++            same_price_ahead_worst: 7.0,
++            better_price_ahead: 2.0,
++            last_book_ms: 100,
++        };
++
++        mm_sport_update_fifo_guard(
++            &mut guard,
++            "condition",
++            "token",
++            "BUY",
++            0.58,
++            8.0,
++            30.0,
++            1.0,
++            200,
++            0.01,
++        );
++        assert!((guard.price - 0.58).abs() < 1e-9);
++        assert!((guard.same_price_ahead_worst - 30.0).abs() < 1e-9);
++
++        mm_sport_update_fifo_guard(
++            &mut guard,
++            "other-condition",
++            "token",
++            "BUY",
++            0.58,
++            8.0,
++            40.0,
++            1.0,
++            300,
++            0.01,
++        );
++        assert_eq!(guard.condition_id, "other-condition");
++        assert!((guard.same_price_ahead_worst - 40.0).abs() < 1e-9);
++    }
++
+     #[test]
+     fn mm_sport_external_ask_depth_at_or_below_combines_visible_levels_to_submit_price() {
+         let orderbook = polymarket_arbitrage_bot::models::OrderBook {
+diff --git a/src/mm/mod.rs b/src/mm/mod.rs
+index 0b5a458..dac4cd3 100644
+--- a/src/mm/mod.rs
++++ b/src/mm/mod.rs
+@@ -97,6 +97,7 @@ pub struct MmSportConfig {
+     pub event_driven_enable: bool,
+     pub event_fallback_poll_ms: u64,
+     pub ws_stale_ms: i64,
++    pub fifo_ws_gap_cancel_ms: i64,
+     pub discovery_refresh_sec: u64,
+     pub rewards_page_budget: u32,
+     pub min_reward_rate_per_day: f64,
+@@ -162,6 +163,8 @@ impl MmSportConfig {
+             event_driven_enable: env_bool("EVPOLY_MM_SPORT_EVENT_DRIVEN_ENABLE", true),
+             event_fallback_poll_ms: 1_000,
+             ws_stale_ms: env_u64("EVPOLY_MM_SPORT_WS_STALE_MS", 2_500).clamp(250, 30_000) as i64,
++            fifo_ws_gap_cancel_ms: env_u64("EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS", 5_000)
++                .clamp(500, 60_000) as i64,
+             discovery_refresh_sec: 300,
+             rewards_page_budget: env_u32("EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET", 8).clamp(1, 200),
+             min_reward_rate_per_day: env_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 5.0)
+diff --git a/src/polymarket_ws.rs b/src/polymarket_ws.rs
+index 380a955..3233acb 100644
+--- a/src/polymarket_ws.rs
++++ b/src/polymarket_ws.rs
+@@ -365,6 +365,20 @@ impl SharedPolymarketWsState {
+         Some(snapshot.orderbook.clone())
+     }
+ 
++    pub async fn get_orderbook_snapshot(
++        &self,
++        token_id: &str,
++        max_age_ms: i64,
++    ) -> Option<WsOrderbookSnapshot> {
++        let now_ms = chrono::Utc::now().timestamp_millis();
++        let map = self.inner.orderbooks.read().await;
++        let snapshot = map.get(token_id)?;
++        if snapshot.updated_ms <= 0 || now_ms.saturating_sub(snapshot.updated_ms) > max_age_ms {
++            return None;
++        }
++        Some(snapshot.clone())
++    }
++
+     pub async fn get_best_price(&self, token_id: &str, max_age_ms: i64) -> Option<TokenPrice> {
+         let orderbook = self.get_orderbook(token_id, max_age_ms).await?;
+         let best_bid = orderbook
+diff --git a/strategy-changelog.md b/strategy-changelog.md
+index 50428aa..0a97a61 100644
+--- a/strategy-changelog.md
++++ b/strategy-changelog.md
+@@ -9,6 +9,11 @@ Older entries may reference env keys that were removed in later commits.
+ 
+ ## Change Log
+ 
++### 2026-05-02
++- `mm_sport_v1` / MM 2.0 queue guard: backported the strict WS FIFO cancel guard from live EVPOLY into the desktop runtime patch stack (`src/main.rs`, `src/mm/mod.rs`, `src/polymarket_ws.rs`, `.env.example`, `.env.full.example`).
++  - BUY quote cancellation now uses fresh websocket orderbook snapshots and order-status live size to split same-price FIFO-ahead depth from better-price depth; same-price external depth only decreases for a stable order slot so newly added behind-us depth does not mask front-of-queue risk.
++  - Added `EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS` default `5000`; stale/missing WS orderbook snapshots clear FIFO guard state and skip forced FIFO cancellation until fresh WS data returns.
++
+ ### 2026-04-29
+ - `mm_sport_v1` / MM 2.0 inventory-exit loss guard: added `EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS` default `10` and applies it before inventory-exit SELL placement (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+   - affects MM 2.0 inventory cleanup for all discovered markets; when tracked average entry exists, exit SELL quotes are lifted to avoid quoting more than the configured cents below entry.

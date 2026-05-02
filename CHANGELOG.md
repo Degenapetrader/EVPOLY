@@ -1,5 +1,9 @@
 # EVPoly Desktop Changelog
 
+## Unreleased
+- Added MM 2.0 Sport / Non-S sizing profiles in desktop config and settings UI.
+- Added a desktop runtime patch for Non-S sizing overrides that fall back to Sport values and apply only to fresh BUY sizing plus BUY-side ratio hygiene.
+
 ## UI-v2.1.0 - 2026-04-29
 - Added MM 2.0 inventory-exit max-loss control and Tauri config mapping.
 - Bumped desktop app/updater version to 2.1.0.

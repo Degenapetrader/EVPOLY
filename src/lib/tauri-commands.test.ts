@@ -53,6 +53,7 @@ const SAMPLE_CONFIG: BotConfig = {
   mm_tuning: {
     rewards_min_share_multiple: 1,
     sport_quote_size_multiplier: 1.2,
+    nonsport_quote_size_multiplier: 1.2,
   },
   size_policy: {
     symbol_multipliers: {
@@ -131,8 +132,11 @@ const SAMPLE_CONFIG: BotConfig = {
     mm_sport: {
       discovery_route: "sports",
       quote_size_mode: "multiple",
+      nonsport_quote_size_mode: "multiple",
       multiple_collateral_cap_mult: 0.45,
+      nonsport_multiple_collateral_cap_mult: 0.45,
       depth_ratio_collateral_cap_mult: 0.9,
+      nonsport_depth_ratio_collateral_cap_mult: 0.9,
       min_reward_rate_per_day: 300,
       match_only: false,
       allowed_sport_league_codes: "",
@@ -150,7 +154,9 @@ const SAMPLE_CONFIG: BotConfig = {
       inventory_exit_max_loss_cents: 10,
       inventory_exit_mode: "normal",
       max_share_ratio: 0.05,
+      nonsport_max_share_ratio: 0.05,
       min_top_depth_usd: 1100,
+      nonsport_min_top_depth_usd: 1100,
       min_entry_top_bid_price: 0.1,
       allow_sponsored_rewards: true,
       sponsored_reward_min_share: 0.5,

@@ -159,8 +159,11 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
   mm_sport: {
     discovery_route: "sports",
     quote_size_mode: "depth_ratio",
+    nonsport_quote_size_mode: "depth_ratio",
     multiple_collateral_cap_mult: 0.45,
+    nonsport_multiple_collateral_cap_mult: 0.45,
     depth_ratio_collateral_cap_mult: 0.9,
+    nonsport_depth_ratio_collateral_cap_mult: 0.9,
     min_reward_rate_per_day: 5,
     match_only: true,
     allowed_sport_league_codes: "",
@@ -178,7 +181,9 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     inventory_exit_max_loss_cents: 10,
     inventory_exit_mode: "normal",
     max_share_ratio: 0.05,
+    nonsport_max_share_ratio: 0.05,
     min_top_depth_usd: 1100,
+    nonsport_min_top_depth_usd: 1100,
     min_entry_top_bid_price: 0.1,
     allow_sponsored_rewards: true,
     sponsored_reward_min_share: 0.5,
@@ -245,6 +250,7 @@ export const DEFAULT_CONFIG: BotConfig = {
   mm_tuning: {
     rewards_min_share_multiple: 1.0,
     sport_quote_size_multiplier: 1.2,
+    nonsport_quote_size_multiplier: 1.2,
   },
   size_policy: DEFAULT_SIZE_POLICY,
   strategy_settings: DEFAULT_STRATEGY_SETTINGS,
@@ -268,6 +274,22 @@ export const DEFAULT_CONFIG: BotConfig = {
 };
 
 export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotConfig {
+  const savedMmSport = saved?.strategy_settings?.mm_sport;
+  const sportQuoteSizeMode = normalizeMMSportQuoteSizeMode(savedMmSport?.quote_size_mode);
+  const sportQuoteSizeMultiplier =
+    saved?.mm_tuning?.sport_quote_size_multiplier ??
+    DEFAULT_CONFIG.mm_tuning.sport_quote_size_multiplier;
+  const sportMultipleCollateralCap =
+    savedMmSport?.multiple_collateral_cap_mult ??
+    DEFAULT_CONFIG.strategy_settings.mm_sport.multiple_collateral_cap_mult;
+  const sportDepthRatioCollateralCap =
+    savedMmSport?.depth_ratio_collateral_cap_mult ??
+    DEFAULT_CONFIG.strategy_settings.mm_sport.depth_ratio_collateral_cap_mult;
+  const sportMaxShareRatio =
+    savedMmSport?.max_share_ratio ?? DEFAULT_CONFIG.strategy_settings.mm_sport.max_share_ratio;
+  const sportMinTopDepthUsd =
+    savedMmSport?.min_top_depth_usd ?? DEFAULT_CONFIG.strategy_settings.mm_sport.min_top_depth_usd;
+
   return {
     ...DEFAULT_CONFIG,
     ...saved,
@@ -288,6 +310,9 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
     mm_tuning: {
       ...DEFAULT_CONFIG.mm_tuning,
       ...saved?.mm_tuning,
+      sport_quote_size_multiplier: sportQuoteSizeMultiplier,
+      nonsport_quote_size_multiplier:
+        saved?.mm_tuning?.nonsport_quote_size_multiplier ?? sportQuoteSizeMultiplier,
     },
     size_policy: {
       ...DEFAULT_CONFIG.size_policy,
@@ -376,16 +401,28 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
       },
       mm_sport: {
         ...DEFAULT_CONFIG.strategy_settings.mm_sport,
-        ...saved?.strategy_settings?.mm_sport,
+        ...savedMmSport,
         discovery_route: normalizeMMSportDiscoveryRoute(
-          saved?.strategy_settings?.mm_sport?.discovery_route
+          savedMmSport?.discovery_route
         ),
-        quote_size_mode: normalizeMMSportQuoteSizeMode(
-          saved?.strategy_settings?.mm_sport?.quote_size_mode
+        quote_size_mode: sportQuoteSizeMode,
+        nonsport_quote_size_mode: normalizeMMSportQuoteSizeMode(
+          savedMmSport?.nonsport_quote_size_mode ?? sportQuoteSizeMode
         ),
+        multiple_collateral_cap_mult: sportMultipleCollateralCap,
+        nonsport_multiple_collateral_cap_mult:
+          savedMmSport?.nonsport_multiple_collateral_cap_mult ?? sportMultipleCollateralCap,
+        depth_ratio_collateral_cap_mult: sportDepthRatioCollateralCap,
+        nonsport_depth_ratio_collateral_cap_mult:
+          savedMmSport?.nonsport_depth_ratio_collateral_cap_mult ?? sportDepthRatioCollateralCap,
         inventory_exit_mode: normalizeMMSportInventoryExitMode(
-          saved?.strategy_settings?.mm_sport?.inventory_exit_mode
+          savedMmSport?.inventory_exit_mode
         ),
+        max_share_ratio: sportMaxShareRatio,
+        nonsport_max_share_ratio: savedMmSport?.nonsport_max_share_ratio ?? sportMaxShareRatio,
+        min_top_depth_usd: sportMinTopDepthUsd,
+        nonsport_min_top_depth_usd:
+          savedMmSport?.nonsport_min_top_depth_usd ?? sportMinTopDepthUsd,
       },
     },
     symbols: saved?.symbols?.length ? saved.symbols : DEFAULT_CONFIG.symbols,

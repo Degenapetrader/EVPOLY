@@ -484,6 +484,7 @@ export function StrategyEditorPane({
   saveMessage?: string | null;
 }) {
   const [selectedSection, setSelectedSection] = useState<StrategyEditorSection>("general");
+  const [mmSportSizingProfile, setMmSportSizingProfile] = useState<"sport" | "nonsport">("sport");
 
   const visibleSections = useMemo(() => strategySections(selectedStrategy), [selectedStrategy]);
   const canEdit = Boolean(activeProfileId);
@@ -1477,6 +1478,41 @@ export function StrategyEditorPane({
 
     if (selectedStrategy === "mm_sport") {
       const mmSport = config.strategy_settings.mm_sport;
+      const sizingProfileIsNonSport = mmSportSizingProfile === "nonsport";
+      const sizingProfileLabel = sizingProfileIsNonSport ? "Non-S" : "Sport";
+      const sizingQuoteMode = sizingProfileIsNonSport
+        ? mmSport.nonsport_quote_size_mode
+        : mmSport.quote_size_mode;
+      const sizingUsesDepthRatio = sizingQuoteMode === "depth_ratio";
+      const sizingQuoteMultiplier = sizingProfileIsNonSport
+        ? config.mm_tuning.nonsport_quote_size_multiplier
+        : config.mm_tuning.sport_quote_size_multiplier;
+      const sizingMultipleCap = sizingProfileIsNonSport
+        ? mmSport.nonsport_multiple_collateral_cap_mult
+        : mmSport.multiple_collateral_cap_mult;
+      const sizingDepthRatioCap = sizingProfileIsNonSport
+        ? mmSport.nonsport_depth_ratio_collateral_cap_mult
+        : mmSport.depth_ratio_collateral_cap_mult;
+      const sizingMaxShareRatio = sizingProfileIsNonSport
+        ? mmSport.nonsport_max_share_ratio
+        : mmSport.max_share_ratio;
+      const sizingMinTopDepthUsd = sizingProfileIsNonSport
+        ? mmSport.nonsport_min_top_depth_usd
+        : mmSport.min_top_depth_usd;
+      const patchSizingProfile = (
+        patch: Partial<BotConfig["strategy_settings"]["mm_sport"]>
+      ) => patchMMSport(patch);
+      const updateSizingMultiplier = (value: number) =>
+        setConfig((current) => ({
+          ...current,
+          mm_tuning: {
+            ...current.mm_tuning,
+            [sizingProfileIsNonSport
+              ? "nonsport_quote_size_multiplier"
+              : "sport_quote_size_multiplier"]: value,
+          },
+        }));
+
       return (
         <div className="space-y-4">
           <div className="surface-panel">
@@ -1488,7 +1524,7 @@ export function StrategyEditorPane({
                 </p>
               </div>
             </div>
-              <div className="surface-panel__body grid gap-4">
+            <div className="surface-panel__body grid gap-4">
               <div>
                 <label className="field-label">Discovery Route</label>
                 <div className="flex flex-wrap gap-2">
@@ -1519,7 +1555,30 @@ export function StrategyEditorPane({
                 </p>
               </div>
               <div>
-                <label className="field-label">Quote Size Mode</label>
+                <label className="field-label">Sizing Profile</label>
+                <div className="flex flex-wrap gap-2">
+                  {([
+                    ["sport", "Sport"],
+                    ["nonsport", "Non-S"],
+                  ] as const).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setMmSportSizingProfile(value)}
+                      className={`mode-choice ${
+                        mmSportSizingProfile === value ? "mode-choice--active" : ""
+                      }`.trim()}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                  Dual route applies the matching profile per market. Missing Non-S values fall back to Sport defaults.
+                </p>
+              </div>
+              <div>
+                <label className="field-label">{sizingProfileLabel} Quote Size Mode</label>
                 <div className="flex flex-wrap gap-2">
                   {[
                     ["multiple", "Quote Multiple"],
@@ -1530,12 +1589,20 @@ export function StrategyEditorPane({
                       type="button"
                       disabled={!canEdit}
                       onClick={() =>
-                        patchMMSport({
-                          quote_size_mode: value as BotConfig["strategy_settings"]["mm_sport"]["quote_size_mode"],
-                        })
+                        patchSizingProfile(
+                          sizingProfileIsNonSport
+                            ? {
+                                nonsport_quote_size_mode:
+                                  value as BotConfig["strategy_settings"]["mm_sport"]["quote_size_mode"],
+                              }
+                            : {
+                                quote_size_mode:
+                                  value as BotConfig["strategy_settings"]["mm_sport"]["quote_size_mode"],
+                              }
+                        )
                       }
                       className={`mode-choice ${
-                        mmSport.quote_size_mode === value ? "mode-choice--active" : ""
+                        sizingQuoteMode === value ? "mode-choice--active" : ""
                       }`.trim()}
                     >
                       {label}
@@ -1543,76 +1610,37 @@ export function StrategyEditorPane({
                   ))}
                 </div>
                 <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                  {mmSportUsesDepthRatio
+                  {sizingUsesDepthRatio
                     ? "Depth Ratio sizes quotes from visible book depth and pUSD collateral."
                     : "Quote Multiple sizes from the reward minimum share target."}
                 </p>
               </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div>
-                  <label className="field-label">Multiple pUSD Cap Mult</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={mmSport.multiple_collateral_cap_mult}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchMMSport({
-                        multiple_collateral_cap_mult: parseNonNegative(
-                          event.target.value,
-                          mmSport.multiple_collateral_cap_mult
-                        ),
-                      })
-                    }
-                    className="field-input"
-                  />
-                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    Cap for Quote Multiple mode. Default 0.45 means MM 2.0 plans up to 45% of available pUSD collateral.
-                  </p>
-                </div>
-                <div>
-                  <label className="field-label">Depth Ratio pUSD Cap Mult</label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="1"
-                    step="0.01"
-                    value={mmSport.depth_ratio_collateral_cap_mult}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchMMSport({
-                        depth_ratio_collateral_cap_mult: parseNonNegative(
-                          event.target.value,
-                          mmSport.depth_ratio_collateral_cap_mult
-                        ),
-                      })
-                    }
-                    className="field-input"
-                  />
-                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    Cap for Depth Ratio mode. Approval and balance status are checked by runtime before live quoting.
-                  </p>
-                </div>
-              </div>
-              {mmSportUsesDepthRatio ? (
-                <div className="grid gap-4 md:grid-cols-2">
+              {sizingUsesDepthRatio ? (
+                <div className="grid gap-4 md:grid-cols-3">
                   <div>
-                    <label className="field-label">Max Share Ratio</label>
+                    <label className="field-label">{sizingProfileLabel} Max Share Ratio</label>
                     <input
                       type="number"
                       min="0"
                       step="0.01"
-                      value={mmSport.max_share_ratio}
+                      value={sizingMaxShareRatio}
                       disabled={!canEdit}
                       onChange={(event) =>
-                        patchMMSport({
-                          max_share_ratio: parseNonNegative(
-                            event.target.value,
-                            mmSport.max_share_ratio
-                          ),
-                        })
+                        patchSizingProfile(
+                          sizingProfileIsNonSport
+                            ? {
+                                nonsport_max_share_ratio: parseNonNegative(
+                                  event.target.value,
+                                  sizingMaxShareRatio
+                                ),
+                              }
+                            : {
+                                max_share_ratio: parseNonNegative(
+                                  event.target.value,
+                                  sizingMaxShareRatio
+                                ),
+                              }
+                        )
                       }
                       className="field-input"
                     />
@@ -1621,20 +1649,29 @@ export function StrategyEditorPane({
                     </p>
                   </div>
                   <div>
-                    <label className="field-label">Min Visible Depth (USD)</label>
+                    <label className="field-label">{sizingProfileLabel} Min Visible Depth (USD)</label>
                     <input
                       type="number"
                       min="0"
                       step="1"
-                      value={mmSport.min_top_depth_usd}
+                      value={sizingMinTopDepthUsd}
                       disabled={!canEdit}
                       onChange={(event) =>
-                        patchMMSport({
-                          min_top_depth_usd: parseNonNegative(
-                            event.target.value,
-                            mmSport.min_top_depth_usd
-                          ),
-                        })
+                        patchSizingProfile(
+                          sizingProfileIsNonSport
+                            ? {
+                                nonsport_min_top_depth_usd: parseNonNegative(
+                                  event.target.value,
+                                  sizingMinTopDepthUsd
+                                ),
+                              }
+                            : {
+                                min_top_depth_usd: parseNonNegative(
+                                  event.target.value,
+                                  sizingMinTopDepthUsd
+                                ),
+                              }
+                        )
                       }
                       className="field-input"
                     />
@@ -1642,33 +1679,95 @@ export function StrategyEditorPane({
                       Depth Ratio mode stays out when combined visible bid depth across the passive band is too thin.
                     </p>
                   </div>
+                  <div>
+                    <label className="field-label">{sizingProfileLabel} Depth Ratio pUSD Cap</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={sizingDepthRatioCap}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchSizingProfile(
+                          sizingProfileIsNonSport
+                            ? {
+                                nonsport_depth_ratio_collateral_cap_mult: parseNonNegative(
+                                  event.target.value,
+                                  sizingDepthRatioCap
+                                ),
+                              }
+                            : {
+                                depth_ratio_collateral_cap_mult: parseNonNegative(
+                                  event.target.value,
+                                  sizingDepthRatioCap
+                                ),
+                              }
+                        )
+                      }
+                      className="field-input"
+                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      pUSD collateral cap used by Depth Ratio entry sizing.
+                    </p>
+                  </div>
                 </div>
               ) : (
-                <div>
-                  <label className="field-label">Quote Size Multiplier</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    value={config.mm_tuning.sport_quote_size_multiplier}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      setConfig((current) => ({
-                        ...current,
-                        mm_tuning: {
-                          ...current.mm_tuning,
-                          sport_quote_size_multiplier: parseNonNegative(
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="field-label">{sizingProfileLabel} Quote Size Multiplier</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={sizingQuoteMultiplier}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        updateSizingMultiplier(
+                          parseNonNegative(
                             event.target.value,
-                            current.mm_tuning.sport_quote_size_multiplier
-                          ),
-                        },
-                      }))
-                    }
-                    className="field-input"
-                  />
-                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    1.2 means MM 2.0 quotes at 120% of the reward minimum share size.
-                  </p>
+                            sizingQuoteMultiplier
+                          )
+                        )
+                      }
+                      className="field-input"
+                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      1.2 means MM 2.0 quotes at 120% of the reward minimum share size.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="field-label">{sizingProfileLabel} Multiple pUSD Cap</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={sizingMultipleCap}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchSizingProfile(
+                          sizingProfileIsNonSport
+                            ? {
+                                nonsport_multiple_collateral_cap_mult: parseNonNegative(
+                                  event.target.value,
+                                  sizingMultipleCap
+                                ),
+                              }
+                            : {
+                                multiple_collateral_cap_mult: parseNonNegative(
+                                  event.target.value,
+                                  sizingMultipleCap
+                                ),
+                              }
+                        )
+                      }
+                      className="field-input"
+                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      pUSD collateral cap used by Quote Multiple entry sizing.
+                    </p>
+                  </div>
                 </div>
               )}
               <div>

@@ -370,8 +370,11 @@ export type MMSportDiscoveryRoute = "sports" | "nonsports" | "dual";
 export interface MMSportSettings {
   discovery_route: MMSportDiscoveryRoute;
   quote_size_mode: MMSportQuoteSizeMode;
+  nonsport_quote_size_mode: MMSportQuoteSizeMode;
   multiple_collateral_cap_mult: number;
+  nonsport_multiple_collateral_cap_mult: number;
   depth_ratio_collateral_cap_mult: number;
+  nonsport_depth_ratio_collateral_cap_mult: number;
   min_reward_rate_per_day: number;
   match_only: boolean;
   allowed_sport_league_codes: string;
@@ -389,7 +392,9 @@ export interface MMSportSettings {
   inventory_exit_max_loss_cents: number;
   inventory_exit_mode: MMSportInventoryExitMode;
   max_share_ratio: number;
+  nonsport_max_share_ratio: number;
   min_top_depth_usd: number;
+  nonsport_min_top_depth_usd: number;
   min_entry_top_bid_price: number;
   allow_sponsored_rewards: boolean;
   sponsored_reward_min_share: number;
@@ -471,6 +476,7 @@ export interface BotConfig {
   mm_tuning: {
     rewards_min_share_multiple: number;
     sport_quote_size_multiplier: number;
+    nonsport_quote_size_multiplier: number;
   };
   size_policy: SizePolicySettings;
   strategy_settings: StrategySettings;

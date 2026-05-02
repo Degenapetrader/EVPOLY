@@ -1,0 +1,251 @@
+diff --git a/src/polymarket_ws.rs b/src/polymarket_ws.rs
+index c48adf5..eabc849 100644
+--- a/src/polymarket_ws.rs
++++ b/src/polymarket_ws.rs
+@@ -160,6 +160,8 @@ struct PolymarketWsInner {
+     market_trades: tokio::sync::RwLock<HashMap<String, VecDeque<WsTradeSnapshot>>>,
+     order_statuses: tokio::sync::RwLock<HashMap<String, WsOrderStatusSnapshot>>,
+     subscription_scope_targets: StdMutex<HashMap<String, WsSubscriptionScopeTargets>>,
++    subscription_scope_revision: AtomicI64,
++    subscription_scope_notify: tokio::sync::Notify,
+     market_update_notify: tokio::sync::Notify,
+     user_update_notify: tokio::sync::Notify,
+     market_connected_shards: StdMutex<HashMap<usize, bool>>,
+@@ -263,6 +265,8 @@ pub fn new_shared_polymarket_ws_state() -> SharedPolymarketWsState {
+             market_trades: tokio::sync::RwLock::new(HashMap::new()),
+             order_statuses: tokio::sync::RwLock::new(HashMap::new()),
+             subscription_scope_targets: StdMutex::new(HashMap::new()),
++            subscription_scope_revision: AtomicI64::new(0),
++            subscription_scope_notify: tokio::sync::Notify::new(),
+             market_update_notify: tokio::sync::Notify::new(),
+             user_update_notify: tokio::sync::Notify::new(),
+             market_connected_shards: StdMutex::new(HashMap::new()),
+@@ -306,6 +310,10 @@ impl SharedPolymarketWsState {
+             .subscription_scope_targets
+             .lock()
+             .expect("polymarket ws subscription-scope mutex poisoned");
++        let changed = match guard.get(scope_key.as_str()) {
++            Some(existing) => existing.asset_ids != asset_ids || existing.market_ids != market_ids,
++            None => !(asset_ids.is_empty() && market_ids.is_empty()),
++        };
+         if asset_ids.is_empty() && market_ids.is_empty() {
+             guard.remove(scope_key.as_str());
+         } else {
+@@ -317,6 +325,13 @@ impl SharedPolymarketWsState {
+                 },
+             );
+         }
++        drop(guard);
++        if changed {
++            self.inner
++                .subscription_scope_revision
++                .fetch_add(1, Ordering::SeqCst);
++            self.inner.subscription_scope_notify.notify_waiters();
++        }
+     }
+
+     pub fn clear_subscription_scope_targets(&self, scope_id: &str) {
+@@ -329,7 +344,14 @@ impl SharedPolymarketWsState {
+             .subscription_scope_targets
+             .lock()
+             .expect("polymarket ws subscription-scope mutex poisoned");
+-        guard.remove(scope_key.as_str());
++        let changed = guard.remove(scope_key.as_str()).is_some();
++        drop(guard);
++        if changed {
++            self.inner
++                .subscription_scope_revision
++                .fetch_add(1, Ordering::SeqCst);
++            self.inner.subscription_scope_notify.notify_waiters();
++        }
+     }
+
+     pub fn subscription_scope_targets_snapshot(&self) -> (Vec<U256>, Vec<B256>) {
+@@ -355,6 +377,22 @@ impl SharedPolymarketWsState {
+         (asset_ids, market_ids)
+     }
+
++    pub fn subscription_scope_revision(&self) -> i64 {
++        self.inner
++            .subscription_scope_revision
++            .load(Ordering::SeqCst)
++    }
++
++    async fn wait_for_subscription_scope_revision_after(&self, previous_revision: i64) -> i64 {
++        loop {
++            let current_revision = self.subscription_scope_revision();
++            if current_revision != previous_revision {
++                return current_revision;
++            }
++            self.inner.subscription_scope_notify.notified().await;
++        }
++    }
++
+     pub async fn get_orderbook(&self, token_id: &str, max_age_ms: i64) -> Option<OrderBook> {
+         let now_ms = chrono::Utc::now().timestamp_millis();
+         let map = self.inner.orderbooks.read().await;
+@@ -1092,9 +1130,59 @@ async fn run_market_loop(
+         let mut lag_ignored_count = 0_u32;
+         let mut lag_ignored_missed_max = 0_u32;
+         let mut lag_ignored_last_log_ms = 0_i64;
++        let mut last_scope_revision = state.subscription_scope_revision();
+
+         loop {
+             tokio::select! {
++                scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
++                    last_scope_revision = scope_revision;
++                    match discover_subscription_targets(
++                        api.as_ref(),
++                        &state,
++                        cfg.market_discovery_limit,
++                    )
++                    .await
++                    {
++                        Ok((next_asset_ids_all, next_market_ids_all, next_tracked_markets)) => {
++                            let next_asset_ids =
++                                shard_vec(next_asset_ids_all.as_slice(), shard_idx, shard_count);
++                            let next_market_ids =
++                                shard_vec(next_market_ids_all.as_slice(), shard_idx, shard_count);
++                            if next_asset_ids != asset_ids || next_market_ids != market_ids {
++                                refresh_reconnect = true;
++                                log_event(
++                                    "polymarket_ws_market_refresh_reconnect",
++                                    json!({
++                                        "reason": "subscription_scope_changed",
++                                        "prev_asset_count": asset_ids.len(),
++                                        "next_asset_count": next_asset_ids.len(),
++                                        "prev_market_count": market_ids.len(),
++                                        "next_market_count": next_market_ids.len(),
++                                        "prev_tracked_markets": tracked_markets,
++                                        "next_tracked_markets": next_tracked_markets,
++                                        "scope_revision": scope_revision,
++                                        "shard_idx": shard_idx,
++                                        "shard_count": shard_count
++                                    }),
++                                );
++                                break;
++                            }
++                        }
++                        Err(e) => {
++                            log_event(
++                                "polymarket_ws_market_scope_discovery_failed",
++                                json!({
++                                    "error": e.to_string(),
++                                    "asset_count": asset_ids.len(),
++                                    "market_count": market_ids.len(),
++                                    "scope_revision": scope_revision,
++                                    "shard_idx": shard_idx,
++                                    "shard_count": shard_count
++                                }),
++                            );
++                        }
++                    }
++                }
+                 _ = refresh_interval.tick() => {
+                     if cfg.reconnect_on_refresh {
+                         refresh_reconnect = true;
+@@ -1659,8 +1747,47 @@ async fn run_user_loop(
+         refresh_interval.tick().await;
+         let mut refresh_reconnect = false;
+         let mut pending_target_change: Option<PendingUserTargetChange> = None;
++        let mut last_scope_revision = state.subscription_scope_revision();
+         loop {
+             tokio::select! {
++                scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
++                    last_scope_revision = scope_revision;
++                    match discover_subscription_targets(
++                        api.as_ref(),
++                        &state,
++                        cfg.market_discovery_limit,
++                    )
++                    .await
++                    {
++                        Ok((_, next_market_ids, next_tracked_markets)) => {
++                            if next_market_ids != market_ids {
++                                refresh_reconnect = true;
++                                log_event(
++                                    "polymarket_ws_user_refresh_reconnect",
++                                    json!({
++                                        "reason": "subscription_scope_changed",
++                                        "prev_market_count": market_ids.len(),
++                                        "next_market_count": next_market_ids.len(),
++                                        "prev_tracked_markets": tracked_markets,
++                                        "next_tracked_markets": next_tracked_markets,
++                                        "scope_revision": scope_revision
++                                    }),
++                                );
++                                break;
++                            }
++                        }
++                        Err(e) => {
++                            log_event(
++                                "polymarket_ws_user_scope_discovery_failed",
++                                json!({
++                                    "error": e.to_string(),
++                                    "market_count": market_ids.len(),
++                                    "scope_revision": scope_revision
++                                }),
++                            );
++                        }
++                    }
++                }
+                 _ = refresh_interval.tick() => {
+                     if cfg.reconnect_on_refresh {
+                         refresh_reconnect = true;
+@@ -2217,6 +2344,43 @@ mod tests {
+         assert!(!state.market_connected());
+     }
+
++    #[test]
++    fn subscription_scope_revision_changes_only_on_target_changes() {
++        let state = new_shared_polymarket_ws_state();
++        let token_ids = vec![
++            "71983878769646543569771747914086054960230109850913433882779852271882956401020"
++                .to_string(),
++        ];
++        let condition_ids =
++            vec!["0x0000000000000000000000000000000000000000000000000000000000000001".to_string()];
++
++        let initial = state.subscription_scope_revision();
++        state.set_subscription_scope_targets("mm-sport", &[], &[]);
++        assert_eq!(state.subscription_scope_revision(), initial);
++
++        state.set_subscription_scope_targets(
++            "mm-sport",
++            token_ids.as_slice(),
++            condition_ids.as_slice(),
++        );
++        let after_insert = state.subscription_scope_revision();
++        assert_eq!(after_insert, initial + 1);
++
++        state.set_subscription_scope_targets(
++            "mm-sport",
++            token_ids.as_slice(),
++            condition_ids.as_slice(),
++        );
++        assert_eq!(state.subscription_scope_revision(), after_insert);
++
++        state.clear_subscription_scope_targets("mm-sport");
++        let after_clear = state.subscription_scope_revision();
++        assert_eq!(after_clear, after_insert + 1);
++
++        state.clear_subscription_scope_targets("mm-sport");
++        assert_eq!(state.subscription_scope_revision(), after_clear);
++    }
++
+     #[test]
+     fn ws_discovery_defaults_are_safe() {
+         with_ws_env(
+diff --git a/strategy-changelog.md b/strategy-changelog.md
+index 9267187..1102b19 100644
+--- a/strategy-changelog.md
++++ b/strategy-changelog.md
+@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
+ ## Change Log
+
+ ### 2026-05-02
++- `mm_sport_v1` / MM 2.0 WS FIFO coverage: open-order subscription-scope changes now notify the Polymarket WS bridge and immediately reconnect market/user streams to the current open-order token and condition set (`src/polymarket_ws.rs`).
++  - affects MM 2.0 FIFO cancel visibility for Sport, Non-S, and Dual routes; FIFO no longer waits for the normal WS target refresh/debounce window before subscribing to markets where the bot already has live orders.
+ - `mm_sport_v1` / MM 2.0 queue guard: backported the strict WS FIFO cancel guard from live EVPOLY into the desktop runtime patch stack (`src/main.rs`, `src/mm/mod.rs`, `src/polymarket_ws.rs`, `.env.example`, `.env.full.example`).
+   - BUY quote cancellation now uses cached websocket orderbook snapshots and order-status live size to split same-price FIFO-ahead depth from better-price depth; same-price external depth only decreases for a stable order slot so newly added behind-us depth does not mask front-of-queue risk.
+   - Added `EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS` default `5000` for compatibility/logging, but FIFO cancellation no longer treats stale WS age as a decision gate; only a missing orderbook snapshot prevents FIFO depth math.

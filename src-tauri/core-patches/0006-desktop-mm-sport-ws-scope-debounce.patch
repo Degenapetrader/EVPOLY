@@ -1,0 +1,141 @@
+diff --git a/src/polymarket_ws.rs b/src/polymarket_ws.rs
+index eabc849..048dce2 100644
+--- a/src/polymarket_ws.rs
++++ b/src/polymarket_ws.rs
+@@ -41,6 +41,7 @@ pub struct PolymarketWsConfig {
+     pub target_change_debounce_scans: u32,
+     pub target_change_min_hold_sec: u64,
+     pub target_change_min_delta_bps: u32,
++    pub subscription_scope_reconnect_debounce_ms: u64,
+     pub reconnect_on_refresh: bool,
+     pub market_shards: u32,
+ }
+@@ -100,6 +101,11 @@ impl Default for PolymarketWsConfig {
+                 .clamp(0, 900),
+             target_change_min_delta_bps: env_u64("EVPOLY_PM_WS_TARGET_CHANGE_MIN_DELTA_BPS", 0)
+                 .clamp(0, 10_000) as u32,
++            subscription_scope_reconnect_debounce_ms: env_u64(
++                "EVPOLY_PM_WS_SCOPE_RECONNECT_DEBOUNCE_MS",
++                5_000,
++            )
++            .clamp(0, 60_000),
+             reconnect_on_refresh: env_bool("EVPOLY_PM_WS_RECONNECT_ON_REFRESH", false),
+             market_shards: env_u64("EVPOLY_PM_WS_MARKET_SHARDS", 2).clamp(1, 12) as u32,
+         }
+@@ -930,6 +936,7 @@ async fn run_market_loop(
+     let mut last_discovered_targets: Option<(Vec<U256>, Vec<B256>, usize)> = None;
+     let mut discovery_failure_streak = 0_u32;
+     let mut discovery_retry_after_ms = 0_i64;
++    let mut last_scope_reconnect_ms = 0_i64;
+     let mut discovery_log_state = DegradedLogState::default();
+     let mut stream_log_state = DegradedLogState::default();
+     loop {
+@@ -1134,7 +1141,29 @@ async fn run_market_loop(
+ 
+         loop {
+             tokio::select! {
+-                scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
++                mut scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
++                    let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
++                    let now_ms = chrono::Utc::now().timestamp_millis();
++                    let scope_wait_ms = if last_scope_reconnect_ms > 0 && scope_debounce_ms > 0 {
++                        let elapsed_ms = now_ms.saturating_sub(last_scope_reconnect_ms) as u64;
++                        scope_debounce_ms.saturating_sub(elapsed_ms)
++                    } else {
++                        0
++                    };
++                    if scope_wait_ms > 0 {
++                        log_event(
++                            "polymarket_ws_market_scope_reconnect_debounced",
++                            json!({
++                                "wait_ms": scope_wait_ms,
++                                "debounce_ms": scope_debounce_ms,
++                                "scope_revision": scope_revision,
++                                "shard_idx": shard_idx,
++                                "shard_count": shard_count
++                            }),
++                        );
++                        sleep(Duration::from_millis(scope_wait_ms)).await;
++                        scope_revision = state.subscription_scope_revision();
++                    }
+                     last_scope_revision = scope_revision;
+                     match discover_subscription_targets(
+                         api.as_ref(),
+@@ -1150,10 +1179,13 @@ async fn run_market_loop(
+                                 shard_vec(next_market_ids_all.as_slice(), shard_idx, shard_count);
+                             if next_asset_ids != asset_ids || next_market_ids != market_ids {
+                                 refresh_reconnect = true;
++                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
+                                 log_event(
+                                     "polymarket_ws_market_refresh_reconnect",
+                                     json!({
+                                         "reason": "subscription_scope_changed",
++                                        "scope_debounce_ms": scope_debounce_ms,
++                                        "scope_wait_ms": scope_wait_ms,
+                                         "prev_asset_count": asset_ids.len(),
+                                         "next_asset_count": next_asset_ids.len(),
+                                         "prev_market_count": market_ids.len(),
+@@ -1582,6 +1614,7 @@ async fn run_user_loop(
+     let mut last_market_targets: Option<(Vec<B256>, usize)> = None;
+     let mut discovery_failure_streak = 0_u32;
+     let mut discovery_retry_after_ms = 0_i64;
++    let mut last_scope_reconnect_ms = 0_i64;
+     let mut discovery_log_state = DegradedLogState::default();
+     let mut user_stream_log_state = DegradedLogState::default();
+     loop {
+@@ -1750,7 +1783,27 @@ async fn run_user_loop(
+         let mut last_scope_revision = state.subscription_scope_revision();
+         loop {
+             tokio::select! {
+-                scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
++                mut scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
++                    let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
++                    let now_ms = chrono::Utc::now().timestamp_millis();
++                    let scope_wait_ms = if last_scope_reconnect_ms > 0 && scope_debounce_ms > 0 {
++                        let elapsed_ms = now_ms.saturating_sub(last_scope_reconnect_ms) as u64;
++                        scope_debounce_ms.saturating_sub(elapsed_ms)
++                    } else {
++                        0
++                    };
++                    if scope_wait_ms > 0 {
++                        log_event(
++                            "polymarket_ws_user_scope_reconnect_debounced",
++                            json!({
++                                "wait_ms": scope_wait_ms,
++                                "debounce_ms": scope_debounce_ms,
++                                "scope_revision": scope_revision
++                            }),
++                        );
++                        sleep(Duration::from_millis(scope_wait_ms)).await;
++                        scope_revision = state.subscription_scope_revision();
++                    }
+                     last_scope_revision = scope_revision;
+                     match discover_subscription_targets(
+                         api.as_ref(),
+@@ -1762,10 +1815,13 @@ async fn run_user_loop(
+                         Ok((_, next_market_ids, next_tracked_markets)) => {
+                             if next_market_ids != market_ids {
+                                 refresh_reconnect = true;
++                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
+                                 log_event(
+                                     "polymarket_ws_user_refresh_reconnect",
+                                     json!({
+                                         "reason": "subscription_scope_changed",
++                                        "scope_debounce_ms": scope_debounce_ms,
++                                        "scope_wait_ms": scope_wait_ms,
+                                         "prev_market_count": market_ids.len(),
+                                         "next_market_count": next_market_ids.len(),
+                                         "prev_tracked_markets": tracked_markets,
+diff --git a/strategy-changelog.md b/strategy-changelog.md
+index 1102b19..a205b4a 100644
+--- a/strategy-changelog.md
++++ b/strategy-changelog.md
+@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
+ ## Change Log
+ 
+ ### 2026-05-02
++- `mm_sport_v1` / MM 2.0 WS FIFO scope reconnect stability: added `EVPOLY_PM_WS_SCOPE_RECONNECT_DEBOUNCE_MS` default `5000` so the first open-order scope change reconnects immediately, while repeated scope changes within the short window are collapsed before reconnecting (`src/polymarket_ws.rs`).
++  - affects MM 2.0 FIFO cancel visibility for Sport, Non-S, and Dual routes; fresh markets may wait up to the debounce remainder before WS subscribes, but mass cancel/requote bursts avoid repeated market/user WS reconnects.
+ - `mm_sport_v1` / MM 2.0 WS FIFO coverage: open-order subscription-scope changes now notify the Polymarket WS bridge and immediately reconnect market/user streams to the current open-order token and condition set (`src/polymarket_ws.rs`).
+   - affects MM 2.0 FIFO cancel visibility for Sport, Non-S, and Dual routes; FIFO no longer waits for the normal WS target refresh/debounce window before subscribing to markets where the bot already has live orders.
+ - `mm_sport_v1` / MM 2.0 queue guard: backported the strict WS FIFO cancel guard from live EVPOLY into the desktop runtime patch stack (`src/main.rs`, `src/mm/mod.rs`, `src/polymarket_ws.rs`, `.env.example`, `.env.full.example`).

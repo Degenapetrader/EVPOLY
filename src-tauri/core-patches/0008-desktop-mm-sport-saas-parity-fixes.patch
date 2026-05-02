@@ -1,0 +1,454 @@
+diff --git a/src/main.rs b/src/main.rs
+index a4da433..4fc09c4 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -233,6 +233,8 @@ struct MmSportDiscoveryReport {
+     skipped_missing_start_time: usize,
+     skipped_missing_end_time: usize,
+     skipped_sponsored_reward: usize,
++    sponsored_reward_filter_failed: bool,
++    sponsored_reward_condition_ids: Vec<String>,
+     skipped_not_reward_eligible: usize,
+     skipped_reward_min_shares_cap: usize,
+     skipped_blocked_sport_league: usize,
+@@ -2834,6 +2836,42 @@ fn mm_sport_external_bid_queue_components(
+     (same_external, better_external)
+ }
+ 
++fn mm_sport_external_best_bid_price(
++    orderbook: &polymarket_arbitrage_bot::models::OrderBook,
++    buy_rows: &[PendingOrderRecord],
++    live_shares_by_order_id: Option<&std::collections::HashMap<String, f64>>,
++    tick_size: f64,
++) -> Option<f64> {
++    let mut prices = orderbook
++        .bids
++        .iter()
++        .filter_map(|entry| {
++            let price = f64::try_from(entry.price).ok()?;
++            let size = f64::try_from(entry.size).ok()?;
++            (price.is_finite() && price > 0.0 && size.is_finite() && size > 0.0).then_some(price)
++        })
++        .collect::<Vec<_>>();
++    prices.sort_by(|a, b| b.total_cmp(a));
++
++    let mut last_price: Option<f64> = None;
++    for price in prices {
++        if last_price
++            .map(|prev| mm_sport_price_close(prev, price, tick_size))
++            .unwrap_or(false)
++        {
++            continue;
++        }
++        last_price = Some(price);
++        let (visible_shares, _) = mm_sport_bid_depth_at_price(orderbook, price, tick_size);
++        let (own_shares, _) =
++            mm_sport_own_bid_depth_at_price(buy_rows, live_shares_by_order_id, price, tick_size);
++        if visible_shares > own_shares + 1e-9 {
++            return Some(price);
++        }
++    }
++    None
++}
++
+ fn mm_sport_own_ask_depth_at_or_below(
+     sell_rows: &[PendingOrderRecord],
+     live_shares_by_order_id: Option<&std::collections::HashMap<String, f64>>,
+@@ -3456,6 +3494,7 @@ async fn mm_sport_discover_markets(
+                     })
+                     .collect(),
+                 Err(err) => {
++                    report.sponsored_reward_filter_failed = true;
+                     log_event(
+                         "mm_sport_sponsored_reward_filter_refresh_failed",
+                         json!({
+@@ -3465,10 +3504,12 @@ async fn mm_sport_discover_markets(
+                             "error": err.to_string()
+                         }),
+                     );
+-                    std::collections::HashMap::new()
++                    return Ok((Vec::new(), report));
+                 }
+             }
+         };
++    report.sponsored_reward_condition_ids =
++        sponsored_reward_rows_by_condition.keys().cloned().collect();
+     let rewards_rows = api
+         .get_rewards_markets_api(cfg.rewards_page_budget, None, None, true)
+         .await?;
+@@ -16247,7 +16288,9 @@ async fn main() -> Result<()> {
+                                     markets
+                                 } else {
+                                     let fallback_markets =
+-                                        if !last_good_discovered_markets.is_empty() {
++                                        if discovery_report.sponsored_reward_filter_failed {
++                                            Vec::new()
++                                        } else if !last_good_discovered_markets.is_empty() {
+                                             using_cached_markets = true;
+                                             last_good_discovered_markets.clone()
+                                         } else {
+@@ -16257,7 +16300,12 @@ async fn main() -> Result<()> {
+                                         || discovery_report.gamma_fallback_error > 0;
+                                     let had_rate_limit =
+                                         discovery_report.clob_detail_rate_limited > 0;
+-                                    if had_detail_failure || had_rate_limit {
++                                    let had_sponsored_filter_failure =
++                                        discovery_report.sponsored_reward_filter_failed;
++                                    if had_detail_failure
++                                        || had_rate_limit
++                                        || had_sponsored_filter_failure
++                                    {
+                                         discovery_backoff_ms =
+                                             (discovery_backoff_ms.saturating_mul(2)).clamp(
+                                                 MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MIN_MS,
+@@ -16384,6 +16432,8 @@ async fn main() -> Result<()> {
+                                         "skipped_missing_start_time": discovery_report.skipped_missing_start_time,
+                                         "skipped_missing_end_time": discovery_report.skipped_missing_end_time,
+                                         "skipped_sponsored_reward": discovery_report.skipped_sponsored_reward,
++                                        "sponsored_reward_filter_failed": discovery_report.sponsored_reward_filter_failed,
++                                        "sponsored_reward_blocked_conditions": discovery_report.sponsored_reward_condition_ids.len(),
+                                         "skipped_not_reward_eligible": discovery_report.skipped_not_reward_eligible,
+                                         "skipped_reward_min_shares_cap": discovery_report.skipped_reward_min_shares_cap,
+                                         "skipped_blocked_sport_league": discovery_report.skipped_blocked_sport_league,
+@@ -18796,6 +18846,48 @@ async fn main() -> Result<()> {
+                                 );
+                                 continue;
+                             };
++                            let external_best_bid = mm_sport_external_best_bid_price(
++                                &active_book,
++                                active_buy_rows.as_slice(),
++                                None,
++                                market.minimum_tick_size,
++                            )
++                            .unwrap_or(0.0);
++                            let min_entry_top_bid_price =
++                                mm_sport_cfg_for_loop.min_entry_top_bid_price;
++                            if min_entry_top_bid_price > 0.0
++                                && external_best_bid < min_entry_top_bid_price
++                            {
++                                let active_rows = market_rows
++                                    .iter()
++                                    .filter(|row| {
++                                        row.token_id.eq_ignore_ascii_case(active_token_id.as_str())
++                                    })
++                                    .cloned()
++                                    .collect::<Vec<_>>();
++                                if !active_rows.is_empty() {
++                                    let _ = mm_sport_cancel_pending_rows(
++                                        &api_for_mm_sport,
++                                        &tracking_db_for_mm_sport,
++                                        active_rows.as_slice(),
++                                    )
++                                    .await;
++                                }
++                                log_event(
++                                    "mm_sport_skip_no_exit_side_min_entry_top_bid_price",
++                                    json!({
++                                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
++                                        "condition_id": market.condition_id,
++                                        "market_slug": market.market_slug,
++                                        "token_id": active_token_id,
++                                        "raw_best_bid": best_bid,
++                                        "external_best_bid": external_best_bid,
++                                        "min_entry_top_bid_price": min_entry_top_bid_price,
++                                        "buy_cancel_count": active_rows.len()
++                                    }),
++                                );
++                                continue;
++                            }
+                             if !best_bid.is_finite()
+                                 || !best_ask.is_finite()
+                                 || best_bid <= 0.0
+@@ -19021,11 +19113,25 @@ async fn main() -> Result<()> {
+                             }
+                             let up_best_bid = up_best_bid.unwrap_or(0.0);
+                             let down_best_bid = down_best_bid.unwrap_or(0.0);
++                            let up_external_best_bid = mm_sport_external_best_bid_price(
++                                &up_book,
++                                up_buy_rows.as_slice(),
++                                None,
++                                market.minimum_tick_size,
++                            )
++                            .unwrap_or(0.0);
++                            let down_external_best_bid = mm_sport_external_best_bid_price(
++                                &down_book,
++                                down_buy_rows.as_slice(),
++                                None,
++                                market.minimum_tick_size,
++                            )
++                            .unwrap_or(0.0);
+                             let min_entry_top_bid_price =
+                                 mm_sport_cfg_for_loop.min_entry_top_bid_price;
+                             if min_entry_top_bid_price > 0.0
+-                                && (up_best_bid < min_entry_top_bid_price
+-                                    || down_best_bid < min_entry_top_bid_price)
++                                && (up_external_best_bid < min_entry_top_bid_price
++                                    || down_external_best_bid < min_entry_top_bid_price)
+                             {
+                                 let mut buy_rows = up_buy_rows.clone();
+                                 buy_rows.extend(down_buy_rows.clone());
+@@ -19045,6 +19151,8 @@ async fn main() -> Result<()> {
+                                         "market_slug": market.market_slug,
+                                         "up_best_bid": up_best_bid,
+                                         "down_best_bid": down_best_bid,
++                                        "up_external_best_bid": up_external_best_bid,
++                                        "down_external_best_bid": down_external_best_bid,
+                                         "min_entry_top_bid_price": min_entry_top_bid_price,
+                                         "buy_cancel_count": buy_rows.len()
+                                     }),
+@@ -27794,6 +27902,43 @@ mod tests {
+         assert!((better_external - 10.0).abs() < 1e-9);
+     }
+ 
++    #[test]
++    fn mm_sport_external_best_bid_price_ignores_own_top_bid() {
++        let orderbook = polymarket_arbitrage_bot::models::OrderBook {
++            bids: vec![
++                polymarket_arbitrage_bot::models::OrderBookEntry {
++                    price: rust_decimal::Decimal::new(12, 2),
++                    size: rust_decimal::Decimal::new(5, 0),
++                },
++                polymarket_arbitrage_bot::models::OrderBookEntry {
++                    price: rust_decimal::Decimal::new(9, 2),
++                    size: rust_decimal::Decimal::new(50, 0),
++                },
++            ],
++            asks: vec![],
++        };
++        let own_row = polymarket_arbitrage_bot::tracking_db::PendingOrderRecord {
++            order_id: "own-12".to_string(),
++            trade_key: "test".to_string(),
++            token_id: "token".to_string(),
++            condition_id: Some("condition".to_string()),
++            timeframe: "1d".to_string(),
++            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
++            asset_symbol: Some("SPORT".to_string()),
++            entry_mode: "mm_sport".to_string(),
++            period_timestamp: 0,
++            price: 0.12,
++            size_usd: 0.60,
++            side: "BUY".to_string(),
++            status: "OPEN".to_string(),
++        };
++
++        assert_eq!(
++            mm_sport_external_best_bid_price(&orderbook, &[own_row], None, 0.01),
++            Some(0.09)
++        );
++    }
++
+     #[test]
+     fn mm_sport_update_fifo_guard_keeps_stable_slot_same_price_ahead_monotonic() {
+         let mut guard = MmSportFifoGuard {
+diff --git a/src/mm_sport_holder_intel.rs b/src/mm_sport_holder_intel.rs
+index 2e6eddd..daad58a 100644
+--- a/src/mm_sport_holder_intel.rs
++++ b/src/mm_sport_holder_intel.rs
+@@ -875,6 +875,7 @@ mod tests {
+             minimum_tick_size: 0.01,
+             minimum_order_size_usd: 1.0,
+             game_start_ts_ms: Utc::now().timestamp_millis() + (4 * 3_600_000),
++            market_end_ts_ms: 0,
+             period_timestamp: 0,
+             up_token_id: "up".to_string(),
+             down_token_id: "down".to_string(),
+diff --git a/src/polymarket_ws.rs b/src/polymarket_ws.rs
+index 048dce2..58c3b92 100644
+--- a/src/polymarket_ws.rs
++++ b/src/polymarket_ws.rs
+@@ -17,7 +17,7 @@ use std::str::FromStr;
+ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+ use std::sync::Once;
+ use std::sync::{Arc, Mutex as StdMutex};
+-use tokio::time::{sleep, Duration};
++use tokio::time::{sleep, sleep_until, Duration, Instant};
+ 
+ #[derive(Debug, Clone)]
+ pub struct PolymarketWsConfig {
+@@ -1138,10 +1138,11 @@ async fn run_market_loop(
+         let mut lag_ignored_missed_max = 0_u32;
+         let mut lag_ignored_last_log_ms = 0_i64;
+         let mut last_scope_revision = state.subscription_scope_revision();
++        let mut pending_scope_reconnect_at: Option<Instant> = None;
+ 
+         loop {
+             tokio::select! {
+-                mut scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
++                scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
+                     let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
+                     let now_ms = chrono::Utc::now().timestamp_millis();
+                     let scope_wait_ms = if last_scope_reconnect_ms > 0 && scope_debounce_ms > 0 {
+@@ -1161,9 +1162,12 @@ async fn run_market_loop(
+                                 "shard_count": shard_count
+                             }),
+                         );
+-                        sleep(Duration::from_millis(scope_wait_ms)).await;
+-                        scope_revision = state.subscription_scope_revision();
++                        last_scope_revision = scope_revision;
++                        pending_scope_reconnect_at =
++                            Some(Instant::now() + Duration::from_millis(scope_wait_ms));
++                        continue;
+                     }
++                    pending_scope_reconnect_at = None;
+                     last_scope_revision = scope_revision;
+                     match discover_subscription_targets(
+                         api.as_ref(),
+@@ -1215,6 +1219,64 @@ async fn run_market_loop(
+                         }
+                     }
+                 }
++                _ = async {
++                    let deadline = pending_scope_reconnect_at.unwrap_or_else(Instant::now);
++                    sleep_until(deadline).await;
++                }, if pending_scope_reconnect_at.is_some() => {
++                    pending_scope_reconnect_at = None;
++                    let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
++                    let scope_revision = state.subscription_scope_revision();
++                    last_scope_revision = scope_revision;
++                    match discover_subscription_targets(
++                        api.as_ref(),
++                        &state,
++                        cfg.market_discovery_limit,
++                    )
++                    .await
++                    {
++                        Ok((next_asset_ids_all, next_market_ids_all, next_tracked_markets)) => {
++                            let next_asset_ids =
++                                shard_vec(next_asset_ids_all.as_slice(), shard_idx, shard_count);
++                            let next_market_ids =
++                                shard_vec(next_market_ids_all.as_slice(), shard_idx, shard_count);
++                            if next_asset_ids != asset_ids || next_market_ids != market_ids {
++                                refresh_reconnect = true;
++                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
++                                log_event(
++                                    "polymarket_ws_market_refresh_reconnect",
++                                    json!({
++                                        "reason": "subscription_scope_changed",
++                                        "scope_debounce_ms": scope_debounce_ms,
++                                        "scope_wait_ms": 0_u64,
++                                        "prev_asset_count": asset_ids.len(),
++                                        "next_asset_count": next_asset_ids.len(),
++                                        "prev_market_count": market_ids.len(),
++                                        "next_market_count": next_market_ids.len(),
++                                        "prev_tracked_markets": tracked_markets,
++                                        "next_tracked_markets": next_tracked_markets,
++                                        "scope_revision": scope_revision,
++                                        "shard_idx": shard_idx,
++                                        "shard_count": shard_count
++                                    }),
++                                );
++                                break;
++                            }
++                        }
++                        Err(e) => {
++                            log_event(
++                                "polymarket_ws_market_scope_discovery_failed",
++                                json!({
++                                    "error": e.to_string(),
++                                    "asset_count": asset_ids.len(),
++                                    "market_count": market_ids.len(),
++                                    "scope_revision": scope_revision,
++                                    "shard_idx": shard_idx,
++                                    "shard_count": shard_count
++                                }),
++                            );
++                        }
++                    }
++                }
+                 _ = refresh_interval.tick() => {
+                     if cfg.reconnect_on_refresh {
+                         refresh_reconnect = true;
+@@ -1781,9 +1843,10 @@ async fn run_user_loop(
+         let mut refresh_reconnect = false;
+         let mut pending_target_change: Option<PendingUserTargetChange> = None;
+         let mut last_scope_revision = state.subscription_scope_revision();
++        let mut pending_scope_reconnect_at: Option<Instant> = None;
+         loop {
+             tokio::select! {
+-                mut scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
++                scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
+                     let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
+                     let now_ms = chrono::Utc::now().timestamp_millis();
+                     let scope_wait_ms = if last_scope_reconnect_ms > 0 && scope_debounce_ms > 0 {
+@@ -1801,9 +1864,12 @@ async fn run_user_loop(
+                                 "scope_revision": scope_revision
+                             }),
+                         );
+-                        sleep(Duration::from_millis(scope_wait_ms)).await;
+-                        scope_revision = state.subscription_scope_revision();
++                        last_scope_revision = scope_revision;
++                        pending_scope_reconnect_at =
++                            Some(Instant::now() + Duration::from_millis(scope_wait_ms));
++                        continue;
+                     }
++                    pending_scope_reconnect_at = None;
+                     last_scope_revision = scope_revision;
+                     match discover_subscription_targets(
+                         api.as_ref(),
+@@ -1844,6 +1910,53 @@ async fn run_user_loop(
+                         }
+                     }
+                 }
++                _ = async {
++                    let deadline = pending_scope_reconnect_at.unwrap_or_else(Instant::now);
++                    sleep_until(deadline).await;
++                }, if pending_scope_reconnect_at.is_some() => {
++                    pending_scope_reconnect_at = None;
++                    let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
++                    let scope_revision = state.subscription_scope_revision();
++                    last_scope_revision = scope_revision;
++                    match discover_subscription_targets(
++                        api.as_ref(),
++                        &state,
++                        cfg.market_discovery_limit,
++                    )
++                    .await
++                    {
++                        Ok((_, next_market_ids, next_tracked_markets)) => {
++                            if next_market_ids != market_ids {
++                                refresh_reconnect = true;
++                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
++                                log_event(
++                                    "polymarket_ws_user_refresh_reconnect",
++                                    json!({
++                                        "reason": "subscription_scope_changed",
++                                        "scope_debounce_ms": scope_debounce_ms,
++                                        "scope_wait_ms": 0_u64,
++                                        "prev_market_count": market_ids.len(),
++                                        "next_market_count": next_market_ids.len(),
++                                        "prev_tracked_markets": tracked_markets,
++                                        "next_tracked_markets": next_tracked_markets,
++                                        "scope_revision": scope_revision
++                                    }),
++                                );
++                                break;
++                            }
++                        }
++                        Err(e) => {
++                            log_event(
++                                "polymarket_ws_user_scope_discovery_failed",
++                                json!({
++                                    "error": e.to_string(),
++                                    "market_count": market_ids.len(),
++                                    "scope_revision": scope_revision
++                                }),
++                            );
++                        }
++                    }
++                }
+                 _ = refresh_interval.tick() => {
+                     if cfg.reconnect_on_refresh {
+                         refresh_reconnect = true;
+diff --git a/strategy-changelog.md b/strategy-changelog.md
+index 245c036..3bddae4 100644
+--- a/strategy-changelog.md
++++ b/strategy-changelog.md
+@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
+ ## Change Log
+ 
+ ### 2026-05-02
++- `mm_sport_v1` / MM 2.0 desktop SaaS parity fixes: hardened the Non-S/Dual guard backport so top-bid entry checks use external orderbook bids after removing our own BUY depth, one-sided `NoExit` entries honor the same top-bid floor, sponsored-reward exclusion fails closed when its source endpoint is unavailable, and WS scope debounce no longer sleeps inside the stream select loop (`src/main.rs`, `src/polymarket_ws.rs`).
++  - affects MM 2.0 Sport, Non-S, and Dual routes; FIFO stream ingestion continues while repeated scope changes are debounced, and sponsor-filter outage cannot reuse cached markets when sponsored rewards are explicitly disallowed.
+ - `mm_sport_v1` / MM 2.0 Non-S and Dual route guards: added separate non-sports end-date entry halt, top-bid minimum, and optional sponsored-reward exclusion (`src/main.rs`, `src/mm/mod.rs`, `src/api.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+   - `EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC=172800` skips non-sports discovery rows missing an end date and cancels/skips fresh BUY entries inside the final 48 hours while preserving inventory cleanup.
+   - `EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE=0.10` blocks paired fresh entry when either binary side has a top bid below 10c.

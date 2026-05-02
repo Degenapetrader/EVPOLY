@@ -1037,19 +1037,18 @@ diff --git a/src/polymarket_ws.rs b/src/polymarket_ws.rs
 index 380a955..3233acb 100644
 --- a/src/polymarket_ws.rs
 +++ b/src/polymarket_ws.rs
-@@ -365,6 +365,20 @@ impl SharedPolymarketWsState {
+@@ -365,6 +365,19 @@ impl SharedPolymarketWsState {
          Some(snapshot.orderbook.clone())
      }
  
 +    pub async fn get_orderbook_snapshot(
 +        &self,
 +        token_id: &str,
-+        max_age_ms: i64,
++        _max_age_ms: i64,
 +    ) -> Option<WsOrderbookSnapshot> {
-+        let now_ms = chrono::Utc::now().timestamp_millis();
 +        let map = self.inner.orderbooks.read().await;
 +        let snapshot = map.get(token_id)?;
-+        if snapshot.updated_ms <= 0 || now_ms.saturating_sub(snapshot.updated_ms) > max_age_ms {
++        if snapshot.updated_ms <= 0 {
 +            return None;
 +        }
 +        Some(snapshot.clone())
@@ -1068,8 +1067,8 @@ index 50428aa..0a97a61 100644
  
 +### 2026-05-02
 +- `mm_sport_v1` / MM 2.0 queue guard: backported the strict WS FIFO cancel guard from live EVPOLY into the desktop runtime patch stack (`src/main.rs`, `src/mm/mod.rs`, `src/polymarket_ws.rs`, `.env.example`, `.env.full.example`).
-+  - BUY quote cancellation now uses fresh websocket orderbook snapshots and order-status live size to split same-price FIFO-ahead depth from better-price depth; same-price external depth only decreases for a stable order slot so newly added behind-us depth does not mask front-of-queue risk.
-+  - Added `EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS` default `5000`; stale/missing WS orderbook snapshots clear FIFO guard state and skip forced FIFO cancellation until fresh WS data returns.
++  - BUY quote cancellation now uses cached websocket orderbook snapshots and order-status live size to split same-price FIFO-ahead depth from better-price depth; same-price external depth only decreases for a stable order slot so newly added behind-us depth does not mask front-of-queue risk.
++  - Added `EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS` default `5000` for compatibility/logging, but FIFO cancellation no longer treats stale WS age as a decision gate; only a missing orderbook snapshot prevents FIFO depth math.
 +
  ### 2026-04-29
  - `mm_sport_v1` / MM 2.0 inventory-exit loss guard: added `EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS` default `10` and applies it before inventory-exit SELL placement (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).

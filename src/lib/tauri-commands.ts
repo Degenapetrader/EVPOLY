@@ -392,10 +392,14 @@ export interface MMSportSettings {
   polymarket_live_guard_ws_stale_ms: number;
   pause_after_fill_sec: number;
   inventory_exit_start_hours: number;
+  nonsport_end_exit_start_hours: number;
   inventory_exit_max_loss_cents: number;
   inventory_exit_mode: MMSportInventoryExitMode;
   max_share_ratio: number;
   min_top_depth_usd: number;
+  min_entry_top_bid_price: number;
+  allow_sponsored_rewards: boolean;
+  sponsored_reward_min_share: number;
   quote_expiry_min_sec: number;
   quote_expiry_max_sec: number;
 }

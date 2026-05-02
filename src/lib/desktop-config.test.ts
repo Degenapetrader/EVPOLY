@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CONFIG, mergeConfig } from "./desktop-config";
+import {
+  DEFAULT_CONFIG,
+  mergeConfig,
+  strategyControlSuffix,
+  strategySizeValue,
+  updateStrategySize,
+} from "./desktop-config";
 import type { BotConfig } from "./tauri-commands";
 
 describe("desktop config MM 2.0 sizing profiles", () => {
@@ -54,5 +60,52 @@ describe("desktop config MM 2.0 sizing profiles", () => {
     expect(merged.strategy_settings.mm_sport.nonsport_depth_ratio_collateral_cap_mult).toBe(0.55);
     expect(merged.strategy_settings.mm_sport.nonsport_max_share_ratio).toBe(0.05);
     expect(merged.strategy_settings.mm_sport.nonsport_min_top_depth_usd).toBe(900);
+  });
+
+  it("uses the active Sport or Non-S route for the compact MM 2.0 rail size", () => {
+    const config: BotConfig = {
+      ...DEFAULT_CONFIG,
+      mm_tuning: {
+        ...DEFAULT_CONFIG.mm_tuning,
+        sport_quote_size_multiplier: 2,
+        nonsport_quote_size_multiplier: 0.7,
+      },
+      strategy_settings: {
+        ...DEFAULT_CONFIG.strategy_settings,
+        mm_sport: {
+          ...DEFAULT_CONFIG.strategy_settings.mm_sport,
+          discovery_route: "nonsports",
+          quote_size_mode: "multiple",
+          nonsport_quote_size_mode: "depth_ratio",
+          max_share_ratio: 0.12,
+          nonsport_max_share_ratio: 0.05,
+        },
+      },
+    };
+
+    expect(strategySizeValue(config, "mm_sport")).toBe(0.05);
+    expect(strategyControlSuffix("mm_sport", config)).toBe("DEPTH");
+
+    const updated = updateStrategySize(config, "mm_sport", 0.08);
+
+    expect(updated.strategy_settings.mm_sport.max_share_ratio).toBe(0.12);
+    expect(updated.strategy_settings.mm_sport.nonsport_max_share_ratio).toBe(0.08);
+  });
+
+  it("does not mutate MM 2.0 sizing from the compact rail in Dual route", () => {
+    const config: BotConfig = {
+      ...DEFAULT_CONFIG,
+      strategy_settings: {
+        ...DEFAULT_CONFIG.strategy_settings,
+        mm_sport: {
+          ...DEFAULT_CONFIG.strategy_settings.mm_sport,
+          discovery_route: "dual",
+          max_share_ratio: 0.05,
+          nonsport_max_share_ratio: 0.1,
+        },
+      },
+    };
+
+    expect(updateStrategySize(config, "mm_sport", 0.2)).toBe(config);
   });
 });

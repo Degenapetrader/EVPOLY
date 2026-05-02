@@ -259,10 +259,14 @@ struct DesktopMmSportSettings {
     polymarket_live_guard_ws_stale_ms: f64,
     pause_after_fill_sec: f64,
     inventory_exit_start_hours: f64,
+    nonsport_end_exit_start_hours: f64,
     inventory_exit_max_loss_cents: f64,
     inventory_exit_mode: String,
     max_share_ratio: f64,
     min_top_depth_usd: f64,
+    min_entry_top_bid_price: f64,
+    allow_sponsored_rewards: bool,
+    sponsored_reward_min_share: f64,
     quote_expiry_min_sec: f64,
     quote_expiry_max_sec: f64,
 }
@@ -850,6 +854,10 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC",
                     28800.0,
                 ) / 3600.0,
+                nonsport_end_exit_start_hours: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC",
+                    172800.0,
+                ) / 3600.0,
                 inventory_exit_max_loss_cents: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS",
                     10.0,
@@ -867,6 +875,18 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 min_top_depth_usd: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD",
                     1100.0,
+                ),
+                min_entry_top_bid_price: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE",
+                    0.10,
+                ),
+                allow_sponsored_rewards: config_io::env_template_default_bool(
+                    "EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS",
+                    true,
+                ),
+                sponsored_reward_min_share: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE",
+                    0.50,
                 ),
                 quote_expiry_min_sec: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC",
@@ -1853,6 +1873,16 @@ fn desktop_config_to_profile_payload(
         number_to_json(config.strategy_settings.mm_sport.inventory_exit_start_hours * 3600.0),
     );
     strategy.insert(
+        "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC".to_string(),
+        number_to_json(
+            config
+                .strategy_settings
+                .mm_sport
+                .nonsport_end_exit_start_hours
+                * 3600.0,
+        ),
+    );
+    strategy.insert(
         "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS".to_string(),
         number_to_json(
             config
@@ -1881,6 +1911,18 @@ fn desktop_config_to_profile_payload(
     strategy.insert(
         "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD".to_string(),
         number_to_json(config.strategy_settings.mm_sport.min_top_depth_usd),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.min_entry_top_bid_price),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS".to_string(),
+        Value::Bool(config.strategy_settings.mm_sport.allow_sponsored_rewards),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.sponsored_reward_min_share),
     );
     strategy.insert(
         "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC".to_string(),
@@ -2291,12 +2333,16 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "polymarket_live_guard_ws_stale_ms": f64_from_object(&strategy, "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_STALE_MS", config_io::env_template_default_f64("EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_WS_STALE_MS", 600000.0)),
                 "pause_after_fill_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 600.0)),
                 "inventory_exit_start_hours": f64_from_object(&strategy, "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28800.0)) / 3600.0,
+                "nonsport_end_exit_start_hours": f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC", 172800.0)) / 3600.0,
                 "inventory_exit_max_loss_cents": f64_from_object(&strategy, "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS", config_io::env_template_default_f64("EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS", 10.0)),
                 "inventory_exit_mode": normalize_mm_sport_exit_mode(
                     string_from_object(&strategy, "EVPOLY_MM_SPORT_EXIT_MODE", "normal").as_str()
                 ),
                 "max_share_ratio": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MAX_SHARE_RATIO", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05)),
                 "min_top_depth_usd": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 1100.0)),
+                "min_entry_top_bid_price": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", 0.10)),
+                "allow_sponsored_rewards": bool_from_object(&strategy, "EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS", config_io::env_template_default_bool("EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS", true)),
+                "sponsored_reward_min_share": f64_from_object(&strategy, "EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE", config_io::env_template_default_f64("EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE", 0.50)),
                 "quote_expiry_min_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", 65.0)),
                 "quote_expiry_max_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 185.0))
             }

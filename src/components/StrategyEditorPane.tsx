@@ -382,6 +382,38 @@ function MMSportFiltersPanel({
           )}
         </div>
 
+        <div className="field">
+          <span className="field-label">Allow Sponsored Rewards</span>
+          {renderBooleanChoice(
+            mmSport.allow_sponsored_rewards,
+            (next) => patchMMSport({ allow_sponsored_rewards: next }),
+            !canEdit
+          )}
+        </div>
+
+        {!mmSport.allow_sponsored_rewards ? (
+          <div className="field">
+            <span className="field-label">Sponsor Min Share</span>
+            <input
+              type="number"
+              min="0"
+              max="1"
+              step="0.05"
+              value={mmSport.sponsored_reward_min_share}
+              disabled={!canEdit}
+              onChange={(event) =>
+                patchMMSport({
+                  sponsored_reward_min_share: parseNonNegative(
+                    event.target.value,
+                    mmSport.sponsored_reward_min_share
+                  ),
+                })
+              }
+              className="field-input"
+            />
+          </div>
+        ) : null}
+
         <div className="filter-divider" aria-hidden="true" />
 
         <div className="field">
@@ -1639,6 +1671,29 @@ export function StrategyEditorPane({
                   </p>
                 </div>
               )}
+              <div>
+                <label className="field-label">Min Entry Top Bid</label>
+                <input
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={mmSport.min_entry_top_bid_price}
+                  disabled={!canEdit}
+                  onChange={(event) =>
+                    patchMMSport({
+                      min_entry_top_bid_price: parseNonNegative(
+                        event.target.value,
+                        mmSport.min_entry_top_bid_price
+                      ),
+                    })
+                  }
+                  className="field-input"
+                />
+                <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                  MM 2.0 skips fresh paired entries when either side has a top bid below this price.
+                </p>
+              </div>
             </div>
           </div>
 
@@ -1720,6 +1775,28 @@ export function StrategyEditorPane({
                   <p className="mt-2 text-sm text-[var(--text-secondary)]">
                     MM 2.0 stops opening fresh entry quotes and switches into inventory cleanup
                     this many hours before game start.
+                  </p>
+                </div>
+                <div>
+                  <label className="field-label">Non-S End Exit Hours</label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={mmSport.nonsport_end_exit_start_hours}
+                    disabled={!canEdit}
+                    onChange={(event) =>
+                      patchMMSport({
+                        nonsport_end_exit_start_hours: parseNonNegative(
+                          event.target.value,
+                          mmSport.nonsport_end_exit_start_hours
+                        ),
+                      })
+                    }
+                    className="field-input"
+                  />
+                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                    Non-sport markets stop opening fresh entry quotes this many hours before market end.
                   </p>
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">

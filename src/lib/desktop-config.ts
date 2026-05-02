@@ -91,8 +91,15 @@ function normalizeMMSportInventoryExitMode(value: string | undefined) {
   return "normal";
 }
 
+function mmSportUsesNonSportRailProfile(config: BotConfig) {
+  return config.strategy_settings.mm_sport.discovery_route === "nonsports";
+}
+
 function mmSportUsesDepthRatio(config: BotConfig) {
-  return config.strategy_settings.mm_sport.quote_size_mode === "depth_ratio";
+  const mmSport = config.strategy_settings.mm_sport;
+  return mmSportUsesNonSportRailProfile(config)
+    ? mmSport.nonsport_quote_size_mode === "depth_ratio"
+    : mmSport.quote_size_mode === "depth_ratio";
 }
 
 function normalizeWeekendPolicy(value: string | undefined): WeekendPolicy {
@@ -503,6 +510,30 @@ export function updateStrategySize(
       },
     };
   }
+  if (strategy === "mm_sport" && config.strategy_settings.mm_sport.discovery_route === "dual") {
+    return config;
+  }
+  if (strategy === "mm_sport" && mmSportUsesNonSportRailProfile(config)) {
+    if (mmSportUsesDepthRatio(config)) {
+      return {
+        ...config,
+        strategy_settings: {
+          ...config.strategy_settings,
+          mm_sport: {
+            ...config.strategy_settings.mm_sport,
+            nonsport_max_share_ratio: value,
+          },
+        },
+      };
+    }
+    return {
+      ...config,
+      mm_tuning: {
+        ...config.mm_tuning,
+        nonsport_quote_size_multiplier: value,
+      },
+    };
+  }
   if (mmSportUsesDepthRatio(config)) {
     return {
       ...config,
@@ -655,6 +686,12 @@ export function strategySizeValue(config: BotConfig, strategy: StrategyKey): num
   if (strategy === "session_band") return config.sizing.session_band;
   if (strategy === "evsnipe") return config.sizing.evsnipe_per_hit;
   if (strategy === "mm_rewards") return config.mm_tuning.rewards_min_share_multiple;
+  if (strategy === "mm_sport" && mmSportUsesNonSportRailProfile(config)) {
+    if (mmSportUsesDepthRatio(config)) {
+      return config.strategy_settings.mm_sport.nonsport_max_share_ratio;
+    }
+    return config.mm_tuning.nonsport_quote_size_multiplier;
+  }
   if (mmSportUsesDepthRatio(config)) return config.strategy_settings.mm_sport.max_share_ratio;
   return config.mm_tuning.sport_quote_size_multiplier;
 }

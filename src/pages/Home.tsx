@@ -29,6 +29,7 @@ import {
   updateStrategyEnabled,
   updateStrategySettingsSection,
   updateStrategySize,
+  type StrategyEditorSection,
   type StrategyKey,
 } from "../lib/desktop-config";
 import {
@@ -90,40 +91,6 @@ function metricToneClass(value: number | null | undefined): string {
 function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(100, Math.max(0, value));
-}
-
-function mmSportRailSizing(config: BotConfig): { label: string; suffix: string } {
-  const sportMode = config.strategy_settings.mm_sport.quote_size_mode;
-  const nonsportMode = config.strategy_settings.mm_sport.nonsport_quote_size_mode;
-  const formatProfile = (
-    shortLabel: string,
-    mode: typeof sportMode,
-    depthRatio: number,
-    multiple: number,
-    mixed: boolean
-  ) => {
-    if (mode === "depth_ratio") {
-      return `${shortLabel} ${depthRatio.toFixed(2)}${mixed ? "D" : ""}`;
-    }
-    return `${shortLabel} ${multiple.toFixed(2)}x`;
-  };
-  const mixed = sportMode !== nonsportMode;
-  const sport = formatProfile(
-    "S",
-    sportMode,
-    config.strategy_settings.mm_sport.max_share_ratio,
-    config.mm_tuning.sport_quote_size_multiplier,
-    mixed
-  );
-  const nonsport = formatProfile(
-    "N",
-    nonsportMode,
-    config.strategy_settings.mm_sport.nonsport_max_share_ratio,
-    config.mm_tuning.nonsport_quote_size_multiplier,
-    mixed
-  );
-  const suffix = mixed ? "MIXED" : sportMode === "depth_ratio" ? "DEPTH" : "MULT";
-  return { label: `${sport} / ${nonsport}`, suffix };
 }
 
 function PerformanceSparkline({ points }: { points: TradeStats["pnl_history"] }) {
@@ -196,6 +163,8 @@ export function Home() {
   const [doctorDialogOpen, setDoctorDialogOpen] = useState(false);
   const [portfolioFeedSeed, setPortfolioFeedSeed] = useState(0);
   const [tradeStats, setTradeStats] = useState<TradeStats | null>(null);
+  const [requestedEditorSection, setRequestedEditorSection] =
+    useState<StrategyEditorSection | null>(null);
   const [railDraftValues, setRailDraftValues] = useState<Record<StrategyKey, string>>(() =>
     Object.fromEntries(
       STRATEGIES.map((strategy) => [strategy.key, String(strategySizeValue(DEFAULT_CONFIG, strategy.key))])
@@ -507,6 +476,15 @@ export function Home() {
     setRailDraftValues((current) => ({ ...current, [strategy]: nextRawValue }));
   };
 
+  const openMMSportAdvanced = useCallback(() => {
+    setRequestedEditorSection("advanced");
+    navigate("/home/mm_sport");
+  }, [navigate]);
+
+  const consumeRequestedEditorSection = useCallback(() => {
+    setRequestedEditorSection(null);
+  }, []);
+
   const renderStrategyList = () => (
     <div className="strategy-rail">
       <div className="strategy-rail__heading">
@@ -546,8 +524,12 @@ export function Home() {
           const controlTitle = strategyControlTooltip(config, strategy.key);
           const showPreHitRow = strategy.key === "evsnipe";
           const preHitEnabled = config.strategy_settings.evsnipe.pre_hit_enabled;
-          const mmSportSizing =
-            strategy.key === "mm_sport" ? mmSportRailSizing(config) : null;
+          const mmSportDualRoute =
+            strategy.key === "mm_sport" &&
+            config.strategy_settings.mm_sport.discovery_route === "dual";
+          const fieldTitle = mmSportDualRoute
+            ? "Dual uses separate Sport and Non-S sizing profiles. Open Advanced to edit both."
+            : controlTitle;
 
           return (
             <div
@@ -590,39 +572,80 @@ export function Home() {
                   {enabled ? "On" : "Off"}
                 </button>
 
-                {strategy.key === "mm_sport" ? (
-                  <div
-                    className="strategy-rail__field"
-                    title="Open MM 2.0 settings to edit Sport and Non-S sizing profiles."
-                  >
-                    <div className="field-input field-input--compact" aria-label="MM 2.0 sizing profiles">
-                      {mmSportSizing?.label}
-                    </div>
-                    <span className="strategy-rail__field-suffix">{mmSportSizing?.suffix}</span>
-                  </div>
-                ) : (
-                  <div className="strategy-rail__field" title={controlTitle}>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      value={railDraftValues[strategy.key] ?? String(value)}
-                      aria-label={`${strategy.label} ${strategySizeLabel(strategy.key, config)}`}
-                      onChange={(event) => updateRailDraftValue(strategy.key, event.target.value)}
-                      onBlur={() => commitRailDraftValue(strategy.key)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.currentTarget.blur();
-                        }
-                      }}
+                <div className="strategy-rail__field" title={fieldTitle}>
+                  <input
+                    type={mmSportDualRoute ? "text" : "number"}
+                    min="0"
+                    step="0.1"
+                    value={
+                      mmSportDualRoute
+                        ? "Dual"
+                        : railDraftValues[strategy.key] ?? String(value)
+                    }
+                    aria-label={`${strategy.label} ${strategySizeLabel(strategy.key, config)}`}
+                    aria-disabled={mmSportDualRoute}
+                    onClick={mmSportDualRoute ? openMMSportAdvanced : undefined}
+                    onChange={(event) => updateRailDraftValue(strategy.key, event.target.value)}
+                    onBlur={() => {
+                      if (!mmSportDualRoute) {
+                        commitRailDraftValue(strategy.key);
+                      }
+                    }}
+                    onKeyDown={(event) => {
+                      if (mmSportDualRoute && (event.key === "Enter" || event.key === " ")) {
+                        event.preventDefault();
+                        openMMSportAdvanced();
+                        return;
+                      }
+                      if (event.key === "Enter") {
+                        event.currentTarget.blur();
+                      }
+                    }}
+                    readOnly={mmSportDualRoute}
+                    disabled={!canOperate}
+                    className="field-input field-input--compact"
+                    placeholder={mmSportDualRoute ? "Dual" : suffix}
+                    title={fieldTitle}
+                  />
+                  {strategy.key === "mm_sport" ? (
+                    <button
+                      type="button"
+                      className="strategy-rail__field-suffix strategy-rail__field-suffix--toggle"
                       disabled={!canOperate}
-                      className="field-input field-input--compact"
-                      placeholder={suffix}
-                      title={controlTitle}
-                    />
+                      onClick={() => {
+                        if (mmSportDualRoute) {
+                          openMMSportAdvanced();
+                          return;
+                        }
+                        setConfig((current) => {
+                          const mmSport = current.strategy_settings.mm_sport;
+                          const useNonSport = mmSport.discovery_route === "nonsports";
+                          const currentMode = useNonSport
+                            ? mmSport.nonsport_quote_size_mode
+                            : mmSport.quote_size_mode;
+                          const nextMode =
+                            currentMode === "multiple" ? "depth_ratio" : "multiple";
+
+                          return updateStrategySettingsSection(current, "mm_sport", {
+                            ...mmSport,
+                            ...(useNonSport
+                              ? { nonsport_quote_size_mode: nextMode }
+                              : { quote_size_mode: nextMode }),
+                          });
+                        });
+                      }}
+                      title={
+                        mmSportDualRoute
+                          ? "Open Advanced MM 2.0 settings"
+                          : "Click to toggle Multiple / Depth Ratio"
+                      }
+                    >
+                      {mmSportDualRoute ? "ADV" : suffix}
+                    </button>
+                  ) : (
                     <span className="strategy-rail__field-suffix">{suffix}</span>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
 
               {showPreHitRow ? (
@@ -976,6 +999,8 @@ export function Home() {
           config={config}
           setConfig={setConfig}
           activeProfileId={activeProfileId}
+          requestedSection={requestedEditorSection}
+          onRequestedSectionConsumed={consumeRequestedEditorSection}
           onSave={() => void handleSave()}
           saveLoading={saveLoading}
           dirty={dirty}

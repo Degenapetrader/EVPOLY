@@ -467,6 +467,8 @@ export function StrategyEditorPane({
   config,
   setConfig,
   activeProfileId,
+  requestedSection = null,
+  onRequestedSectionConsumed,
   onSave,
   saveLoading = false,
   dirty = false,
@@ -477,6 +479,8 @@ export function StrategyEditorPane({
   config: BotConfig;
   setConfig: Dispatch<SetStateAction<BotConfig>>;
   activeProfileId: string | null;
+  requestedSection?: StrategyEditorSection | null;
+  onRequestedSectionConsumed?: () => void;
   onSave?: () => void;
   saveLoading?: boolean;
   dirty?: boolean;
@@ -494,6 +498,13 @@ export function StrategyEditorPane({
       setSelectedSection(visibleSections[0]);
     }
   }, [selectedSection, visibleSections]);
+
+  useEffect(() => {
+    if (requestedSection && visibleSections.includes(requestedSection)) {
+      setSelectedSection(requestedSection);
+      onRequestedSectionConsumed?.();
+    }
+  }, [onRequestedSectionConsumed, requestedSection, visibleSections]);
 
   const selectedEnabled = config.strategies[selectedStrategy];
   const selectedSizeValue = strategySizeValue(config, selectedStrategy);

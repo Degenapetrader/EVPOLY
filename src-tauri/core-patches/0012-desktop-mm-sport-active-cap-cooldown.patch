@@ -1,0 +1,874 @@
+diff --git a/.env.example b/.env.example
+index ff912a4..f8ea8c7 100644
+--- a/.env.example
++++ b/.env.example
+@@ -117,6 +117,9 @@ EVPOLY_MM_SPORT_MAX_SHARE_RATIO=0.05
+ EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD=1100
+ EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO=
+ EVPOLY_MM_SPORT_NONSPORT_MIN_TOP_DEPTH_USD=
++EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO=0.11
++EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP=
++EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP=
+ EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE=0.10
+ EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES=
+ EVPOLY_MM_SPORT_BLOCKED_SPORT_LEAGUE_CODES=
+@@ -149,6 +152,8 @@ EVPOLY_MM_SPORT_RATIO_PAUSE_SEC=900
+ EVPOLY_MM_SPORT_REPRICE_MIN_INTERVAL_MS=600
+ EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC=65
+ EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC=185
++EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC=10
++EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC=60
+ EVPOLY_MM_SPORT_MAX_MARKETS=0
+ # Unified strategy base sizing (blank => 10 USD except Endgame => 50 USD)
+ EVPOLY_WEEKEND_POLICY=off
+diff --git a/.env.full.example b/.env.full.example
+index 970669a..7a6c952 100644
+--- a/.env.full.example
++++ b/.env.full.example
+@@ -1106,6 +1106,9 @@ EVPOLY_MM_SPORT_MAX_SHARE_RATIO=0.05
+ EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD=1100
+ EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO=
+ EVPOLY_MM_SPORT_NONSPORT_MIN_TOP_DEPTH_USD=
++EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO=0.11
++EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP=
++EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP=
+ EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE=0.10
+ EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES=
+ EVPOLY_MM_SPORT_BLOCKED_SPORT_LEAGUE_CODES=
+@@ -1136,6 +1139,8 @@ EVPOLY_MM_SPORT_RATIO_PAUSE_SEC=900
+ EVPOLY_MM_SPORT_REPRICE_MIN_INTERVAL_MS=600
+ EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC=65
+ EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC=185
++EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC=10
++EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC=60
+ EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT=0.03
+ EVPOLY_MM_SPORT_ALLOWANCE_REFRESH_SEC=60
+ EVPOLY_MM_SPORT_REQUIRE_REWARD_ELIGIBLE=true
+diff --git a/docs/mm_sport_v1.md b/docs/mm_sport_v1.md
+index a7cd141..100e539 100644
+--- a/docs/mm_sport_v1.md
++++ b/docs/mm_sport_v1.md
+@@ -105,16 +105,23 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
+ - `EVPOLY_MM_SPORT_POST_ONLY`
+ - `EVPOLY_MM_SPORT_ORDER_SUBMIT_TIMEOUT_MS`
+ - `EVPOLY_MM_SPORT_MAX_SHARE_RATIO`
++- `EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO`
+ - `EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS`
++- `EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP`
++- `EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP`
+ - `EVPOLY_MM_SPORT_MAX_MARKETS`
+ - `EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC`
+ - `EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS`
+ - `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC`
+ - `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC`
++- `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC`
++- `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC`
+ 
+ ## Notes
+ 
+ - The legacy generic rewards-MM strategy is not part of the public V2 runtime.
+ - Existing inventory and open orders can still be canceled or unwound even when a market no longer qualifies for fresh entry.
++- Fresh-entry scope is capped by route: Dual defaults to 50 sports plus 50 non-sports candidates, while single-route Sport or Non-S runs default to 100 candidates for the selected route. Markets with inventory/open orders remain in scope for exit and cancel work.
++- FIFO cancellation uses `EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO`, clamped to at least 110% of the larger Sport/Non-S fresh-entry max share ratio. FIFO cancels and natural quote expiry start a randomized fresh-BUY cooldown from `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC` to `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC`.
+ - Prime Line Coverage is platform-only and is not part of MM 2.0 in main2.
+ - Review sizing and inventory risk before combining MM 2.0 with heavy directional profiles.
+diff --git a/src/main.rs b/src/main.rs
+index 44d25da..68db466 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -2121,9 +2121,6 @@ const MM_SPORT_NO_EXIT_SIDE_PAUSE_STATE_KEY: &str = "mm_sport_no_exit_side_pause
+ const MM_SPORT_RUNTIME_STATE_UPDATED_BY: &str = "mm_sport";
+ const MM_SPORT_NO_EXIT_HOLD_LOG_COOLDOWN_MS: i64 = 300_000;
+ const MM_SPORT_NONSPORT_END_ENTRY_HALT_LOG_COOLDOWN_MS: i64 = 60_000;
+-const MM_SPORT_SCOPE_SCOUT_ANCHOR_MARKETS: usize = 24;
+-const MM_SPORT_SCOPE_SCOUT_ROTATE_MARKETS: usize = 24;
+-const MM_SPORT_SCOPE_SCOUT_ROTATE_INTERVAL_MS: i64 = 60_000;
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+ struct MmSportNoExitSidePauseState {
+@@ -2306,19 +2303,6 @@ fn mm_sport_should_log_cancel_unresolved_warn(order_id: &str) -> bool {
+     true
+ }
+ 
+-fn mm_sport_next_scout_offset(
+-    current_offset: usize,
+-    discovered_len: usize,
+-    anchor_count: usize,
+-    rotate_count: usize,
+-) -> usize {
+-    let tail_len = discovered_len.saturating_sub(anchor_count);
+-    if tail_len <= rotate_count || rotate_count == 0 {
+-        return 0;
+-    }
+-    (current_offset + rotate_count) % tail_len
+-}
+-
+ fn mm_sport_build_active_markets(
+     discovered_markets: &[MmSportMarket],
+     fallback_exit_markets_by_condition: &std::collections::HashMap<String, MmSportMarket>,
+@@ -2331,9 +2315,8 @@ fn mm_sport_build_active_markets(
+     no_exit_side_pause_by_token: &std::collections::HashMap<String, MmSportNoExitSidePauseState>,
+     now_ms: i64,
+     inventory_exit_start_sec: u64,
+-    scout_anchor_count: usize,
+-    scout_rotate_count: usize,
+-    scout_offset: usize,
++    active_sport_market_cap: usize,
++    active_nonsport_market_cap: usize,
+ ) -> Vec<MmSportMarket> {
+     let mut hot_condition_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+     hot_condition_ids.extend(
+@@ -2386,28 +2369,6 @@ fn mm_sport_build_active_markets(
+             .map(str::to_string),
+     );
+ 
+-    let scout_candidates = discovered_markets
+-        .iter()
+-        .filter(|market| {
+-            !mm_sport_prestart_exit_mode(now_ms, market.game_start_ts_ms, inventory_exit_start_sec)
+-        })
+-        .collect::<Vec<_>>();
+-    let anchor_take = scout_anchor_count.min(scout_candidates.len());
+-    for market in scout_candidates.iter().take(anchor_take) {
+-        hot_condition_ids.insert(market.condition_id.clone());
+-    }
+-    if scout_rotate_count > 0 && scout_candidates.len() > anchor_take {
+-        let tail = &scout_candidates[anchor_take..];
+-        let rotate_take = scout_rotate_count.min(tail.len());
+-        if rotate_take > 0 {
+-            let offset = scout_offset % tail.len();
+-            for idx in 0..rotate_take {
+-                let market = tail[(offset + idx) % tail.len()];
+-                hot_condition_ids.insert(market.condition_id.clone());
+-            }
+-        }
+-    }
+-
+     let mut active_markets = Vec::new();
+     let mut seen_conditions: std::collections::HashSet<String> = std::collections::HashSet::new();
+     for market in discovered_markets {
+@@ -2420,6 +2381,46 @@ fn mm_sport_build_active_markets(
+         }
+         active_markets.push(market.clone());
+     }
++
++    let mut fresh_candidates = discovered_markets
++        .iter()
++        .filter(|market| {
++            !mm_sport_prestart_exit_mode(now_ms, market.game_start_ts_ms, inventory_exit_start_sec)
++        })
++        .filter(|market| {
++            let condition_key = market.condition_id.trim().to_ascii_lowercase();
++            !condition_key.is_empty()
++                && !hot_condition_ids.contains(market.condition_id.as_str())
++                && !seen_conditions.contains(condition_key.as_str())
++        })
++        .collect::<Vec<_>>();
++    fresh_candidates.sort_by(|a, b| {
++        b.reward_rate_per_day
++            .partial_cmp(&a.reward_rate_per_day)
++            .unwrap_or(std::cmp::Ordering::Equal)
++            .then_with(|| a.market_slug.cmp(&b.market_slug))
++    });
++    let mut fresh_sport_count = 0usize;
++    let mut fresh_nonsport_count = 0usize;
++    for market in fresh_candidates {
++        if market.is_sports_market {
++            if active_sport_market_cap == 0 || fresh_sport_count >= active_sport_market_cap {
++                continue;
++            }
++            fresh_sport_count = fresh_sport_count.saturating_add(1);
++        } else {
++            if active_nonsport_market_cap == 0 || fresh_nonsport_count >= active_nonsport_market_cap
++            {
++                continue;
++            }
++            fresh_nonsport_count = fresh_nonsport_count.saturating_add(1);
++        }
++        let condition_key = market.condition_id.trim().to_ascii_lowercase();
++        if seen_conditions.insert(condition_key) {
++            active_markets.push(market.clone());
++        }
++    }
++
+     for market in fallback_exit_markets_by_condition.values() {
+         let condition_key = market.condition_id.trim().to_ascii_lowercase();
+         let has_existing_exposure = inventory_condition_ids
+@@ -2602,6 +2603,29 @@ fn mm_sport_condition_quote_expiration(
+     (expiration_ts, expiration_ms, ttl_sec)
+ }
+ 
++fn mm_sport_start_quote_cooldown(
++    quote_cooldown_until_by_token_side: &mut std::collections::HashMap<String, i64>,
++    now_ms: i64,
++    action_key: &str,
++    min_sec: u64,
++    max_sec: u64,
++) -> (i64, u64) {
++    let cooldown_sec =
++        mm_sport_random_range_u64(now_ms, action_key, min_sec, max_sec).clamp(min_sec, max_sec);
++    let cooldown_ms = i64::try_from(cooldown_sec.saturating_mul(1_000))
++        .ok()
++        .unwrap_or(0)
++        .max(0);
++    let cooldown_until_ms = now_ms.saturating_add(cooldown_ms);
++    let entry = quote_cooldown_until_by_token_side
++        .entry(action_key.to_string())
++        .or_insert(0);
++    if cooldown_until_ms > *entry {
++        *entry = cooldown_until_ms;
++    }
++    (*entry, cooldown_sec)
++}
++
+ fn mm_sport_floor_order_shares(units: f64) -> f64 {
+     ((units.max(0.0) * 100.0) + 1e-9).floor() / 100.0
+ }
+@@ -15957,6 +15981,12 @@ async fn main() -> Result<()> {
+                     std::collections::HashMap::new();
+                 let mut last_action_ms_by_token_side: std::collections::HashMap<String, i64> =
+                     std::collections::HashMap::new();
++                let mut quote_cooldown_until_by_token_side: std::collections::HashMap<String, i64> =
++                    std::collections::HashMap::new();
++                let mut last_quote_cooldown_skip_log_ms_by_token_side: std::collections::HashMap<
++                    String,
++                    i64,
++                > = std::collections::HashMap::new();
+                 let mut last_no_exit_hold_log_ms_by_condition: std::collections::HashMap<
+                     String,
+                     i64,
+@@ -16032,9 +16062,6 @@ async fn main() -> Result<()> {
+                     String,
+                     (i64, u64),
+                 > = std::collections::HashMap::new();
+-                let mut mm_sport_scope_scout_offset = 0usize;
+-                let mut mm_sport_scope_scout_rotated_at_ms = 0_i64;
+-
+                 if mm_sport_cfg_for_loop.polymarket_live_guard_enable
+                     && mm_sport_cfg_for_loop.polymarket_live_guard_ws_enable
+                 {
+@@ -16202,13 +16229,19 @@ async fn main() -> Result<()> {
+                         .retain(|_, (expiration_ms, _)| *expiration_ms > now_ms);
+                     last_quote_expiration_log_by_token_side
+                         .retain(|_, (expiration_ms, _)| *expiration_ms > now_ms);
++                    quote_cooldown_until_by_token_side.retain(|_, until_ms| *until_ms > now_ms);
++                    last_quote_cooldown_skip_log_ms_by_token_side.retain(|key, _| {
++                        quote_cooldown_until_by_token_side.contains_key(key.as_str())
++                    });
+                     if now_ms.saturating_sub(last_reconcile_failed_rearm_ms) >= 60_000 {
+                         last_reconcile_failed_rearm_ms = now_ms;
+                         if let Ok(rows) = tracking_db_for_mm_sport
+                             .list_reconcile_pending_orders_retry(128, 300_000, 172_800)
+                         {
+-                            let mut rearmed = 0_u64;
+-                            let mut canceled = 0_u64;
++                            let mut restored_open = 0_u64;
++                            let mut terminal = 0_u64;
++                            let mut stale = 0_u64;
++                            let mut unresolved = 0_u64;
+                             for row in rows {
+                                 if !row
+                                     .strategy_id
+@@ -16217,43 +16250,84 @@ async fn main() -> Result<()> {
+                                 {
+                                     continue;
+                                 }
+-                                let mut terminal_canceled = false;
+-                                if row.order_id.trim().starts_with("0x")
+-                                    && !row.order_id.trim().is_empty()
+-                                {
+-                                    if let Ok(cancel_response) =
+-                                        api_for_mm_sport.cancel_order(row.order_id.as_str()).await
+-                                    {
+-                                        terminal_canceled =
+-                                            cancel_response.canceled.iter().any(|id| {
+-                                                id.eq_ignore_ascii_case(row.order_id.as_str())
+-                                            });
+-                                    }
++                                let order_id = row.order_id.trim();
++                                if order_id.is_empty() {
++                                    continue;
+                                 }
+-                                if terminal_canceled {
++                                if !mm_sport_is_exchange_order_id(order_id) {
+                                     if tracking_db_for_mm_sport
+-                                        .update_pending_order_status(
+-                                            row.order_id.as_str(),
+-                                            "CANCELED",
+-                                        )
++                                        .update_pending_order_status(order_id, "CANCELED")
+                                         .is_ok()
+                                     {
+-                                        canceled = canceled.saturating_add(1);
++                                        terminal = terminal.saturating_add(1);
++                                    }
++                                    continue;
++                                }
++                                match api_for_mm_sport.get_order(order_id).await {
++                                    Ok(order_status) => {
++                                        let matched = f64::try_from(order_status.size_matched)
++                                            .ok()
++                                            .unwrap_or(0.0)
++                                            .max(0.0);
++                                        let matched_price = f64::try_from(order_status.price)
++                                            .ok()
++                                            .filter(|value| value.is_finite() && *value > 0.0);
++                                        if let Some(terminal_status) =
++                                            mm_pending_terminal_status(&order_status.status)
++                                        {
++                                            let fill_persisted =
++                                                matches!(terminal_status, "FILLED" | "CANCELED")
++                                                    && matched > 0.0
++                                                    && mm_sport_record_fill_from_pending(
++                                                        &tracking_db_for_mm_sport,
++                                                        &row,
++                                                        matched,
++                                                        matched_price,
++                                                        "mm_sport_reconcile_terminal_lookup",
++                                                    );
++                                            if !fill_persisted {
++                                                let _ = tracking_db_for_mm_sport
++                                                    .update_pending_order_status(
++                                                        order_id,
++                                                        terminal_status,
++                                                    );
++                                            }
++                                            if terminal_status.eq_ignore_ascii_case("STALE") {
++                                                stale = stale.saturating_add(1);
++                                            } else {
++                                                terminal = terminal.saturating_add(1);
++                                            }
++                                        } else if tracking_db_for_mm_sport
++                                            .update_pending_order_status(order_id, "OPEN")
++                                            .is_ok()
++                                        {
++                                            restored_open = restored_open.saturating_add(1);
++                                        }
++                                    }
++                                    Err(err) => {
++                                        let err_text = err.to_string();
++                                        if mm_order_lookup_error_is_terminal(err_text.as_str()) {
++                                            if tracking_db_for_mm_sport
++                                                .update_pending_order_status(order_id, "STALE")
++                                                .is_ok()
++                                            {
++                                                stale = stale.saturating_add(1);
++                                            }
++                                        } else {
++                                            unresolved = unresolved.saturating_add(1);
++                                        }
+                                     }
+-                                } else if tracking_db_for_mm_sport
+-                                    .update_pending_order_status(row.order_id.as_str(), "OPEN")
+-                                    .is_ok()
+-                                {
+-                                    rearmed = rearmed.saturating_add(1);
+                                 }
+                             }
+-                            if rearmed > 0 || canceled > 0 {
++                            if restored_open > 0 || terminal > 0 || stale > 0 || unresolved > 0 {
+                                 log_event(
+-                                    "mm_sport_reconcile_failed_rearmed",
++                                    "mm_sport_reconcile_uncertain_orders_resolved",
+                                     json!({
+                                         "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+-                                        "rearmed_count": rearmed,
+-                                        "canceled_count": canceled
++                                        "restored_open_count": restored_open,
++                                        "terminal_count": terminal,
++                                        "stale_count": stale,
++                                        "unresolved_count": unresolved
+                                     }),
+                                 );
+                             }
+@@ -17781,8 +17855,11 @@ async fn main() -> Result<()> {
+                     last_watchdog_pause_reason_by_condition = watchdog_pause_state_this_pass;
+ 
+                     if mm_sport_cfg_for_loop.event_driven_enable && api_for_mm_sport.ws_enabled() {
++                        let configured_fifo_ratio_limit =
++                            mm_sport_cfg_for_loop.fifo_max_share_ratio.clamp(0.01, 0.99);
++                        let fifo_ratio_floor = mm_sport_cfg_for_loop.fifo_ratio_floor();
+                         let report_ratio_limit =
+-                            mm_sport_cfg_for_loop.max_share_ratio.clamp(0.01, 0.99);
++                            mm_sport_cfg_for_loop.effective_fifo_max_share_ratio();
+                         let fifo_ws_gap_cancel_ms =
+                             mm_sport_cfg_for_loop.fifo_ws_gap_cancel_ms.max(500);
+                         let mut fifo_report_condition_count = 0usize;
+@@ -17813,7 +17890,9 @@ async fn main() -> Result<()> {
+                                     .map(|market| market.is_sports_market)
+                                     .unwrap_or(true),
+                             );
+-                            let ratio_limit = condition_sizing.max_share_ratio.clamp(0.01, 0.99);
++                            let quote_ratio_limit =
++                                condition_sizing.max_share_ratio.clamp(0.01, 0.99);
++                            let ratio_limit = report_ratio_limit;
+                             let tick_size = market_by_condition
+                                 .get(condition_id)
+                                 .map(|market| market.minimum_tick_size)
+@@ -18027,6 +18106,7 @@ async fn main() -> Result<()> {
+                                         "ahead_worst": ahead_worst,
+                                         "front_ratio": front_ratio,
+                                         "max_share_ratio": ratio_limit,
++                                        "quote_max_share_ratio": quote_ratio_limit,
+                                         "ws_age_ms": ws_age_ms
+                                     }));
+                                     let front_ratio_breached = front_ratio
+@@ -18053,6 +18133,7 @@ async fn main() -> Result<()> {
+                                             "ahead_worst": ahead_worst,
+                                             "front_ratio": front_ratio,
+                                             "max_share_ratio": ratio_limit,
++                                            "quote_max_share_ratio": quote_ratio_limit,
+                                             "ws_age_ms": ws_age_ms,
+                                             "fifo_ws_gap_cancel_ms": fifo_ws_gap_cancel_ms
+                                         }));
+@@ -18088,6 +18169,7 @@ async fn main() -> Result<()> {
+                                 .unwrap_or(true);
+                             fifo_report_cancel_attempted =
+                                 fifo_report_cancel_attempted.saturating_add(cancel_rows.len());
++                            let mut quote_cooldowns_started = Vec::new();
+                             let canceled = if can_cancel_on_fifo {
+                                 let canceled = mm_sport_cancel_pending_rows(
+                                     &api_for_mm_sport,
+@@ -18099,6 +18181,29 @@ async fn main() -> Result<()> {
+                                     .insert(condition_id.clone(), now_ms);
+                                 for row in &cancel_rows {
+                                     fifo_guard_by_order_id.remove(row.order_id.trim());
++                                    if row.side.eq_ignore_ascii_case("BUY") {
++                                        let action_key = format!(
++                                            "{}:{}:BUY",
++                                            row.condition_id
++                                                .as_deref()
++                                                .unwrap_or(condition_id.as_str()),
++                                            row.token_id
++                                        );
++                                        let (cooldown_until_ms, cooldown_sec) =
++                                            mm_sport_start_quote_cooldown(
++                                                &mut quote_cooldown_until_by_token_side,
++                                                now_ms,
++                                                action_key.as_str(),
++                                                mm_sport_cfg_for_loop.quote_cooldown_min_sec,
++                                                mm_sport_cfg_for_loop.quote_cooldown_max_sec,
++                                            );
++                                        quote_cooldowns_started.push(json!({
++                                            "token_id": row.token_id,
++                                            "order_id": row.order_id,
++                                            "cooldown_sec": cooldown_sec,
++                                            "cooldown_until_ms": cooldown_until_ms
++                                        }));
++                                    }
+                                 }
+                                 canceled
+                             } else {
+@@ -18120,12 +18225,16 @@ async fn main() -> Result<()> {
+                                     "condition_id": condition_id,
+                                     "quote_size_mode": condition_sizing.quote_size_mode.as_str(),
+                                     "max_share_ratio": ratio_limit,
++                                    "configured_fifo_max_share_ratio": configured_fifo_ratio_limit,
++                                    "fifo_ratio_floor": fifo_ratio_floor,
++                                    "quote_max_share_ratio": quote_ratio_limit,
+                                     "fifo_ws_gap_cancel_ms": fifo_ws_gap_cancel_ms,
+                                     "ratio_pause_sec": mm_sport_cfg_for_loop.ratio_pause_sec,
+                                     "ratio_pause_until_ms": pause_until_ms,
+                                     "attempted_cancel_count": cancel_rows.len(),
+                                     "resolved_cancel_count": canceled,
+                                     "cancel_executed": can_cancel_on_fifo,
++                                    "quote_cooldowns_started": quote_cooldowns_started,
+                                     "details": fifo_details
+                                 }),
+                             );
+@@ -18179,6 +18288,8 @@ async fn main() -> Result<()> {
+                                 "max_front_ratio": fifo_report_max_front_ratio,
+                                 "min_ahead_worst": fifo_report_min_ahead_worst,
+                                 "max_share_ratio": report_ratio_limit,
++                                "configured_fifo_max_share_ratio": configured_fifo_ratio_limit,
++                                "fifo_ratio_floor": fifo_ratio_floor,
+                                 "fifo_ws_gap_cancel_ms": fifo_ws_gap_cancel_ms,
+                                 "market_ws_age_ms": market_ws_age_ms,
+                                 "max_orderbook_ws_age_ms": fifo_report_max_ws_age_ms,
+@@ -18193,20 +18304,6 @@ async fn main() -> Result<()> {
+                         }
+                     }
+ 
+-                    if mm_sport_scope_scout_rotated_at_ms <= 0 {
+-                        mm_sport_scope_scout_rotated_at_ms = now_ms;
+-                    } else if now_ms.saturating_sub(mm_sport_scope_scout_rotated_at_ms)
+-                        >= MM_SPORT_SCOPE_SCOUT_ROTATE_INTERVAL_MS
+-                    {
+-                        mm_sport_scope_scout_offset = mm_sport_next_scout_offset(
+-                            mm_sport_scope_scout_offset,
+-                            discovered_markets.len(),
+-                            MM_SPORT_SCOPE_SCOUT_ANCHOR_MARKETS,
+-                            MM_SPORT_SCOPE_SCOUT_ROTATE_MARKETS,
+-                        );
+-                        mm_sport_scope_scout_rotated_at_ms = now_ms;
+-                    }
+-
+                     let active_markets = mm_sport_build_active_markets(
+                         discovered_markets.as_slice(),
+                         &fallback_exit_markets_by_condition,
+@@ -18219,9 +18316,8 @@ async fn main() -> Result<()> {
+                         &no_exit_side_pause_by_token,
+                         now_ms,
+                         mm_sport_cfg_for_loop.inventory_exit_start_sec,
+-                        MM_SPORT_SCOPE_SCOUT_ANCHOR_MARKETS,
+-                        MM_SPORT_SCOPE_SCOUT_ROTATE_MARKETS,
+-                        mm_sport_scope_scout_offset,
++                        mm_sport_cfg_for_loop.active_sport_market_cap,
++                        mm_sport_cfg_for_loop.active_nonsport_market_cap,
+                     );
+                     let discovered_condition_ids_lc = discovered_markets
+                         .iter()
+@@ -20630,6 +20726,7 @@ async fn main() -> Result<()> {
+ 
+                             let mut keep_buy_id: Option<String> = None;
+                             let mut buy_cancel_rows = Vec::new();
++                            let mut expired_buy_cancel_rows = Vec::new();
+                             for row in &buy_rows {
+                                 let order_id = row.order_id.trim();
+                                 let row_expired = order_expiry_ms_by_order_id
+@@ -20648,7 +20745,11 @@ async fn main() -> Result<()> {
+                                 {
+                                     keep_buy_id = Some(row.order_id.clone());
+                                 } else {
+-                                    buy_cancel_rows.push(row.clone());
++                                    let row_clone = row.clone();
++                                    if row_expired {
++                                        expired_buy_cancel_rows.push(row_clone.clone());
++                                    }
++                                    buy_cancel_rows.push(row_clone);
+                                 }
+                             }
+ 
+@@ -20688,6 +20789,59 @@ async fn main() -> Result<()> {
+                                 } else {
+                                     keep_buy_id = None;
+                                 }
++                                if !expired_buy_cancel_rows.is_empty() {
++                                    let (cooldown_until_ms, cooldown_sec) =
++                                        mm_sport_start_quote_cooldown(
++                                            &mut quote_cooldown_until_by_token_side,
++                                            now_ms_local,
++                                            buy_key.as_str(),
++                                            mm_sport_cfg_for_loop.quote_cooldown_min_sec,
++                                            mm_sport_cfg_for_loop.quote_cooldown_max_sec,
++                                        );
++                                    log_event(
++                                        "mm_sport_quote_cooldown_started",
++                                        json!({
++                                            "strategy_id": STRATEGY_ID_MM_SPORT_V1,
++                                            "condition_id": market.condition_id,
++                                            "token_id": token_id,
++                                            "side": "BUY",
++                                            "reason": "quote_expired",
++                                            "expired_cancel_count": expired_buy_cancel_rows.len(),
++                                            "cooldown_sec": cooldown_sec,
++                                            "cooldown_until_ms": cooldown_until_ms
++                                        }),
++                                    );
++                                }
++                            }
++
++                            let quote_cooldown_until_ms = quote_cooldown_until_by_token_side
++                                .get(buy_key.as_str())
++                                .copied()
++                                .unwrap_or(0);
++                            if keep_buy_id.is_none()
++                                && can_buy_action
++                                && quote_cooldown_until_ms > now_ms_local
++                            {
++                                let should_log = last_quote_cooldown_skip_log_ms_by_token_side
++                                    .get(buy_key.as_str())
++                                    .map(|last| now_ms_local.saturating_sub(*last) >= 10_000)
++                                    .unwrap_or(true);
++                                if should_log {
++                                    last_quote_cooldown_skip_log_ms_by_token_side
++                                        .insert(buy_key.clone(), now_ms_local);
++                                    log_event(
++                                        "mm_sport_quote_cooldown_skip",
++                                        json!({
++                                            "strategy_id": STRATEGY_ID_MM_SPORT_V1,
++                                            "condition_id": market.condition_id,
++                                            "token_id": token_id,
++                                            "side": "BUY",
++                                            "cooldown_until_ms": quote_cooldown_until_ms,
++                                            "remaining_ms": quote_cooldown_until_ms.saturating_sub(now_ms_local)
++                                        }),
++                                    );
++                                }
++                                continue;
+                             }
+ 
+                             if keep_buy_id.is_none() && can_buy_action {
+@@ -20869,8 +21023,8 @@ async fn main() -> Result<()> {
+                                 "exit_mode": mm_sport_cfg_for_loop.exit_mode.as_str(),
+                                 "discovered_markets": discovered_markets.len(),
+                                 "active_markets": active_markets.len(),
+-                                "scope_scout_anchor_markets": MM_SPORT_SCOPE_SCOUT_ANCHOR_MARKETS,
+-                                "scope_scout_rotate_markets": MM_SPORT_SCOPE_SCOUT_ROTATE_MARKETS,
++                                "active_sport_market_cap": mm_sport_cfg_for_loop.active_sport_market_cap,
++                                "active_nonsport_market_cap": mm_sport_cfg_for_loop.active_nonsport_market_cap,
+                                 "open_order_conditions": open_orders_by_condition.len(),
+                                 "entry_paused_markets": entry_pause_until_by_condition.len(),
+                                 "bust_paused_markets": bust_pause_until_by_condition.len(),
+@@ -20880,6 +21034,7 @@ async fn main() -> Result<()> {
+                                 "queue_guard_orders": queue_guard_by_order_id.len(),
+                                 "fifo_guard_orders": fifo_guard_by_order_id.len(),
+                                 "fifo_guard_last_report": last_fifo_guard_report.clone(),
++                                "quote_cooldowns": quote_cooldown_until_by_token_side.len(),
+                                 "tracked_order_expiries": order_expiry_ms_by_order_id.len(),
+                                 "inventory_tokens": inventory_by_token.len(),
+                             }),
+@@ -27476,7 +27631,7 @@ mod tests {
+     }
+ 
+     #[test]
+-    fn mm_sport_active_scope_keeps_hot_state_and_rotating_scouts() {
++    fn mm_sport_active_scope_keeps_hot_state_and_caps_fresh_candidates() {
+         let now_ms = 2_000_000_000_000_i64;
+         let discovered_markets = vec![
+             mm_sport_test_market("cond-a", 900.0, now_ms + 86_400_000),
+@@ -27519,8 +27674,7 @@ mod tests {
+             now_ms,
+             28_800,
+             2,
+-            1,
+-            1,
++            0,
+         );
+ 
+         let conditions = active
+@@ -27537,6 +27691,51 @@ mod tests {
+         assert!(conditions.contains("cond-c"));
+     }
+ 
++    #[test]
++    fn mm_sport_active_scope_applies_separate_sport_and_nonsport_caps() {
++        let now_ms = 2_000_000_000_000_i64;
++        let mut nonsport_a = mm_sport_test_market("nonsport-a", 1100.0, now_ms + 86_400_000);
++        nonsport_a.is_sports_market = false;
++        let mut nonsport_b = mm_sport_test_market("nonsport-b", 700.0, now_ms + 86_400_000);
++        nonsport_b.is_sports_market = false;
++        let discovered_markets = vec![
++            mm_sport_test_market("sport-a", 1000.0, now_ms + 86_400_000),
++            mm_sport_test_market("sport-b", 900.0, now_ms + 86_400_000),
++            mm_sport_test_market("sport-hot", 100.0, now_ms + 86_400_000),
++            nonsport_a,
++            nonsport_b,
++        ];
++        let open_orders = std::collections::HashMap::from([(
++            "sport-hot".to_string(),
++            vec![mm_sport_test_pending_row("sport-hot", "sport-hot_up")],
++        )]);
++        let active = mm_sport_build_active_markets(
++            discovered_markets.as_slice(),
++            &std::collections::HashMap::new(),
++            &open_orders,
++            &std::collections::HashSet::new(),
++            &std::collections::HashMap::new(),
++            &std::collections::HashMap::new(),
++            &std::collections::HashMap::new(),
++            &std::collections::HashMap::new(),
++            &std::collections::HashMap::new(),
++            now_ms,
++            28_800,
++            1,
++            1,
++        );
++
++        let conditions = active
++            .iter()
++            .map(|market| market.condition_id.as_str())
++            .collect::<std::collections::HashSet<_>>();
++        assert!(conditions.contains("sport-hot"));
++        assert!(conditions.contains("sport-a"));
++        assert!(conditions.contains("nonsport-a"));
++        assert!(!conditions.contains("sport-b"));
++        assert!(!conditions.contains("nonsport-b"));
++    }
++
+     #[test]
+     fn mm_sport_active_scope_skips_exit_fallback_without_existing_exposure() {
+         let now_ms = 2_000_000_000_000_i64;
+@@ -27562,7 +27761,6 @@ mod tests {
+             28_800,
+             2,
+             0,
+-            0,
+         );
+ 
+         let conditions = active
+@@ -27603,7 +27801,6 @@ mod tests {
+             28_800,
+             4,
+             0,
+-            0,
+         );
+ 
+         let conditions = active
+diff --git a/src/mm/mod.rs b/src/mm/mod.rs
+index 1fa90ba..48cdd0f 100644
+--- a/src/mm/mod.rs
++++ b/src/mm/mod.rs
+@@ -130,6 +130,7 @@ pub struct MmSportConfig {
+     pub reward_min_shares_cap: f64,
+     pub max_share_ratio: f64,
+     pub nonsport_max_share_ratio: f64,
++    pub fifo_max_share_ratio: f64,
+     pub min_top_depth_usd: f64,
+     pub nonsport_min_top_depth_usd: f64,
+     pub nonsport_end_exit_start_sec: u64,
+@@ -149,6 +150,8 @@ pub struct MmSportConfig {
+     pub reprice_min_interval_ms: i64,
+     pub quote_expiry_min_sec: u64,
+     pub quote_expiry_max_sec: u64,
++    pub quote_cooldown_min_sec: u64,
++    pub quote_cooldown_max_sec: u64,
+     pub size_requote_delta_pct: f64,
+     pub allowance_refresh_sec: u64,
+     pub require_reward_eligible: bool,
+@@ -156,6 +159,8 @@ pub struct MmSportConfig {
+     pub match_only: bool,
+     pub post_only: bool,
+     pub max_markets: usize,
++    pub active_sport_market_cap: usize,
++    pub active_nonsport_market_cap: usize,
+     pub polymarket_live_guard_enable: bool,
+     pub polymarket_live_guard_ws_enable: bool,
+     pub polymarket_live_guard_ws_stale_ms: i64,
+@@ -192,6 +197,24 @@ impl MmSportConfig {
+         )
+         .clamp(0.0, 1.0);
+         let max_share_ratio = env_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05).clamp(0.01, 0.99);
++        let nonsport_max_share_ratio =
++            env_f64("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", max_share_ratio).clamp(0.01, 0.99);
++        let fifo_ratio_floor =
++            (max_share_ratio.max(nonsport_max_share_ratio) * 1.10).clamp(0.01, 0.99);
++        let fifo_max_share_ratio =
++            env_f64("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", fifo_ratio_floor)
++                .clamp(fifo_ratio_floor, 0.99);
++        let quote_cooldown_min_sec =
++            env_u64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC", 10).clamp(0, 3_600);
++        let quote_cooldown_max_sec = env_u64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC", 60)
++            .clamp(quote_cooldown_min_sec, 7_200);
++        let discovery_route =
++            MmSportDiscoveryRoute::from_env(std::env::var("EVPOLY_MM_SPORT_DISCOVERY_ROUTE").ok());
++        let (default_active_sport_cap, default_active_nonsport_cap) = match discovery_route {
++            MmSportDiscoveryRoute::Sports => (100, 0),
++            MmSportDiscoveryRoute::NonSports => (0, 100),
++            MmSportDiscoveryRoute::Dual => (50, 50),
++        };
+         let min_top_depth_usd = env_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 1_100.0).max(0.0);
+         Self {
+             enable: env_bool("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false),
+@@ -206,9 +229,7 @@ impl MmSportConfig {
+             rewards_page_budget: env_u32("EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET", 8).clamp(1, 200),
+             min_reward_rate_per_day: env_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 5.0)
+                 .max(0.0),
+-            discovery_route: MmSportDiscoveryRoute::from_env(
+-                std::env::var("EVPOLY_MM_SPORT_DISCOVERY_ROUTE").ok(),
+-            ),
++            discovery_route,
+             quote_size_mode,
+             nonsport_quote_size_mode: MmSportQuoteSizeMode::from_env(
+                 std::env::var("EVPOLY_MM_SPORT_NONSPORT_QUOTE_SIZE_MODE")
+@@ -256,11 +277,8 @@ impl MmSportConfig {
+             ),
+             reward_min_shares_cap: env_f64("EVPOLY_MM_SPORT_REWARD_MIN_SHARES_CAP", 0.0).max(0.0),
+             max_share_ratio,
+-            nonsport_max_share_ratio: env_f64(
+-                "EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO",
+-                max_share_ratio,
+-            )
+-            .clamp(0.01, 0.99),
++            nonsport_max_share_ratio,
++            fifo_max_share_ratio,
+             min_top_depth_usd,
+             nonsport_min_top_depth_usd: env_f64(
+                 "EVPOLY_MM_SPORT_NONSPORT_MIN_TOP_DEPTH_USD",
+@@ -303,6 +321,8 @@ impl MmSportConfig {
+                 .clamp(50, 60_000) as i64,
+             quote_expiry_min_sec,
+             quote_expiry_max_sec,
++            quote_cooldown_min_sec,
++            quote_cooldown_max_sec,
+             size_requote_delta_pct: env_f64("EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT", 0.03)
+                 .clamp(0.0, 1.0),
+             allowance_refresh_sec: env_u64("EVPOLY_MM_SPORT_ALLOWANCE_REFRESH_SEC", 60)
+@@ -312,6 +332,16 @@ impl MmSportConfig {
+             match_only: env_bool("EVPOLY_MM_SPORT_MATCH_ONLY", true),
+             post_only: env_bool("EVPOLY_MM_SPORT_POST_ONLY", true),
+             max_markets: env_usize("EVPOLY_MM_SPORT_MAX_MARKETS", 0),
++            active_sport_market_cap: env_usize(
++                "EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP",
++                default_active_sport_cap,
++            )
++            .min(1_000),
++            active_nonsport_market_cap: env_usize(
++                "EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP",
++                default_active_nonsport_cap,
++            )
++            .min(1_000),
+             polymarket_live_guard_enable: env_bool(
+                 "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_ENABLE",
+                 true,
+@@ -349,6 +379,15 @@ impl MmSportConfig {
+             }
+         }
+     }
++
++    pub fn fifo_ratio_floor(&self) -> f64 {
++        (self.max_share_ratio.max(self.nonsport_max_share_ratio) * 1.10).clamp(0.01, 0.99)
++    }
++
++    pub fn effective_fifo_max_share_ratio(&self) -> f64 {
++        self.fifo_max_share_ratio
++            .clamp(self.fifo_ratio_floor(), 0.99)
++    }
+ }
+ 
+ fn env_bool(key: &str, default: bool) -> bool {
+@@ -644,6 +683,31 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn mm_sport_config_reads_active_caps_and_clamps_fifo_ratio() {
++        with_mm_env(
++            &[
++                ("EVPOLY_MM_SPORT_DISCOVERY_ROUTE", Some("dual")),
++                ("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", Some("0.10")),
++                ("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", Some("0.05")),
++                ("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", Some("0.09")),
++                ("EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP", Some("44")),
++                ("EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP", Some("33")),
++                ("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC", Some("12")),
++                ("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC", Some("45")),
++            ],
++            || {
++                let cfg = MmSportConfig::from_env();
++                assert_eq!(cfg.active_sport_market_cap, 44);
++                assert_eq!(cfg.active_nonsport_market_cap, 33);
++                assert_eq!(cfg.quote_cooldown_min_sec, 12);
++                assert_eq!(cfg.quote_cooldown_max_sec, 45);
++                assert!((cfg.fifo_ratio_floor() - 0.11).abs() < 1e-9);
++                assert!((cfg.effective_fifo_max_share_ratio() - 0.11).abs() < 1e-9);
++            },
++        );
++    }
++
+     #[test]
+     fn mm_sport_sizing_profile_falls_back_and_overrides_nonsport() {
+         with_mm_env(
+diff --git a/strategy-changelog.md b/strategy-changelog.md
+index f4bc86a..dc959d6 100644
+--- a/strategy-changelog.md
++++ b/strategy-changelog.md
+@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
+ ## Change Log
+ 
+ ### 2026-05-03
++- `mm_sport_v1` / MM 2.0 active-market and churn controls: added route-aware fresh-entry caps, independent FIFO depth ratio, randomized fresh-BUY cooldown after FIFO cancel or natural quote expiry, and hard reconcile for uncertain pending orders (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
++  - Applies to MM 2.0 Sport, Non-S, and Dual routes. Defaults cap Dual to 50 sports plus 50 non-sports fresh markets, single-route runs to 100 selected-route fresh markets, keep inventory/open-order markets in scope, clamp FIFO to at least 110% of the larger route sizing ratio, and avoid rearming unresolved `RECONCILE_FAILED` rows as open unless CLOB confirms they are still live.
+ - `mm_sport_v1` / MM 2.0 Polymarket WS pressure control: capped the sticky subscription superset used for FIFO/orderbook visibility and added periodic sticky-scope refresh reconnects so stale markets age out instead of accumulating indefinitely (`src/polymarket_ws.rs`, `.env.example`).
+   - Applies to MM 2.0 Sport, Non-S, and Dual routes. Current open-order/discovery scope remains protected, while stale sticky entries expire after `EVPOLY_PM_WS_STICKY_SCOPE_TTL_MS=900000` and are bounded by `EVPOLY_PM_WS_STICKY_SCOPE_MAX_MARKETS=300` / `EVPOLY_PM_WS_STICKY_SCOPE_MAX_ASSETS=650`.
+ 

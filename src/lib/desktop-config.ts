@@ -82,6 +82,33 @@ function normalizeMMSportDiscoveryRoute(value: string | undefined) {
   return "sports";
 }
 
+export function mmSportRouteDefaultCaps(value: string | undefined) {
+  const route = normalizeMMSportDiscoveryRoute(value);
+  if (route === "nonsports") {
+    return { active_sport_market_cap: 0, active_nonsport_market_cap: 100 };
+  }
+  if (route === "dual") {
+    return { active_sport_market_cap: 50, active_nonsport_market_cap: 50 };
+  }
+  return { active_sport_market_cap: 100, active_nonsport_market_cap: 0 };
+}
+
+function normalizeNonNegativeInteger(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return fallback;
+  return Math.floor(value);
+}
+
+function normalizeCooldownPair(
+  minValue: number | undefined,
+  maxValue: number | undefined,
+  fallbackMin: number,
+  fallbackMax: number
+) {
+  const min = normalizeNonNegativeInteger(minValue, fallbackMin);
+  const max = Math.max(normalizeNonNegativeInteger(maxValue, fallbackMax), min);
+  return { quote_cooldown_min_sec: min, quote_cooldown_max_sec: max };
+}
+
 function normalizeMMSportInventoryExitMode(value: string | undefined) {
   const normalized = value?.trim().toLowerCase();
   if (normalized === "aggressive") return "aggressive";
@@ -196,6 +223,11 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     sponsored_reward_min_share: 0.5,
     quote_expiry_min_sec: 65,
     quote_expiry_max_sec: 185,
+    quote_cooldown_min_sec: 10,
+    quote_cooldown_max_sec: 60,
+    fifo_max_share_ratio: 0.11,
+    active_sport_market_cap: 100,
+    active_nonsport_market_cap: 0,
   },
 };
 
@@ -282,6 +314,14 @@ export const DEFAULT_CONFIG: BotConfig = {
 
 export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotConfig {
   const savedMmSport = saved?.strategy_settings?.mm_sport;
+  const mmSportDiscoveryRoute = normalizeMMSportDiscoveryRoute(savedMmSport?.discovery_route);
+  const mmSportDefaultCaps = mmSportRouteDefaultCaps(mmSportDiscoveryRoute);
+  const mmSportCooldown = normalizeCooldownPair(
+    savedMmSport?.quote_cooldown_min_sec,
+    savedMmSport?.quote_cooldown_max_sec,
+    DEFAULT_CONFIG.strategy_settings.mm_sport.quote_cooldown_min_sec,
+    DEFAULT_CONFIG.strategy_settings.mm_sport.quote_cooldown_max_sec
+  );
   const sportQuoteSizeMode = normalizeMMSportQuoteSizeMode(savedMmSport?.quote_size_mode);
   const sportQuoteSizeMultiplier =
     saved?.mm_tuning?.sport_quote_size_multiplier ??
@@ -409,9 +449,7 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
       mm_sport: {
         ...DEFAULT_CONFIG.strategy_settings.mm_sport,
         ...savedMmSport,
-        discovery_route: normalizeMMSportDiscoveryRoute(
-          savedMmSport?.discovery_route
-        ),
+        discovery_route: mmSportDiscoveryRoute,
         quote_size_mode: sportQuoteSizeMode,
         nonsport_quote_size_mode: normalizeMMSportQuoteSizeMode(
           savedMmSport?.nonsport_quote_size_mode ?? sportQuoteSizeMode
@@ -430,6 +468,16 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
         min_top_depth_usd: sportMinTopDepthUsd,
         nonsport_min_top_depth_usd:
           savedMmSport?.nonsport_min_top_depth_usd ?? sportMinTopDepthUsd,
+        quote_cooldown_min_sec: mmSportCooldown.quote_cooldown_min_sec,
+        quote_cooldown_max_sec: mmSportCooldown.quote_cooldown_max_sec,
+        active_sport_market_cap: normalizeNonNegativeInteger(
+          savedMmSport?.active_sport_market_cap,
+          mmSportDefaultCaps.active_sport_market_cap
+        ),
+        active_nonsport_market_cap: normalizeNonNegativeInteger(
+          savedMmSport?.active_nonsport_market_cap,
+          mmSportDefaultCaps.active_nonsport_market_cap
+        ),
       },
     },
     symbols: saved?.symbols?.length ? saved.symbols : DEFAULT_CONFIG.symbols,

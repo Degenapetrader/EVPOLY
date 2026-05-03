@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { SectionPanel } from "./SectionPanel";
 import {
+  mmSportRouteDefaultCaps,
   parseNonNegative,
   strategyCapValue,
   strategyLabel,
@@ -1525,6 +1526,10 @@ export function StrategyEditorPane({
       const sizingMinTopDepthUsd = sizingProfileIsNonSport
         ? mmSport.nonsport_min_top_depth_usd
         : mmSport.min_top_depth_usd;
+      const fifoRatioFloor = Math.min(
+        0.99,
+        Math.max(0.01, Math.max(mmSport.max_share_ratio, mmSport.nonsport_max_share_ratio) * 1.1)
+      );
       const patchSizingProfile = (
         patch: Partial<BotConfig["strategy_settings"]["mm_sport"]>
       ) => patchMMSport(patch);
@@ -1566,6 +1571,7 @@ export function StrategyEditorPane({
                       onClick={() =>
                         patchMMSport({
                           discovery_route: value as BotConfig["strategy_settings"]["mm_sport"]["discovery_route"],
+                          ...mmSportRouteDefaultCaps(value),
                         })
                       }
                       className={`mode-choice ${
@@ -1819,6 +1825,29 @@ export function StrategyEditorPane({
                   MM 2.0 skips fresh paired entries when either side has a top bid below this price.
                 </p>
               </div>
+              <div>
+                <label className="field-label">FIFO Cancel Ratio</label>
+                <input
+                  type="number"
+                  min={fifoRatioFloor}
+                  max="0.99"
+                  step="0.01"
+                  value={mmSport.fifo_max_share_ratio}
+                  disabled={!canEdit}
+                  onChange={(event) =>
+                    patchMMSport({
+                      fifo_max_share_ratio: parseNonNegative(
+                        event.target.value,
+                        mmSport.fifo_max_share_ratio
+                      ),
+                    })
+                  }
+                  className="field-input"
+                />
+                <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                  FIFO cancels only at or above this ratio. Runtime clamps it to at least {fifoRatioFloor.toFixed(3)} based on the larger Sport/Non-S sizing ratio.
+                </p>
+              </div>
             </div>
           </div>
 
@@ -1855,6 +1884,56 @@ export function StrategyEditorPane({
                     Minimum daily liquidity reward rate a market must offer before MM 2.0
                     will quote it.
                   </p>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="field-label">Sport Fresh Market Cap</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={mmSport.active_sport_market_cap}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({
+                          active_sport_market_cap: Math.floor(
+                            parseNonNegative(
+                              event.target.value,
+                              mmSport.active_sport_market_cap
+                            )
+                          ),
+                        })
+                      }
+                      className="field-input"
+                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Fresh sports markets ranked by reward/day. Open orders and inventory stay in scope.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="field-label">Non-S Fresh Market Cap</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={mmSport.active_nonsport_market_cap}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({
+                          active_nonsport_market_cap: Math.floor(
+                            parseNonNegative(
+                              event.target.value,
+                              mmSport.active_nonsport_market_cap
+                            )
+                          ),
+                        })
+                      }
+                      className="field-input"
+                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Fresh non-sport markets ranked by reward/day. Dual uses separate Sport and Non-S caps.
+                    </p>
+                  </div>
                 </div>
                 <div>
                   <label className="field-label">Pause After Fill (Sec)</label>
@@ -1967,6 +2046,61 @@ export function StrategyEditorPane({
                     />
                     <p className="mt-2 text-sm text-[var(--text-secondary)]">
                       Longest quote lifetime MM 2.0 will allow when market conditions stay calm.
+                    </p>
+                  </div>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="field-label">Quote Cooldown Min (Sec)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={mmSport.quote_cooldown_min_sec}
+                      disabled={!canEdit}
+                      onChange={(event) => {
+                        const nextMin = Math.floor(
+                          parseNonNegative(event.target.value, mmSport.quote_cooldown_min_sec)
+                        );
+                        patchMMSport({
+                          quote_cooldown_min_sec: nextMin,
+                          quote_cooldown_max_sec: Math.max(
+                            Math.floor(mmSport.quote_cooldown_max_sec),
+                            nextMin
+                          ),
+                        });
+                      }}
+                      className="field-input"
+                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Shortest random pause before fresh BUY re-entry after FIFO cancel or natural expiry.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="field-label">Quote Cooldown Max (Sec)</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={mmSport.quote_cooldown_max_sec}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchMMSport({
+                          quote_cooldown_max_sec: Math.max(
+                            Math.floor(
+                              parseNonNegative(
+                                event.target.value,
+                                mmSport.quote_cooldown_max_sec
+                              )
+                            ),
+                            Math.floor(mmSport.quote_cooldown_min_sec)
+                          ),
+                        })
+                      }
+                      className="field-input"
+                    />
+                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
+                      Longest random pause before fresh BUY re-entry after churn.
                     </p>
                   </div>
                 </div>

@@ -9,6 +9,51 @@ import {
 import type { BotConfig } from "./tauri-commands";
 
 describe("desktop config MM 2.0 sizing profiles", () => {
+  it("uses route-aware fresh market cap defaults", () => {
+    expect(mergeConfig(null).strategy_settings.mm_sport).toMatchObject({
+      discovery_route: "sports",
+      active_sport_market_cap: 100,
+      active_nonsport_market_cap: 0,
+    });
+
+    expect(
+      mergeConfig({
+        strategy_settings: { mm_sport: { discovery_route: "nonsports" } },
+      } as Partial<BotConfig>).strategy_settings.mm_sport
+    ).toMatchObject({
+      active_sport_market_cap: 0,
+      active_nonsport_market_cap: 100,
+    });
+
+    expect(
+      mergeConfig({
+        strategy_settings: { mm_sport: { discovery_route: "dual" } },
+      } as Partial<BotConfig>).strategy_settings.mm_sport
+    ).toMatchObject({
+      active_sport_market_cap: 50,
+      active_nonsport_market_cap: 50,
+    });
+  });
+
+  it("normalizes fresh caps and cooldown windows", () => {
+    const merged = mergeConfig({
+      strategy_settings: {
+        mm_sport: {
+          discovery_route: "dual",
+          active_sport_market_cap: 50.9,
+          active_nonsport_market_cap: -1,
+          quote_cooldown_min_sec: 61.8,
+          quote_cooldown_max_sec: 10,
+        },
+      },
+    } as Partial<BotConfig>);
+
+    expect(merged.strategy_settings.mm_sport.active_sport_market_cap).toBe(50);
+    expect(merged.strategy_settings.mm_sport.active_nonsport_market_cap).toBe(50);
+    expect(merged.strategy_settings.mm_sport.quote_cooldown_min_sec).toBe(61);
+    expect(merged.strategy_settings.mm_sport.quote_cooldown_max_sec).toBe(61);
+  });
+
   it("falls back missing Non-S sizing fields to Sport values", () => {
     const merged = mergeConfig({
       mm_tuning: {

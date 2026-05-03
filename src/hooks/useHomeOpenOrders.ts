@@ -8,5 +8,5 @@ export function useHomeOpenOrders(limit = 120, enabled = true) {
     [limit]
   );
 
-  return usePolledList<HomeApiOpenOrderItem>({ enabled, pollMs: 10_000, load });
+  return usePolledList<HomeApiOpenOrderItem>({ enabled, pollMs: 20_000, load });
 }

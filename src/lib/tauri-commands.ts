@@ -637,8 +637,8 @@ export const getOpenPositions = (): Promise<Position[]> =>
 export const getWalletBalance = (): Promise<number> =>
   invoke("get_wallet_balance");
 
-export const getHomeOverview = (): Promise<HomeOverview> =>
-  invoke("get_home_overview");
+export const getHomeOverview = (forceRefresh = false): Promise<HomeOverview> =>
+  invoke("get_home_overview", { forceRefresh });
 
 export const getHomeActivity = (
   limit: number,

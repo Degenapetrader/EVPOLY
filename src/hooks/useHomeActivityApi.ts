@@ -8,5 +8,5 @@ export function useHomeActivityApi(limit = 24, enabled = true) {
     [limit]
   );
 
-  return usePolledList<HomeApiActivityItem>({ enabled, pollMs: 8_000, load });
+  return usePolledList<HomeApiActivityItem>({ enabled, pollMs: 15_000, load });
 }

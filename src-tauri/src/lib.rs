@@ -44,6 +44,8 @@ struct AppDataDir(PathBuf);
 struct MarketMetadataState(Mutex<HashMap<String, MarketMetadata>>);
 #[derive(Default)]
 struct LiquidityRewardsState(Mutex<Option<LiquidityRewardsCacheEntry>>);
+#[derive(Default)]
+struct HomeOverviewCacheState(Mutex<HomeOverviewCache>);
 
 type AuthState = Arc<Mutex<AppAuth>>;
 type ProfileState = Arc<Mutex<ProfileManager>>;
@@ -76,6 +78,10 @@ const DESKTOP_SECRET_KEYS: &[&str] = &[
 const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
 const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
 const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
+const HOME_DB_REFRESH_MS: i64 = 15_000;
+const HOME_REMOTE_REFRESH_MS: i64 = 60_000;
+const HOME_REMOTE_ERROR_REFRESH_MS: i64 = 15_000;
+const TRADE_STATS_REFRESH_MS: i64 = 60_000;
 
 #[derive(Clone, Default)]
 struct MarketMetadata {
@@ -138,6 +144,49 @@ struct TradeActivityRecord {
     period_timestamp: Option<i64>,
     token_type: Option<String>,
     asset_symbol: Option<String>,
+}
+
+#[derive(Clone, Default)]
+struct HomeDbSummary {
+    fetched_at_ms: i64,
+    pnl_today_utc: f64,
+    ack_sample_count: u64,
+    avg_ack_latency_ms: Option<f64>,
+    recent_ack_warning_count: u64,
+}
+
+#[derive(Clone)]
+struct HomeSlowOverviewSnapshot {
+    profile_id: String,
+    wallet_address: String,
+    fetched_at_ms: i64,
+    available_balance_result: Result<f64, String>,
+    portfolio_value_result: Result<f64, String>,
+    liquidity_rewards_today: Option<f64>,
+    liquidity_rewards_lifetime: Option<f64>,
+    liquidity_rewards_as_of_utc: Option<String>,
+    liquidity_rewards_error: Option<String>,
+}
+
+impl HomeSlowOverviewSnapshot {
+    fn has_error(&self) -> bool {
+        self.available_balance_result.is_err()
+            || self.portfolio_value_result.is_err()
+            || self.liquidity_rewards_error.is_some()
+    }
+}
+
+#[derive(Clone)]
+struct HomeTradeStatsSnapshot {
+    fetched_at_ms: i64,
+    value: Value,
+}
+
+#[derive(Clone, Default)]
+struct HomeOverviewCache {
+    db_summary: Option<HomeDbSummary>,
+    slow_snapshot: Option<HomeSlowOverviewSnapshot>,
+    trade_stats: Option<HomeTradeStatsSnapshot>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -2528,6 +2577,82 @@ fn resolve_tracking_db_path(data_dir: &Path) -> PathBuf {
     data_dir.join("tracking.db")
 }
 
+fn configure_tracking_connection(conn: &Connection) {
+    let _ = conn.busy_timeout(Duration::from_millis(1_500));
+    let _ = conn.execute_batch("PRAGMA temp_store=MEMORY;");
+}
+
+fn open_tracking_connection(data_dir: &Path) -> Option<Connection> {
+    let db_path = resolve_tracking_db_path(data_dir);
+    let conn = Connection::open(&db_path).ok()?;
+    configure_tracking_connection(&conn);
+    Some(conn)
+}
+
+fn ensure_tracking_db_indexes(data_dir: &Path, allow_large_create: bool) {
+    let db_path = resolve_tracking_db_path(data_dir);
+    if !db_path.exists() {
+        return;
+    }
+    let Ok(conn) = Connection::open(&db_path) else {
+        return;
+    };
+    configure_tracking_connection(&conn);
+    let db_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+    let allow_create = allow_large_create || db_bytes <= 512 * 1024 * 1024;
+    let mut skipped = 0usize;
+    for (name, sql) in [
+        (
+            "idx_evpoly_trade_events_event_ts",
+            "CREATE INDEX IF NOT EXISTS idx_evpoly_trade_events_event_ts ON trade_events(event_type, ts_ms)",
+        ),
+        (
+            "idx_evpoly_fills_v2_ts",
+            "CREATE INDEX IF NOT EXISTS idx_evpoly_fills_v2_ts ON fills_v2(ts_ms)",
+        ),
+        (
+            "idx_evpoly_fills_v2_created_ts",
+            "CREATE INDEX IF NOT EXISTS idx_evpoly_fills_v2_created_ts ON fills_v2(created_at_ms)",
+        ),
+        (
+            "idx_evpoly_positions_v2_status",
+            "CREATE INDEX IF NOT EXISTS idx_evpoly_positions_v2_status ON positions_v2(status)",
+        ),
+        (
+            "idx_evpoly_marks_v2_position_ts",
+            "CREATE INDEX IF NOT EXISTS idx_evpoly_marks_v2_position_ts ON marks_v2(position_key, ts_ms)",
+        ),
+    ] {
+        let exists = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1 LIMIT 1",
+                [name],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if exists {
+            continue;
+        }
+        if allow_create {
+            let _ = conn.execute(sql, []);
+        } else {
+            skipped = skipped.saturating_add(1);
+        }
+    }
+    if skipped > 0 {
+        append_desktop_debug_line(
+            data_dir,
+            "SYSTEM",
+            format!(
+                "tracking index creation skipped for large db bytes={} missing_indexes={}",
+                db_bytes, skipped
+            )
+            .as_str(),
+        );
+    }
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);");
+}
+
 fn append_desktop_debug_line(data_dir: &Path, source: &str, line: &str) {
     let ts = Utc::now().to_rfc3339();
     let content = format!("[{ts}] [{source}] {line}\n");
@@ -2620,7 +2745,7 @@ END
             "WITH ack_events AS ( \
                 SELECT ts_ms, {ack_latency_expr} AS ack_latency_ms \
                 FROM trade_events \
-                WHERE event_type='ENTRY_ACK' \
+                WHERE event_type='ENTRY_ACK' AND COALESCE(ts_ms, 0) >= ?1 \
             ) \
             SELECT \
                 COALESCE(SUM(CASE WHEN ack_latency_ms IS NOT NULL AND ack_latency_ms >= 0.0 THEN 1 ELSE 0 END), 0), \
@@ -3221,14 +3346,17 @@ fn build_home_activity_batch(
 }
 
 async fn build_home_overview_payload(
-    app: AppHandle,
+    _app: AppHandle,
     bot: State<'_, BotState>,
     auth: State<'_, AuthState>,
     profiles: State<'_, ProfileState>,
     wallet_sync: State<'_, WalletSyncState>,
     liquidity_rewards: State<'_, LiquidityRewardsState>,
+    overview_cache: State<'_, HomeOverviewCacheState>,
     data_dir: State<'_, AppDataDir>,
+    force_refresh: bool,
 ) -> Result<serde_json::Value, String> {
+    let now_ms = Utc::now().timestamp_millis();
     let bot_snapshot = {
         let manager = bot.lock().map_err(|e| e.to_string())?;
         (
@@ -3240,15 +3368,47 @@ async fn build_home_overview_payload(
     };
     let wallet_sync_status = wallet_sync.lock().map_err(|e| e.to_string())?.status();
     let db_path = resolve_tracking_db_path(&data_dir.0);
-    let (pnl_today_utc, ack_sample_count, avg_ack_latency_ms, recent_ack_warning_count) =
-        Connection::open(&db_path)
-            .ok()
-            .map(|conn| {
-                let pnl = query_pnl_today_utc(&conn);
-                let (ack_count, ack_avg, ack_warnings) = query_ack_latency_summary(&conn);
-                (pnl, ack_count, ack_avg, ack_warnings)
-            })
-            .unwrap_or((0.0, 0, None, 0));
+    let db_summary = {
+        let cached = overview_cache
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .db_summary
+            .clone();
+        if let Some(summary) = cached.filter(|summary| {
+            !force_refresh && now_ms.saturating_sub(summary.fetched_at_ms) <= HOME_DB_REFRESH_MS
+        }) {
+            summary
+        } else {
+            let (pnl_today_utc, ack_sample_count, avg_ack_latency_ms, recent_ack_warning_count) =
+                Connection::open(&db_path)
+                    .ok()
+                    .map(|conn| {
+                        configure_tracking_connection(&conn);
+                        let pnl = query_pnl_today_utc(&conn);
+                        let (ack_count, ack_avg, ack_warnings) = query_ack_latency_summary(&conn);
+                        (pnl, ack_count, ack_avg, ack_warnings)
+                    })
+                    .unwrap_or((0.0, 0, None, 0));
+            let summary = HomeDbSummary {
+                fetched_at_ms: now_ms,
+                pnl_today_utc,
+                ack_sample_count,
+                avg_ack_latency_ms,
+                recent_ack_warning_count,
+            };
+            overview_cache
+                .0
+                .lock()
+                .map_err(|e| e.to_string())?
+                .db_summary = Some(summary.clone());
+            summary
+        }
+    };
+    let pnl_today_utc = db_summary.pnl_today_utc;
+    let ack_sample_count = db_summary.ack_sample_count;
+    let avg_ack_latency_ms = db_summary.avg_ack_latency_ms;
+    let recent_ack_warning_count = db_summary.recent_ack_warning_count;
     let recent_unknown_ack_count = count_unknown_ack_warnings(&data_dir.0, 160) as u64;
 
     let (active_profile_id, maybe_profile, live_profile_name) = {
@@ -3306,48 +3466,98 @@ async fn build_home_overview_payload(
     };
 
     let wallet_address = profile.primary_wallet_address();
-    let rewards_query = {
-        let auth = auth.lock().map_err(|e| e.to_string())?;
-        build_liquidity_rewards_query(&profile, &auth, &db_path)?
-    };
-    let rewards_result = tokio::time::timeout(
-        Duration::from_secs(20),
-        load_liquidity_rewards_overview(&rewards_query, &liquidity_rewards.0),
-    )
-    .await
-    .map_err(|_| "liquidity rewards refresh timed out".to_string());
+    let slow_snapshot = {
+        let cached = overview_cache
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .slow_snapshot
+            .clone();
+        if let Some(snapshot) = cached.filter(|snapshot| {
+            !force_refresh
+                && snapshot.profile_id == profile.id
+                && snapshot
+                    .wallet_address
+                    .eq_ignore_ascii_case(wallet_address.as_str())
+                && now_ms.saturating_sub(snapshot.fetched_at_ms)
+                    <= if snapshot.has_error() {
+                        HOME_REMOTE_ERROR_REFRESH_MS
+                    } else {
+                        HOME_REMOTE_REFRESH_MS
+                    }
+        }) {
+            snapshot
+        } else {
+            let rewards_query = {
+                let auth = auth.lock().map_err(|e| e.to_string())?;
+                build_liquidity_rewards_query(&profile, &auth, &db_path)?
+            };
+            let rewards_result = tokio::time::timeout(
+                Duration::from_secs(20),
+                load_liquidity_rewards_overview(&rewards_query, &liquidity_rewards.0),
+            )
+            .await
+            .map_err(|_| "liquidity rewards refresh timed out".to_string());
 
-    let (available_balance_result, portfolio_value_result) = tokio::join!(
-        tokio::time::timeout(Duration::from_secs(15), get_wallet_balance(app.clone())),
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            portfolio_api::fetch_portfolio_value_with_fallback(&wallet_address),
-        )
-    );
-    let available_balance_result = match available_balance_result {
-        Ok(result) => result,
-        Err(_) => Err("available balance refresh timed out".to_string()),
+            let (available_balance_result, portfolio_value_result) = tokio::join!(
+                tokio::time::timeout(
+                    Duration::from_secs(15),
+                    get_wallet_balance_for_address(&wallet_address),
+                ),
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    portfolio_api::fetch_portfolio_value_with_fallback(&wallet_address),
+                )
+            );
+            let available_balance_result = match available_balance_result {
+                Ok(result) => result,
+                Err(_) => Err("available balance refresh timed out".to_string()),
+            };
+            let portfolio_value_result = match portfolio_value_result {
+                Ok(result) => result.map(|row| row.0),
+                Err(_) => Err("portfolio value refresh timed out".to_string()),
+            };
+            let (
+                liquidity_rewards_today,
+                liquidity_rewards_lifetime,
+                liquidity_rewards_as_of_utc,
+                liquidity_rewards_error,
+            ) = match rewards_result {
+                Ok(Ok((today, lifetime, as_of_utc))) => (today, lifetime, as_of_utc, None),
+                Ok(Err(err)) => (None, None, None, Some(err)),
+                Err(err) => (None, None, None, Some(err)),
+            };
+            let snapshot = HomeSlowOverviewSnapshot {
+                profile_id: profile.id.clone(),
+                wallet_address: wallet_address.clone(),
+                fetched_at_ms: now_ms,
+                available_balance_result,
+                portfolio_value_result,
+                liquidity_rewards_today,
+                liquidity_rewards_lifetime,
+                liquidity_rewards_as_of_utc,
+                liquidity_rewards_error,
+            };
+            overview_cache
+                .0
+                .lock()
+                .map_err(|e| e.to_string())?
+                .slow_snapshot = Some(snapshot.clone());
+            snapshot
+        }
     };
-    let portfolio_value_result = match portfolio_value_result {
-        Ok(result) => result.map(|row| row.0),
-        Err(_) => Err("portfolio value refresh timed out".to_string()),
-    };
+    let available_balance_result = slow_snapshot.available_balance_result.clone();
+    let portfolio_value_result = slow_snapshot.portfolio_value_result.clone();
     let available_balance = available_balance_result.clone().ok();
     let portfolio_value = portfolio_value_result.clone().ok();
     let total_equity = match (available_balance, portfolio_value) {
         (Some(available), Some(portfolio)) => Some(available + portfolio),
         _ => None,
     };
-    let (
-        liquidity_rewards_today,
-        liquidity_rewards_lifetime,
-        liquidity_rewards_as_of_utc,
-        liquidity_rewards_error,
-    ) = match rewards_result {
-        Ok(Ok((today, lifetime, as_of_utc))) => (today, lifetime, as_of_utc, None),
-        Ok(Err(err)) => (None, None, None, Some(err)),
-        Err(err) => (None, None, None, Some(err)),
-    };
+    let liquidity_rewards_today = slow_snapshot.liquidity_rewards_today;
+    let liquidity_rewards_lifetime = slow_snapshot.liquidity_rewards_lifetime;
+    let liquidity_rewards_as_of_utc = slow_snapshot.liquidity_rewards_as_of_utc;
+    let liquidity_rewards_error = slow_snapshot.liquidity_rewards_error;
     let mode = match bot_snapshot.1 {
         Some(true) => "dry_run",
         Some(false) => "live",
@@ -3647,9 +3857,15 @@ async fn start_bot(
 fn stop_bot(
     bot: State<'_, BotState>,
     wallet_sync: State<'_, WalletSyncState>,
+    data_dir: State<'_, AppDataDir>,
 ) -> Result<(), String> {
     wallet_sync.lock().map_err(|e| e.to_string())?.stop()?;
-    bot.lock().map_err(|e| e.to_string())?.stop()
+    bot.lock().map_err(|e| e.to_string())?.stop()?;
+    let tracking_index_dir = data_dir.0.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_tracking_db_indexes(&tracking_index_dir, true);
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -4474,8 +4690,7 @@ fn import_config(
 
 // ── Data (tracking.db) ──────────────────────────────────────────────
 
-#[tauri::command]
-fn get_trade_stats(data_dir: State<'_, AppDataDir>) -> serde_json::Value {
+fn build_trade_stats_value(data_dir: &Path) -> serde_json::Value {
     let empty = serde_json::json!({
         "total_pnl": 0.0,
         "win_rate": 0.0,
@@ -4486,15 +4701,16 @@ fn get_trade_stats(data_dir: State<'_, AppDataDir>) -> serde_json::Value {
         "ack_sample_count": 0,
         "pnl_history": []
     });
-    let db_path = resolve_tracking_db_path(&data_dir.0);
 
-    let conn = match Connection::open(&db_path) {
-        Ok(c) => c,
-        Err(_) => return empty.clone(),
+    let conn = match open_tracking_connection(data_dir) {
+        Some(c) => c,
+        None => return empty.clone(),
     };
 
     let total_trades: i64 = conn
-        .query_row("SELECT COUNT(*) FROM fills_v2", [], |row| row.get(0))
+        .query_row("SELECT COALESCE(MAX(id), 0) FROM fills_v2", [], |row| {
+            row.get(0)
+        })
         .unwrap_or(0);
     let total_pnl: f64 = conn
         .query_row(
@@ -4503,13 +4719,14 @@ fn get_trade_stats(data_dir: State<'_, AppDataDir>) -> serde_json::Value {
             |row| row.get(0),
         )
         .unwrap_or(0.0);
+    let history_start_ms = start_of_current_utc_day_ms();
     let (winning_trades, losing_trades): (i64, i64) = conn
         .query_row(
             "SELECT \
                 COALESCE(SUM(CASE WHEN COALESCE(pnl_usd, 0.0) > 0 THEN 1 ELSE 0 END), 0), \
                 COALESCE(SUM(CASE WHEN COALESCE(pnl_usd, 0.0) < 0 THEN 1 ELSE 0 END), 0) \
-             FROM trade_events WHERE event_type='EXIT'",
-            [],
+             FROM trade_events WHERE event_type='EXIT' AND COALESCE(ts_ms, 0) >= ?1",
+            [history_start_ms],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap_or((0, 0));
@@ -4526,11 +4743,11 @@ fn get_trade_stats(data_dir: State<'_, AppDataDir>) -> serde_json::Value {
         "SELECT ((ts_ms / 3600000) * 3600000) AS bucket_ms, \
                 COALESCE(SUM(COALESCE(pnl_usd, 0.0)), 0.0) AS pnl_delta \
          FROM trade_events \
-         WHERE event_type='EXIT' \
+         WHERE event_type='EXIT' AND COALESCE(ts_ms, 0) >= ?1 \
          GROUP BY bucket_ms \
          ORDER BY bucket_ms ASC",
     ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
+        if let Ok(rows) = stmt.query_map([history_start_ms], |row| {
             let bucket_ms: i64 = row.get(0)?;
             let pnl_delta: f64 = row.get(1)?;
             Ok((bucket_ms, pnl_delta))
@@ -4556,6 +4773,32 @@ fn get_trade_stats(data_dir: State<'_, AppDataDir>) -> serde_json::Value {
         "ack_sample_count": ack_sample_count,
         "pnl_history": pnl_history
     })
+}
+
+#[tauri::command]
+fn get_trade_stats(
+    data_dir: State<'_, AppDataDir>,
+    overview_cache: State<'_, HomeOverviewCacheState>,
+) -> serde_json::Value {
+    let now_ms = Utc::now().timestamp_millis();
+    if let Some(snapshot) = overview_cache
+        .0
+        .lock()
+        .ok()
+        .and_then(|cache| cache.trade_stats.clone())
+        .filter(|snapshot| now_ms.saturating_sub(snapshot.fetched_at_ms) <= TRADE_STATS_REFRESH_MS)
+    {
+        return snapshot.value;
+    }
+
+    let value = build_trade_stats_value(&data_dir.0);
+    if let Ok(mut cache) = overview_cache.0.lock() {
+        cache.trade_stats = Some(HomeTradeStatsSnapshot {
+            fetched_at_ms: now_ms,
+            value: value.clone(),
+        });
+    }
+    value
 }
 
 #[tauri::command]
@@ -4698,9 +4941,13 @@ async fn get_wallet_balance(app: AppHandle) -> Result<f64, String> {
         let p = pm.get_profile(&id).ok_or("profile not found")?;
         p.primary_wallet_address()
     };
+    get_wallet_balance_for_address(&wallet).await
+}
+
+async fn get_wallet_balance_for_address(wallet: &str) -> Result<f64, String> {
     tokio::time::timeout(
         Duration::from_secs(15),
-        wallet_rpc::fetch_pusd_balance_with_fallback(&config_io::DESKTOP_POLYGON_RPC_URLS, &wallet),
+        wallet_rpc::fetch_pusd_balance_with_fallback(&config_io::DESKTOP_POLYGON_RPC_URLS, wallet),
     )
     .await
     .map_err(|_| "wallet balance refresh timed out".to_string())?
@@ -4714,7 +4961,9 @@ async fn get_home_overview(
     profiles: State<'_, ProfileState>,
     wallet_sync: State<'_, WalletSyncState>,
     liquidity_rewards: State<'_, LiquidityRewardsState>,
+    overview_cache: State<'_, HomeOverviewCacheState>,
     data_dir: State<'_, AppDataDir>,
+    force_refresh: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     build_home_overview_payload(
         app,
@@ -4723,7 +4972,9 @@ async fn get_home_overview(
         profiles,
         wallet_sync,
         liquidity_rewards,
+        overview_cache,
         data_dir,
+        force_refresh.unwrap_or(false),
     )
     .await
 }
@@ -5042,6 +5293,7 @@ pub fn run() {
     config_io::cleanup_generated_env_files(&data_dir);
     let _ = ensure_debug_log_files(&data_dir);
     append_desktop_debug_line(&data_dir, "SYSTEM", "desktop app startup");
+    let data_dir_for_indexes = data_dir.clone();
 
     let auth: AuthState = Arc::new(Mutex::new(AppAuth::new(data_dir.clone())));
     let profiles: ProfileState = Arc::new(Mutex::new(ProfileManager::new(data_dir.clone())));
@@ -5059,7 +5311,12 @@ pub fn run() {
         .manage(wallet_sync)
         .manage(MarketMetadataState::default())
         .manage(LiquidityRewardsState::default())
-        .setup(|app| {
+        .manage(HomeOverviewCacheState::default())
+        .setup(move |app| {
+            let tracking_index_dir = data_dir_for_indexes.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                ensure_tracking_db_indexes(&tracking_index_dir, false);
+            });
             let status_item =
                 MenuItem::with_id(app, "status", "EVPoly: Stopped", false, None::<&str>)?;
             let start_item = MenuItem::with_id(app, "start", "Start", true, None::<&str>)?;

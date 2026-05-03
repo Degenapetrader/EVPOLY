@@ -52,6 +52,7 @@ fn parse_signature_type(raw: u8) -> Result<SignatureType> {
         0 => Ok(SignatureType::Eoa),
         1 => Ok(SignatureType::Proxy),
         2 => Ok(SignatureType::GnosisSafe),
+        3 => Ok(SignatureType::Poly1271),
         _ => bail!("unsupported POLY_SIGNATURE_TYPE={raw}"),
     }
 }
@@ -127,7 +128,7 @@ async fn authenticate_and_fetch(
                 .authenticate()
                 .await?
         }
-        SignatureType::Proxy | SignatureType::GnosisSafe => {
+        SignatureType::Proxy | SignatureType::GnosisSafe | SignatureType::Poly1271 => {
             auth_builder
                 .funder(maker_address)
                 .signature_type(signature_type)

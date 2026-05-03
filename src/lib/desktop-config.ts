@@ -285,6 +285,7 @@ export const DEFAULT_CONFIG: BotConfig = {
   private_key: "",
   eoa_wallet: "",
   proxy_wallet: "",
+  deposit_wallet: "",
   sig_type: 1,
   weekend_policy: "off",
   symbols: ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"],

@@ -5,6 +5,7 @@ export interface Profile {
   name: string;
   eoa_wallet_address: string;
   proxy_wallet_address: string;
+  deposit_wallet_address: string;
   wallet_address: string;
   signature_type: number;
   created_at: string;
@@ -14,6 +15,7 @@ export interface PolymarketFunderAddresses {
   eoa_wallet: string;
   proxy_wallet: string | null;
   safe_wallet: string;
+  deposit_wallet: string | null;
 }
 
 export interface LogLine {
@@ -255,6 +257,8 @@ export interface Position {
 export interface OnboardResult {
   eoa_wallet?: string;
   bound_wallet?: string;
+  deposit_wallet?: string;
+  deposit_wallet_address?: string;
   wallet_binding?: string;
   alpha_key?: string;
   relayer_remote_signer_token?: string;
@@ -452,6 +456,7 @@ export interface BotConfig {
   private_key: string;
   eoa_wallet: string;
   proxy_wallet: string;
+  deposit_wallet: string;
   sig_type: number;
   weekend_policy: WeekendPolicy;
   symbols: string[];
@@ -525,12 +530,15 @@ export const listProfiles = (): Promise<Profile[]> =>
 export const createProfile = (
   name: string,
   proxyWallet: string,
-  sigType: number
+  sigType: number,
+  depositWallet = ""
 ): Promise<Profile> =>
   invoke("create_profile", {
     name,
     proxyWalletAddress: proxyWallet,
     proxy_wallet_address: proxyWallet,
+    depositWalletAddress: depositWallet,
+    deposit_wallet_address: depositWallet,
     signatureType: sigType,
     signature_type: sigType,
   });
@@ -696,7 +704,8 @@ export const derivePolymarketFunderAddresses = (
 export const runOnboarding = (
   privateKey: string,
   sigType: number,
-  proxyWallet: string
+  proxyWallet: string,
+  depositWallet = ""
 ): Promise<OnboardResult> =>
   invoke("run_onboarding", {
     privateKey,
@@ -705,6 +714,8 @@ export const runOnboarding = (
     signature_type: sigType,
     proxyWallet,
     proxy_wallet: proxyWallet,
+    depositWallet,
+    deposit_wallet: depositWallet,
   });
 
 export const runSetupDoctor = (): Promise<SetupDoctorResult> =>

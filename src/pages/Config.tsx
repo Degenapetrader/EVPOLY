@@ -83,20 +83,37 @@ function getErrorText(err: unknown, fallback: string): string {
 function walletModeLabel(sigType: number): string {
   if (sigType === 1) return "Proxy Wallet";
   if (sigType === 2) return "Safe Wallet";
+  if (sigType === 3) return "Deposit Wallet";
   return "EOA";
 }
 
 function walletModeHelp(sigType: number): string {
   if (sigType === 1) return "Use this if you signed up for Polymarket with email.";
   if (sigType === 2) return "Use this if you signed up for Polymarket with a Web3 wallet.";
+  if (sigType === 3) return "Use this for new API users with a deployed deposit wallet.";
   return "Use this if you want to pay gas fees yourself.";
 }
 
 const WALLET_MODE_OPTIONS = [
   { value: 1, label: "Proxy Wallet" },
   { value: 2, label: "Safe Wallet" },
+  { value: 3, label: "Deposit Wallet" },
   { value: 0, label: "EOA" },
 ] as const;
+
+function funderAddressLabel(sigType: number): string {
+  if (sigType === 3) return "Deposit Wallet Address";
+  return "Proxy Wallet Address";
+}
+
+function activeFunderAddress(config: BotConfig): string {
+  if (config.sig_type === 3) return config.deposit_wallet.trim();
+  return config.proxy_wallet.trim();
+}
+
+function matchesProxyOrSafe(sigType: number): boolean {
+  return sigType === 1 || sigType === 2;
+}
 
 function WalletModeSelector({
   value,
@@ -197,6 +214,7 @@ export function Config() {
   const [walletProfileMessage, setWalletProfileMessage] = useState<string | null>(null);
   const [importPrivateKey, setImportPrivateKey] = useState("");
   const [importSigType, setImportSigType] = useState("2");
+  const [importDepositWallet, setImportDepositWallet] = useState("");
   const [importLoading, setImportLoading] = useState(false);
   const [showImportPrivateKey, setShowImportPrivateKey] = useState(false);
   const [logsOpen, setLogsOpen] = useState(false);
@@ -260,7 +278,7 @@ export function Config() {
   );
 
   const setupReady = Boolean(
-    config.private_key.trim() && (config.sig_type === 0 || config.proxy_wallet.trim())
+    config.private_key.trim() && (config.sig_type === 0 || activeFunderAddress(config))
   );
   const onboardingReady = Boolean(
     setupReady &&
@@ -352,17 +370,19 @@ export function Config() {
     eoaWallet,
     signatureType,
     proxyWallet,
+    depositWallet,
   }: {
     profileName: string;
     privateKey: string;
     eoaWallet: string;
     signatureType: number;
     proxyWallet: string;
+    depositWallet: string;
   }) => {
     let createdProfileId: string | null = null;
     let activatedProfile = false;
     try {
-      const created = await createProfile(profileName, proxyWallet, signatureType);
+      const created = await createProfile(profileName, proxyWallet, signatureType, depositWallet);
       createdProfileId = created.id;
       const saved = mergeConfig(await getSavedConfig(created.id));
       const nextConfig = {
@@ -371,6 +391,7 @@ export function Config() {
         eoa_wallet: eoaWallet,
         sig_type: signatureType,
         proxy_wallet: proxyWallet,
+        deposit_wallet: depositWallet,
         alpha_key: "",
         relayer_remote_signer_token: "",
         relayer_submit_signer_url: "",
@@ -410,7 +431,7 @@ export function Config() {
       setWalletProfileMessage("Enter a private key.");
       return;
     }
-    if (!Number.isFinite(signatureType) || signatureType < 0 || signatureType > 2) {
+    if (!Number.isFinite(signatureType) || signatureType < 0 || signatureType > 3) {
       setWalletProfileMessage("Choose a valid wallet mode.");
       return;
     }
@@ -420,14 +441,21 @@ export function Config() {
     setSaveMessage(null);
     try {
       const funders = await derivePolymarketFunderAddresses(privateKey);
+      const depositWallet = signatureType === 3 ? importDepositWallet.trim() : "";
       const proxyWallet =
         signatureType === 0
           ? ""
           : signatureType === 1
             ? funders.proxy_wallet || ""
-            : funders.safe_wallet;
-      if (signatureType !== 0 && !proxyWallet) {
+            : signatureType === 2
+              ? funders.safe_wallet
+              : "";
+      if (matchesProxyOrSafe(signatureType) && !proxyWallet) {
         setWalletProfileMessage("Could not derive the proxy or safe wallet for this private key.");
+        return;
+      }
+      if (signatureType === 3 && !depositWallet) {
+        setWalletProfileMessage("Enter the deployed deposit wallet address.");
         return;
       }
       const profileName = importedProfileName(funders.eoa_wallet, profiles);
@@ -437,8 +465,10 @@ export function Config() {
         eoaWallet: funders.eoa_wallet,
         signatureType,
         proxyWallet,
+        depositWallet,
       });
       setImportPrivateKey("");
+      setImportDepositWallet("");
       setShowImportPrivateKey(false);
       const message = "Imported private key profile created and selected. Onboarding credentials are ready.";
       setWalletProfileMessage(message);
@@ -452,7 +482,14 @@ export function Config() {
 
   const handleCreateProfile = async () => {
     try {
-      const created = await createProfile(createName.trim() || "New Profile", createProxy.trim(), Number(createSigType));
+      const signatureType = Number(createSigType);
+      const address = createProxy.trim();
+      const created = await createProfile(
+        createName.trim() || "New Profile",
+        matchesProxyOrSafe(signatureType) ? address : "",
+        signatureType,
+        signatureType === 3 ? address : ""
+      );
       await setActiveProfile(created.id);
       setActiveProfileId(created.id);
       await loadProfileConfig(created.id);
@@ -540,8 +577,8 @@ export function Config() {
               </div>
               <div className="status-strip__copy">
                 {onboardingReady
-                  ? "This profile is ready to trade. Save changes any time you update the private key, proxy wallet, or relayer fields."
-                  : "Set the wallet mode, private key, and proxy wallet when needed. Save will generate EVPOLY alpha and relayer signer credentials automatically."}
+                  ? "This profile is ready to trade. Save changes any time you update the private key, wallet address, or relayer fields."
+                  : "Set the wallet mode, private key, and wallet address when needed. Save will generate EVPOLY alpha and relayer signer credentials automatically."}
               </div>
             </div>
 
@@ -552,10 +589,14 @@ export function Config() {
               >
                 <div className="grid gap-4 xl:grid-cols-2">
                   <Field
-                    label="Proxy Wallet Address"
-                    value={config.proxy_wallet}
+                    label={funderAddressLabel(config.sig_type)}
+                    value={config.sig_type === 3 ? config.deposit_wallet : config.proxy_wallet}
                     onChange={(value) =>
-                      setConfig((current) => ({ ...current, proxy_wallet: value }))
+                      setConfig((current) =>
+                        current.sig_type === 3
+                          ? { ...current, deposit_wallet: value }
+                          : { ...current, proxy_wallet: value }
+                      )
                     }
                   />
 
@@ -733,9 +774,19 @@ export function Config() {
                         onChange={(value) => setImportSigType(String(value))}
                       />
                     </div>
+                    {Number(importSigType) === 3 ? (
+                      <Field
+                        label="Deposit Wallet Address"
+                        value={importDepositWallet}
+                        onChange={setImportDepositWallet}
+                        placeholder="0x..."
+                      />
+                    ) : null}
                     {Number(importSigType) !== 0 ? (
                       <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
-                        Proxy/Safe funder address is derived locally during import.
+                        {Number(importSigType) === 3
+                          ? "Deposit wallet address must already be deployed, funded, and approved before live trading."
+                          : "Proxy/Safe funder address is derived locally during import."}
                       </div>
                     ) : null}
                     <button
@@ -810,12 +861,14 @@ export function Config() {
               <div className="space-y-4">
                 <Field label="Profile name" value={createName} onChange={setCreateName} />
                 <Field
-                  label="Proxy Wallet Address"
+                  label={funderAddressLabel(Number(createSigType))}
                   value={createProxy}
                   onChange={setCreateProxy}
                 />
                 <div className="text-sm leading-6 text-[var(--text-secondary)]">
-                  EOA address is derived from the private key during onboarding.
+                  {Number(createSigType) === 3
+                    ? "Use a deployed deposit wallet address for new API user profiles."
+                    : "EOA address is derived from the private key during onboarding."}
                 </div>
                 <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4 text-sm leading-6 text-[var(--text-secondary)]">
                   <div className="text-sm font-semibold text-[var(--text-primary)]">

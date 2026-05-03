@@ -16,6 +16,8 @@ pub struct Profile {
     #[serde(default)]
     pub proxy_wallet_address: String,
     #[serde(default)]
+    pub deposit_wallet_address: String,
+    #[serde(default)]
     pub wallet_address: String,
     pub signature_type: u8,
     pub encrypted_secrets: String,
@@ -29,12 +31,19 @@ impl Profile {
     pub fn normalize_wallet_fields(&mut self) {
         let legacy = self.wallet_address.trim().to_string();
 
-        if self.eoa_wallet_address.trim().is_empty()
-            && self.proxy_wallet_address.trim().is_empty()
+        self.eoa_wallet_address = self.eoa_wallet_address.trim().to_string();
+        self.proxy_wallet_address = self.proxy_wallet_address.trim().to_string();
+        self.deposit_wallet_address = self.deposit_wallet_address.trim().to_string();
+
+        if self.eoa_wallet_address.is_empty()
+            && self.proxy_wallet_address.is_empty()
+            && self.deposit_wallet_address.is_empty()
             && !legacy.is_empty()
         {
             if self.signature_type == 0 {
                 self.eoa_wallet_address = legacy.clone();
+            } else if self.signature_type == 3 {
+                self.deposit_wallet_address = legacy.clone();
             } else {
                 self.proxy_wallet_address = legacy.clone();
             }
@@ -45,7 +54,15 @@ impl Profile {
                 self.eoa_wallet_address = legacy;
             }
             self.wallet_address = self.eoa_wallet_address.trim().to_string();
-            self.proxy_wallet_address = self.proxy_wallet_address.trim().to_string();
+        } else if self.signature_type == 3 {
+            if self.deposit_wallet_address.is_empty() {
+                if !legacy.is_empty() {
+                    self.deposit_wallet_address = legacy;
+                } else if !self.proxy_wallet_address.is_empty() {
+                    self.deposit_wallet_address = self.proxy_wallet_address.clone();
+                }
+            }
+            self.wallet_address = self.deposit_wallet_address.clone();
         } else {
             if self.proxy_wallet_address.trim().is_empty() {
                 if !legacy.is_empty() {
@@ -54,8 +71,6 @@ impl Profile {
                     self.proxy_wallet_address = self.eoa_wallet_address.trim().to_string();
                 }
             }
-            self.proxy_wallet_address = self.proxy_wallet_address.trim().to_string();
-            self.eoa_wallet_address = self.eoa_wallet_address.trim().to_string();
             self.wallet_address = self.proxy_wallet_address.clone();
         }
     }
@@ -63,6 +78,9 @@ impl Profile {
     pub fn primary_wallet_address(&self) -> String {
         if self.signature_type == 0 {
             return self.eoa_wallet_address.trim().to_string();
+        }
+        if self.signature_type == 3 {
+            return self.deposit_wallet_address.trim().to_string();
         }
         self.proxy_wallet_address.trim().to_string()
     }
@@ -162,6 +180,7 @@ impl ProfileManager {
         name: String,
         eoa_wallet_address: String,
         proxy_wallet_address: String,
+        deposit_wallet_address: String,
         sig_type: u8,
         strategy_config: serde_json::Value,
         sizing_config: serde_json::Value,
@@ -172,6 +191,7 @@ impl ProfileManager {
             name,
             eoa_wallet_address,
             proxy_wallet_address,
+            deposit_wallet_address,
             wallet_address: String::new(),
             signature_type: sig_type,
             encrypted_secrets: String::new(),
@@ -239,6 +259,7 @@ mod tests {
             name: "test".to_string(),
             eoa_wallet_address: String::new(),
             proxy_wallet_address: String::new(),
+            deposit_wallet_address: String::new(),
             wallet_address: "0xabc".to_string(),
             signature_type,
             encrypted_secrets: String::new(),
@@ -255,6 +276,7 @@ mod tests {
         profile.normalize_wallet_fields();
         assert_eq!(profile.eoa_wallet_address, "0xabc");
         assert_eq!(profile.proxy_wallet_address, "");
+        assert_eq!(profile.deposit_wallet_address, "");
         assert_eq!(profile.wallet_address, "0xabc");
         assert_eq!(profile.primary_wallet_address(), "0xabc");
     }
@@ -265,6 +287,18 @@ mod tests {
         profile.normalize_wallet_fields();
         assert_eq!(profile.eoa_wallet_address, "");
         assert_eq!(profile.proxy_wallet_address, "0xabc");
+        assert_eq!(profile.deposit_wallet_address, "");
+        assert_eq!(profile.wallet_address, "0xabc");
+        assert_eq!(profile.primary_wallet_address(), "0xabc");
+    }
+
+    #[test]
+    fn legacy_wallet_maps_to_deposit_for_sig_type_three() {
+        let mut profile = base_profile(3);
+        profile.normalize_wallet_fields();
+        assert_eq!(profile.eoa_wallet_address, "");
+        assert_eq!(profile.proxy_wallet_address, "");
+        assert_eq!(profile.deposit_wallet_address, "0xabc");
         assert_eq!(profile.wallet_address, "0xabc");
         assert_eq!(profile.primary_wallet_address(), "0xabc");
     }
@@ -293,6 +327,7 @@ mod tests {
                 "desktop".to_string(),
                 "0x111".to_string(),
                 "0x222".to_string(),
+                String::new(),
                 1,
                 strategy_config.clone(),
                 sizing_config.clone(),

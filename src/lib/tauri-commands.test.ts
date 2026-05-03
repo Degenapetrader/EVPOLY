@@ -24,6 +24,7 @@ const SAMPLE_CONFIG: BotConfig = {
   private_key: "0xpk",
   eoa_wallet: "0xeoa",
   proxy_wallet: "0xproxy",
+  deposit_wallet: "",
   sig_type: 1,
   weekend_policy: "off",
   symbols: ["BTC"],
@@ -200,6 +201,8 @@ describe("tauri command payload contracts", () => {
       name: "Default",
       proxyWalletAddress: "0xproxy",
       proxy_wallet_address: "0xproxy",
+      depositWalletAddress: "",
+      deposit_wallet_address: "",
       signatureType: 1,
       signature_type: 1,
     });
@@ -225,6 +228,37 @@ describe("tauri command payload contracts", () => {
       signature_type: 1,
       proxyWallet: "0xproxy",
       proxy_wallet: "0xproxy",
+      depositWallet: "",
+      deposit_wallet: "",
+    });
+  });
+
+  it("sends deposit wallet keys for run_onboarding", async () => {
+    await runOnboarding("0xprivate", 3, "", "0xdeposit");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("run_onboarding", {
+      privateKey: "0xprivate",
+      private_key: "0xprivate",
+      signatureType: 3,
+      signature_type: 3,
+      proxyWallet: "",
+      proxy_wallet: "",
+      depositWallet: "0xdeposit",
+      deposit_wallet: "0xdeposit",
+    });
+  });
+
+  it("sends deposit wallet keys for create_profile", async () => {
+    await createProfile("Deposit", "", 3, "0xdeposit");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("create_profile", {
+      name: "Deposit",
+      proxyWalletAddress: "",
+      proxy_wallet_address: "",
+      depositWalletAddress: "0xdeposit",
+      deposit_wallet_address: "0xdeposit",
+      signatureType: 3,
+      signature_type: 3,
     });
   });
 

@@ -1,0 +1,44 @@
+diff --git a/src/main.rs b/src/main.rs
+index 68db466..359eba7 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -19400,8 +19400,16 @@ async fn main() -> Result<()> {
+                             // can support the configured baseline reward size under max_share_ratio.
+                             // If either side cannot support baseline size at ratio cap, cancel
+                             // both sides and stay out until depth recovers.
++                            let pair_baseline_quote_size_mult = match market_sizing.quote_size_mode
++                            {
++                                mm::MmSportQuoteSizeMode::Multiple => market_sizing.quote_size_mult,
++                                mm::MmSportQuoteSizeMode::DepthRatio => {
++                                    mm_sport_cfg_for_loop.pair_baseline_quote_size_mult
++                                }
++                            }
++                            .clamp(0.1, 20.0);
+                             let baseline_shares = (market.reward_min_size_shares
+-                                * mm_sport_cfg_for_loop.pair_baseline_quote_size_mult)
++                                * pair_baseline_quote_size_mult)
+                                 .max(1.0);
+                             let ratio = market_sizing.max_share_ratio.clamp(0.01, 0.99);
+                             let required_ext_top_shares =
+@@ -19432,7 +19440,7 @@ async fn main() -> Result<()> {
+                                             "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                             "condition_id": market.condition_id,
+                                             "baseline_shares": baseline_shares,
+-                                            "baseline_quote_size_mult": mm_sport_cfg_for_loop.pair_baseline_quote_size_mult,
++                                            "baseline_quote_size_mult": pair_baseline_quote_size_mult,
+                                             "max_share_ratio": ratio,
+                                             "required_ext_top_shares": required_ext_top_shares,
+                                             "up_ext_top_bid_shares": up_ext_top_bid_shares,
+diff --git a/strategy-changelog.md b/strategy-changelog.md
+index dc959d6..06eaa7f 100644
+--- a/strategy-changelog.md
++++ b/strategy-changelog.md
+@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
+ ## Change Log
+ 
+ ### 2026-05-03
++- `mm_sport_v1` / MM 2.0 route baseline feasibility: fixed the paired quote feasibility guard so Multiple markets use the active Sport/Non-S route multiplier, while Depth Ratio markets keep the configured baseline multiplier (`src/main.rs`).
++  - Affects Sport, Non-S, and Dual route fresh BUY entry only; exits, cancels, FIFO, and inventory cleanup are unchanged.
+ - `mm_sport_v1` / MM 2.0 active-market and churn controls: added route-aware fresh-entry caps, independent FIFO depth ratio, randomized fresh-BUY cooldown after FIFO cancel or natural quote expiry, and hard reconcile for uncertain pending orders (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+   - Applies to MM 2.0 Sport, Non-S, and Dual routes. Defaults cap Dual to 50 sports plus 50 non-sports fresh markets, single-route runs to 100 selected-route fresh markets, keep inventory/open-order markets in scope, clamp FIFO to at least 110% of the larger route sizing ratio, and avoid rearming unresolved `RECONCILE_FAILED` rows as open unless CLOB confirms they are still live.
+ - `mm_sport_v1` / MM 2.0 Polymarket WS pressure control: capped the sticky subscription superset used for FIFO/orderbook visibility and added periodic sticky-scope refresh reconnects so stale markets age out instead of accumulating indefinitely (`src/polymarket_ws.rs`, `.env.example`).

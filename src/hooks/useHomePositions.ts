@@ -8,5 +8,5 @@ export function useHomePositions(limit = 80, enabled = true) {
     [limit]
   );
 
-  return usePolledList<HomeApiPositionItem>({ enabled, pollMs: 12_000, load });
+  return usePolledList<HomeApiPositionItem>({ enabled, pollMs: 30_000, load });
 }

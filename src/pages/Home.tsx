@@ -311,7 +311,7 @@ export function Home() {
     };
 
     void load();
-    interval = setInterval(() => void load(), 10_000);
+    interval = setInterval(() => void load(), 60_000);
 
     return () => {
       active = false;
@@ -332,6 +332,10 @@ export function Home() {
     setActionError(null);
     setUpdateMessage(null);
     try {
+      if (globalBotBusy) {
+        await stopBot();
+        await refreshOverview(true);
+      }
       const outputPath = await downloadLinuxUpdateDeb(updateVersion);
       setUpdateMessage(
         `Downloaded ${updateVersion} to ${outputPath}. Install it with: sudo apt install ${outputPath}`
@@ -390,7 +394,7 @@ export function Home() {
   const handleProfileSwitch = async (profileId: string) => {
     setActiveProfileId(profileId);
     await loadProfileConfig(profileId);
-    await refreshOverview();
+    await refreshOverview(true);
     setPortfolioFeedSeed((current) => current + 1);
   };
 
@@ -431,7 +435,7 @@ export function Home() {
       const snapshot = JSON.stringify(config);
       setSavedSnapshot(snapshot);
       setSaveMessage("Changes saved.");
-      await refreshOverview();
+      await refreshOverview(true);
     } catch (err) {
       setSaveMessage(getErrorText(err, "failed to save changes"));
     } finally {
@@ -452,7 +456,7 @@ export function Home() {
       }
       await startBot(false);
       setActionError(null);
-      await refreshOverview();
+      await refreshOverview(true);
       setPortfolioFeedSeed((current) => current + 1);
     } catch (err) {
       setActionError(getErrorText(err, "failed to start bot"));
@@ -474,7 +478,7 @@ export function Home() {
       }
       await restartBot(false);
       setActionError(null);
-      await refreshOverview();
+      await refreshOverview(true);
       setPortfolioFeedSeed((current) => current + 1);
     } catch (err) {
       setActionError(getErrorText(err, "failed to restart bot"));
@@ -520,7 +524,7 @@ export function Home() {
     try {
       await stopBot();
       setActionError(null);
-      await refreshOverview();
+      await refreshOverview(true);
       setPortfolioFeedSeed((current) => current + 1);
     } catch (err) {
       setActionError(getErrorText(err, "failed to stop bot"));
@@ -536,7 +540,7 @@ export function Home() {
       setDoctorResult(result);
       setDoctorDialogOpen(true);
       setActionError(null);
-      await refreshOverview();
+      await refreshOverview(true);
       setPortfolioFeedSeed((current) => current + 1);
       if (activeProfileId) {
         await loadProfileConfig(activeProfileId);
@@ -890,7 +894,7 @@ export function Home() {
                       </span>
                       <span className="home-overview__unit">pUSD</span>
                     </div>
-                    <div className="home-capital-card__wrap-balance">pUSD checked live</div>
+                    <div className="home-capital-card__wrap-balance">pUSD refreshed periodically</div>
                   </div>
                 </div>
 

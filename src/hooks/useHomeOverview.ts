@@ -8,13 +8,13 @@ export function useHomeOverview() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inFlightRef = useRef(false);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (forceRefresh = false) => {
     if (inFlightRef.current) {
       return;
     }
     inFlightRef.current = true;
     try {
-      const next = await getHomeOverview();
+      const next = await getHomeOverview(forceRefresh);
       setOverview(next);
       setError(null);
     } catch (err) {
@@ -33,7 +33,7 @@ export function useHomeOverview() {
 
   useEffect(() => {
     void refresh();
-    intervalRef.current = setInterval(() => void refresh(), 5_000);
+    intervalRef.current = setInterval(() => void refresh(), 10_000);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };

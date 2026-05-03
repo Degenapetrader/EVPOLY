@@ -332,7 +332,7 @@ export function Home() {
     setActionError(null);
     setUpdateMessage(null);
     try {
-      if (globalBotBusy) {
+      if (botRunning) {
         await stopBot();
         await refreshOverview(true);
       }

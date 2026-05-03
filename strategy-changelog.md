@@ -9,6 +9,32 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-05-03
+- `mm_sport_v1` / MM 2.0 active-market and churn controls: added route-aware fresh-entry caps, independent FIFO depth ratio, randomized fresh-BUY cooldown after FIFO cancel or natural quote expiry, and hard reconcile for uncertain pending orders (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+  - Applies to MM 2.0 Sport, Non-S, and Dual routes. Defaults cap Dual to 50 sports plus 50 non-sports fresh markets, single-route runs to 100 selected-route fresh markets, keep inventory/open-order markets in scope, clamp FIFO to at least 110% of the larger route sizing ratio, and avoid rearming unresolved `RECONCILE_FAILED` rows as open unless CLOB confirms they are still live.
+- `mm_sport_v1` / MM 2.0 Polymarket WS pressure control: capped the sticky subscription superset used for FIFO/orderbook visibility and added periodic sticky-scope refresh reconnects so stale markets age out instead of accumulating indefinitely (`src/polymarket_ws.rs`, `.env.example`).
+  - Applies to MM 2.0 Sport, Non-S, and Dual routes. Current open-order/discovery scope remains protected, while stale sticky entries expire after `EVPOLY_PM_WS_STICKY_SCOPE_TTL_MS=900000` and are bounded by `EVPOLY_PM_WS_STICKY_SCOPE_MAX_MARKETS=300` / `EVPOLY_PM_WS_STICKY_SCOPE_MAX_ASSETS=650`.
+
+### 2026-05-02
+- `mm_sport_v1` / MM 2.0 route-specific sizing profiles: added optional Non-S sizing overrides for quote mode, quote multiplier, collateral caps, max share ratio, and min visible depth (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+  - Sport markets keep using existing `EVPOLY_MM_SPORT_*` sizing keys; Non-S markets use `EVPOLY_MM_SPORT_NONSPORT_*` values when present and otherwise fall back to Sport values.
+  - Applies only to fresh BUY entry sizing and BUY-side depth/ratio hygiene, including FIFO/ratio checks. SELL exits, inventory cleanup, end-date halt, top-bid floor, sponsored filtering, and WS scope plumbing remain on existing logic.
+- `mm_sport_v1` / MM 2.0 WS FIFO subscription pressure guard: scope refreshes now keep a sticky in-process superset of subscribed assets/markets, merge mixed add/remove target changes into the active superset before reconnecting, defer shrink-only changes, and explicitly drop old WS streams before reconnecting (`src/polymarket_ws.rs`).
+  - affects MM 2.0 Sport, Non-S, and Dual FIFO visibility; new open-order markets still trigger prompt subscription, while normal quote-loop scope shrink/toggle noise no longer creates repeated Polymarket WS connections.
+- `mm_sport_v1` / MM 2.0 desktop SaaS parity fixes: hardened the Non-S/Dual guard backport so top-bid entry checks use external orderbook bids after removing our own BUY depth, one-sided `NoExit` entries honor the same top-bid floor, sponsored-reward exclusion fails closed when its source endpoint is unavailable, and WS scope debounce no longer sleeps inside the stream select loop (`src/main.rs`, `src/polymarket_ws.rs`).
+  - affects MM 2.0 Sport, Non-S, and Dual routes; FIFO stream ingestion continues while repeated scope changes are debounced, and sponsor-filter outage cannot reuse cached markets when sponsored rewards are explicitly disallowed.
+- `mm_sport_v1` / MM 2.0 Non-S and Dual route guards: added separate non-sports end-date entry halt, top-bid minimum, and optional sponsored-reward exclusion (`src/main.rs`, `src/mm/mod.rs`, `src/api.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+  - `EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC=172800` skips non-sports discovery rows missing an end date and cancels/skips fresh BUY entries inside the final 48 hours while preserving inventory cleanup.
+  - `EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE=0.10` blocks paired fresh entry when either binary side has a top bid below 10c.
+  - `EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS=true` keeps sponsored rewards allowed by default; setting it to `false` excludes only markets where sponsored rewards are at least `EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE=0.50` of daily rewards.
+- `mm_sport_v1` / MM 2.0 WS FIFO scope reconnect stability: added `EVPOLY_PM_WS_SCOPE_RECONNECT_DEBOUNCE_MS` default `5000` so the first open-order scope change reconnects immediately, while repeated scope changes within the short window are collapsed before reconnecting (`src/polymarket_ws.rs`).
+  - affects MM 2.0 FIFO cancel visibility for Sport, Non-S, and Dual routes; fresh markets may wait up to the debounce remainder before WS subscribes, but mass cancel/requote bursts avoid repeated market/user WS reconnects.
+- `mm_sport_v1` / MM 2.0 WS FIFO coverage: open-order subscription-scope changes now notify the Polymarket WS bridge and immediately reconnect market/user streams to the current open-order token and condition set (`src/polymarket_ws.rs`).
+  - affects MM 2.0 FIFO cancel visibility for Sport, Non-S, and Dual routes; FIFO no longer waits for the normal WS target refresh/debounce window before subscribing to markets where the bot already has live orders.
+- `mm_sport_v1` / MM 2.0 queue guard: backported the strict WS FIFO cancel guard from live EVPOLY into the desktop runtime patch stack (`src/main.rs`, `src/mm/mod.rs`, `src/polymarket_ws.rs`, `.env.example`, `.env.full.example`).
+  - BUY quote cancellation now uses cached websocket orderbook snapshots and order-status live size to split same-price FIFO-ahead depth from better-price depth; same-price external depth only decreases for a stable order slot so newly added behind-us depth does not mask front-of-queue risk.
+  - Added `EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS` default `5000` for compatibility/logging, but FIFO cancellation no longer treats stale WS age as a decision gate; only a missing orderbook snapshot prevents FIFO depth math.
+
 ### 2026-04-29
 - `mm_sport_v1` / MM 2.0 inventory-exit loss guard: added `EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS` default `10` and applies it before inventory-exit SELL placement (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
   - affects MM 2.0 inventory cleanup for all discovered markets; when tracked average entry exists, exit SELL quotes are lifted to avoid quoting more than the configured cents below entry.

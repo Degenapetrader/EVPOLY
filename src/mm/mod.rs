@@ -89,6 +89,16 @@ impl MmSportExitMode {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct MmSportSizingProfile {
+    pub quote_size_mode: MmSportQuoteSizeMode,
+    pub quote_size_mult: f64,
+    pub multiple_collateral_cap_mult: f64,
+    pub depth_ratio_collateral_cap_mult: f64,
+    pub max_share_ratio: f64,
+    pub min_top_depth_usd: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct MmSportConfig {
     pub enable: bool,
@@ -97,16 +107,21 @@ pub struct MmSportConfig {
     pub event_driven_enable: bool,
     pub event_fallback_poll_ms: u64,
     pub ws_stale_ms: i64,
+    pub fifo_ws_gap_cancel_ms: i64,
     pub discovery_refresh_sec: u64,
     pub rewards_page_budget: u32,
     pub min_reward_rate_per_day: f64,
     pub discovery_route: MmSportDiscoveryRoute,
     pub quote_size_mode: MmSportQuoteSizeMode,
+    pub nonsport_quote_size_mode: MmSportQuoteSizeMode,
     pub exit_mode: MmSportExitMode,
     pub quote_size_mult: f64,
+    pub nonsport_quote_size_mult: f64,
     pub pair_baseline_quote_size_mult: f64,
     pub multiple_collateral_cap_mult: f64,
+    pub nonsport_multiple_collateral_cap_mult: f64,
     pub depth_ratio_collateral_cap_mult: f64,
+    pub nonsport_depth_ratio_collateral_cap_mult: f64,
     pub market_allowlist_keywords: Vec<String>,
     pub market_blacklist_keywords: Vec<String>,
     pub allowed_sport_league_codes: Vec<String>,
@@ -114,7 +129,14 @@ pub struct MmSportConfig {
     pub blocked_competition_levels: Vec<String>,
     pub reward_min_shares_cap: f64,
     pub max_share_ratio: f64,
+    pub nonsport_max_share_ratio: f64,
+    pub fifo_max_share_ratio: f64,
     pub min_top_depth_usd: f64,
+    pub nonsport_min_top_depth_usd: f64,
+    pub nonsport_end_exit_start_sec: u64,
+    pub min_entry_top_bid_price: f64,
+    pub allow_sponsored_rewards: bool,
+    pub sponsored_reward_min_share: f64,
     pub inventory_exit_start_sec: u64,
     pub inventory_exit_max_loss_cents: f64,
     pub pause_after_fill_sec: u64,
@@ -128,6 +150,8 @@ pub struct MmSportConfig {
     pub reprice_min_interval_ms: i64,
     pub quote_expiry_min_sec: u64,
     pub quote_expiry_max_sec: u64,
+    pub quote_cooldown_min_sec: u64,
+    pub quote_cooldown_max_sec: u64,
     pub size_requote_delta_pct: f64,
     pub allowance_refresh_sec: u64,
     pub require_reward_eligible: bool,
@@ -135,6 +159,8 @@ pub struct MmSportConfig {
     pub match_only: bool,
     pub post_only: bool,
     pub max_markets: usize,
+    pub active_sport_market_cap: usize,
+    pub active_nonsport_market_cap: usize,
     pub polymarket_live_guard_enable: bool,
     pub polymarket_live_guard_ws_enable: bool,
     pub polymarket_live_guard_ws_stale_ms: i64,
@@ -155,6 +181,41 @@ impl MmSportConfig {
             env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", 65).clamp(61, 3_600);
         let quote_expiry_max_sec =
             env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 185).clamp(quote_expiry_min_sec, 7_200);
+        let quote_size_mode =
+            MmSportQuoteSizeMode::from_env(std::env::var("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE").ok());
+        let quote_size_mult = env_f64("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2).clamp(0.1, 20.0);
+        let multiple_collateral_cap_mult = env_f64_with_alias(
+            "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT",
+            "EVPOLY_MM_SPORT_MULTIPLE_USDC_CAP_MULT",
+            0.45,
+        )
+        .clamp(0.0, 1.0);
+        let depth_ratio_collateral_cap_mult = env_f64_with_alias(
+            "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
+            "EVPOLY_MM_SPORT_DEPTH_RATIO_USDC_CAP_MULT",
+            0.90,
+        )
+        .clamp(0.0, 1.0);
+        let max_share_ratio = env_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05).clamp(0.01, 0.99);
+        let nonsport_max_share_ratio =
+            env_f64("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", max_share_ratio).clamp(0.01, 0.99);
+        let fifo_ratio_floor =
+            (max_share_ratio.max(nonsport_max_share_ratio) * 1.10).clamp(0.01, 0.99);
+        let fifo_max_share_ratio =
+            env_f64("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", fifo_ratio_floor)
+                .clamp(fifo_ratio_floor, 0.99);
+        let quote_cooldown_min_sec =
+            env_u64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC", 10).clamp(0, 3_600);
+        let quote_cooldown_max_sec = env_u64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC", 60)
+            .clamp(quote_cooldown_min_sec, 7_200);
+        let discovery_route =
+            MmSportDiscoveryRoute::from_env(std::env::var("EVPOLY_MM_SPORT_DISCOVERY_ROUTE").ok());
+        let (default_active_sport_cap, default_active_nonsport_cap) = match discovery_route {
+            MmSportDiscoveryRoute::Sports => (100, 0),
+            MmSportDiscoveryRoute::NonSports => (0, 100),
+            MmSportDiscoveryRoute::Dual => (50, 50),
+        };
+        let min_top_depth_usd = env_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 1_100.0).max(0.0);
         Self {
             enable: env_bool("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false),
             hard_disable: env_bool("EVPOLY_MM_SPORT_HARD_DISABLE", false),
@@ -162,33 +223,41 @@ impl MmSportConfig {
             event_driven_enable: env_bool("EVPOLY_MM_SPORT_EVENT_DRIVEN_ENABLE", true),
             event_fallback_poll_ms: 1_000,
             ws_stale_ms: env_u64("EVPOLY_MM_SPORT_WS_STALE_MS", 2_500).clamp(250, 30_000) as i64,
+            fifo_ws_gap_cancel_ms: env_u64("EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS", 5_000)
+                .clamp(500, 60_000) as i64,
             discovery_refresh_sec: 300,
             rewards_page_budget: env_u32("EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET", 8).clamp(1, 200),
             min_reward_rate_per_day: env_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 5.0)
                 .max(0.0),
-            discovery_route: MmSportDiscoveryRoute::from_env(
-                std::env::var("EVPOLY_MM_SPORT_DISCOVERY_ROUTE").ok(),
-            ),
-            quote_size_mode: MmSportQuoteSizeMode::from_env(
-                std::env::var("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE").ok(),
+            discovery_route,
+            quote_size_mode,
+            nonsport_quote_size_mode: MmSportQuoteSizeMode::from_env(
+                std::env::var("EVPOLY_MM_SPORT_NONSPORT_QUOTE_SIZE_MODE")
+                    .ok()
+                    .or_else(|| Some(quote_size_mode.as_str().to_string())),
             ),
             exit_mode: MmSportExitMode::from_env(std::env::var("EVPOLY_MM_SPORT_EXIT_MODE").ok()),
-            quote_size_mult: env_f64("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2).clamp(0.1, 20.0),
+            quote_size_mult,
+            nonsport_quote_size_mult: env_f64(
+                "EVPOLY_MM_SPORT_NONSPORT_QUOTE_SIZE_MULT",
+                quote_size_mult,
+            )
+            .clamp(0.1, 20.0),
             pair_baseline_quote_size_mult: env_f64(
                 "EVPOLY_MM_SPORT_PAIR_BASELINE_QUOTE_SIZE_MULT",
                 1.2,
             )
             .clamp(0.1, 20.0),
-            multiple_collateral_cap_mult: env_f64_with_alias(
-                "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT",
-                "EVPOLY_MM_SPORT_MULTIPLE_USDC_CAP_MULT",
-                0.45,
+            multiple_collateral_cap_mult,
+            nonsport_multiple_collateral_cap_mult: env_f64(
+                "EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT",
+                multiple_collateral_cap_mult,
             )
             .clamp(0.0, 1.0),
-            depth_ratio_collateral_cap_mult: env_f64_with_alias(
-                "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
-                "EVPOLY_MM_SPORT_DEPTH_RATIO_USDC_CAP_MULT",
-                0.90,
+            depth_ratio_collateral_cap_mult,
+            nonsport_depth_ratio_collateral_cap_mult: env_f64(
+                "EVPOLY_MM_SPORT_NONSPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
+                depth_ratio_collateral_cap_mult,
             )
             .clamp(0.0, 1.0),
             market_allowlist_keywords: parse_string_list_env(
@@ -207,8 +276,25 @@ impl MmSportConfig {
                 "EVPOLY_MM_SPORT_BLOCKED_COMPETITION_LEVELS",
             ),
             reward_min_shares_cap: env_f64("EVPOLY_MM_SPORT_REWARD_MIN_SHARES_CAP", 0.0).max(0.0),
-            max_share_ratio: env_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05).clamp(0.01, 0.99),
-            min_top_depth_usd: env_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 1_100.0).max(0.0),
+            max_share_ratio,
+            nonsport_max_share_ratio,
+            fifo_max_share_ratio,
+            min_top_depth_usd,
+            nonsport_min_top_depth_usd: env_f64(
+                "EVPOLY_MM_SPORT_NONSPORT_MIN_TOP_DEPTH_USD",
+                min_top_depth_usd,
+            )
+            .max(0.0),
+            nonsport_end_exit_start_sec: env_u64(
+                "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC",
+                172_800,
+            )
+            .clamp(0, 2_592_000),
+            min_entry_top_bid_price: env_f64("EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", 0.10)
+                .clamp(0.0, 0.99),
+            allow_sponsored_rewards: env_bool("EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS", true),
+            sponsored_reward_min_share: env_f64("EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE", 0.50)
+                .clamp(0.0, 1.0),
             inventory_exit_start_sec: env_u64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28_800)
                 .clamp(300, 172_800),
             inventory_exit_max_loss_cents: env_f64(
@@ -235,6 +321,8 @@ impl MmSportConfig {
                 .clamp(50, 60_000) as i64,
             quote_expiry_min_sec,
             quote_expiry_max_sec,
+            quote_cooldown_min_sec,
+            quote_cooldown_max_sec,
             size_requote_delta_pct: env_f64("EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT", 0.03)
                 .clamp(0.0, 1.0),
             allowance_refresh_sec: env_u64("EVPOLY_MM_SPORT_ALLOWANCE_REFRESH_SEC", 60)
@@ -244,6 +332,16 @@ impl MmSportConfig {
             match_only: env_bool("EVPOLY_MM_SPORT_MATCH_ONLY", true),
             post_only: env_bool("EVPOLY_MM_SPORT_POST_ONLY", true),
             max_markets: env_usize("EVPOLY_MM_SPORT_MAX_MARKETS", 0),
+            active_sport_market_cap: env_usize(
+                "EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP",
+                default_active_sport_cap,
+            )
+            .min(1_000),
+            active_nonsport_market_cap: env_usize(
+                "EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP",
+                default_active_nonsport_cap,
+            )
+            .min(1_000),
             polymarket_live_guard_enable: env_bool(
                 "EVPOLY_MM_SPORT_POLYMARKET_LIVE_GUARD_ENABLE",
                 true,
@@ -258,6 +356,37 @@ impl MmSportConfig {
             )
             .clamp(30_000, 3_600_000) as i64,
         }
+    }
+
+    pub fn sizing_for_market(&self, is_sports_market: bool) -> MmSportSizingProfile {
+        if is_sports_market {
+            MmSportSizingProfile {
+                quote_size_mode: self.quote_size_mode,
+                quote_size_mult: self.quote_size_mult,
+                multiple_collateral_cap_mult: self.multiple_collateral_cap_mult,
+                depth_ratio_collateral_cap_mult: self.depth_ratio_collateral_cap_mult,
+                max_share_ratio: self.max_share_ratio,
+                min_top_depth_usd: self.min_top_depth_usd,
+            }
+        } else {
+            MmSportSizingProfile {
+                quote_size_mode: self.nonsport_quote_size_mode,
+                quote_size_mult: self.nonsport_quote_size_mult,
+                multiple_collateral_cap_mult: self.nonsport_multiple_collateral_cap_mult,
+                depth_ratio_collateral_cap_mult: self.nonsport_depth_ratio_collateral_cap_mult,
+                max_share_ratio: self.nonsport_max_share_ratio,
+                min_top_depth_usd: self.nonsport_min_top_depth_usd,
+            }
+        }
+    }
+
+    pub fn fifo_ratio_floor(&self) -> f64 {
+        (self.max_share_ratio.max(self.nonsport_max_share_ratio) * 1.10).clamp(0.01, 0.99)
+    }
+
+    pub fn effective_fifo_max_share_ratio(&self) -> f64 {
+        self.fifo_max_share_ratio
+            .clamp(self.fifo_ratio_floor(), 0.99)
     }
 }
 
@@ -528,6 +657,119 @@ mod tests {
             || {
                 let cfg = MmSportConfig::from_env();
                 assert_eq!(cfg.inventory_exit_start_sec, 21_600);
+            },
+        );
+    }
+
+    #[test]
+    fn mm_sport_config_reads_nonsport_entry_guards() {
+        with_mm_env(
+            &[
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC",
+                    Some("86400.0"),
+                ),
+                ("EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", Some("0.15")),
+                ("EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS", Some("false")),
+                ("EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE", Some("0.65")),
+            ],
+            || {
+                let cfg = MmSportConfig::from_env();
+                assert_eq!(cfg.nonsport_end_exit_start_sec, 86_400);
+                assert!((cfg.min_entry_top_bid_price - 0.15).abs() < 1e-9);
+                assert!(!cfg.allow_sponsored_rewards);
+                assert!((cfg.sponsored_reward_min_share - 0.65).abs() < 1e-9);
+            },
+        );
+    }
+
+    #[test]
+    fn mm_sport_config_reads_active_caps_and_clamps_fifo_ratio() {
+        with_mm_env(
+            &[
+                ("EVPOLY_MM_SPORT_DISCOVERY_ROUTE", Some("dual")),
+                ("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", Some("0.10")),
+                ("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", Some("0.05")),
+                ("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", Some("0.09")),
+                ("EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP", Some("44")),
+                ("EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP", Some("33")),
+                ("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC", Some("12")),
+                ("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC", Some("45")),
+            ],
+            || {
+                let cfg = MmSportConfig::from_env();
+                assert_eq!(cfg.active_sport_market_cap, 44);
+                assert_eq!(cfg.active_nonsport_market_cap, 33);
+                assert_eq!(cfg.quote_cooldown_min_sec, 12);
+                assert_eq!(cfg.quote_cooldown_max_sec, 45);
+                assert!((cfg.fifo_ratio_floor() - 0.11).abs() < 1e-9);
+                assert!((cfg.effective_fifo_max_share_ratio() - 0.11).abs() < 1e-9);
+            },
+        );
+    }
+
+    #[test]
+    fn mm_sport_sizing_profile_falls_back_and_overrides_nonsport() {
+        with_mm_env(
+            &[
+                ("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE", Some("multiple")),
+                ("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", Some("2.0")),
+                ("EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", Some("0.40")),
+                (
+                    "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
+                    Some("0.80"),
+                ),
+                ("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", Some("0.10")),
+                ("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", Some("1200")),
+            ],
+            || {
+                let cfg = MmSportConfig::from_env();
+                let sport = cfg.sizing_for_market(true);
+                let nonsport = cfg.sizing_for_market(false);
+                assert_eq!(sport.quote_size_mode, MmSportQuoteSizeMode::Multiple);
+                assert!((nonsport.quote_size_mult - sport.quote_size_mult).abs() < 1e-9);
+                assert!(
+                    (nonsport.multiple_collateral_cap_mult - sport.multiple_collateral_cap_mult)
+                        .abs()
+                        < 1e-9
+                );
+                assert!((nonsport.max_share_ratio - sport.max_share_ratio).abs() < 1e-9);
+                assert!((nonsport.min_top_depth_usd - sport.min_top_depth_usd).abs() < 1e-9);
+            },
+        );
+
+        with_mm_env(
+            &[
+                ("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE", Some("multiple")),
+                ("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", Some("2.0")),
+                ("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", Some("0.10")),
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_QUOTE_SIZE_MODE",
+                    Some("depth_ratio"),
+                ),
+                ("EVPOLY_MM_SPORT_NONSPORT_QUOTE_SIZE_MULT", Some("0.7")),
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT",
+                    Some("0.25"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
+                    Some("0.55"),
+                ),
+                ("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", Some("0.05")),
+                ("EVPOLY_MM_SPORT_NONSPORT_MIN_TOP_DEPTH_USD", Some("900")),
+            ],
+            || {
+                let cfg = MmSportConfig::from_env();
+                let sport = cfg.sizing_for_market(true);
+                let nonsport = cfg.sizing_for_market(false);
+                assert_eq!(sport.quote_size_mode, MmSportQuoteSizeMode::Multiple);
+                assert_eq!(nonsport.quote_size_mode, MmSportQuoteSizeMode::DepthRatio);
+                assert!((nonsport.quote_size_mult - 0.7).abs() < 1e-9);
+                assert!((nonsport.multiple_collateral_cap_mult - 0.25).abs() < 1e-9);
+                assert!((nonsport.depth_ratio_collateral_cap_mult - 0.55).abs() < 1e-9);
+                assert!((nonsport.max_share_ratio - 0.05).abs() < 1e-9);
+                assert!((nonsport.min_top_depth_usd - 900.0).abs() < 1e-9);
             },
         );
     }

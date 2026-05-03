@@ -1985,6 +1985,16 @@ async fn build_ui_dashboard_summary(ctx: &BotAdminContext) -> UiDashboardSummary
         .as_ref()
         .map(|summary| summary.recent_orders_count)
         .unwrap_or(0);
+    let ack_warning_count_recent = db_summary
+        .as_ref()
+        .map(|summary| summary.ack_warning_count_recent)
+        .unwrap_or(0);
+    let degraded_ack_quality = ack_warning_count_recent > 0
+        || db_summary
+            .as_ref()
+            .and_then(|summary| summary.avg_ack_latency_ms)
+            .map(|value| value >= 250.0)
+            .unwrap_or(false);
     let recent_result = db_summary.as_ref().and_then(recent_result_text);
     let (headline, detail) = if let Some(blocker) = blocker_reason.as_ref() {
         ("Something needs attention".to_string(), blocker.clone())
@@ -2047,6 +2057,12 @@ async fn build_ui_dashboard_summary(ctx: &BotAdminContext) -> UiDashboardSummary
         avg_ack_latency_ms: db_summary
             .as_ref()
             .and_then(|summary| summary.avg_ack_latency_ms),
+        ack_sample_count: db_summary
+            .as_ref()
+            .map(|summary| summary.ack_sample_count)
+            .unwrap_or(0),
+        ack_warning_count_recent,
+        degraded_ack_quality,
         total_pnl: db_summary
             .as_ref()
             .map(|summary| summary.total_pnl)
@@ -2391,6 +2407,7 @@ async fn collect_doctor_issues(
             .map(|raw| raw.trim().is_empty())
             .unwrap_or(true)
     };
+    let remote_token_missing = |key: &str| env_missing(key) && env_missing("EVPOLY_ALPHA_KEY");
     let remote_url_has_builtin_default = |key: &str| {
         matches!(
             key,
@@ -2415,7 +2432,7 @@ async fn collect_doctor_issues(
         if env_missing(url_key) && !remote_url_has_builtin_default(url_key) {
             missing_keys.push(url_key);
         }
-        if env_missing(token_key) {
+        if remote_token_missing(token_key) {
             missing_keys.push(token_key);
         }
         if missing_keys.is_empty() {

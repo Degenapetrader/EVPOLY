@@ -281,6 +281,14 @@ pub struct RewardsMarketEntry {
     pub rewards_min_size: Option<f64>,
     #[serde(default)]
     pub rewards_config: Vec<RewardsConfigEntry>,
+    #[serde(default, alias = "sponsoredDailyRate")]
+    pub sponsored_daily_rate: Option<f64>,
+    #[serde(default, alias = "nativeDailyRate")]
+    pub native_daily_rate: Option<f64>,
+    #[serde(default, alias = "totalDailyRate")]
+    pub total_daily_rate: Option<f64>,
+    #[serde(default, alias = "sponsorsCount")]
+    pub sponsors_count: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -326,6 +334,44 @@ impl RewardsMarketEntry {
             .filter_map(|entry| entry.rate_per_day)
             .filter(|v| v.is_finite() && *v > 0.0)
             .fold(0.0_f64, f64::max)
+    }
+
+    pub fn sponsored_daily_rate_hint(&self) -> f64 {
+        self.sponsored_daily_rate
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(0.0)
+    }
+
+    pub fn total_daily_rate_hint(&self) -> f64 {
+        self.total_daily_rate
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or_else(|| {
+                (self
+                    .native_daily_rate
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .unwrap_or(0.0)
+                    + self.sponsored_daily_rate_hint())
+                .max(self.reward_rate_hint())
+            })
+    }
+
+    pub fn sponsored_reward_share(&self) -> Option<f64> {
+        let sponsored = self.sponsored_daily_rate_hint();
+        let total = self.total_daily_rate_hint();
+        (sponsored > 0.0 && total > 0.0).then_some((sponsored / total).clamp(0.0, 1.0))
+    }
+
+    pub fn sponsored_reward_share_at_least(&self, min_share: f64) -> bool {
+        let sponsors_positive = self
+            .sponsors_count
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .is_some()
+            || self.sponsored_daily_rate_hint() > 0.0;
+        sponsors_positive
+            && self
+                .sponsored_reward_share()
+                .map(|share| share + 1e-9 >= min_share.clamp(0.0, 1.0))
+                .unwrap_or(false)
     }
 }
 
@@ -2201,6 +2247,62 @@ impl PolymarketApi {
         Ok(deduped)
     }
 
+    /// Load current reward configs from the CLOB rewards API.
+    pub async fn get_current_rewards_markets_api(
+        &self,
+        sponsored: bool,
+    ) -> Result<Vec<RewardsMarketEntry>> {
+        let url = "https://clob.polymarket.com/rewards/markets/current";
+        let sponsored_value = if sponsored { "true" } else { "false" };
+        let response = self
+            .send_readonly_get_with_proxy_fallback(|client| {
+                client
+                    .get(url)
+                    .header("User-Agent", "Mozilla/5.0 EVPoly")
+                    .query(&[("sponsored", sponsored_value)])
+            })
+            .await
+            .context("Failed to fetch CLOB current rewards markets")?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .context("Failed to read CLOB current rewards body")?;
+        if !status.is_success() {
+            anyhow::bail!(
+                "Failed to fetch CLOB current rewards markets (status {}): {}",
+                status,
+                body
+            );
+        }
+        let payload: Value = serde_json::from_str(&body)
+            .with_context(|| format!("Failed to parse CLOB current rewards body: {}", body))?;
+        let rows = payload
+            .as_array()
+            .cloned()
+            .or_else(|| payload.get("data").and_then(Value::as_array).cloned())
+            .or_else(|| payload.get("markets").and_then(Value::as_array).cloned())
+            .unwrap_or_default();
+
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for row in rows {
+            let Some(entry) = rewards_market_entry_from_value(&row) else {
+                continue;
+            };
+            let key = if !entry.condition_id.trim().is_empty() {
+                entry.condition_id.trim().to_ascii_lowercase()
+            } else {
+                entry.market_slug.trim().to_ascii_lowercase()
+            };
+            if key.is_empty() || !seen.insert(key) {
+                continue;
+            }
+            out.push(entry);
+        }
+        Ok(out)
+    }
+
     /// Load reward-ranked markets from Polymarket rewards page dehydrated payload.
     /// This returns the page's current market list (typically top 100 by `rate_per_day`).
     pub async fn get_rewards_markets_page(&self) -> Result<Vec<RewardsMarketEntry>> {
@@ -2412,6 +2514,10 @@ impl PolymarketApi {
                     start_date: None,
                     end_date: None,
                 }],
+                sponsored_daily_rate: None,
+                native_daily_rate: None,
+                total_daily_rate: None,
+                sponsors_count: None,
             })
             .collect::<Vec<_>>();
         rows.sort_by(|a, b| b.reward_rate_hint().total_cmp(&a.reward_rate_hint()));
@@ -7779,6 +7885,58 @@ fn value_f64(row: &Value, keys: &[&str]) -> Option<f64> {
             .as_str()
             .and_then(|raw| raw.trim().parse::<f64>().ok())
             .filter(|v| v.is_finite())
+    })
+}
+
+fn rewards_market_entry_from_value(row: &Value) -> Option<RewardsMarketEntry> {
+    let condition_id = value_string(
+        row,
+        &["condition_id", "conditionId", "condition", "conditionID"],
+    );
+    let market_slug = value_string(row, &["market_slug", "marketSlug", "slug"]);
+    if condition_id.is_empty() && market_slug.is_empty() {
+        return None;
+    }
+
+    let total_daily_rate = value_f64(row, &["total_daily_rate", "totalDailyRate"]);
+    let native_daily_rate = value_f64(
+        row,
+        &[
+            "native_daily_rate",
+            "nativeDailyRate",
+            "daily_rate",
+            "dailyRate",
+        ],
+    );
+    let sponsored_daily_rate = value_f64(row, &["sponsored_daily_rate", "sponsoredDailyRate"]);
+    let rewards_rate = total_daily_rate
+        .or(native_daily_rate)
+        .or(sponsored_daily_rate);
+
+    Some(RewardsMarketEntry {
+        condition_id,
+        market_slug,
+        question: value_string_opt(row, &["question", "title"]),
+        market_competitiveness: value_f64(
+            row,
+            &["market_competitiveness", "marketCompetitiveness"],
+        ),
+        rewards_max_spread: value_f64(row, &["rewards_max_spread", "rewardsMaxSpread"]),
+        rewards_min_size: value_f64(row, &["rewards_min_size", "rewardsMinSize"]),
+        rewards_config: rewards_rate
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map(|rate| {
+                vec![RewardsConfigEntry {
+                    rate_per_day: Some(rate),
+                    start_date: None,
+                    end_date: None,
+                }]
+            })
+            .unwrap_or_default(),
+        sponsored_daily_rate,
+        native_daily_rate,
+        total_daily_rate,
+        sponsors_count: value_f64(row, &["sponsors_count", "sponsorsCount"]),
     })
 }
 

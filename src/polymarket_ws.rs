@@ -13,11 +13,12 @@ use polymarket_client_sdk_v2::ws::config::Config as WsConnectionConfig;
 use rust_decimal::Decimal;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::Hash;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Once;
 use std::sync::{Arc, Mutex as StdMutex};
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, sleep_until, Duration, Instant};
 
 #[derive(Debug, Clone)]
 pub struct PolymarketWsConfig {
@@ -41,8 +42,12 @@ pub struct PolymarketWsConfig {
     pub target_change_debounce_scans: u32,
     pub target_change_min_hold_sec: u64,
     pub target_change_min_delta_bps: u32,
+    pub subscription_scope_reconnect_debounce_ms: u64,
     pub reconnect_on_refresh: bool,
     pub market_shards: u32,
+    pub sticky_scope_ttl_ms: i64,
+    pub sticky_scope_max_markets: usize,
+    pub sticky_scope_max_assets: usize,
 }
 
 impl Default for PolymarketWsConfig {
@@ -52,6 +57,8 @@ impl Default for PolymarketWsConfig {
         let backoff_max_sec = env_u64("EVPOLY_PM_WS_BACKOFF_MAX_SEC", 20).max(backoff_min_sec);
         let market_stale_ms = env_i64("EVPOLY_PM_WS_MARKET_STALE_MS", 600).max(250);
         let order_stale_ms = env_i64("EVPOLY_PM_WS_ORDER_STALE_MS", 5_000).max(500);
+        let sticky_scope_max_markets =
+            env_u64("EVPOLY_PM_WS_STICKY_SCOPE_MAX_MARKETS", 300).clamp(50, 5_000) as usize;
         Self {
             enabled: env_bool("EVPOLY_PM_WS_ENABLE", true),
             endpoint: std::env::var("EVPOLY_PM_WS_ENDPOINT")
@@ -100,8 +107,27 @@ impl Default for PolymarketWsConfig {
                 .clamp(0, 900),
             target_change_min_delta_bps: env_u64("EVPOLY_PM_WS_TARGET_CHANGE_MIN_DELTA_BPS", 0)
                 .clamp(0, 10_000) as u32,
+            subscription_scope_reconnect_debounce_ms: env_u64(
+                "EVPOLY_PM_WS_SCOPE_RECONNECT_DEBOUNCE_MS",
+                5_000,
+            )
+            .clamp(0, 60_000),
             reconnect_on_refresh: env_bool("EVPOLY_PM_WS_RECONNECT_ON_REFRESH", false),
             market_shards: env_u64("EVPOLY_PM_WS_MARKET_SHARDS", 2).clamp(1, 12) as u32,
+            sticky_scope_ttl_ms: env_i64("EVPOLY_PM_WS_STICKY_SCOPE_TTL_MS", 900_000)
+                .clamp(60_000, 3_600_000),
+            sticky_scope_max_markets,
+            sticky_scope_max_assets: env_u64(
+                "EVPOLY_PM_WS_STICKY_SCOPE_MAX_ASSETS",
+                u64::try_from(
+                    sticky_scope_max_markets
+                        .saturating_mul(2)
+                        .saturating_add(50),
+                )
+                .ok()
+                .unwrap_or(650),
+            )
+            .clamp(100, 10_000) as usize,
         }
     }
 }
@@ -121,6 +147,22 @@ struct PendingUserTargetChange {
     first_seen_ms: i64,
     confirmations: u32,
     delta_bps: u32,
+}
+
+#[derive(Debug, Clone)]
+struct StickyTarget<T> {
+    value: T,
+    last_seen_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+struct StickyTargetUpdate<T> {
+    values: Vec<T>,
+    expired_removed: usize,
+    capped_removed: usize,
+    current_count: usize,
+    protected_count: usize,
+    sticky_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +202,8 @@ struct PolymarketWsInner {
     market_trades: tokio::sync::RwLock<HashMap<String, VecDeque<WsTradeSnapshot>>>,
     order_statuses: tokio::sync::RwLock<HashMap<String, WsOrderStatusSnapshot>>,
     subscription_scope_targets: StdMutex<HashMap<String, WsSubscriptionScopeTargets>>,
+    subscription_scope_revision: AtomicI64,
+    subscription_scope_notify: tokio::sync::Notify,
     market_update_notify: tokio::sync::Notify,
     user_update_notify: tokio::sync::Notify,
     market_connected_shards: StdMutex<HashMap<usize, bool>>,
@@ -263,6 +307,8 @@ pub fn new_shared_polymarket_ws_state() -> SharedPolymarketWsState {
             market_trades: tokio::sync::RwLock::new(HashMap::new()),
             order_statuses: tokio::sync::RwLock::new(HashMap::new()),
             subscription_scope_targets: StdMutex::new(HashMap::new()),
+            subscription_scope_revision: AtomicI64::new(0),
+            subscription_scope_notify: tokio::sync::Notify::new(),
             market_update_notify: tokio::sync::Notify::new(),
             user_update_notify: tokio::sync::Notify::new(),
             market_connected_shards: StdMutex::new(HashMap::new()),
@@ -306,6 +352,10 @@ impl SharedPolymarketWsState {
             .subscription_scope_targets
             .lock()
             .expect("polymarket ws subscription-scope mutex poisoned");
+        let changed = match guard.get(scope_key.as_str()) {
+            Some(existing) => existing.asset_ids != asset_ids || existing.market_ids != market_ids,
+            None => !(asset_ids.is_empty() && market_ids.is_empty()),
+        };
         if asset_ids.is_empty() && market_ids.is_empty() {
             guard.remove(scope_key.as_str());
         } else {
@@ -316,6 +366,13 @@ impl SharedPolymarketWsState {
                     market_ids,
                 },
             );
+        }
+        drop(guard);
+        if changed {
+            self.inner
+                .subscription_scope_revision
+                .fetch_add(1, Ordering::SeqCst);
+            self.inner.subscription_scope_notify.notify_waiters();
         }
     }
 
@@ -329,7 +386,14 @@ impl SharedPolymarketWsState {
             .subscription_scope_targets
             .lock()
             .expect("polymarket ws subscription-scope mutex poisoned");
-        guard.remove(scope_key.as_str());
+        let changed = guard.remove(scope_key.as_str()).is_some();
+        drop(guard);
+        if changed {
+            self.inner
+                .subscription_scope_revision
+                .fetch_add(1, Ordering::SeqCst);
+            self.inner.subscription_scope_notify.notify_waiters();
+        }
     }
 
     pub fn subscription_scope_targets_snapshot(&self) -> (Vec<U256>, Vec<B256>) {
@@ -355,6 +419,22 @@ impl SharedPolymarketWsState {
         (asset_ids, market_ids)
     }
 
+    pub fn subscription_scope_revision(&self) -> i64 {
+        self.inner
+            .subscription_scope_revision
+            .load(Ordering::SeqCst)
+    }
+
+    async fn wait_for_subscription_scope_revision_after(&self, previous_revision: i64) -> i64 {
+        loop {
+            let current_revision = self.subscription_scope_revision();
+            if current_revision != previous_revision {
+                return current_revision;
+            }
+            self.inner.subscription_scope_notify.notified().await;
+        }
+    }
+
     pub async fn get_orderbook(&self, token_id: &str, max_age_ms: i64) -> Option<OrderBook> {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let map = self.inner.orderbooks.read().await;
@@ -363,6 +443,19 @@ impl SharedPolymarketWsState {
             return None;
         }
         Some(snapshot.orderbook.clone())
+    }
+
+    pub async fn get_orderbook_snapshot(
+        &self,
+        token_id: &str,
+        _max_age_ms: i64,
+    ) -> Option<WsOrderbookSnapshot> {
+        let map = self.inner.orderbooks.read().await;
+        let snapshot = map.get(token_id)?;
+        if snapshot.updated_ms <= 0 {
+            return None;
+        }
+        Some(snapshot.clone())
     }
 
     pub async fn get_best_price(&self, token_id: &str, max_age_ms: i64) -> Option<TokenPrice> {
@@ -401,6 +494,25 @@ impl SharedPolymarketWsState {
             return None;
         }
         Some(snapshot.clone())
+    }
+
+    pub async fn live_order_subscription_targets(&self) -> (Vec<U256>, Vec<B256>) {
+        let map = self.inner.order_statuses.read().await;
+        let mut asset_ids = HashSet::new();
+        let mut market_ids = HashSet::new();
+        for snapshot in map.values() {
+            if snapshot.status == OrderStatusType::Live
+                && snapshot.original_size > snapshot.size_matched
+            {
+                asset_ids.insert(snapshot.asset_id);
+                market_ids.insert(snapshot.market);
+            }
+        }
+        let mut asset_ids = asset_ids.into_iter().collect::<Vec<_>>();
+        asset_ids.sort();
+        let mut market_ids = market_ids.into_iter().collect::<Vec<_>>();
+        market_ids.sort();
+        (asset_ids, market_ids)
     }
 
     pub async fn get_last_trade(&self, token_id: &str, max_age_ms: i64) -> Option<WsTradeSnapshot> {
@@ -808,7 +920,10 @@ pub fn spawn_polymarket_ws_bridge(
                 "refresh_sec": cfg.refresh_sec,
                 "market_discovery_limit": cfg.market_discovery_limit,
                 "market_stale_ms": cfg.market_stale_ms,
-                "order_stale_ms": cfg.order_stale_ms
+                "order_stale_ms": cfg.order_stale_ms,
+                "sticky_scope_ttl_ms": cfg.sticky_scope_ttl_ms,
+                "sticky_scope_max_markets": cfg.sticky_scope_max_markets,
+                "sticky_scope_max_assets": cfg.sticky_scope_max_assets
             }),
         );
 
@@ -879,6 +994,9 @@ async fn run_market_loop(
     let mut last_discovered_targets: Option<(Vec<U256>, Vec<B256>, usize)> = None;
     let mut discovery_failure_streak = 0_u32;
     let mut discovery_retry_after_ms = 0_i64;
+    let mut last_scope_reconnect_ms = 0_i64;
+    let mut subscribed_asset_superset: Vec<StickyTarget<U256>> = Vec::new();
+    let mut subscribed_market_superset: Vec<StickyTarget<B256>> = Vec::new();
     let mut discovery_log_state = DegradedLogState::default();
     let mut stream_log_state = DegradedLogState::default();
     loop {
@@ -959,6 +1077,53 @@ async fn run_market_loop(
                 }
             }
         };
+        let (protected_asset_ids, protected_market_ids) =
+            state.live_order_subscription_targets().await;
+        let asset_update = update_sticky_targets(
+            &mut subscribed_asset_superset,
+            asset_ids_all,
+            &protected_asset_ids,
+            now_ms,
+            cfg.sticky_scope_ttl_ms,
+            cfg.sticky_scope_max_assets,
+        );
+        let market_update = update_sticky_targets(
+            &mut subscribed_market_superset,
+            market_ids_all,
+            &protected_market_ids,
+            now_ms,
+            cfg.sticky_scope_ttl_ms,
+            cfg.sticky_scope_max_markets,
+        );
+        if asset_update.expired_removed > 0
+            || asset_update.capped_removed > 0
+            || market_update.expired_removed > 0
+            || market_update.capped_removed > 0
+        {
+            log_event(
+                "polymarket_ws_market_sticky_scope_pruned",
+                json!({
+                    "asset_current_count": asset_update.current_count,
+                    "asset_sticky_count": asset_update.sticky_count,
+                    "asset_expired_removed": asset_update.expired_removed,
+                    "asset_capped_removed": asset_update.capped_removed,
+                    "asset_protected_count": asset_update.protected_count,
+                    "market_current_count": market_update.current_count,
+                    "market_sticky_count": market_update.sticky_count,
+                    "market_expired_removed": market_update.expired_removed,
+                    "market_capped_removed": market_update.capped_removed,
+                    "market_protected_count": market_update.protected_count,
+                    "sticky_scope_ttl_ms": cfg.sticky_scope_ttl_ms,
+                    "sticky_scope_max_assets": cfg.sticky_scope_max_assets,
+                    "sticky_scope_max_markets": cfg.sticky_scope_max_markets,
+                    "shard_idx": shard_idx,
+                    "shard_count": shard_count
+                }),
+            );
+        }
+        let asset_ids_all = asset_update.values;
+        let market_ids_all = market_update.values;
+        let tracked_markets = tracked_markets.max(market_ids_all.len());
         let asset_ids = shard_vec(asset_ids_all.as_slice(), shard_idx, shard_count);
         let market_ids = shard_vec(market_ids_all.as_slice(), shard_idx, shard_count);
 
@@ -1079,9 +1244,232 @@ async fn run_market_loop(
         let mut lag_ignored_count = 0_u32;
         let mut lag_ignored_missed_max = 0_u32;
         let mut lag_ignored_last_log_ms = 0_i64;
+        let mut last_scope_revision = state.subscription_scope_revision();
+        let mut pending_scope_reconnect_at: Option<Instant> = None;
+        let sticky_scope_refresh_at = Instant::now()
+            + Duration::from_millis(
+                u64::try_from(cfg.sticky_scope_ttl_ms)
+                    .ok()
+                    .unwrap_or(900_000)
+                    .max(60_000),
+            );
 
         loop {
             tokio::select! {
+                _ = sleep_until(sticky_scope_refresh_at) => {
+                    refresh_reconnect = true;
+                    log_event(
+                        "polymarket_ws_market_sticky_scope_refresh_reconnect",
+                        json!({
+                            "asset_count": asset_ids.len(),
+                            "asset_count_all": asset_ids_all.len(),
+                            "market_count": market_ids.len(),
+                            "market_count_all": market_ids_all.len(),
+                            "tracked_markets": tracked_markets,
+                            "sticky_scope_ttl_ms": cfg.sticky_scope_ttl_ms,
+                            "sticky_scope_max_assets": cfg.sticky_scope_max_assets,
+                            "sticky_scope_max_markets": cfg.sticky_scope_max_markets,
+                            "shard_idx": shard_idx,
+                            "shard_count": shard_count
+                        }),
+                    );
+                    break;
+                }
+                scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
+                    let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let scope_wait_ms = if last_scope_reconnect_ms > 0 && scope_debounce_ms > 0 {
+                        let elapsed_ms = now_ms.saturating_sub(last_scope_reconnect_ms) as u64;
+                        scope_debounce_ms.saturating_sub(elapsed_ms)
+                    } else {
+                        0
+                    };
+                    if scope_wait_ms > 0 {
+                        log_event(
+                            "polymarket_ws_market_scope_reconnect_debounced",
+                            json!({
+                                "wait_ms": scope_wait_ms,
+                                "debounce_ms": scope_debounce_ms,
+                                "scope_revision": scope_revision,
+                                "shard_idx": shard_idx,
+                                "shard_count": shard_count
+                            }),
+                        );
+                        last_scope_revision = scope_revision;
+                        pending_scope_reconnect_at =
+                            Some(Instant::now() + Duration::from_millis(scope_wait_ms));
+                        continue;
+                    }
+                    pending_scope_reconnect_at = None;
+                    last_scope_revision = scope_revision;
+                    match discover_subscription_targets(
+                        api.as_ref(),
+                        &state,
+                        cfg.market_discovery_limit,
+                    )
+                    .await
+                    {
+                        Ok((next_asset_ids_all, next_market_ids_all, next_tracked_markets)) => {
+                            let next_asset_ids =
+                                shard_vec(next_asset_ids_all.as_slice(), shard_idx, shard_count);
+                            let next_market_ids =
+                                shard_vec(next_market_ids_all.as_slice(), shard_idx, shard_count);
+                            let next_asset_ids =
+                                merged_target_superset(asset_ids.as_slice(), next_asset_ids);
+                            let next_market_ids =
+                                merged_target_superset(market_ids.as_slice(), next_market_ids);
+                            let target_changed =
+                                next_asset_ids != asset_ids || next_market_ids != market_ids;
+                            let target_added =
+                                target_change_has_additions(asset_ids.as_slice(), next_asset_ids.as_slice())
+                                    || target_change_has_additions(
+                                        market_ids.as_slice(),
+                                        next_market_ids.as_slice(),
+                                    );
+                            if target_changed && target_added {
+                                refresh_reconnect = true;
+                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
+                                log_event(
+                                    "polymarket_ws_market_refresh_reconnect",
+                                    json!({
+                                        "reason": "subscription_scope_changed",
+                                        "scope_debounce_ms": scope_debounce_ms,
+                                        "scope_wait_ms": scope_wait_ms,
+                                        "prev_asset_count": asset_ids.len(),
+                                        "next_asset_count": next_asset_ids.len(),
+                                        "prev_market_count": market_ids.len(),
+                                        "next_market_count": next_market_ids.len(),
+                                        "prev_tracked_markets": tracked_markets,
+                                        "next_tracked_markets": next_tracked_markets,
+                                        "scope_revision": scope_revision,
+                                        "shard_idx": shard_idx,
+                                        "shard_count": shard_count
+                                    }),
+                                );
+                                break;
+                            } else if target_changed {
+                                log_event(
+                                    "polymarket_ws_market_scope_shrink_deferred",
+                                    json!({
+                                        "reason": "subscription_scope_changed",
+                                        "scope_debounce_ms": scope_debounce_ms,
+                                        "scope_wait_ms": scope_wait_ms,
+                                        "prev_asset_count": asset_ids.len(),
+                                        "next_asset_count": next_asset_ids.len(),
+                                        "prev_market_count": market_ids.len(),
+                                        "next_market_count": next_market_ids.len(),
+                                        "prev_tracked_markets": tracked_markets,
+                                        "next_tracked_markets": next_tracked_markets,
+                                        "scope_revision": scope_revision,
+                                        "shard_idx": shard_idx,
+                                        "shard_count": shard_count
+                                    }),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            log_event(
+                                "polymarket_ws_market_scope_discovery_failed",
+                                json!({
+                                    "error": e.to_string(),
+                                    "asset_count": asset_ids.len(),
+                                    "market_count": market_ids.len(),
+                                    "scope_revision": scope_revision,
+                                    "shard_idx": shard_idx,
+                                    "shard_count": shard_count
+                                }),
+                            );
+                        }
+                    }
+                }
+                _ = async {
+                    let deadline = pending_scope_reconnect_at.unwrap_or_else(Instant::now);
+                    sleep_until(deadline).await;
+                }, if pending_scope_reconnect_at.is_some() => {
+                    pending_scope_reconnect_at = None;
+                    let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
+                    let scope_revision = state.subscription_scope_revision();
+                    last_scope_revision = scope_revision;
+                    match discover_subscription_targets(
+                        api.as_ref(),
+                        &state,
+                        cfg.market_discovery_limit,
+                    )
+                    .await
+                    {
+                        Ok((next_asset_ids_all, next_market_ids_all, next_tracked_markets)) => {
+                            let next_asset_ids =
+                                shard_vec(next_asset_ids_all.as_slice(), shard_idx, shard_count);
+                            let next_market_ids =
+                                shard_vec(next_market_ids_all.as_slice(), shard_idx, shard_count);
+                            let next_asset_ids =
+                                merged_target_superset(asset_ids.as_slice(), next_asset_ids);
+                            let next_market_ids =
+                                merged_target_superset(market_ids.as_slice(), next_market_ids);
+                            let target_changed =
+                                next_asset_ids != asset_ids || next_market_ids != market_ids;
+                            let target_added =
+                                target_change_has_additions(asset_ids.as_slice(), next_asset_ids.as_slice())
+                                    || target_change_has_additions(
+                                        market_ids.as_slice(),
+                                        next_market_ids.as_slice(),
+                                    );
+                            if target_changed && target_added {
+                                refresh_reconnect = true;
+                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
+                                log_event(
+                                    "polymarket_ws_market_refresh_reconnect",
+                                    json!({
+                                        "reason": "subscription_scope_changed",
+                                        "scope_debounce_ms": scope_debounce_ms,
+                                        "scope_wait_ms": 0_u64,
+                                        "prev_asset_count": asset_ids.len(),
+                                        "next_asset_count": next_asset_ids.len(),
+                                        "prev_market_count": market_ids.len(),
+                                        "next_market_count": next_market_ids.len(),
+                                        "prev_tracked_markets": tracked_markets,
+                                        "next_tracked_markets": next_tracked_markets,
+                                        "scope_revision": scope_revision,
+                                        "shard_idx": shard_idx,
+                                        "shard_count": shard_count
+                                    }),
+                                );
+                                break;
+                            } else if target_changed {
+                                log_event(
+                                    "polymarket_ws_market_scope_shrink_deferred",
+                                    json!({
+                                        "reason": "subscription_scope_changed",
+                                        "scope_debounce_ms": scope_debounce_ms,
+                                        "scope_wait_ms": 0_u64,
+                                        "prev_asset_count": asset_ids.len(),
+                                        "next_asset_count": next_asset_ids.len(),
+                                        "prev_market_count": market_ids.len(),
+                                        "next_market_count": next_market_ids.len(),
+                                        "prev_tracked_markets": tracked_markets,
+                                        "next_tracked_markets": next_tracked_markets,
+                                        "scope_revision": scope_revision,
+                                        "shard_idx": shard_idx,
+                                        "shard_count": shard_count
+                                    }),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            log_event(
+                                "polymarket_ws_market_scope_discovery_failed",
+                                json!({
+                                    "error": e.to_string(),
+                                    "asset_count": asset_ids.len(),
+                                    "market_count": market_ids.len(),
+                                    "scope_revision": scope_revision,
+                                    "shard_idx": shard_idx,
+                                    "shard_count": shard_count
+                                }),
+                            );
+                        }
+                    }
+                }
                 _ = refresh_interval.tick() => {
                     if cfg.reconnect_on_refresh {
                         refresh_reconnect = true;
@@ -1108,7 +1496,34 @@ async fn run_market_loop(
                                 shard_vec(next_asset_ids_all.as_slice(), shard_idx, shard_count);
                             let next_market_ids =
                                 shard_vec(next_market_ids_all.as_slice(), shard_idx, shard_count);
+                            let next_asset_ids =
+                                merged_target_superset(asset_ids.as_slice(), next_asset_ids);
+                            let next_market_ids =
+                                merged_target_superset(market_ids.as_slice(), next_market_ids);
                             if next_asset_ids != asset_ids || next_market_ids != market_ids {
+                                let target_added =
+                                    target_change_has_additions(asset_ids.as_slice(), next_asset_ids.as_slice())
+                                        || target_change_has_additions(
+                                            market_ids.as_slice(),
+                                            next_market_ids.as_slice(),
+                                        );
+                                if !target_added {
+                                    pending_target_change = None;
+                                    log_event(
+                                        "polymarket_ws_market_target_shrink_deferred",
+                                        json!({
+                                            "prev_asset_count": asset_ids.len(),
+                                            "next_asset_count": next_asset_ids.len(),
+                                            "prev_market_count": market_ids.len(),
+                                            "next_market_count": next_market_ids.len(),
+                                            "prev_tracked_markets": tracked_markets,
+                                            "next_tracked_markets": next_tracked_markets,
+                                            "shard_idx": shard_idx,
+                                            "shard_count": shard_count
+                                        }),
+                                    );
+                                    continue;
+                                }
                                 let now_ms = chrono::Utc::now().timestamp_millis();
                                 let asset_delta_bps =
                                     symmetric_delta_bps(asset_ids.as_slice(), next_asset_ids.as_slice());
@@ -1414,6 +1829,9 @@ async fn run_market_loop(
                 }),
             );
         }
+        drop(trade_stream);
+        drop(book_stream);
+        drop(client);
         state.set_market_connected(shard_idx, false);
         state.prune_stale(cfg.prune_after_ms).await;
         if !refresh_reconnect {
@@ -1481,6 +1899,8 @@ async fn run_user_loop(
     let mut last_market_targets: Option<(Vec<B256>, usize)> = None;
     let mut discovery_failure_streak = 0_u32;
     let mut discovery_retry_after_ms = 0_i64;
+    let mut last_scope_reconnect_ms = 0_i64;
+    let mut subscribed_market_superset: Vec<StickyTarget<B256>> = Vec::new();
     let mut discovery_log_state = DegradedLogState::default();
     let mut user_stream_log_state = DegradedLogState::default();
     loop {
@@ -1550,6 +1970,32 @@ async fn run_user_loop(
                 }
             }
         };
+        let (_, protected_market_ids) = state.live_order_subscription_targets().await;
+        let market_update = update_sticky_targets(
+            &mut subscribed_market_superset,
+            market_ids,
+            &protected_market_ids,
+            now_ms,
+            cfg.sticky_scope_ttl_ms,
+            cfg.sticky_scope_max_markets,
+        );
+        if market_update.expired_removed > 0 || market_update.capped_removed > 0 {
+            log_event(
+                "polymarket_ws_user_sticky_scope_pruned",
+                json!({
+                    "market_current_count": market_update.current_count,
+                    "market_sticky_count": market_update.sticky_count,
+                    "market_expired_removed": market_update.expired_removed,
+                    "market_capped_removed": market_update.capped_removed,
+                    "market_protected_count": market_update.protected_count,
+                    "sticky_scope_ttl_ms": cfg.sticky_scope_ttl_ms,
+                    "sticky_scope_max_markets": cfg.sticky_scope_max_markets
+                }),
+            );
+        }
+        let market_ids = market_update.values;
+        let tracked_markets = tracked_markets.max(market_ids.len());
+
         if market_ids.is_empty() {
             state.set_user_connected(false);
             sleep(Duration::from_secs(cfg.refresh_sec)).await;
@@ -1646,8 +2092,179 @@ async fn run_user_loop(
         refresh_interval.tick().await;
         let mut refresh_reconnect = false;
         let mut pending_target_change: Option<PendingUserTargetChange> = None;
+        let mut last_scope_revision = state.subscription_scope_revision();
+        let mut pending_scope_reconnect_at: Option<Instant> = None;
+        let sticky_scope_refresh_at = Instant::now()
+            + Duration::from_millis(
+                u64::try_from(cfg.sticky_scope_ttl_ms)
+                    .ok()
+                    .unwrap_or(900_000)
+                    .max(60_000),
+            );
         loop {
             tokio::select! {
+                _ = sleep_until(sticky_scope_refresh_at) => {
+                    refresh_reconnect = true;
+                    log_event(
+                        "polymarket_ws_user_sticky_scope_refresh_reconnect",
+                        json!({
+                            "market_count": market_ids.len(),
+                            "tracked_markets": tracked_markets,
+                            "sticky_scope_ttl_ms": cfg.sticky_scope_ttl_ms,
+                            "sticky_scope_max_markets": cfg.sticky_scope_max_markets
+                        }),
+                    );
+                    break;
+                }
+                scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
+                    let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    let scope_wait_ms = if last_scope_reconnect_ms > 0 && scope_debounce_ms > 0 {
+                        let elapsed_ms = now_ms.saturating_sub(last_scope_reconnect_ms) as u64;
+                        scope_debounce_ms.saturating_sub(elapsed_ms)
+                    } else {
+                        0
+                    };
+                    if scope_wait_ms > 0 {
+                        log_event(
+                            "polymarket_ws_user_scope_reconnect_debounced",
+                            json!({
+                                "wait_ms": scope_wait_ms,
+                                "debounce_ms": scope_debounce_ms,
+                                "scope_revision": scope_revision
+                            }),
+                        );
+                        last_scope_revision = scope_revision;
+                        pending_scope_reconnect_at =
+                            Some(Instant::now() + Duration::from_millis(scope_wait_ms));
+                        continue;
+                    }
+                    pending_scope_reconnect_at = None;
+                    last_scope_revision = scope_revision;
+                    match discover_subscription_targets(
+                        api.as_ref(),
+                        &state,
+                        cfg.market_discovery_limit,
+                    )
+                    .await
+                    {
+                        Ok((_, next_market_ids, next_tracked_markets)) => {
+                            let next_market_ids =
+                                merged_target_superset(market_ids.as_slice(), next_market_ids);
+                            let target_changed = next_market_ids != market_ids;
+                            let target_added =
+                                target_change_has_additions(market_ids.as_slice(), next_market_ids.as_slice());
+                            if target_changed && target_added {
+                                refresh_reconnect = true;
+                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
+                                log_event(
+                                    "polymarket_ws_user_refresh_reconnect",
+                                    json!({
+                                        "reason": "subscription_scope_changed",
+                                        "scope_debounce_ms": scope_debounce_ms,
+                                        "scope_wait_ms": scope_wait_ms,
+                                        "prev_market_count": market_ids.len(),
+                                        "next_market_count": next_market_ids.len(),
+                                        "prev_tracked_markets": tracked_markets,
+                                        "next_tracked_markets": next_tracked_markets,
+                                        "scope_revision": scope_revision
+                                    }),
+                                );
+                                break;
+                            } else if target_changed {
+                                log_event(
+                                    "polymarket_ws_user_scope_shrink_deferred",
+                                    json!({
+                                        "reason": "subscription_scope_changed",
+                                        "scope_debounce_ms": scope_debounce_ms,
+                                        "scope_wait_ms": scope_wait_ms,
+                                        "prev_market_count": market_ids.len(),
+                                        "next_market_count": next_market_ids.len(),
+                                        "prev_tracked_markets": tracked_markets,
+                                        "next_tracked_markets": next_tracked_markets,
+                                        "scope_revision": scope_revision
+                                    }),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            log_event(
+                                "polymarket_ws_user_scope_discovery_failed",
+                                json!({
+                                    "error": e.to_string(),
+                                    "market_count": market_ids.len(),
+                                    "scope_revision": scope_revision
+                                }),
+                            );
+                        }
+                    }
+                }
+                _ = async {
+                    let deadline = pending_scope_reconnect_at.unwrap_or_else(Instant::now);
+                    sleep_until(deadline).await;
+                }, if pending_scope_reconnect_at.is_some() => {
+                    pending_scope_reconnect_at = None;
+                    let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
+                    let scope_revision = state.subscription_scope_revision();
+                    last_scope_revision = scope_revision;
+                    match discover_subscription_targets(
+                        api.as_ref(),
+                        &state,
+                        cfg.market_discovery_limit,
+                    )
+                    .await
+                    {
+                        Ok((_, next_market_ids, next_tracked_markets)) => {
+                            let next_market_ids =
+                                merged_target_superset(market_ids.as_slice(), next_market_ids);
+                            let target_changed = next_market_ids != market_ids;
+                            let target_added =
+                                target_change_has_additions(market_ids.as_slice(), next_market_ids.as_slice());
+                            if target_changed && target_added {
+                                refresh_reconnect = true;
+                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
+                                log_event(
+                                    "polymarket_ws_user_refresh_reconnect",
+                                    json!({
+                                        "reason": "subscription_scope_changed",
+                                        "scope_debounce_ms": scope_debounce_ms,
+                                        "scope_wait_ms": 0_u64,
+                                        "prev_market_count": market_ids.len(),
+                                        "next_market_count": next_market_ids.len(),
+                                        "prev_tracked_markets": tracked_markets,
+                                        "next_tracked_markets": next_tracked_markets,
+                                        "scope_revision": scope_revision
+                                    }),
+                                );
+                                break;
+                            } else if target_changed {
+                                log_event(
+                                    "polymarket_ws_user_scope_shrink_deferred",
+                                    json!({
+                                        "reason": "subscription_scope_changed",
+                                        "scope_debounce_ms": scope_debounce_ms,
+                                        "scope_wait_ms": 0_u64,
+                                        "prev_market_count": market_ids.len(),
+                                        "next_market_count": next_market_ids.len(),
+                                        "prev_tracked_markets": tracked_markets,
+                                        "next_tracked_markets": next_tracked_markets,
+                                        "scope_revision": scope_revision
+                                    }),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            log_event(
+                                "polymarket_ws_user_scope_discovery_failed",
+                                json!({
+                                    "error": e.to_string(),
+                                    "market_count": market_ids.len(),
+                                    "scope_revision": scope_revision
+                                }),
+                            );
+                        }
+                    }
+                }
                 _ = refresh_interval.tick() => {
                     if cfg.reconnect_on_refresh {
                         refresh_reconnect = true;
@@ -1669,7 +2286,25 @@ async fn run_user_loop(
                     .await
                     {
                         Ok((_, next_market_ids, next_tracked_markets)) => {
+                            let next_market_ids =
+                                merged_target_superset(market_ids.as_slice(), next_market_ids);
                             if next_market_ids != market_ids {
+                                if !target_change_has_additions(
+                                    market_ids.as_slice(),
+                                    next_market_ids.as_slice(),
+                                ) {
+                                    pending_target_change = None;
+                                    log_event(
+                                        "polymarket_ws_user_target_shrink_deferred",
+                                        json!({
+                                            "prev_market_count": market_ids.len(),
+                                            "next_market_count": next_market_ids.len(),
+                                            "prev_tracked_markets": tracked_markets,
+                                            "next_tracked_markets": next_tracked_markets
+                                        }),
+                                    );
+                                    continue;
+                                }
                                 let now_ms = chrono::Utc::now().timestamp_millis();
                                 let delta_bps = symmetric_delta_bps(
                                     market_ids.as_slice(),
@@ -1804,6 +2439,8 @@ async fn run_user_loop(
                 }
             }
         }
+        drop(stream);
+        drop(user_client);
         state.set_user_connected(false);
         state.prune_stale(cfg.prune_after_ms).await;
         if !refresh_reconnect {
@@ -1893,6 +2530,124 @@ fn symmetric_delta_bps<T: Ord>(left: &[T], right: &[T]) -> u32 {
     let bps =
         (u64::try_from(diff).ok().unwrap_or(0) * 10_000) / u64::try_from(denom).ok().unwrap_or(1);
     u32::try_from(bps).ok().unwrap_or(u32::MAX)
+}
+
+fn target_change_has_additions<T: Ord>(current: &[T], next: &[T]) -> bool {
+    let mut current_idx = 0usize;
+    for next_item in next {
+        loop {
+            match current.get(current_idx) {
+                Some(current_item) => match current_item.cmp(next_item) {
+                    std::cmp::Ordering::Less => current_idx = current_idx.saturating_add(1),
+                    std::cmp::Ordering::Equal => break,
+                    std::cmp::Ordering::Greater => return true,
+                },
+                None => return true,
+            }
+        }
+    }
+    false
+}
+
+fn merged_target_superset<T: Ord + Clone>(current: &[T], mut next: Vec<T>) -> Vec<T> {
+    if current.is_empty() {
+        return next;
+    }
+    next.extend_from_slice(current);
+    next.sort();
+    next.dedup();
+    next
+}
+
+fn update_sticky_targets<T>(
+    sticky: &mut Vec<StickyTarget<T>>,
+    mut current: Vec<T>,
+    protected: &[T],
+    now_ms: i64,
+    ttl_ms: i64,
+    max_items: usize,
+) -> StickyTargetUpdate<T>
+where
+    T: Ord + Clone + Eq + Hash,
+{
+    current.sort();
+    current.dedup();
+    let current_set = current.iter().cloned().collect::<HashSet<_>>();
+    let protected_set = protected.iter().cloned().collect::<HashSet<_>>();
+
+    for item in &current {
+        if let Some(entry) = sticky.iter_mut().find(|entry| entry.value == *item) {
+            entry.last_seen_ms = now_ms;
+        } else {
+            sticky.push(StickyTarget {
+                value: item.clone(),
+                last_seen_ms: now_ms,
+            });
+        }
+    }
+    for item in &protected_set {
+        if sticky.iter().all(|entry| entry.value != *item) {
+            sticky.push(StickyTarget {
+                value: item.clone(),
+                last_seen_ms: now_ms,
+            });
+        }
+    }
+
+    let before_expiry = sticky.len();
+    sticky.retain(|entry| {
+        current_set.contains(&entry.value)
+            || protected_set.contains(&entry.value)
+            || now_ms.saturating_sub(entry.last_seen_ms) <= ttl_ms.max(60_000)
+    });
+    let expired_removed = before_expiry.saturating_sub(sticky.len());
+
+    let effective_max = max_items
+        .max(current_set.union(&protected_set).count())
+        .max(1);
+    let mut capped_removed = 0usize;
+    if sticky.len() > effective_max {
+        let mut removable = sticky
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                !current_set.contains(&entry.value) && !protected_set.contains(&entry.value)
+            })
+            .map(|(idx, entry)| (idx, entry.last_seen_ms))
+            .collect::<Vec<_>>();
+        removable.sort_by_key(|(_, last_seen_ms)| *last_seen_ms);
+        let to_remove = sticky
+            .len()
+            .saturating_sub(effective_max)
+            .min(removable.len());
+        let remove_indices = removable
+            .into_iter()
+            .take(to_remove)
+            .map(|(idx, _)| idx)
+            .collect::<HashSet<_>>();
+        let mut idx = 0usize;
+        sticky.retain(|_| {
+            let keep = !remove_indices.contains(&idx);
+            idx = idx.saturating_add(1);
+            keep
+        });
+        capped_removed = to_remove;
+    }
+
+    let mut values = sticky
+        .iter()
+        .map(|entry| entry.value.clone())
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    StickyTargetUpdate {
+        values,
+        expired_removed,
+        capped_removed,
+        current_count: current_set.len(),
+        protected_count: protected_set.len(),
+        sticky_count: sticky.len(),
+    }
 }
 
 fn shard_vec<T: Clone>(items: &[T], shard_idx: usize, shard_count: usize) -> Vec<T> {
@@ -2205,18 +2960,117 @@ mod tests {
     }
 
     #[test]
+    fn subscription_scope_revision_changes_only_on_target_changes() {
+        let state = new_shared_polymarket_ws_state();
+        let token_ids = vec![
+            "71983878769646543569771747914086054960230109850913433882779852271882956401020"
+                .to_string(),
+        ];
+        let condition_ids =
+            vec!["0x0000000000000000000000000000000000000000000000000000000000000001".to_string()];
+
+        let initial = state.subscription_scope_revision();
+        state.set_subscription_scope_targets("mm-sport", &[], &[]);
+        assert_eq!(state.subscription_scope_revision(), initial);
+
+        state.set_subscription_scope_targets(
+            "mm-sport",
+            token_ids.as_slice(),
+            condition_ids.as_slice(),
+        );
+        let after_insert = state.subscription_scope_revision();
+        assert_eq!(after_insert, initial + 1);
+
+        state.set_subscription_scope_targets(
+            "mm-sport",
+            token_ids.as_slice(),
+            condition_ids.as_slice(),
+        );
+        assert_eq!(state.subscription_scope_revision(), after_insert);
+
+        state.clear_subscription_scope_targets("mm-sport");
+        let after_clear = state.subscription_scope_revision();
+        assert_eq!(after_clear, after_insert + 1);
+
+        state.clear_subscription_scope_targets("mm-sport");
+        assert_eq!(state.subscription_scope_revision(), after_clear);
+    }
+
+    #[test]
     fn ws_discovery_defaults_are_safe() {
         with_ws_env(
             &[
                 ("EVPOLY_PM_WS_MARKET_DISCOVERY_LIMIT", None),
                 ("EVPOLY_PM_WS_REFRESH_SEC", None),
+                ("EVPOLY_PM_WS_STICKY_SCOPE_TTL_MS", None),
+                ("EVPOLY_PM_WS_STICKY_SCOPE_MAX_MARKETS", None),
+                ("EVPOLY_PM_WS_STICKY_SCOPE_MAX_ASSETS", None),
             ],
             || {
                 let cfg = PolymarketWsConfig::default();
                 assert_eq!(cfg.market_discovery_limit, 250);
                 assert_eq!(cfg.refresh_sec, 90);
+                assert_eq!(cfg.sticky_scope_ttl_ms, 900_000);
+                assert_eq!(cfg.sticky_scope_max_markets, 300);
+                assert_eq!(cfg.sticky_scope_max_assets, 650);
             },
         );
+    }
+
+    #[test]
+    fn sticky_scope_keeps_current_and_prunes_stale_over_cap() {
+        let now_ms = 1_000_000_i64;
+        let mut sticky = Vec::new();
+        let first =
+            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000001")
+                .expect("first");
+        let stale =
+            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000002")
+                .expect("stale");
+        let current =
+            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000003")
+                .expect("current");
+
+        let initial =
+            update_sticky_targets(&mut sticky, vec![first, stale], &[], now_ms, 60_000, 3);
+        assert_eq!(initial.values.len(), 2);
+        let update =
+            update_sticky_targets(&mut sticky, vec![current], &[], now_ms + 120_000, 60_000, 1);
+        assert!(update.values.contains(&current));
+        assert!(!update.values.contains(&stale));
+        assert!(!update.values.contains(&first));
+        assert_eq!(update.expired_removed, 2);
+    }
+
+    #[test]
+    fn sticky_scope_keeps_protected_live_orders_over_ttl_and_cap() {
+        let now_ms = 1_000_000_i64;
+        let mut sticky = Vec::new();
+        let protected =
+            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000001")
+                .expect("protected");
+        let stale =
+            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000002")
+                .expect("stale");
+        let current =
+            B256::from_str("0x0000000000000000000000000000000000000000000000000000000000000003")
+                .expect("current");
+
+        let initial =
+            update_sticky_targets(&mut sticky, vec![protected, stale], &[], now_ms, 60_000, 3);
+        assert_eq!(initial.values.len(), 2);
+        let update = update_sticky_targets(
+            &mut sticky,
+            vec![current],
+            &[protected],
+            now_ms + 120_000,
+            60_000,
+            1,
+        );
+        assert!(update.values.contains(&current));
+        assert!(update.values.contains(&protected));
+        assert!(!update.values.contains(&stale));
+        assert_eq!(update.protected_count, 1);
     }
 
     #[test]

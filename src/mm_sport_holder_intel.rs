@@ -875,6 +875,7 @@ mod tests {
             minimum_tick_size: 0.01,
             minimum_order_size_usd: 1.0,
             game_start_ts_ms: Utc::now().timestamp_millis() + (4 * 3_600_000),
+            market_end_ts_ms: 0,
             period_timestamp: 0,
             up_token_id: "up".to_string(),
             down_token_id: "down".to_string(),

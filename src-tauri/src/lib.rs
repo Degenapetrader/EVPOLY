@@ -324,6 +324,11 @@ struct DesktopMmSportSettings {
     sponsored_reward_min_share: f64,
     quote_expiry_min_sec: f64,
     quote_expiry_max_sec: f64,
+    quote_cooldown_min_sec: f64,
+    quote_cooldown_max_sec: f64,
+    fifo_max_share_ratio: f64,
+    active_sport_market_cap: f64,
+    active_nonsport_market_cap: f64,
 }
 
 fn normalize_mm_rewards_market_mode(value: &str) -> &'static str {
@@ -346,6 +351,28 @@ fn normalize_mm_sport_discovery_route(value: &str) -> &'static str {
         "dual" => "dual",
         _ => "sports",
     }
+}
+
+fn mm_sport_route_default_caps(route: &str) -> (f64, f64) {
+    match normalize_mm_sport_discovery_route(route) {
+        "nonsports" => (0.0, 100.0),
+        "dual" => (50.0, 50.0),
+        _ => (100.0, 0.0),
+    }
+}
+
+fn normalize_nonnegative_integer_f64(value: f64, default: f64) -> f64 {
+    if value.is_finite() && value >= 0.0 {
+        value.floor()
+    } else {
+        default
+    }
+}
+
+fn normalize_cooldown_pair_f64(min_value: f64, max_value: f64) -> (f64, f64) {
+    let min_value = normalize_nonnegative_integer_f64(min_value, 10.0);
+    let max_value = normalize_nonnegative_integer_f64(max_value, 60.0).max(min_value);
+    (min_value, max_value)
 }
 
 fn normalize_mm_sport_exit_mode(value: &str) -> &'static str {
@@ -603,6 +630,33 @@ fn default_premarket_timeframes() -> Vec<String> {
 }
 
 fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8) -> DesktopConfig {
+    let mm_sport_discovery_route = normalize_mm_sport_discovery_route(
+        config_io::env_template_default_string("EVPOLY_MM_SPORT_DISCOVERY_ROUTE")
+            .as_deref()
+            .unwrap_or("sports"),
+    )
+    .to_string();
+    let (default_active_sport_market_cap, default_active_nonsport_market_cap) =
+        mm_sport_route_default_caps(mm_sport_discovery_route.as_str());
+    let (quote_cooldown_min_sec, quote_cooldown_max_sec) = normalize_cooldown_pair_f64(
+        config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC", 10.0),
+        config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC", 60.0),
+    );
+    let active_sport_market_cap = normalize_nonnegative_integer_f64(
+        config_io::env_template_default_f64(
+            "EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP",
+            default_active_sport_market_cap,
+        ),
+        default_active_sport_market_cap,
+    );
+    let active_nonsport_market_cap = normalize_nonnegative_integer_f64(
+        config_io::env_template_default_f64(
+            "EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP",
+            default_active_nonsport_market_cap,
+        ),
+        default_active_nonsport_market_cap,
+    );
+
     DesktopConfig {
         private_key: String::new(),
         eoa_wallet,
@@ -841,12 +895,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 ),
             },
             mm_sport: DesktopMmSportSettings {
-                discovery_route: normalize_mm_sport_discovery_route(
-                    config_io::env_template_default_string("EVPOLY_MM_SPORT_DISCOVERY_ROUTE")
-                        .as_deref()
-                        .unwrap_or("sports"),
-                )
-                .to_string(),
+                discovery_route: mm_sport_discovery_route,
                 quote_size_mode: normalize_mm_sport_quote_size_mode(
                     config_io::env_template_default_string("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE")
                         .as_deref()
@@ -991,6 +1040,14 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC",
                     185.0,
                 ),
+                quote_cooldown_min_sec,
+                quote_cooldown_max_sec,
+                fifo_max_share_ratio: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO",
+                    0.11,
+                ),
+                active_sport_market_cap,
+                active_nonsport_market_cap,
             },
         },
         simulation: config_io::env_template_default_bool("APP_SIMULATION", false),
@@ -1833,14 +1890,26 @@ fn desktop_config_to_profile_payload(
         "EVPOLY_MM_REWARD_MIN_SHARES_CAP".to_string(),
         number_to_json(config.strategy_settings.mm_rewards.reward_min_shares_cap),
     );
+    let mm_sport_discovery_route = normalize_mm_sport_discovery_route(
+        config.strategy_settings.mm_sport.discovery_route.as_str(),
+    );
+    let (default_active_sport_market_cap, default_active_nonsport_market_cap) =
+        mm_sport_route_default_caps(mm_sport_discovery_route);
+    let (quote_cooldown_min_sec, quote_cooldown_max_sec) = normalize_cooldown_pair_f64(
+        config.strategy_settings.mm_sport.quote_cooldown_min_sec,
+        config.strategy_settings.mm_sport.quote_cooldown_max_sec,
+    );
+    let active_sport_market_cap = normalize_nonnegative_integer_f64(
+        config.strategy_settings.mm_sport.active_sport_market_cap,
+        default_active_sport_market_cap,
+    );
+    let active_nonsport_market_cap = normalize_nonnegative_integer_f64(
+        config.strategy_settings.mm_sport.active_nonsport_market_cap,
+        default_active_nonsport_market_cap,
+    );
     strategy.insert(
         "EVPOLY_MM_SPORT_DISCOVERY_ROUTE".to_string(),
-        Value::String(
-            normalize_mm_sport_discovery_route(
-                config.strategy_settings.mm_sport.discovery_route.as_str(),
-            )
-            .to_string(),
-        ),
+        Value::String(mm_sport_discovery_route.to_string()),
     );
     strategy.insert(
         "EVPOLY_MM_SPORT_QUOTE_SIZE_MODE".to_string(),
@@ -2069,6 +2138,26 @@ fn desktop_config_to_profile_payload(
     strategy.insert(
         "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC".to_string(),
         number_to_json(config.strategy_settings.mm_sport.quote_expiry_max_sec),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC".to_string(),
+        number_to_json(quote_cooldown_min_sec),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC".to_string(),
+        number_to_json(quote_cooldown_max_sec),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.fifo_max_share_ratio),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP".to_string(),
+        number_to_json(active_sport_market_cap),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP".to_string(),
+        number_to_json(active_nonsport_market_cap),
     );
 
     sizing.insert(
@@ -2347,6 +2436,46 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD",
         config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 1100.0),
     );
+    let mm_sport_discovery_route = normalize_mm_sport_discovery_route(
+        string_from_object(&strategy, "EVPOLY_MM_SPORT_DISCOVERY_ROUTE", "sports").as_str(),
+    );
+    let (default_active_sport_market_cap, default_active_nonsport_market_cap) =
+        mm_sport_route_default_caps(mm_sport_discovery_route);
+    let (mm_sport_quote_cooldown_min_sec, mm_sport_quote_cooldown_max_sec) =
+        normalize_cooldown_pair_f64(
+            f64_from_object(
+                &strategy,
+                "EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC",
+                config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC", 10.0),
+            ),
+            f64_from_object(
+                &strategy,
+                "EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC",
+                config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC", 60.0),
+            ),
+        );
+    let mm_sport_active_sport_market_cap = normalize_nonnegative_integer_f64(
+        f64_from_object(
+            &strategy,
+            "EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP",
+            config_io::env_template_default_f64(
+                "EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP",
+                default_active_sport_market_cap,
+            ),
+        ),
+        default_active_sport_market_cap,
+    );
+    let mm_sport_active_nonsport_market_cap = normalize_nonnegative_integer_f64(
+        f64_from_object(
+            &strategy,
+            "EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP",
+            config_io::env_template_default_f64(
+                "EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP",
+                default_active_nonsport_market_cap,
+            ),
+        ),
+        default_active_nonsport_market_cap,
+    );
 
     let relayer_remote_signer_token = secrets
         .get("EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN")
@@ -2481,9 +2610,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "reward_min_shares_cap": f64_from_object(&strategy, "EVPOLY_MM_REWARD_MIN_SHARES_CAP", config_io::env_template_default_f64("EVPOLY_MM_REWARD_MIN_SHARES_CAP", 0.0))
             },
             "mm_sport": {
-                "discovery_route": normalize_mm_sport_discovery_route(
-                    string_from_object(&strategy, "EVPOLY_MM_SPORT_DISCOVERY_ROUTE", "sports").as_str()
-                ),
+                "discovery_route": mm_sport_discovery_route,
                 "quote_size_mode": normalize_mm_sport_quote_size_mode(
                     mm_sport_quote_size_mode.as_str()
                 ),
@@ -2520,7 +2647,12 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "allow_sponsored_rewards": bool_from_object(&strategy, "EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS", config_io::env_template_default_bool("EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS", true)),
                 "sponsored_reward_min_share": f64_from_object(&strategy, "EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE", config_io::env_template_default_f64("EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE", 0.50)),
                 "quote_expiry_min_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", 65.0)),
-                "quote_expiry_max_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 185.0))
+                "quote_expiry_max_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 185.0)),
+                "quote_cooldown_min_sec": mm_sport_quote_cooldown_min_sec,
+                "quote_cooldown_max_sec": mm_sport_quote_cooldown_max_sec,
+                "fifo_max_share_ratio": f64_from_object(&strategy, "EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", config_io::env_template_default_f64("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", 0.11)),
+                "active_sport_market_cap": mm_sport_active_sport_market_cap,
+                "active_nonsport_market_cap": mm_sport_active_nonsport_market_cap
             }
         },
         "simulation": bool_from_object(&sizing, "APP_SIMULATION", default_simulation),
@@ -5696,6 +5828,77 @@ mod tests {
     }
 
     #[test]
+    fn mm_sport_desktop_caps_are_route_aware_and_integer_normalized() {
+        let mut config = default_desktop_config(
+            "0x1111111111111111111111111111111111111111".to_string(),
+            "0x2222222222222222222222222222222222222222".to_string(),
+            1,
+        );
+        assert_eq!(
+            config.strategy_settings.mm_sport.active_sport_market_cap,
+            100.0
+        );
+        assert_eq!(
+            config.strategy_settings.mm_sport.active_nonsport_market_cap,
+            0.0
+        );
+
+        config.strategy_settings.mm_sport.active_sport_market_cap = 77.9;
+        config.strategy_settings.mm_sport.active_nonsport_market_cap = -1.0;
+        config.strategy_settings.mm_sport.quote_cooldown_min_sec = 61.8;
+        config.strategy_settings.mm_sport.quote_cooldown_max_sec = 10.0;
+
+        let (strategy, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        let strategy = strategy.as_object().expect("strategy object");
+        assert_eq!(
+            strategy.get("EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP"),
+            Some(&serde_json::json!(77.0))
+        );
+        assert_eq!(
+            strategy.get("EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP"),
+            Some(&serde_json::json!(0.0))
+        );
+        assert_eq!(
+            strategy.get("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC"),
+            Some(&serde_json::json!(61.0))
+        );
+        assert_eq!(
+            strategy.get("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC"),
+            Some(&serde_json::json!(61.0))
+        );
+    }
+
+    #[test]
+    fn mm_sport_profile_load_defaults_missing_caps_by_route() {
+        let auth = AppAuth::new(std::env::temp_dir().join("evpoly-test-auth-mm-route-caps"));
+        let profile = Profile {
+            id: "p-route".to_string(),
+            name: "desktop".to_string(),
+            eoa_wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
+            proxy_wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            signature_type: 1,
+            encrypted_secrets: String::new(),
+            strategy_config: serde_json::json!({
+                "EVPOLY_MM_SPORT_DISCOVERY_ROUTE": "dual"
+            }),
+            sizing_config: serde_json::json!({}),
+            created_at: "now".to_string(),
+            last_used: "now".to_string(),
+        };
+
+        let value = profile_to_desktop_config(&profile, &auth).expect("profile to desktop config");
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["active_sport_market_cap"],
+            serde_json::json!(50.0)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["active_nonsport_market_cap"],
+            serde_json::json!(50.0)
+        );
+    }
+
+    #[test]
     fn mm_sport_depth_ratio_round_trip_preserves_max_share_ratio() {
         let mut config = default_desktop_config(
             "0x1111111111111111111111111111111111111111".to_string(),
@@ -5704,6 +5907,11 @@ mod tests {
         );
         config.strategy_settings.mm_sport.quote_size_mode = "depth_ratio".to_string();
         config.strategy_settings.mm_sport.max_share_ratio = 0.4;
+        config.strategy_settings.mm_sport.fifo_max_share_ratio = 0.5;
+        config.strategy_settings.mm_sport.active_sport_market_cap = 77.0;
+        config.strategy_settings.mm_sport.active_nonsport_market_cap = 33.0;
+        config.strategy_settings.mm_sport.quote_cooldown_min_sec = 12.0;
+        config.strategy_settings.mm_sport.quote_cooldown_max_sec = 45.0;
 
         let (strategy, sizing, _, _, _, _) = desktop_config_to_profile_payload(&config);
         let profile = Profile {
@@ -5730,6 +5938,26 @@ mod tests {
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["max_share_ratio"],
             serde_json::json!(0.4)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["fifo_max_share_ratio"],
+            serde_json::json!(0.5)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["active_sport_market_cap"],
+            serde_json::json!(77.0)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["active_nonsport_market_cap"],
+            serde_json::json!(33.0)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["quote_cooldown_min_sec"],
+            serde_json::json!(12.0)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["quote_cooldown_max_sec"],
+            serde_json::json!(45.0)
         );
     }
 

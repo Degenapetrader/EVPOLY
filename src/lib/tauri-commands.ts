@@ -400,6 +400,11 @@ export interface MMSportSettings {
   sponsored_reward_min_share: number;
   quote_expiry_min_sec: number;
   quote_expiry_max_sec: number;
+  quote_cooldown_min_sec: number;
+  quote_cooldown_max_sec: number;
+  fifo_max_share_ratio: number;
+  active_sport_market_cap: number;
+  active_nonsport_market_cap: number;
 }
 
 export interface SharedSymbolMultipliers {

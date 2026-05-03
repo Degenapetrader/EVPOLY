@@ -19,6 +19,7 @@ import {
   DEFAULT_CONFIG,
   formatUsd,
   mergeConfig,
+  mmSportRouteDefaultCaps,
   parseNonNegative,
   setEVSnipePreHitEnabled,
   strategyControlSuffix,
@@ -695,6 +696,7 @@ export function Home() {
                           updateStrategySettingsSection(current, "mm_sport", {
                             ...current.strategy_settings.mm_sport,
                             discovery_route: value,
+                            ...mmSportRouteDefaultCaps(value),
                           })
                         )
                       }

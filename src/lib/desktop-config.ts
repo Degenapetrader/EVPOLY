@@ -98,6 +98,31 @@ function normalizeNonNegativeInteger(value: number | undefined, fallback: number
   return Math.floor(value);
 }
 
+function normalizeMMSportRouteCaps(
+  route: string,
+  sportCap: number | undefined,
+  nonsportCap: number | undefined
+) {
+  const defaults = mmSportRouteDefaultCaps(route);
+  const sport = normalizeNonNegativeInteger(sportCap, defaults.active_sport_market_cap);
+  const nonsport = normalizeNonNegativeInteger(
+    nonsportCap,
+    defaults.active_nonsport_market_cap
+  );
+  const savedSportsOnly = sport === 100 && nonsport === 0;
+  const savedNonsportsOnly = sport === 0 && nonsport === 100;
+
+  if (
+    (route === "dual" && (savedSportsOnly || savedNonsportsOnly)) ||
+    (route === "sports" && savedNonsportsOnly) ||
+    (route === "nonsports" && savedSportsOnly)
+  ) {
+    return defaults;
+  }
+
+  return { active_sport_market_cap: sport, active_nonsport_market_cap: nonsport };
+}
+
 function normalizeCooldownPair(
   minValue: number | undefined,
   maxValue: number | undefined,
@@ -315,7 +340,11 @@ export const DEFAULT_CONFIG: BotConfig = {
 export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotConfig {
   const savedMmSport = saved?.strategy_settings?.mm_sport;
   const mmSportDiscoveryRoute = normalizeMMSportDiscoveryRoute(savedMmSport?.discovery_route);
-  const mmSportDefaultCaps = mmSportRouteDefaultCaps(mmSportDiscoveryRoute);
+  const mmSportCaps = normalizeMMSportRouteCaps(
+    mmSportDiscoveryRoute,
+    savedMmSport?.active_sport_market_cap,
+    savedMmSport?.active_nonsport_market_cap
+  );
   const mmSportCooldown = normalizeCooldownPair(
     savedMmSport?.quote_cooldown_min_sec,
     savedMmSport?.quote_cooldown_max_sec,
@@ -470,14 +499,8 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
           savedMmSport?.nonsport_min_top_depth_usd ?? sportMinTopDepthUsd,
         quote_cooldown_min_sec: mmSportCooldown.quote_cooldown_min_sec,
         quote_cooldown_max_sec: mmSportCooldown.quote_cooldown_max_sec,
-        active_sport_market_cap: normalizeNonNegativeInteger(
-          savedMmSport?.active_sport_market_cap,
-          mmSportDefaultCaps.active_sport_market_cap
-        ),
-        active_nonsport_market_cap: normalizeNonNegativeInteger(
-          savedMmSport?.active_nonsport_market_cap,
-          mmSportDefaultCaps.active_nonsport_market_cap
-        ),
+        active_sport_market_cap: mmSportCaps.active_sport_market_cap,
+        active_nonsport_market_cap: mmSportCaps.active_nonsport_market_cap,
       },
     },
     symbols: saved?.symbols?.length ? saved.symbols : DEFAULT_CONFIG.symbols,

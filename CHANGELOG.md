@@ -1,6 +1,7 @@
 # EVPoly Desktop Changelog
 
 ## Unreleased
+- Fixed MM 2.0 route cap normalization so Dual route migrates stale Sport-only or Non-S-only caps back to `50/50`, and Home route buttons save the route-default caps.
 - Added MM 2.0 Sport / Non-S sizing profiles in desktop config and settings UI.
 - Added a desktop runtime patch for Non-S sizing overrides that fall back to Sport values and apply only to fresh BUY sizing plus BUY-side ratio hygiene.
 

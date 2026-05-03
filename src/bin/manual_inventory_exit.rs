@@ -193,6 +193,8 @@ async fn main() -> Result<()> {
         config.polymarket.clob_api_url.clone(),
         config.polymarket.private_key.clone(),
         config.polymarket.proxy_wallet_address.clone(),
+        config.polymarket.deposit_wallet_address.clone(),
+        config.polymarket.funder_wallet_address.clone(),
         config.polymarket.signature_type,
     ));
 

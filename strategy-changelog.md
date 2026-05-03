@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-05-03
+- Runtime wallet/order path: added sidecar config support for new API-user deposit wallets using `POLY_SIGNATURE_TYPE=3`, `POLY_DEPOSIT_WALLET_ADDRESS`, `POLY_FUNDER_WALLET_ADDRESS`, and SDK `SignatureType::Poly1271` (`src/api.rs`, `src/config.rs`, `.env.example`, `.env.full.example`).
+  - Affects all CLOB order/auth paths after a deposit wallet already exists, is funded, and has approvals. Existing EOA, Proxy, and Safe modes remain supported. Old relayer approval/redeem/wrap helpers intentionally fail for deposit-wallet mode until signed `WALLET` batch support exists.
 - `mm_sport_v1` / MM 2.0 active-market and churn controls: added route-aware fresh-entry caps, independent FIFO depth ratio, randomized fresh-BUY cooldown after FIFO cancel or natural quote expiry, and hard reconcile for uncertain pending orders (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
   - Applies to MM 2.0 Sport, Non-S, and Dual routes. Defaults cap Dual to 50 sports plus 50 non-sports fresh markets, single-route runs to 100 selected-route fresh markets, keep inventory/open-order markets in scope, clamp FIFO to at least 110% of the larger route sizing ratio, and avoid rearming unresolved `RECONCILE_FAILED` rows as open unless CLOB confirms they are still live.
 - `mm_sport_v1` / MM 2.0 Polymarket WS pressure control: capped the sticky subscription superset used for FIFO/orderbook visibility and added periodic sticky-scope refresh reconnects so stale markets age out instead of accumulating indefinitely (`src/polymarket_ws.rs`, `.env.example`).

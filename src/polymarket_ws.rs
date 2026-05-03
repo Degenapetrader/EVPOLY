@@ -3104,6 +3104,8 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
+                None,
             );
             let (asset_ids, market_ids, tracked_markets) =
                 discover_subscription_targets(&api, &state, 250)

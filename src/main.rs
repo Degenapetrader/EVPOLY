@@ -917,7 +917,9 @@ fn alpha_install_id() -> String {
     if let Some(value) = env_nonempty_named("EVPOLY_INSTALL_ID") {
         return value;
     }
-    let wallet_hint = env_nonempty_named("POLY_PROXY_WALLET_ADDRESS")
+    let wallet_hint = env_nonempty_named("POLY_FUNDER_WALLET_ADDRESS")
+        .or_else(|| env_nonempty_named("POLY_DEPOSIT_WALLET_ADDRESS"))
+        .or_else(|| env_nonempty_named("POLY_PROXY_WALLET_ADDRESS"))
         .or_else(|| env_nonempty_named("POLY_WALLET_ADDRESS"))
         .unwrap_or_else(|| "unknown_wallet".to_string());
     format!("evpoly-local-{}", wallet_hint.trim().to_ascii_lowercase())
@@ -986,7 +988,7 @@ async fn ensure_alpha_key_auto_onboard(proxy_wallet: Option<&str>) {
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        warn!("EVPOLY alpha auto-onboard skipped: POLY_PROXY_WALLET_ADDRESS is missing");
+        warn!("EVPOLY alpha auto-onboard skipped: no trading wallet address is configured");
         return;
     };
     if !polymarket_arbitrage_bot::builder_attribution::configured_builder_code_is_official() {
@@ -2170,7 +2172,12 @@ fn mm_sport_market_mode_flags(
 }
 
 fn mm_wallet_snapshot_address_from_env() -> Option<String> {
-    for key in ["EVPOLY_WALLET_SYNC_ADDRESS", "POLY_PROXY_WALLET_ADDRESS"] {
+    for key in [
+        "EVPOLY_WALLET_SYNC_ADDRESS",
+        "POLY_FUNDER_WALLET_ADDRESS",
+        "POLY_DEPOSIT_WALLET_ADDRESS",
+        "POLY_PROXY_WALLET_ADDRESS",
+    ] {
         if let Ok(value) = std::env::var(key) {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
@@ -5371,6 +5378,8 @@ async fn main() -> Result<()> {
         config.polymarket.clob_api_url.clone(),
         config.polymarket.private_key.clone(),
         config.polymarket.proxy_wallet_address.clone(),
+        config.polymarket.deposit_wallet_address.clone(),
+        config.polymarket.funder_wallet_address.clone(),
         config.polymarket.signature_type,
     ));
 
@@ -6337,14 +6346,16 @@ async fn main() -> Result<()> {
     //     eprintln!("");
     // }
 
-    let remote_alpha_proxy_wallet = config
+    let remote_alpha_wallet = config
         .polymarket
-        .proxy_wallet_address
+        .funder_wallet_address
         .as_deref()
+        .or(config.polymarket.deposit_wallet_address.as_deref())
+        .or(config.polymarket.proxy_wallet_address.as_deref())
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string());
-    ensure_alpha_key_auto_onboard(remote_alpha_proxy_wallet.as_deref()).await;
+    ensure_alpha_key_auto_onboard(remote_alpha_wallet.as_deref()).await;
 
     // Initialize components
     let monitor_arc = if core_monitor_runtime_enabled {
@@ -8091,7 +8102,7 @@ async fn main() -> Result<()> {
         endgame_cfg.enabled_symbols().as_slice(),
     );
     let endgame_alpha_required_cfg = endgame_alpha_required();
-    let endgame_alpha_wallet = remote_alpha_proxy_wallet.clone();
+    let endgame_alpha_wallet = remote_alpha_wallet.clone();
     warn_remote_alpha_config_startup(endgame_alpha_required_cfg);
     if endgame_cfg.enable {
         let symbols_csv = endgame_symbols.join(",");
@@ -21086,7 +21097,7 @@ async fn main() -> Result<()> {
 
     let premarket_cancel_schedules_for_premarket = premarket_cancel_schedules.clone();
     let premarket_assets_for_premarket = premarket_assets.clone();
-    let premarket_alpha_wallet = remote_alpha_proxy_wallet.clone();
+    let premarket_alpha_wallet = remote_alpha_wallet.clone();
     let premarket_enabled_timeframes_for_premarket = premarket_timeframes.clone();
     tokio::spawn(async move {
         let premarket_enqueue_mode_cfg = PremarketEnqueueMode::from_env();
@@ -24446,6 +24457,8 @@ async fn send_remote_json_post_once<T: Serialize + ?Sized>(
     }
     let wallet_header_value = wallet_header
         .map(str::to_string)
+        .or_else(|| env_nonempty_named("POLY_FUNDER_WALLET_ADDRESS"))
+        .or_else(|| env_nonempty_named("POLY_DEPOSIT_WALLET_ADDRESS"))
         .or_else(|| env_nonempty_named("POLY_PROXY_WALLET_ADDRESS"));
     if let Some(wallet) = wallet_header_value.as_deref() {
         request = request.header("x-wallet-address", wallet);

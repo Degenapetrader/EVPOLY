@@ -57,10 +57,16 @@ pub struct PolymarketConfig {
     /// If set, the bot will trade using this proxy wallet instead of the EOA (private key account)
     /// Format: Ethereum address (with or without 0x prefix)
     pub proxy_wallet_address: Option<String>,
+    /// Deposit wallet address for new API users using POLY_1271.
+    /// pUSD and conditional tokens must live in this wallet.
+    pub deposit_wallet_address: Option<String>,
+    /// Explicit CLOB funder override. For deposit wallets this should equal deposit_wallet_address.
+    pub funder_wallet_address: Option<String>,
     /// Signature type for authentication (optional, defaults to EOA if not set)
     /// 0 = EOA (Externally Owned Account - private key account)
     /// 1 = Proxy (Polymarket proxy wallet)
     /// 2 = GnosisSafe (Gnosis Safe wallet)
+    /// 3 = Deposit Wallet / POLY_1271
     /// If proxy_wallet_address is set, this should be 1 (Proxy)
     pub signature_type: Option<u8>,
 }
@@ -680,6 +686,8 @@ impl Default for Config {
                 clob_api_url: "https://clob.polymarket.com".to_string(),
                 private_key: None,
                 proxy_wallet_address: None,
+                deposit_wallet_address: None,
+                funder_wallet_address: None,
                 signature_type: None,
             },
             trading: TradingConfig {
@@ -810,6 +818,12 @@ impl Config {
         }
         if let Some(v) = Self::env_string("POLY_PROXY_WALLET_ADDRESS") {
             self.polymarket.proxy_wallet_address = Some(v);
+        }
+        if let Some(v) = Self::env_string("POLY_DEPOSIT_WALLET_ADDRESS") {
+            self.polymarket.deposit_wallet_address = Some(v);
+        }
+        if let Some(v) = Self::env_string("POLY_FUNDER_WALLET_ADDRESS") {
+            self.polymarket.funder_wallet_address = Some(v);
         }
         if let Some(v) = Self::env_u8("POLY_SIGNATURE_TYPE") {
             self.polymarket.signature_type = Some(v);

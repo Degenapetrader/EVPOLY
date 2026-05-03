@@ -30,7 +30,7 @@ use polymarket_client_sdk_v2::auth::{Credentials, LocalSigner, Normal};
 use polymarket_client_sdk_v2::clob::types::request::CancelMarketOrderRequest;
 use polymarket_client_sdk_v2::clob::types::response::{CancelOrdersResponse, OpenOrderResponse};
 use polymarket_client_sdk_v2::clob::types::{
-    Amount, OrderType, Side, SignatureType, SignedOrder as ClobSignedOrder,
+    Amount, AssetType, OrderType, Side, SignatureType, SignedOrder as ClobSignedOrder,
 };
 use polymarket_client_sdk_v2::clob::{Client as ClobClient, Config as ClobConfig};
 use polymarket_client_sdk_v2::{contract_config, derive_safe_wallet, POLYGON};
@@ -411,7 +411,9 @@ pub struct PolymarketApi {
     private_key: Option<String>,
     // Proxy wallet configuration (for Polymarket proxy wallet)
     proxy_wallet_address: Option<String>,
-    signature_type: Option<u8>, // 0 = EOA, 1 = Proxy, 2 = GnosisSafe
+    deposit_wallet_address: Option<String>,
+    funder_wallet_address: Option<String>,
+    signature_type: Option<u8>, // 0 = EOA, 1 = Proxy, 2 = GnosisSafe, 3 = Poly1271
     // Track if authentication was successful at startup
     authenticated: Arc<tokio::sync::Mutex<bool>>,
     cached_clob_client: Arc<tokio::sync::Mutex<Option<Arc<ClobClientHandle>>>>,
@@ -461,6 +463,8 @@ impl PolymarketApi {
         clob_url: String,
         private_key: Option<String>,
         proxy_wallet_address: Option<String>,
+        deposit_wallet_address: Option<String>,
+        funder_wallet_address: Option<String>,
         signature_type: Option<u8>,
     ) -> Self {
         let client = Client::builder()
@@ -476,7 +480,11 @@ impl PolymarketApi {
         let ws_enabled = Self::env_bool("EVPOLY_PM_WS_ENABLE", true);
         let ws_market_stale_ms = Self::env_i64("EVPOLY_PM_WS_MARKET_STALE_MS", 600).max(250);
         let ws_order_stale_ms = Self::env_i64("EVPOLY_PM_WS_ORDER_STALE_MS", 5_000).max(500);
-
+        let normalized_proxy_wallet = Self::normalize_optional_address_string(proxy_wallet_address);
+        let normalized_deposit_wallet =
+            Self::normalize_optional_address_string(deposit_wallet_address);
+        let normalized_funder_wallet =
+            Self::normalize_optional_address_string(funder_wallet_address);
         Self {
             client,
             mm_proxy_clients,
@@ -493,7 +501,9 @@ impl PolymarketApi {
             gamma_url,
             clob_url,
             private_key,
-            proxy_wallet_address,
+            proxy_wallet_address: normalized_proxy_wallet,
+            deposit_wallet_address: normalized_deposit_wallet,
+            funder_wallet_address: normalized_funder_wallet,
             signature_type,
             authenticated: Arc::new(tokio::sync::Mutex::new(false)),
             cached_clob_client: Arc::new(tokio::sync::Mutex::new(None)),
@@ -682,6 +692,17 @@ impl PolymarketApi {
 
     fn env_nonempty(key: &str) -> Option<String> {
         std::env::var(key).ok().and_then(|v| {
+            let trimmed = v.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            }
+        })
+    }
+
+    fn normalize_optional_address_string(value: Option<String>) -> Option<String> {
+        value.and_then(|v| {
             let trimmed = v.trim().to_string();
             if trimmed.is_empty() {
                 None
@@ -1143,27 +1164,145 @@ impl PolymarketApi {
             Some(0) => anyhow::bail!(
                 "Relayer redeem/merge is not supported when POLY_SIGNATURE_TYPE=0 (EOA). Use 1 (Proxy) or 2 (Safe)."
             ),
+            Some(3) => anyhow::bail!(
+                "Relayer redeem/merge/wrap is not supported for POLY_SIGNATURE_TYPE=3 yet. Deposit wallets require signed WALLET batches."
+            ),
             Some(other) => anyhow::bail!("Unsupported signature_type for relayer flow: {}", other),
-            None => Ok("PROXY"),
+            None => {
+                if self.has_deposit_wallet_fields() {
+                    anyhow::bail!(
+                        "POLY_DEPOSIT_WALLET_ADDRESS/POLY_FUNDER_WALLET_ADDRESS require POLY_SIGNATURE_TYPE=3 and cannot use legacy relayer paths."
+                    );
+                }
+                Ok("PROXY")
+            }
         }
     }
 
-    fn configured_funder_wallet_address(&self) -> Result<Option<AlloyAddress>> {
-        match self.proxy_wallet_address.as_deref().map(str::trim) {
-            Some(raw) if !raw.is_empty() => Ok(Some(
-                AlloyAddress::parse_checksummed(raw, None).with_context(|| {
-                    format!(
-                        "Failed to parse proxy_wallet_address for relayer request: {}",
-                        raw
-                    )
-                })?,
-            )),
-            _ => Ok(None),
+    fn parse_configured_wallet_address(raw: &str, label: &str) -> Result<AlloyAddress> {
+        AlloyAddress::parse_checksummed(raw, None)
+            .with_context(|| format!("Failed to parse {}: {}", label, raw))
+    }
+
+    fn configured_proxy_wallet_address(&self) -> Result<Option<AlloyAddress>> {
+        if let Some(raw) = self
+            .proxy_wallet_address
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return Ok(Some(Self::parse_configured_wallet_address(
+                raw,
+                "POLY_PROXY_WALLET_ADDRESS",
+            )?));
         }
+        Ok(None)
+    }
+
+    fn configured_deposit_funder_wallet_address(&self) -> Result<Option<AlloyAddress>> {
+        if let Some(raw) = self
+            .funder_wallet_address
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return Ok(Some(Self::parse_configured_wallet_address(
+                raw,
+                "POLY_FUNDER_WALLET_ADDRESS",
+            )?));
+        }
+        if let Some(raw) = self
+            .deposit_wallet_address
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            return Ok(Some(Self::parse_configured_wallet_address(
+                raw,
+                "POLY_DEPOSIT_WALLET_ADDRESS",
+            )?));
+        }
+        Ok(None)
+    }
+
+    fn has_deposit_wallet_fields(&self) -> bool {
+        self.funder_wallet_address
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|v| !v.is_empty())
+            || self
+                .deposit_wallet_address
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|v| !v.is_empty())
+    }
+
+    fn require_no_deposit_wallet_fields_for_legacy_signature(&self) -> Result<()> {
+        if self.has_deposit_wallet_fields() {
+            anyhow::bail!(
+                "POLY_DEPOSIT_WALLET_ADDRESS/POLY_FUNDER_WALLET_ADDRESS require POLY_SIGNATURE_TYPE=3"
+            );
+        }
+        Ok(())
+    }
+
+    fn resolve_clob_auth_config(&self) -> Result<(Option<AlloyAddress>, Option<SignatureType>)> {
+        let (funder, sig_type) = match self.signature_type {
+            Some(0) => {
+                self.require_no_deposit_wallet_fields_for_legacy_signature()?;
+                if self.configured_proxy_wallet_address()?.is_some() {
+                    anyhow::bail!(
+                        "Invalid configuration: POLY_PROXY_WALLET_ADDRESS is set but POLY_SIGNATURE_TYPE=0 (EOA)"
+                    );
+                }
+                (None, Some(SignatureType::Eoa))
+            }
+            Some(1) => {
+                let funder = self.configured_proxy_wallet_address()?;
+                if funder.is_none() {
+                    anyhow::bail!("POLY_SIGNATURE_TYPE=1 requires POLY_PROXY_WALLET_ADDRESS");
+                }
+                (funder, Some(SignatureType::Proxy))
+            }
+            Some(2) => {
+                let funder = self.configured_proxy_wallet_address()?;
+                if funder.is_none() {
+                    anyhow::bail!("POLY_SIGNATURE_TYPE=2 requires POLY_PROXY_WALLET_ADDRESS");
+                }
+                (funder, Some(SignatureType::GnosisSafe))
+            }
+            Some(3) => {
+                let funder = self.configured_deposit_funder_wallet_address()?;
+                if funder.is_none() {
+                    anyhow::bail!(
+                        "POLY_SIGNATURE_TYPE=3 requires POLY_DEPOSIT_WALLET_ADDRESS or POLY_FUNDER_WALLET_ADDRESS"
+                    );
+                }
+                (funder, Some(SignatureType::Poly1271))
+            }
+            None => {
+                if self.has_deposit_wallet_fields() {
+                    anyhow::bail!(
+                        "POLY_DEPOSIT_WALLET_ADDRESS/POLY_FUNDER_WALLET_ADDRESS require POLY_SIGNATURE_TYPE=3"
+                    );
+                }
+                let funder = self.configured_proxy_wallet_address()?;
+                if funder.is_some() {
+                    (funder, Some(SignatureType::Proxy))
+                } else {
+                    (None, None)
+                }
+            }
+            Some(n) => anyhow::bail!(
+                "Invalid signature_type: {}. Must be 0 (EOA), 1 (Proxy), 2 (GnosisSafe), or 3 (Poly1271)",
+                n
+            ),
+        };
+        Ok((funder, sig_type))
     }
 
     fn resolve_safe_wallet_address(&self, owner: AlloyAddress) -> Result<AlloyAddress> {
-        if let Some(configured) = self.configured_funder_wallet_address()? {
+        if let Some(configured) = self.configured_proxy_wallet_address()? {
             return Ok(configured);
         }
         let derived = derive_safe_wallet(owner, POLYGON).ok_or_else(|| {
@@ -1181,7 +1320,7 @@ impl PolymarketApi {
         owner: AlloyAddress,
         proxy_factory: AlloyAddress,
     ) -> Result<AlloyAddress> {
-        if let Some(configured) = self.configured_funder_wallet_address()? {
+        if let Some(configured) = self.configured_proxy_wallet_address()? {
             return Ok(configured);
         }
         Self::derive_proxy_wallet_address(owner, proxy_factory)
@@ -1544,7 +1683,9 @@ impl PolymarketApi {
         eprintln!("✅ Successfully authenticated with Polymarket CLOB API");
         eprintln!("   ✓ Private key: Valid");
         eprintln!("   ✓ API credentials: Valid");
-        if let Some(proxy_addr) = &self.proxy_wallet_address {
+        if self.signature_type == Some(3) {
+            eprintln!("   Deposit wallet: {}", self.trading_account_address()?);
+        } else if let Some(proxy_addr) = &self.proxy_wallet_address {
             eprintln!("   ✓ Proxy wallet: {}", proxy_addr);
         } else {
             eprintln!("   ✓ Trading account: EOA (private key account)");
@@ -1755,43 +1896,11 @@ impl PolymarketApi {
             }
         }
 
-        if let Some(proxy_addr) = &self.proxy_wallet_address {
-            let funder_address =
-                AlloyAddress::parse_checksummed(proxy_addr, None).context(format!(
-                "Failed to parse proxy_wallet_address: {}. Ensure it's a valid Ethereum address.",
-                proxy_addr
-            ))?;
-
+        let (funder_address, sig_type) = self.resolve_clob_auth_config()?;
+        if let Some(funder_address) = funder_address {
             auth_builder = auth_builder.funder(funder_address);
-
-            let sig_type = match self.signature_type {
-                Some(1) => SignatureType::Proxy,
-                Some(2) => SignatureType::GnosisSafe,
-                Some(0) => {
-                    anyhow::bail!(
-                        "Invalid configuration: proxy_wallet_address is set but signature_type is 0 (EOA)"
-                    );
-                }
-                None => SignatureType::Proxy,
-                Some(n) => anyhow::bail!(
-                    "Invalid signature_type: {}. Must be 0 (EOA), 1 (Proxy), or 2 (GnosisSafe)",
-                    n
-                ),
-            };
-
-            auth_builder = auth_builder.signature_type(sig_type);
-        } else if let Some(sig_type_num) = self.signature_type {
-            let sig_type = match sig_type_num {
-                0 => SignatureType::Eoa,
-                1 | 2 => anyhow::bail!(
-                    "signature_type {} requires proxy_wallet_address to be set",
-                    sig_type_num
-                ),
-                n => anyhow::bail!(
-                    "Invalid signature_type: {}. Must be 0 (EOA), 1 (Proxy), or 2 (GnosisSafe)",
-                    n
-                ),
-            };
+        }
+        if let Some(sig_type) = sig_type {
             auth_builder = auth_builder.signature_type(sig_type);
         }
 
@@ -4838,16 +4947,6 @@ impl PolymarketApi {
             return Ok(explicit_wallet.to_ascii_lowercase());
         }
 
-        if let Some(proxy_wallet) = self
-            .proxy_wallet_address
-            .as_ref()
-            .map(String::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            return Ok(proxy_wallet.to_ascii_lowercase());
-        }
-
         self.trading_account_address()
             .map(|value| value.to_ascii_lowercase())
             .context("wallet address is required for data-api query")
@@ -5163,6 +5262,18 @@ impl PolymarketApi {
             }
         }
 
+        if self.signature_type == Some(3) {
+            if let Err(err) = self
+                .update_balance_allowance_cache(None, AssetType::Collateral, "pUSD collateral")
+                .await
+            {
+                warn!(
+                    "Failed to sync deposit-wallet pUSD balance/allowance cache before balance check: {}",
+                    err
+                );
+            }
+        }
+
         let handle = self
             .get_or_create_clob_client()
             .await
@@ -5472,6 +5583,38 @@ impl PolymarketApi {
         Ok((balance, allowance))
     }
 
+    async fn update_balance_allowance_cache(
+        &self,
+        token_id: Option<U256>,
+        asset_type: AssetType,
+        label: &str,
+    ) -> Result<()> {
+        use polymarket_client_sdk_v2::clob::types::request::UpdateBalanceAllowanceRequest;
+
+        let request = if let Some(token_id) = token_id {
+            UpdateBalanceAllowanceRequest::builder()
+                .token_id(token_id)
+                .asset_type(asset_type)
+                .build()
+        } else {
+            UpdateBalanceAllowanceRequest::builder()
+                .asset_type(asset_type)
+                .build()
+        };
+        let handle = self
+            .get_or_create_clob_client()
+            .await
+            .context("Failed to authenticate for update_balance_allowance")?;
+
+        handle
+            .client
+            .update_balance_allowance(request)
+            .await
+            .with_context(|| format!("Failed to update balance/allowance cache for {}", label))?;
+
+        Ok(())
+    }
+
     /// Refresh cached allowance data for a specific outcome token before selling.
     ///
     /// Per Polymarket: setApprovalForAll() is general approval, but for selling you need
@@ -5482,63 +5625,12 @@ impl PolymarketApi {
     ///
     /// Call this right before place_market_order(..., "SELL", ...) for the token you're selling.
     pub async fn update_balance_allowance_for_sell(&self, token_id: &str) -> Result<()> {
-        let private_key = self.private_key.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("Private key is required. Please set private_key in config.json")
-        })?;
-
-        let signer = LocalSigner::from_str(private_key)
-            .context("Failed to create signer from private key")?
-            .with_chain_id(Some(POLYGON));
-
-        let mut auth_builder = ClobClient::new(&self.clob_url, self.clob_client_config()?)
-            .context("Failed to create CLOB client")?
-            .authentication_builder(&signer);
-
-        if let Some(proxy_addr) = &self.proxy_wallet_address {
-            let funder_address = AlloyAddress::parse_checksummed(proxy_addr, None).context(
-                format!("Failed to parse proxy_wallet_address: {}", proxy_addr),
-            )?;
-            auth_builder = auth_builder.funder(funder_address);
-            let sig_type = match self.signature_type {
-                Some(1) => SignatureType::Proxy,
-                Some(2) => SignatureType::GnosisSafe,
-                Some(0) => anyhow::bail!("proxy_wallet_address set but signature_type is 0 (EOA)"),
-                None => SignatureType::Proxy,
-                Some(n) => anyhow::bail!("Invalid signature_type: {}", n),
-            };
-            auth_builder = auth_builder.signature_type(sig_type);
-        } else if let Some(sig_type_num) = self.signature_type {
-            let sig_type = match sig_type_num {
-                0 => SignatureType::Eoa,
-                1 | 2 => anyhow::bail!(
-                    "signature_type {} requires proxy_wallet_address",
-                    sig_type_num
-                ),
-                n => anyhow::bail!("Invalid signature_type: {}", n),
-            };
-            auth_builder = auth_builder.signature_type(sig_type);
-        }
-
-        let client = auth_builder
-            .authenticate()
-            .await
-            .context("Failed to authenticate for update_balance_allowance")?;
-
-        use polymarket_client_sdk_v2::clob::types::request::UpdateBalanceAllowanceRequest;
-        use polymarket_client_sdk_v2::clob::types::AssetType;
-
-        // Outcome tokens (conditional tokens) need AssetType::Conditional
-        let request = UpdateBalanceAllowanceRequest::builder()
-            .token_id(Self::parse_u256_id(token_id, "token_id")?)
-            .asset_type(AssetType::Conditional)
-            .build();
-
-        client
-            .update_balance_allowance(request)
-            .await
-            .context("Failed to update balance/allowance cache for token")?;
-
-        Ok(())
+        self.update_balance_allowance_cache(
+            Some(Self::parse_u256_id(token_id, "token_id")?),
+            AssetType::Conditional,
+            token_id,
+        )
+        .await
     }
 
     /// Get the CLOB contract address for Polygon using SDK's contract_config
@@ -5552,11 +5644,8 @@ impl PolymarketApi {
     }
 
     fn resolve_trading_account_address(&self) -> Result<AlloyAddress> {
-        if let Some(proxy_addr) = &self.proxy_wallet_address {
-            return AlloyAddress::parse_checksummed(proxy_addr, None).context(format!(
-                "Failed to parse proxy_wallet_address: {}",
-                proxy_addr
-            ));
+        if let Some(funder_address) = self.resolve_clob_auth_config()?.0 {
+            return Ok(funder_address);
         }
         let private_key = self
             .private_key
@@ -5648,6 +5737,11 @@ impl PolymarketApi {
         &self,
         enabled: bool,
     ) -> Result<AutoRedeemApprovalStatus> {
+        if self.signature_type == Some(3) {
+            anyhow::bail!(
+                "Auto-redeem approval is not supported for POLY_SIGNATURE_TYPE=3 yet. Deposit wallets require signed WALLET batches."
+            );
+        }
         let ctf_contract = Self::current_ctf_contract_address()?;
         let operator = Self::auto_redeem_operator_address()?;
 
@@ -5779,22 +5873,7 @@ impl PolymarketApi {
             neg_risk_config.neg_risk_adapter,
         );
 
-        // Determine which address to check (proxy wallet or EOA)
-        let account_to_check = if let Some(proxy_addr) = &self.proxy_wallet_address {
-            AlloyAddress::parse_checksummed(proxy_addr, None).context(format!(
-                "Failed to parse proxy_wallet_address: {}",
-                proxy_addr
-            ))?
-        } else {
-            let private_key = self
-                .private_key
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Private key required to check approval"))?;
-            let signer = LocalSigner::from_str(private_key)
-                .context("Failed to create signer from private key")?
-                .with_chain_id(Some(POLYGON));
-            signer.address()
-        };
+        let account_to_check = self.resolve_trading_account_address()?;
 
         let mut last_error: Option<anyhow::Error> = None;
         for rpc_url in Self::polygon_rpc_http_urls() {
@@ -5853,22 +5932,7 @@ impl PolymarketApi {
         let neg_risk_config = contract_config(POLYGON, true)
             .ok_or_else(|| anyhow::anyhow!("Failed to get neg risk contract config from SDK"))?;
 
-        // Determine which address to check (proxy wallet or EOA)
-        let account_to_check = if let Some(proxy_addr) = &self.proxy_wallet_address {
-            AlloyAddress::parse_checksummed(proxy_addr, None).context(format!(
-                "Failed to parse proxy_wallet_address: {}",
-                proxy_addr
-            ))?
-        } else {
-            let private_key = self
-                .private_key
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Private key required to check approval"))?;
-            let signer = LocalSigner::from_str(private_key)
-                .context("Failed to create signer from private key")?
-                .with_chain_id(Some(POLYGON));
-            signer.address()
-        };
+        let account_to_check = self.resolve_trading_account_address()?;
 
         let mut provider_opt = None;
         let mut last_connect_error: Option<anyhow::Error> = None;
@@ -5958,6 +6022,12 @@ impl PolymarketApi {
     /// Proxy wallets use relayer submit flow (gasless); EOAs use direct RPC transactions.
     pub async fn set_all_trading_approvals(&self) -> Result<()> {
         use polymarket_client_sdk_v2::types::address;
+
+        if self.signature_type == Some(3) {
+            anyhow::bail!(
+                "Trading approvals are not supported for POLY_SIGNATURE_TYPE=3 yet. Deposit wallets require signed WALLET batches."
+            );
+        }
 
         const PUSD_ADDRESS: Address = address!("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB");
 
@@ -6144,8 +6214,13 @@ impl PolymarketApi {
         if amount_base_units == 0 {
             anyhow::bail!("wrap amount must be greater than zero");
         }
+        if self.signature_type == Some(3) {
+            anyhow::bail!(
+                "pUSD wrap is not supported for POLY_SIGNATURE_TYPE=3 yet. Deposit wallets require signed WALLET batches."
+            );
+        }
 
-        let proxy_wallet = self.configured_funder_wallet_address()?.ok_or_else(|| {
+        let proxy_wallet = self.configured_proxy_wallet_address()?.ok_or_else(|| {
             anyhow::anyhow!("pUSD wrap currently requires POLY_PROXY_WALLET_ADDRESS")
         })?;
         let amount = U256::from(amount_base_units);
@@ -6181,6 +6256,11 @@ impl PolymarketApi {
     /// - If using proxy_wallet_address: Uses relayer (gasless, no MATIC needed)
     /// - If NOT using proxy_wallet_address: The wallet derived from private_key needs MATIC
     pub async fn set_approval_for_all_clob(&self) -> Result<()> {
+        if self.signature_type == Some(3) {
+            anyhow::bail!(
+                "CTF approval is not supported for POLY_SIGNATURE_TYPE=3 yet. Deposit wallets require signed WALLET batches."
+            );
+        }
         // Get addresses from SDK's contract_config
         // Based on SDK example: https://github.com/Polymarket/rs-clob-client/blob/main/examples/approvals.rs
         // - config.conditional_tokens = CTF contract (where we call setApprovalForAll)
@@ -6724,64 +6804,8 @@ impl PolymarketApi {
             .context("Failed to create signer from private key. Ensure private_key is a valid hex string.")?
             .with_chain_id(Some(POLYGON));
 
-        // Build authentication builder with proxy wallet support
-        let mut auth_builder = ClobClient::new(&self.clob_url, self.clob_client_config()?)
-            .context("Failed to create CLOB client")?
-            .authentication_builder(&signer);
-
-        // Configure proxy wallet if provided
-        if let Some(proxy_addr) = &self.proxy_wallet_address {
-            let funder_address =
-                AlloyAddress::parse_checksummed(proxy_addr, None).context(format!(
-                "Failed to parse proxy_wallet_address: {}. Ensure it's a valid Ethereum address.",
-                proxy_addr
-            ))?;
-
-            auth_builder = auth_builder.funder(funder_address);
-
-            // Set signature type based on config or default to Proxy
-            // IMPORTANT: The signature type must match what was used when deriving API credentials
-            let sig_type = match self.signature_type {
-                Some(1) => SignatureType::Proxy,
-                Some(2) => SignatureType::GnosisSafe,
-                Some(0) => {
-                    anyhow::bail!(
-                        "Invalid configuration: proxy_wallet_address is set but signature_type is 0 (EOA).\n\
-                        For proxy wallets, use signature_type: 1 (POLY_PROXY) for Magic Link/Google login, or 2 (GNOSIS_SAFE) for browser wallet."
-                    );
-                }
-                None => {
-                    // Default to Proxy when proxy wallet is set, but warn user
-                    eprintln!("⚠️  Using default signature type POLY_PROXY (1) for proxy wallet.");
-                    eprintln!("   If you get 'invalid signature' errors, ensure your API credentials were derived with signature type 1.");
-                    SignatureType::Proxy
-                }
-                Some(n) => anyhow::bail!(
-                    "Invalid signature_type: {}. Must be 0 (EOA), 1 (Proxy), or 2 (GnosisSafe)",
-                    n
-                ),
-            };
-
-            auth_builder = auth_builder.signature_type(sig_type);
-        } else if let Some(sig_type_num) = self.signature_type {
-            // If signature type is set but no proxy wallet, validate it's EOA
-            let sig_type = match sig_type_num {
-                0 => SignatureType::Eoa,
-                1 | 2 => anyhow::bail!(
-                    "signature_type {} requires proxy_wallet_address to be set",
-                    sig_type_num
-                ),
-                n => anyhow::bail!(
-                    "Invalid signature_type: {}. Must be 0 (EOA), 1 (Proxy), or 2 (GnosisSafe)",
-                    n
-                ),
-            };
-            auth_builder = auth_builder.signature_type(sig_type);
-        }
-
-        // Create CLOB client with authentication (equivalent to: new ClobClient(HOST, CHAIN_ID, signer, apiCreds, signatureType, funderAddress))
-        let client = auth_builder
-            .authenticate()
+        let client = self
+            .authenticate_clob_client(&signer)
             .await
             .context("Failed to authenticate with CLOB API. Check your API credentials.")?;
 
@@ -8036,6 +8060,84 @@ mod tests {
             "Failed to post V2 order: Status: error(400 Bad Request) making POST call to /order with {{\"error\":\"no orders found to match with FAK order. FAK orders are partially filled or killed if no match is found.\"}}"
         );
         assert!(PolymarketApi::is_no_match_fak_fok_error(&error));
+    }
+
+    #[test]
+    fn deposit_wallet_auth_uses_poly1271_and_funder_precedence() {
+        let api = PolymarketApi::new(
+            "https://gamma-api.polymarket.com".to_string(),
+            "https://clob.polymarket.com".to_string(),
+            None,
+            Some("0x1111111111111111111111111111111111111111".to_string()),
+            Some("0x2222222222222222222222222222222222222222".to_string()),
+            Some("0x3333333333333333333333333333333333333333".to_string()),
+            Some(3),
+        );
+
+        let (funder, sig_type) = api.resolve_clob_auth_config().expect("auth config");
+        assert_eq!(
+            funder.expect("funder"),
+            AlloyAddress::from_str("0x3333333333333333333333333333333333333333").expect("address")
+        );
+        assert_eq!(
+            sig_type.expect("signature type") as u8,
+            SignatureType::Poly1271 as u8
+        );
+        assert!(api.resolve_relayer_wallet_mode().is_err());
+    }
+
+    #[test]
+    fn deposit_wallet_signature_requires_funder() {
+        let api = PolymarketApi::new(
+            "https://gamma-api.polymarket.com".to_string(),
+            "https://clob.polymarket.com".to_string(),
+            None,
+            None,
+            None,
+            None,
+            Some(3),
+        );
+
+        assert!(api.resolve_clob_auth_config().is_err());
+    }
+
+    #[test]
+    fn deposit_wallet_fields_require_poly1271_when_signature_unset() {
+        let api = PolymarketApi::new(
+            "https://gamma-api.polymarket.com".to_string(),
+            "https://clob.polymarket.com".to_string(),
+            None,
+            Some("0x1111111111111111111111111111111111111111".to_string()),
+            Some("0x2222222222222222222222222222222222222222".to_string()),
+            None,
+            None,
+        );
+
+        assert!(api.resolve_clob_auth_config().is_err());
+        assert!(api.resolve_relayer_wallet_mode().is_err());
+    }
+
+    #[test]
+    fn proxy_signature_ignores_deposit_wallet_fields() {
+        let api = PolymarketApi::new(
+            "https://gamma-api.polymarket.com".to_string(),
+            "https://clob.polymarket.com".to_string(),
+            None,
+            Some("0x1111111111111111111111111111111111111111".to_string()),
+            Some("0x2222222222222222222222222222222222222222".to_string()),
+            Some("0x3333333333333333333333333333333333333333".to_string()),
+            Some(1),
+        );
+
+        let (funder, sig_type) = api.resolve_clob_auth_config().expect("auth config");
+        assert_eq!(
+            funder.expect("funder"),
+            AlloyAddress::from_str("0x1111111111111111111111111111111111111111").expect("address")
+        );
+        assert_eq!(
+            sig_type.expect("signature type") as u8,
+            SignatureType::Proxy as u8
+        );
     }
 
     #[test]

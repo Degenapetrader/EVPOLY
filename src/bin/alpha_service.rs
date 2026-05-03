@@ -599,10 +599,14 @@ async fn main() -> Result<()> {
         None,
         None,
         None,
+        None,
+        None,
     ));
     let api_v2 = Arc::new(PolymarketApi::new(
         settings.gamma_url.clone(),
         settings.clob_v2_url.clone(),
+        None,
+        None,
         None,
         None,
         None,

@@ -398,6 +398,8 @@ pub struct PolymarketApi {
     mm_proxy_clients: Vec<Client>,
     mm_proxy_rr: AtomicUsize,
     mm_proxy_fallback_max: usize,
+    http_read_semaphore: Arc<tokio::sync::Semaphore>,
+    order_submit_semaphore: Arc<tokio::sync::Semaphore>,
     mm_read_proxy_attempts: AtomicU64,
     mm_read_direct_attempts: AtomicU64,
     mm_read_proxy_successes: AtomicU64,
@@ -458,6 +460,34 @@ impl PolymarketApi {
         Some(format!("{:#x}", order.eip712_signing_hash(&domain)))
     }
 
+    fn env_usize_clamped(key: &str, default: usize, min: usize, max: usize) -> usize {
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(default)
+            .clamp(min, max)
+    }
+
+    fn env_u64_clamped(key: &str, default: u64, min: u64, max: u64) -> u64 {
+        std::env::var(key)
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(default)
+            .clamp(min, max)
+    }
+
+    fn http_client_builder() -> reqwest::ClientBuilder {
+        let idle_per_host =
+            Self::env_usize_clamped("EVPOLY_HTTP_POOL_MAX_IDLE_PER_HOST", 16, 0, 128);
+        let idle_timeout_sec =
+            Self::env_u64_clamped("EVPOLY_HTTP_POOL_IDLE_TIMEOUT_SEC", 20, 1, 300);
+        Client::builder()
+            .timeout(Duration::from_secs(10))
+            .pool_max_idle_per_host(idle_per_host)
+            .pool_idle_timeout(Duration::from_secs(idle_timeout_sec))
+            .tcp_keepalive(Duration::from_secs(30))
+    }
+
     pub fn new(
         gamma_url: String,
         clob_url: String,
@@ -467,8 +497,7 @@ impl PolymarketApi {
         funder_wallet_address: Option<String>,
         signature_type: Option<u8>,
     ) -> Self {
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
+        let client = Self::http_client_builder()
             .build()
             .expect("Failed to create HTTP client");
         let mm_proxy_clients = Self::build_mm_proxy_clients();
@@ -490,6 +519,18 @@ impl PolymarketApi {
             mm_proxy_clients,
             mm_proxy_rr: AtomicUsize::new(0),
             mm_proxy_fallback_max,
+            http_read_semaphore: Arc::new(tokio::sync::Semaphore::new(Self::env_usize_clamped(
+                "EVPOLY_HTTP_READ_CONCURRENCY",
+                32,
+                1,
+                512,
+            ))),
+            order_submit_semaphore: Arc::new(tokio::sync::Semaphore::new(Self::env_usize_clamped(
+                "EVPOLY_ORDER_SUBMIT_CONCURRENCY",
+                8,
+                1,
+                128,
+            ))),
             mm_read_proxy_attempts: AtomicU64::new(0),
             mm_read_direct_attempts: AtomicU64::new(0),
             mm_read_proxy_successes: AtomicU64::new(0),
@@ -545,21 +586,15 @@ impl PolymarketApi {
             .take(64)
         {
             match Proxy::all(proxy_url) {
-                Ok(proxy) => {
-                    match Client::builder()
-                        .timeout(std::time::Duration::from_secs(10))
-                        .proxy(proxy)
-                        .build()
-                    {
-                        Ok(client) => out.push(client),
-                        Err(e) => {
-                            warn!(
-                                "Ignoring invalid POLY_MM_PROXIES client ({}): {}",
-                                proxy_url, e
-                            );
-                        }
+                Ok(proxy) => match Self::http_client_builder().proxy(proxy).build() {
+                    Ok(client) => out.push(client),
+                    Err(e) => {
+                        warn!(
+                            "Ignoring invalid POLY_MM_PROXIES client ({}): {}",
+                            proxy_url, e
+                        );
                     }
-                }
+                },
                 Err(e) => {
                     warn!(
                         "Ignoring invalid POLY_MM_PROXIES entry ({}): {}",
@@ -594,6 +629,12 @@ impl PolymarketApi {
     where
         F: FnMut(&Client) -> reqwest::RequestBuilder,
     {
+        let _read_permit = self
+            .http_read_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow::anyhow!("HTTP read concurrency limiter closed"))?;
         let read_timeout_ms = std::env::var("EVPOLY_MM_READ_TIMEOUT_MS")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
@@ -4133,6 +4174,12 @@ impl PolymarketApi {
         signed_order: ClobSignedOrder,
         post_stats: &mut LocalOrderPostStats,
     ) -> Result<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse> {
+        let _order_permit = self
+            .order_submit_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow::anyhow!("order submit concurrency limiter closed"))?;
         let post_started = Instant::now();
         let result = handle.client.post_order(signed_order).await;
         let post_ms = post_started.elapsed().as_millis() as i64;
@@ -4150,6 +4197,12 @@ impl PolymarketApi {
         signed_orders: Vec<ClobSignedOrder>,
         post_stats: &mut LocalOrderPostStats,
     ) -> Result<Vec<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse>> {
+        let _order_permit = self
+            .order_submit_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow::anyhow!("order submit concurrency limiter closed"))?;
         let post_started = Instant::now();
         let result = handle.client.post_orders(signed_orders).await;
         let post_ms = post_started.elapsed().as_millis() as i64;

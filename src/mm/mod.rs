@@ -106,6 +106,7 @@ pub struct MmSportConfig {
     pub poll_ms: u64,
     pub event_driven_enable: bool,
     pub event_fallback_poll_ms: u64,
+    pub event_min_scan_ms: u64,
     pub ws_stale_ms: i64,
     pub fifo_ws_gap_cancel_ms: i64,
     pub discovery_refresh_sec: u64,
@@ -152,6 +153,8 @@ pub struct MmSportConfig {
     pub quote_expiry_max_sec: u64,
     pub quote_cooldown_min_sec: u64,
     pub quote_cooldown_max_sec: u64,
+    pub quote_hold_min_sec: u64,
+    pub quote_hold_max_sec: u64,
     pub size_requote_delta_pct: f64,
     pub allowance_refresh_sec: u64,
     pub require_reward_eligible: bool,
@@ -208,6 +211,9 @@ impl MmSportConfig {
             env_u64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC", 10).clamp(0, 3_600);
         let quote_cooldown_max_sec = env_u64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC", 60)
             .clamp(quote_cooldown_min_sec, 7_200);
+        let quote_hold_min_sec = env_u64("EVPOLY_MM_SPORT_QUOTE_HOLD_MIN_SEC", 20).clamp(0, 3_600);
+        let quote_hold_max_sec =
+            env_u64("EVPOLY_MM_SPORT_QUOTE_HOLD_MAX_SEC", 45).clamp(quote_hold_min_sec, 7_200);
         let discovery_route =
             MmSportDiscoveryRoute::from_env(std::env::var("EVPOLY_MM_SPORT_DISCOVERY_ROUTE").ok());
         let (default_active_sport_cap, default_active_nonsport_cap) = match discovery_route {
@@ -222,6 +228,8 @@ impl MmSportConfig {
             poll_ms: env_u64("EVPOLY_MM_SPORT_POLL_MS", 250).clamp(50, 30_000),
             event_driven_enable: env_bool("EVPOLY_MM_SPORT_EVENT_DRIVEN_ENABLE", true),
             event_fallback_poll_ms: 1_000,
+            event_min_scan_ms: env_u64("EVPOLY_MM_SPORT_EVENT_MIN_SCAN_MS", 1_000)
+                .clamp(250, 30_000),
             ws_stale_ms: env_u64("EVPOLY_MM_SPORT_WS_STALE_MS", 2_500).clamp(250, 30_000) as i64,
             fifo_ws_gap_cancel_ms: env_u64("EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS", 5_000)
                 .clamp(500, 60_000) as i64,
@@ -323,7 +331,9 @@ impl MmSportConfig {
             quote_expiry_max_sec,
             quote_cooldown_min_sec,
             quote_cooldown_max_sec,
-            size_requote_delta_pct: env_f64("EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT", 0.03)
+            quote_hold_min_sec,
+            quote_hold_max_sec,
+            size_requote_delta_pct: env_f64("EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT", 0.20)
                 .clamp(0.0, 1.0),
             allowance_refresh_sec: env_u64("EVPOLY_MM_SPORT_ALLOWANCE_REFRESH_SEC", 60)
                 .clamp(15, 3_600),
@@ -695,6 +705,10 @@ mod tests {
                 ("EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP", Some("33")),
                 ("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC", Some("12")),
                 ("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC", Some("45")),
+                ("EVPOLY_MM_SPORT_QUOTE_HOLD_MIN_SEC", Some("25")),
+                ("EVPOLY_MM_SPORT_QUOTE_HOLD_MAX_SEC", Some("50")),
+                ("EVPOLY_MM_SPORT_EVENT_MIN_SCAN_MS", Some("1500")),
+                ("EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT", Some("0.2")),
             ],
             || {
                 let cfg = MmSportConfig::from_env();
@@ -702,6 +716,10 @@ mod tests {
                 assert_eq!(cfg.active_nonsport_market_cap, 33);
                 assert_eq!(cfg.quote_cooldown_min_sec, 12);
                 assert_eq!(cfg.quote_cooldown_max_sec, 45);
+                assert_eq!(cfg.quote_hold_min_sec, 25);
+                assert_eq!(cfg.quote_hold_max_sec, 50);
+                assert_eq!(cfg.event_min_scan_ms, 1_500);
+                assert!((cfg.size_requote_delta_pct - 0.20).abs() < 1e-9);
                 assert!((cfg.fifo_ratio_floor() - 0.11).abs() < 1e-9);
                 assert!((cfg.effective_fifo_max_share_ratio() - 0.11).abs() < 1e-9);
             },

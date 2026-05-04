@@ -9,6 +9,10 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-05-04
+- `mm_sport_v1` / MM 2.0 runtime pressure controls: coalesced event-driven quote scans to at most once per `EVPOLY_MM_SPORT_EVENT_MIN_SCAN_MS=1000`, changed the default size-based requote threshold to `EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT=0.20`, added a successful BUY quote hold window with `EVPOLY_MM_SPORT_QUOTE_HOLD_MIN_SEC=20` / `EVPOLY_MM_SPORT_QUOTE_HOLD_MAX_SEC=45`, and capped runtime HTTP pooling/read/order-submit concurrency (`src/main.rs`, `src/mm/mod.rs`, `src/api.rs`, `.env.example`, `.env.full.example`).
+  - Applies to MM 2.0 Sport, Non-S, and Dual routes. FIFO cancel remains its own depth-ratio guard; these changes reduce cancel/requote churn from depth-ratio target drift and bound CLOB/Gamma connection pressure without blocking exits or inventory cleanup.
+
 ### 2026-05-03
 - Runtime wallet/order path: added sidecar config support for new API-user deposit wallets using `POLY_SIGNATURE_TYPE=3`, `POLY_DEPOSIT_WALLET_ADDRESS`, `POLY_FUNDER_WALLET_ADDRESS`, and SDK `SignatureType::Poly1271` (`src/api.rs`, `src/config.rs`, `.env.example`, `.env.full.example`).
   - Affects all CLOB order/auth paths after a deposit wallet already exists, is funded, and has approvals. Existing EOA, Proxy, and Safe modes remain supported. Old relayer approval/redeem/wrap helpers intentionally fail for deposit-wallet mode until signed `WALLET` batch support exists.

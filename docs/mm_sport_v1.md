@@ -116,6 +116,10 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
 - `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC`
 - `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC`
 - `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC`
+- `EVPOLY_MM_SPORT_QUOTE_HOLD_MIN_SEC`
+- `EVPOLY_MM_SPORT_QUOTE_HOLD_MAX_SEC`
+- `EVPOLY_MM_SPORT_EVENT_MIN_SCAN_MS`
+- `EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT`
 
 ## Notes
 
@@ -123,5 +127,6 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
 - Existing inventory and open orders can still be canceled or unwound even when a market no longer qualifies for fresh entry.
 - Fresh-entry scope is capped by route: Dual defaults to 50 sports plus 50 non-sports candidates, while single-route Sport or Non-S runs default to 100 candidates for the selected route. Markets with inventory/open orders remain in scope for exit and cancel work.
 - FIFO cancellation uses `EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO`, clamped to at least 110% of the larger Sport/Non-S fresh-entry max share ratio. FIFO cancels and natural quote expiry start a randomized fresh-BUY cooldown from `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC` to `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC`.
+- Event-driven MM 2.0 scans are coalesced by `EVPOLY_MM_SPORT_EVENT_MIN_SCAN_MS`; successful BUY quotes are held briefly by `EVPOLY_MM_SPORT_QUOTE_HOLD_MIN_SEC` / `EVPOLY_MM_SPORT_QUOTE_HOLD_MAX_SEC` so small depth-ratio size drift does not churn quotes.
 - Prime Line Coverage is platform-only and is not part of MM 2.0 in main2.
 - Review sizing and inventory risk before combining MM 2.0 with heavy directional profiles.

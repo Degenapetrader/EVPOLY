@@ -71,6 +71,16 @@ function encryptedPrivateKey(result: DesktopMagicFinishResult): string {
   ).trim();
 }
 
+function createMagicLocalProfileId(): string {
+  if (typeof window !== "undefined" && "randomUUID" in window.crypto) {
+    return `magic-${window.crypto.randomUUID()}`;
+  }
+  const bytes = new Uint8Array(16);
+  assertSubtleCrypto();
+  window.crypto.getRandomValues(bytes);
+  return `magic-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
 async function generateExportKeyPair(): Promise<{
   decryptKey: CryptoKey;
   publicKeyPem: string;
@@ -114,7 +124,7 @@ export async function completeDesktopMagicWalletOnboarding(
   email: string,
   profileId: string | null
 ): Promise<DesktopMagicWalletResult> {
-  const start = await desktopMagicStart(email, profileId);
+  const start = await desktopMagicStart(email, profileId ?? createMagicLocalProfileId());
   const sessionId = startSessionId(start);
   const key = publishableKey(start);
   if (!sessionId) {

@@ -88,6 +88,9 @@ const ENDGAME_ALPHA_POLICY_FETCH_BEFORE_CLOSE_MS: i64 = 180_000;
 const ENDGAME_V1_NEAR_BASE_SKIP_BPS: f64 = 3.0;
 static ALPHA_REQUEST_ID_NONCE: AtomicU64 = AtomicU64::new(1);
 static DB_BACKGROUND_JITTER_NONCE: AtomicU64 = AtomicU64::new(1);
+const MM_SPORT_EXPIRED_ORDER_RECONCILE_GRACE_MS: i64 = 15_000;
+const MM_SPORT_EXPIRED_ORDER_RECONCILE_RETRY_MS: i64 = 30_000;
+const MM_SPORT_EXTREME_SIZE_REQUOTE_DELTA_PCT: f64 = 0.75;
 
 fn next_alpha_request_id_nonce() -> u64 {
     ALPHA_REQUEST_ID_NONCE.fetch_add(1, AtomicOrdering::Relaxed)
@@ -3186,6 +3189,14 @@ fn mm_sport_order_matches_target(
     ((row.size_usd - target_size_usd).abs() / denom) <= size_delta_pct
 }
 
+fn mm_sport_size_delta_pct(row_size_usd: f64, target_size_usd: f64) -> f64 {
+    if !row_size_usd.is_finite() || !target_size_usd.is_finite() {
+        return f64::INFINITY;
+    }
+    let denom = target_size_usd.max(row_size_usd).max(1e-9);
+    ((row_size_usd - target_size_usd).abs() / denom).max(0.0)
+}
+
 fn mm_sport_is_exchange_order_id(order_id: &str) -> bool {
     let trimmed = order_id.trim();
     if trimmed.starts_with("local:") || trimmed.starts_with("restored:") {
@@ -3411,6 +3422,85 @@ async fn mm_sport_cancel_pending_rows(
         }
     }
     canceled
+}
+
+#[derive(Debug, Default)]
+struct MmSportExpiredReconcileResult {
+    terminal: usize,
+    stale: usize,
+    unresolved: usize,
+    active_order_ids: Vec<String>,
+}
+
+async fn mm_sport_reconcile_expired_pending_rows(
+    api: &PolymarketApi,
+    tracking_db: &TrackingDb,
+    rows: &[PendingOrderRecord],
+) -> MmSportExpiredReconcileResult {
+    let mut result = MmSportExpiredReconcileResult::default();
+    let mut seen = std::collections::HashSet::new();
+    for row in rows {
+        let order_id = row.order_id.trim();
+        if order_id.is_empty() || !seen.insert(order_id.to_string()) {
+            continue;
+        }
+        if !mm_sport_is_exchange_order_id(order_id) {
+            if tracking_db
+                .update_pending_order_status(order_id, "CANCELED")
+                .is_ok()
+            {
+                result.terminal = result.terminal.saturating_add(1);
+            }
+            continue;
+        }
+        match api.get_order(order_id).await {
+            Ok(order_status) => {
+                let matched = f64::try_from(order_status.size_matched)
+                    .ok()
+                    .unwrap_or(0.0)
+                    .max(0.0);
+                let matched_price = f64::try_from(order_status.price)
+                    .ok()
+                    .filter(|value| value.is_finite() && *value > 0.0);
+                if let Some(terminal_status) = mm_pending_terminal_status(&order_status.status) {
+                    let fill_persisted = matches!(terminal_status, "FILLED" | "CANCELED")
+                        && matched > 0.0
+                        && mm_sport_record_fill_from_pending(
+                            tracking_db,
+                            row,
+                            matched,
+                            matched_price,
+                            "mm_sport_expired_terminal_reconcile",
+                        );
+                    if !fill_persisted {
+                        let _ = tracking_db.update_pending_order_status(order_id, terminal_status);
+                    }
+                    if terminal_status.eq_ignore_ascii_case("STALE") {
+                        result.stale = result.stale.saturating_add(1);
+                    } else {
+                        result.terminal = result.terminal.saturating_add(1);
+                    }
+                } else {
+                    result.active_order_ids.push(order_id.to_string());
+                }
+            }
+            Err(err) => {
+                let err_text = err.to_string();
+                if mm_order_lookup_error_is_terminal(err_text.as_str()) {
+                    if tracking_db
+                        .update_pending_order_status(order_id, "STALE")
+                        .is_ok()
+                    {
+                        result.stale = result.stale.saturating_add(1);
+                    }
+                } else {
+                    result.unresolved = result.unresolved.saturating_add(1);
+                    result.active_order_ids.push(order_id.to_string());
+                }
+            }
+        }
+    }
+    result
 }
 
 async fn mm_sport_place_order(
@@ -16021,6 +16111,10 @@ async fn main() -> Result<()> {
                     std::collections::HashMap::new();
                 let mut quote_expiry_by_condition: std::collections::HashMap<String, (i64, u64)> =
                     std::collections::HashMap::new();
+                let mut expired_order_reconcile_after_ms_by_order_id: std::collections::HashMap<
+                    String,
+                    i64,
+                > = std::collections::HashMap::new();
                 let mut last_heartbeat_ms = 0_i64;
                 let mut last_mm_sport_scan_ms = 0_i64;
                 let mut fallback_exit_markets_by_condition: std::collections::HashMap<
@@ -17053,6 +17147,8 @@ async fn main() -> Result<()> {
                         }
                     }
                     order_expiry_ms_by_order_id
+                        .retain(|order_id, _| active_pending_order_ids.contains(order_id));
+                    expired_order_reconcile_after_ms_by_order_id
                         .retain(|order_id, _| active_pending_order_ids.contains(order_id));
                     for rows in open_orders_by_condition.values() {
                         for row in rows {
@@ -20775,13 +20871,38 @@ async fn main() -> Result<()> {
                             let mut quote_hold_kept_size_mismatch = false;
                             let mut keep_buy_id: Option<String> = None;
                             let mut buy_cancel_rows = Vec::new();
-                            let mut expired_buy_cancel_rows = Vec::new();
+                            let mut buy_cancel_reason_counts: std::collections::BTreeMap<
+                                &'static str,
+                                usize,
+                            > = std::collections::BTreeMap::new();
+                            let mut expired_buy_reconcile_rows = Vec::new();
                             for row in &buy_rows {
                                 let order_id = row.order_id.trim();
-                                let row_expired = order_expiry_ms_by_order_id
-                                    .get(order_id)
-                                    .map(|expiry_ms| now_ms_local >= *expiry_ms)
+                                let expiry_ms_opt =
+                                    order_expiry_ms_by_order_id.get(order_id).copied();
+                                let row_expired = expiry_ms_opt
+                                    .map(|expiry_ms| now_ms_local >= expiry_ms)
                                     .unwrap_or(false);
+                                if row_expired {
+                                    let reconcile_after_ms =
+                                        expired_order_reconcile_after_ms_by_order_id
+                                            .entry(order_id.to_string())
+                                            .or_insert_with(|| {
+                                                expiry_ms_opt
+                                                    .unwrap_or(now_ms_local)
+                                                    .saturating_add(
+                                                        MM_SPORT_EXPIRED_ORDER_RECONCILE_GRACE_MS,
+                                                    )
+                                            });
+                                    if now_ms_local >= *reconcile_after_ms {
+                                        expired_buy_reconcile_rows.push(row.clone());
+                                    } else if keep_buy_id.is_none() {
+                                        keep_buy_id = Some(row.order_id.clone());
+                                    }
+                                    continue;
+                                } else {
+                                    expired_order_reconcile_after_ms_by_order_id.remove(order_id);
+                                }
                                 let target_matches = mm_sport_order_matches_target(
                                     row,
                                     submit_bid_price,
@@ -20795,20 +20916,110 @@ async fn main() -> Result<()> {
                                         submit_bid_price,
                                         market.minimum_tick_size,
                                     );
+                                let size_delta_pct =
+                                    mm_sport_size_delta_pct(row.size_usd, desired_bid_usd);
+                                let extreme_size_drift = price_matches
+                                    && !target_matches
+                                    && size_delta_pct >= MM_SPORT_EXTREME_SIZE_REQUOTE_DELTA_PCT;
                                 if keep_buy_id.is_none()
                                     && !row_expired
-                                    && (target_matches || (quote_hold_active && price_matches))
+                                    && (target_matches
+                                        || (quote_hold_active && price_matches)
+                                        || (price_matches && !extreme_size_drift))
                                 {
-                                    if quote_hold_active && !target_matches {
+                                    if !target_matches {
                                         quote_hold_kept_size_mismatch = true;
                                     }
                                     keep_buy_id = Some(row.order_id.clone());
                                 } else {
-                                    let row_clone = row.clone();
-                                    if row_expired {
-                                        expired_buy_cancel_rows.push(row_clone.clone());
+                                    let reason = if !price_matches {
+                                        "price_moved"
+                                    } else if extreme_size_drift {
+                                        "size_extreme"
+                                    } else {
+                                        "duplicate_live_quote"
+                                    };
+                                    *buy_cancel_reason_counts.entry(reason).or_insert(0) += 1;
+                                    buy_cancel_rows.push(row.clone());
+                                }
+                            }
+                            if !expired_buy_reconcile_rows.is_empty() {
+                                if can_buy_action {
+                                    let reconcile_result = mm_sport_reconcile_expired_pending_rows(
+                                        &api_for_mm_sport,
+                                        &tracking_db_for_mm_sport,
+                                        expired_buy_reconcile_rows.as_slice(),
+                                    )
+                                    .await;
+                                    for order_id in &reconcile_result.active_order_ids {
+                                        expired_order_reconcile_after_ms_by_order_id.insert(
+                                            order_id.clone(),
+                                            now_ms_local.saturating_add(
+                                                MM_SPORT_EXPIRED_ORDER_RECONCILE_RETRY_MS,
+                                            ),
+                                        );
                                     }
-                                    buy_cancel_rows.push(row_clone);
+                                    for row in &expired_buy_reconcile_rows {
+                                        if !reconcile_result.active_order_ids.iter().any(|id| {
+                                            id.eq_ignore_ascii_case(row.order_id.as_str())
+                                        }) {
+                                            expired_order_reconcile_after_ms_by_order_id
+                                                .remove(row.order_id.as_str());
+                                        }
+                                    }
+                                    if keep_buy_id.is_none() {
+                                        keep_buy_id =
+                                            reconcile_result.active_order_ids.first().cloned();
+                                    }
+                                    let terminal_or_stale = reconcile_result
+                                        .terminal
+                                        .saturating_add(reconcile_result.stale);
+                                    if terminal_or_stale > 0 {
+                                        let (cooldown_until_ms, cooldown_sec) =
+                                            mm_sport_start_quote_cooldown(
+                                                &mut quote_cooldown_until_by_token_side,
+                                                now_ms_local,
+                                                buy_key.as_str(),
+                                                mm_sport_cfg_for_loop.quote_cooldown_min_sec,
+                                                mm_sport_cfg_for_loop.quote_cooldown_max_sec,
+                                            );
+                                        log_event(
+                                            "mm_sport_quote_cooldown_started",
+                                            json!({
+                                                "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                                "condition_id": market.condition_id,
+                                                "token_id": token_id,
+                                                "side": "BUY",
+                                                "reason": "quote_expired_reconciled",
+                                                "terminal_count": reconcile_result.terminal,
+                                                "stale_count": reconcile_result.stale,
+                                                "active_count": reconcile_result.active_order_ids.len(),
+                                                "unresolved_count": reconcile_result.unresolved,
+                                                "cooldown_sec": cooldown_sec,
+                                                "cooldown_until_ms": cooldown_until_ms
+                                            }),
+                                        );
+                                    }
+                                    log_event(
+                                        "mm_sport_expired_order_reconcile",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                            "condition_id": market.condition_id,
+                                            "token_id": token_id,
+                                            "side": "BUY",
+                                            "checked_count": expired_buy_reconcile_rows.len(),
+                                            "terminal_count": reconcile_result.terminal,
+                                            "stale_count": reconcile_result.stale,
+                                            "active_count": reconcile_result.active_order_ids.len(),
+                                            "unresolved_count": reconcile_result.unresolved,
+                                            "grace_ms": MM_SPORT_EXPIRED_ORDER_RECONCILE_GRACE_MS,
+                                            "retry_ms": MM_SPORT_EXPIRED_ORDER_RECONCILE_RETRY_MS
+                                        }),
+                                    );
+                                } else if keep_buy_id.is_none() {
+                                    keep_buy_id = expired_buy_reconcile_rows
+                                        .first()
+                                        .map(|row| row.order_id.clone());
                                 }
                             }
                             if quote_hold_kept_size_mismatch {
@@ -20820,21 +21031,38 @@ async fn main() -> Result<()> {
                                     last_quote_hold_skip_log_ms_by_token_side
                                         .insert(buy_key.clone(), now_ms_local);
                                     log_event(
-                                        "mm_sport_quote_hold_skip_requote",
+                                        "mm_sport_size_drift_keep",
                                         json!({
                                             "strategy_id": STRATEGY_ID_MM_SPORT_V1,
                                             "condition_id": market.condition_id,
                                             "token_id": token_id,
                                             "side": "BUY",
+                                            "quote_hold_active": quote_hold_active,
                                             "hold_until_ms": quote_hold_until_ms,
                                             "remaining_ms": quote_hold_until_ms.saturating_sub(now_ms_local),
-                                            "desired_bid_usd": desired_bid_usd
+                                            "desired_bid_usd": desired_bid_usd,
+                                            "extreme_size_requote_delta_pct": MM_SPORT_EXTREME_SIZE_REQUOTE_DELTA_PCT
                                         }),
                                     );
                                 }
                             }
 
                             if !buy_cancel_rows.is_empty() && can_buy_action {
+                                log_event(
+                                    "mm_sport_cancel_reason",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                        "condition_id": market.condition_id,
+                                        "token_id": token_id,
+                                        "side": "BUY",
+                                        "reason_counts": buy_cancel_reason_counts,
+                                        "attempted_cancel_count": buy_cancel_rows.len(),
+                                        "price": submit_bid_price,
+                                        "desired_bid_usd": desired_bid_usd,
+                                        "size_requote_delta_pct": mm_sport_cfg_for_loop.size_requote_delta_pct,
+                                        "extreme_size_requote_delta_pct": MM_SPORT_EXTREME_SIZE_REQUOTE_DELTA_PCT
+                                    }),
+                                );
                                 let canceled = mm_sport_cancel_pending_rows(
                                     &api_for_mm_sport,
                                     &tracking_db_for_mm_sport,
@@ -20869,29 +21097,6 @@ async fn main() -> Result<()> {
                                     keep_buy_id = unresolved_active.first().cloned();
                                 } else {
                                     keep_buy_id = None;
-                                }
-                                if !expired_buy_cancel_rows.is_empty() {
-                                    let (cooldown_until_ms, cooldown_sec) =
-                                        mm_sport_start_quote_cooldown(
-                                            &mut quote_cooldown_until_by_token_side,
-                                            now_ms_local,
-                                            buy_key.as_str(),
-                                            mm_sport_cfg_for_loop.quote_cooldown_min_sec,
-                                            mm_sport_cfg_for_loop.quote_cooldown_max_sec,
-                                        );
-                                    log_event(
-                                        "mm_sport_quote_cooldown_started",
-                                        json!({
-                                            "strategy_id": STRATEGY_ID_MM_SPORT_V1,
-                                            "condition_id": market.condition_id,
-                                            "token_id": token_id,
-                                            "side": "BUY",
-                                            "reason": "quote_expired",
-                                            "expired_cancel_count": expired_buy_cancel_rows.len(),
-                                            "cooldown_sec": cooldown_sec,
-                                            "cooldown_until_ms": cooldown_until_ms
-                                        }),
-                                    );
                                 }
                             }
 

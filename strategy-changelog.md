@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-05-04
+- `mm_sport_v1` / MM 2.0 cancel pressure reduction: normal expired BUY quotes now use delayed CLOB status reconciliation instead of active cancel calls, same-price depth-ratio size drift is kept unless it exceeds the extreme 75% size-drift threshold, and the normal requote path emits `mm_sport_cancel_reason` / `mm_sport_expired_order_reconcile` telemetry (`src/main.rs`).
+  - Applies to MM 2.0 Sport, Non-S, and Dual routes. Risk cancels remain active for FIFO front-ratio breach, orphaned active scope, min-size invalidation, ratio/depth guard breach, balance/allowance failure, duplicate live quotes, extreme size drift, and price moves.
 - `mm_sport_v1` / MM 2.0 runtime pressure controls: coalesced event-driven quote scans to at most once per `EVPOLY_MM_SPORT_EVENT_MIN_SCAN_MS=1000`, changed the default size-based requote threshold to `EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT=0.20`, added a successful BUY quote hold window with `EVPOLY_MM_SPORT_QUOTE_HOLD_MIN_SEC=20` / `EVPOLY_MM_SPORT_QUOTE_HOLD_MAX_SEC=45`, and capped runtime HTTP pooling/read/order-submit concurrency (`src/main.rs`, `src/mm/mod.rs`, `src/api.rs`, `.env.example`, `.env.full.example`).
   - Applies to MM 2.0 Sport, Non-S, and Dual routes. FIFO cancel remains its own depth-ratio guard; these changes reduce cancel/requote churn from depth-ratio target drift and bound CLOB/Gamma connection pressure without blocking exits or inventory cleanup.
 

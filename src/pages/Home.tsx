@@ -263,7 +263,7 @@ export function Home() {
   const displayError = actionError || overviewError;
   const canOperate = Boolean(activeProfileId && configLoaded);
   const botRunning = overview?.bot_state === "running";
-  const otherProfileRunning = Boolean(overview?.other_profile_running && overview.live_profile_id);
+  const otherProfileRunning = Boolean(overview?.other_profile_running);
   const globalBotBusy = ["starting", "running", "stopping"].includes(
     overview?.global_bot_state ?? overview?.bot_state ?? ""
   );
@@ -945,12 +945,20 @@ export function Home() {
           {otherProfileRunning ? (
             <button
               type="button"
-              onClick={() => void handleOpenLiveProfile()}
+              onClick={() =>
+                overview?.live_profile_id ? void handleOpenLiveProfile() : void handleStop()
+              }
               disabled={actionLoading}
-              className="ui-button ui-button--accent"
-              title={`Switch to ${liveProfileLabel}`}
+              className={`ui-button ${
+                overview?.live_profile_id ? "ui-button--accent" : "ui-button--danger"
+              }`}
+              title={
+                overview?.live_profile_id
+                  ? `Switch to ${liveProfileLabel}`
+                  : "Stop the live bot before starting this profile"
+              }
             >
-              Open Live Profile
+              {overview?.live_profile_id ? "Open Live Profile" : "Stop Live Bot"}
             </button>
           ) : (
             <>

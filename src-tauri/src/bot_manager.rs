@@ -35,6 +35,15 @@ struct LastState {
     simulation: bool,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RunningBotMarker {
+    profile_id: String,
+    env_path: PathBuf,
+    config_path: PathBuf,
+    simulation: bool,
+    started_at: String,
+}
+
 #[derive(Clone)]
 pub struct BotRequestContext {
     pub base_url: String,
@@ -58,7 +67,7 @@ pub struct BotManager {
 
 impl BotManager {
     pub fn new(data_dir: PathBuf) -> Self {
-        Self {
+        let manager = Self {
             data_dir,
             inner: Arc::new(Mutex::new(BotInner {
                 status: BotStatus::Stopped,
@@ -69,7 +78,9 @@ impl BotManager {
                 simulation: false,
             })),
             log_buffer: Arc::new(Mutex::new(LogBuffer::new())),
-        }
+        };
+        manager.restore_external_runtime_state();
+        manager
     }
 
     pub fn start(
@@ -81,13 +92,14 @@ impl BotManager {
         simulation: bool,
     ) -> Result<(), String> {
         ensure_bot_runtime_dirs(&self.data_dir)?;
+        self.restore_external_runtime_state();
 
         let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
         if inner.status != BotStatus::Stopped && !matches!(inner.status, BotStatus::Error(_)) {
             return Err(format!("bot is busy ({:?})", inner.status));
         }
         inner.status = BotStatus::Starting;
-        inner.running_profile_id = Some(profile_id);
+        inner.running_profile_id = Some(profile_id.clone());
         inner.stop_requested = false;
 
         let mut args = vec![
@@ -118,11 +130,22 @@ impl BotManager {
         inner.child = Some(child);
         inner.env_path = Some(env_path.clone());
         inner.simulation = simulation;
+        write_running_marker(
+            &self.data_dir,
+            &RunningBotMarker {
+                profile_id,
+                env_path,
+                config_path,
+                simulation,
+                started_at: Utc::now().to_rfc3339(),
+            },
+        );
         drop(inner);
 
         let log_buf = self.log_buffer.clone();
         let inner_ref = self.inner.clone();
         let debug_log = debug_log_path.clone();
+        let marker_data_dir = self.data_dir.clone();
 
         tauri::async_runtime::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -182,6 +205,7 @@ impl BotManager {
                             if let Some(path) = inner.env_path.take() {
                                 config_io::cleanup_env_file(&path);
                             }
+                            clear_running_marker(&marker_data_dir);
                             inner.child = None;
                             inner.stop_requested = false;
                             inner.simulation = false;
@@ -203,6 +227,7 @@ impl BotManager {
     }
 
     pub fn stop(&self) -> Result<(), String> {
+        self.restore_external_runtime_state();
         let cancel_context = {
             let inner = self.inner.lock().map_err(|e| e.to_string())?;
             if inner.status == BotStatus::Running && !inner.simulation {
@@ -390,11 +415,11 @@ impl BotManager {
                     &config_marker,
                 ) {
                     if let Ok(mut inner) = self.inner.lock() {
-                        finalize_stop(&mut inner);
+                        finalize_stop(&mut inner, &self.data_dir);
                     }
                 }
             } else {
-                finalize_stop(&mut inner);
+                finalize_stop(&mut inner, &self.data_dir);
             }
         }
 
@@ -405,7 +430,7 @@ impl BotManager {
                 Err(_) => return,
             };
             if inner.status == BotStatus::Stopping && inner.child.is_none() {
-                finalize_stop(&mut inner);
+                finalize_stop(&mut inner, &self.data_dir);
             }
         }
     }
@@ -424,6 +449,61 @@ impl BotManager {
                     "SYSTEM",
                     "forced bot orphan cleanup via process scan",
                 );
+            }
+        }
+    }
+
+    fn restore_external_runtime_state(&self) {
+        #[cfg(target_os = "windows")]
+        {
+            let config_marker = self
+                .data_dir
+                .join("runtime.config.json")
+                .to_string_lossy()
+                .to_string();
+            let Some(processes_running) = windows_processes_running(
+                &["evpoly-bot.exe", "evpoly-bot-real.exe"],
+                &config_marker,
+            ) else {
+                return;
+            };
+
+            let mut inner = match self.inner.lock() {
+                Ok(inner) => inner,
+                Err(_) => return,
+            };
+
+            if processes_running {
+                if inner.child.is_some()
+                    || matches!(
+                        inner.status,
+                        BotStatus::Running | BotStatus::Starting | BotStatus::Stopping
+                    )
+                {
+                    return;
+                }
+
+                if let Some(marker) = read_running_marker(&self.data_dir) {
+                    inner.status = BotStatus::Running;
+                    inner.running_profile_id = Some(marker.profile_id);
+                    inner.env_path = Some(marker.env_path);
+                    inner.simulation = marker.simulation;
+                } else {
+                    inner.status = BotStatus::Running;
+                    inner.running_profile_id = None;
+                    inner.env_path = None;
+                    inner.simulation = false;
+                }
+                return;
+            }
+
+            if inner.child.is_none()
+                && matches!(
+                    inner.status,
+                    BotStatus::Running | BotStatus::Starting | BotStatus::Stopping
+                )
+            {
+                finalize_stop(&mut inner, &self.data_dir);
             }
         }
     }
@@ -461,14 +541,34 @@ impl BotManager {
     }
 }
 
-fn finalize_stop(inner: &mut BotInner) {
+fn finalize_stop(inner: &mut BotInner, data_dir: &PathBuf) {
     if let Some(path) = inner.env_path.take() {
         config_io::cleanup_env_file(&path);
     }
+    clear_running_marker(data_dir);
     inner.child = None;
     inner.running_profile_id = None;
     inner.simulation = false;
     inner.status = BotStatus::Stopped;
+}
+
+fn running_marker_path(data_dir: &PathBuf) -> PathBuf {
+    data_dir.join("running_bot.json")
+}
+
+fn read_running_marker(data_dir: &PathBuf) -> Option<RunningBotMarker> {
+    let json = std::fs::read_to_string(running_marker_path(data_dir)).ok()?;
+    serde_json::from_str::<RunningBotMarker>(&json).ok()
+}
+
+fn write_running_marker(data_dir: &PathBuf, marker: &RunningBotMarker) {
+    if let Ok(json) = serde_json::to_string_pretty(marker) {
+        let _ = std::fs::write(running_marker_path(data_dir), json);
+    }
+}
+
+fn clear_running_marker(data_dir: &PathBuf) {
+    let _ = std::fs::remove_file(running_marker_path(data_dir));
 }
 
 fn ensure_bot_runtime_dirs(data_dir: &PathBuf) -> Result<(), String> {

@@ -1548,6 +1548,9 @@ fn active_profile_bot_state(
     match running_profile_id {
         Some(running_id) if active_profile_id == Some(running_id) => global_state.to_string(),
         Some(_) => "stopped".to_string(),
+        None if matches!(global_state, "starting" | "running" | "stopping") => {
+            "stopped".to_string()
+        }
         None => global_state.to_string(),
     }
 }
@@ -3626,9 +3629,7 @@ async fn build_home_overview_payload(
         bot_snapshot.3.as_deref(),
     );
     let global_bot_busy = matches!(bot_snapshot.0.as_str(), "starting" | "running" | "stopping");
-    let other_profile_running = bot_snapshot.3.as_deref().is_some()
-        && bot_snapshot.3.as_deref() != active_profile_id.as_deref()
-        && global_bot_busy;
+    let other_profile_running = global_bot_busy && active_bot_state == "stopped";
 
     let Some(profile) = maybe_profile else {
         return Ok(serde_json::json!({
@@ -5832,12 +5833,12 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_desktop_config, desktop_config_to_profile_payload, merge_config_object,
-        merge_desktop_secrets, polymarket_funders_from_private_key, profile_to_desktop_config,
-        remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
-        PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
-        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
-        WEEKEND_POLICY_ENV_KEY,
+        active_profile_bot_state, default_desktop_config, desktop_config_to_profile_payload,
+        merge_config_object, merge_desktop_secrets, polymarket_funders_from_private_key,
+        profile_to_desktop_config, remove_legacy_premarket_ladder_keys,
+        simulation_mode_from_profile, PREMARKET_LADDER_MODE_ENV_KEY_5M,
+        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
+        PREMARKET_LADDER_MODE_ENV_KEY_SHARED, WEEKEND_POLICY_ENV_KEY,
     };
     use crate::{auth::AppAuth, config_io, profile_manager::Profile};
     use std::collections::HashMap;
@@ -5862,6 +5863,22 @@ mod tests {
             created_at: "now".to_string(),
             last_used: "now".to_string(),
         }
+    }
+
+    #[test]
+    fn unknown_running_bot_is_not_assigned_to_active_profile() {
+        assert_eq!(
+            active_profile_bot_state("running", Some("active"), None),
+            "stopped"
+        );
+    }
+
+    #[test]
+    fn matching_running_bot_is_assigned_to_active_profile() {
+        assert_eq!(
+            active_profile_bot_state("running", Some("active"), Some("active")),
+            "running"
+        );
     }
 
     #[test]

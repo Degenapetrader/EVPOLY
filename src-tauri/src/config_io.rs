@@ -395,6 +395,7 @@ pub fn cleanup_env_file(path: &Path) {
 }
 
 pub fn cleanup_generated_env_files(data_dir: &Path) {
+    let protected_env_path = running_marker_env_path(data_dir);
     let Ok(entries) = std::fs::read_dir(data_dir) else {
         return;
     };
@@ -406,7 +407,30 @@ pub fn cleanup_generated_env_files(data_dir: &Path) {
         if !file_name.starts_with(".env.generated") {
             continue;
         }
+        if protected_env_path
+            .as_ref()
+            .map(|protected| same_path(protected, &path))
+            .unwrap_or(false)
+        {
+            continue;
+        }
         cleanup_env_file(&path);
+    }
+}
+
+fn running_marker_env_path(data_dir: &Path) -> Option<PathBuf> {
+    let json = std::fs::read_to_string(data_dir.join("running_bot.json")).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&json).ok()?;
+    value
+        .get("env_path")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => left == right,
     }
 }
 

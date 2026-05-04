@@ -156,6 +156,9 @@ pub struct MmSportConfig {
     pub quote_hold_min_sec: u64,
     pub quote_hold_max_sec: u64,
     pub size_requote_delta_pct: f64,
+    pub fresh_scan_markets_per_tick: usize,
+    pub order_submit_concurrency: usize,
+    pub verbose_budget_events: bool,
     pub allowance_refresh_sec: u64,
     pub require_reward_eligible: bool,
     pub pregame_only: bool,
@@ -335,6 +338,14 @@ impl MmSportConfig {
             quote_hold_max_sec,
             size_requote_delta_pct: env_f64("EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT", 0.20)
                 .clamp(0.0, 1.0),
+            fresh_scan_markets_per_tick: env_usize(
+                "EVPOLY_MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK",
+                30,
+            )
+            .min(1_000),
+            order_submit_concurrency: env_usize("EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY", 3)
+                .clamp(1, 16),
+            verbose_budget_events: env_bool("EVPOLY_MM_SPORT_VERBOSE_BUDGET_EVENTS", false),
             allowance_refresh_sec: env_u64("EVPOLY_MM_SPORT_ALLOWANCE_REFRESH_SEC", 60)
                 .clamp(15, 3_600),
             require_reward_eligible: env_bool("EVPOLY_MM_SPORT_REQUIRE_REWARD_ELIGIBLE", true),
@@ -709,6 +720,9 @@ mod tests {
                 ("EVPOLY_MM_SPORT_QUOTE_HOLD_MAX_SEC", Some("50")),
                 ("EVPOLY_MM_SPORT_EVENT_MIN_SCAN_MS", Some("1500")),
                 ("EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT", Some("0.2")),
+                ("EVPOLY_MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK", Some("24")),
+                ("EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY", Some("4")),
+                ("EVPOLY_MM_SPORT_VERBOSE_BUDGET_EVENTS", Some("true")),
             ],
             || {
                 let cfg = MmSportConfig::from_env();
@@ -720,6 +734,9 @@ mod tests {
                 assert_eq!(cfg.quote_hold_max_sec, 50);
                 assert_eq!(cfg.event_min_scan_ms, 1_500);
                 assert!((cfg.size_requote_delta_pct - 0.20).abs() < 1e-9);
+                assert_eq!(cfg.fresh_scan_markets_per_tick, 24);
+                assert_eq!(cfg.order_submit_concurrency, 4);
+                assert!(cfg.verbose_budget_events);
                 assert!((cfg.fifo_ratio_floor() - 0.11).abs() < 1e-9);
                 assert!((cfg.effective_fifo_max_share_ratio() - 0.11).abs() < 1e-9);
             },

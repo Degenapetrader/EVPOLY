@@ -478,9 +478,9 @@ impl PolymarketApi {
 
     fn http_client_builder() -> reqwest::ClientBuilder {
         let idle_per_host =
-            Self::env_usize_clamped("EVPOLY_HTTP_POOL_MAX_IDLE_PER_HOST", 16, 0, 128);
+            Self::env_usize_clamped("EVPOLY_HTTP_POOL_MAX_IDLE_PER_HOST", 6, 0, 128);
         let idle_timeout_sec =
-            Self::env_u64_clamped("EVPOLY_HTTP_POOL_IDLE_TIMEOUT_SEC", 20, 1, 300);
+            Self::env_u64_clamped("EVPOLY_HTTP_POOL_IDLE_TIMEOUT_SEC", 8, 1, 300);
         Client::builder()
             .timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(idle_per_host)
@@ -521,13 +521,13 @@ impl PolymarketApi {
             mm_proxy_fallback_max,
             http_read_semaphore: Arc::new(tokio::sync::Semaphore::new(Self::env_usize_clamped(
                 "EVPOLY_HTTP_READ_CONCURRENCY",
-                32,
+                16,
                 1,
                 512,
             ))),
             order_submit_semaphore: Arc::new(tokio::sync::Semaphore::new(Self::env_usize_clamped(
                 "EVPOLY_ORDER_SUBMIT_CONCURRENCY",
-                8,
+                4,
                 1,
                 128,
             ))),

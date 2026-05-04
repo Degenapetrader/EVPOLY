@@ -18,6 +18,32 @@ export interface PolymarketFunderAddresses {
   deposit_wallet: string | null;
 }
 
+export interface DesktopMagicStartResult {
+  desktop_onboard_session_id?: string;
+  session_id?: string;
+  onboard_session_id?: string;
+  publishable_key?: string;
+  magic_publishable_key?: string;
+  magic?: {
+    publishable_key?: string;
+  };
+  [key: string]: unknown;
+}
+
+export interface DesktopMagicFinishResult {
+  encrypted_private_key?: string;
+  encryptedPrivateKey?: string;
+  signer_address?: string | null;
+  wallet_type?: string | null;
+  signature_type?: number | string | null;
+  safe_address?: string | null;
+  deposit_wallet_address?: string | null;
+  active_wallet_address?: string | null;
+  safe_status?: string | null;
+  provisioning_status?: string | null;
+  [key: string]: unknown;
+}
+
 export interface LogLine {
   timestamp: string;
   level: "INFO" | "WARN" | "ERROR";
@@ -698,6 +724,30 @@ export const derivePolymarketFunderAddresses = (
   invoke("derive_polymarket_funder_addresses", {
     privateKey,
     private_key: privateKey,
+  });
+
+export const desktopMagicStart = (
+  email: string,
+  profileId?: string | null
+): Promise<DesktopMagicStartResult> =>
+  invoke("desktop_magic_start", {
+    email,
+    profileId: profileId ?? null,
+    profile_id: profileId ?? null,
+  });
+
+export const desktopMagicFinish = (
+  desktopOnboardSessionId: string,
+  didToken: string,
+  rsaPublicKey: string
+): Promise<DesktopMagicFinishResult> =>
+  invoke("desktop_magic_finish", {
+    desktopOnboardSessionId,
+    desktop_onboard_session_id: desktopOnboardSessionId,
+    didToken,
+    did_token: didToken,
+    rsaPublicKey,
+    rsa_public_key: rsaPublicKey,
   });
 
 // Onboarding

@@ -12,6 +12,7 @@ import { useAppContext } from "../App";
 import { useBotStatus } from "../hooks/useBotStatus";
 import { useHomeOverview } from "../hooks/useHomeOverview";
 import { useWalletSyncStatus } from "../hooks/useWalletSyncStatus";
+import { completeDesktopMagicWalletOnboarding } from "../lib/desktop-magic-onboarding";
 import {
   DEFAULT_CONFIG,
   VISIBLE_STRATEGIES,
@@ -197,6 +198,11 @@ function importedProfileName(address: string, profiles: Profile[]): string {
   return uniqueProfileName(`Imported ${suffix}`, profiles);
 }
 
+function magicProfileName(email: string, profiles: Profile[]): string {
+  const localPart = email.split("@")[0]?.trim() || "Wallet";
+  return uniqueProfileName(`Magic ${localPart}`, profiles);
+}
+
 export function Config() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -212,6 +218,9 @@ export function Config() {
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [walletProfileMessage, setWalletProfileMessage] = useState<string | null>(null);
+  const [createWalletMethod, setCreateWalletMethod] = useState<WalletProfileAction>("magic");
+  const [magicEmail, setMagicEmail] = useState("");
+  const [magicLoading, setMagicLoading] = useState(false);
   const [importPrivateKey, setImportPrivateKey] = useState("");
   const [importSigType, setImportSigType] = useState("2");
   const [importDepositWallet, setImportDepositWallet] = useState("");
@@ -264,7 +273,8 @@ export function Config() {
 
   useEffect(() => {
     const state = location.state as { createWalletMethod?: WalletProfileAction } | null;
-    if (state?.createWalletMethod === "private_key") {
+    if (state?.createWalletMethod === "magic" || state?.createWalletMethod === "private_key") {
+      setCreateWalletMethod(state.createWalletMethod);
       setTab("setup");
       setWalletProfileMessage(null);
     }
@@ -480,6 +490,57 @@ export function Config() {
     }
   };
 
+  const handleCreateMagicWalletProfile = async () => {
+    if (!magicEmail.trim()) {
+      setWalletProfileMessage("Enter an email address.");
+      return;
+    }
+
+    setMagicLoading(true);
+    setWalletProfileMessage(null);
+    setSaveMessage(null);
+    try {
+      const email = magicEmail.trim();
+      const result = await completeDesktopMagicWalletOnboarding(email, null);
+      if (result.signatureType !== 3) {
+        setWalletProfileMessage("Magic bridge did not return a Deposit Wallet account.");
+        return;
+      }
+      if (!result.depositWalletAddress) {
+        setWalletProfileMessage("Magic bridge did not return a deposit wallet address.");
+        return;
+      }
+      const funders = await derivePolymarketFunderAddresses(result.privateKey);
+      if (
+        result.signerAddress &&
+        funders.eoa_wallet.trim().toLowerCase() !== result.signerAddress.trim().toLowerCase()
+      ) {
+        throw new Error("Exported Magic private key does not match the provisioned signer.");
+      }
+
+      const profileName = magicProfileName(email, profiles);
+      await saveNewWalletProfile({
+        profileName,
+        privateKey: result.privateKey,
+        eoaWallet: funders.eoa_wallet,
+        signatureType: 3,
+        proxyWallet: "",
+        depositWallet: result.depositWalletAddress,
+      });
+      setMagicEmail("");
+      const statusText = result.provisioningStatus
+        ? ` Provisioning status: ${toStatusLabel(result.provisioningStatus)}.`
+        : "";
+      const message = `New Deposit Wallet profile created and selected.${statusText}`;
+      setWalletProfileMessage(message);
+      setSaveMessage(message);
+    } catch (err) {
+      setWalletProfileMessage(getErrorText(err, "failed to create Magic wallet profile"));
+    } finally {
+      setMagicLoading(false);
+    }
+  };
+
   const handleCreateProfile = async () => {
     try {
       const signatureType = Number(createSigType);
@@ -502,7 +563,7 @@ export function Config() {
   };
 
   const handleOpenCreateWallet = (method: WalletProfileAction) => {
-    if (method !== "private_key") return;
+    setCreateWalletMethod(method);
     setTab("setup");
     setWalletProfileMessage(null);
   };
@@ -742,61 +803,112 @@ export function Config() {
 
                 <SectionPanel
                   title="Create New Wallet Profile"
-                  subtitle="Create a separate local signing profile from an existing private key."
+                  subtitle="Create a separate local signing profile with email OTP or an existing private key."
                 >
                   <div className="space-y-4">
                     {walletProfileMessage ? (
                       <div className="inline-alert inline-alert--warning">{walletProfileMessage}</div>
                     ) : null}
-                    <div>
-                      <label className="field-label">Private Key</label>
-                      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-                        <input
-                          type={showImportPrivateKey ? "text" : "password"}
-                          value={importPrivateKey}
-                          onChange={(event) => setImportPrivateKey(event.target.value)}
-                          className="field-input"
-                          autoComplete="off"
+                    <div
+                      className="segmented-control"
+                      role="radiogroup"
+                      aria-label="Wallet profile creation method"
+                    >
+                      {[
+                        ["magic", "Email OTP"],
+                        ["private_key", "Private Key"],
+                      ].map(([value, label]) => {
+                        const active = createWalletMethod === value;
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            role="radio"
+                            aria-checked={active}
+                            onClick={() => setCreateWalletMethod(value as WalletProfileAction)}
+                            className={`segmented-control__option ${
+                              active ? "segmented-control__option--active" : ""
+                            }`.trim()}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {createWalletMethod === "magic" ? (
+                      <>
+                        <Field
+                          label="Email"
+                          value={magicEmail}
+                          onChange={setMagicEmail}
+                          type="email"
                         />
+                        <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
+                          Magic email OTP creates a new Deposit Wallet profile. The private key is exported locally and saved into this encrypted desktop profile.
+                        </div>
                         <button
                           type="button"
-                          onClick={() => setShowImportPrivateKey((value) => !value)}
-                          className="ui-button"
+                          onClick={() => void handleCreateMagicWalletProfile()}
+                          disabled={magicLoading}
+                          className="ui-button ui-button--primary"
                         >
-                          {showImportPrivateKey ? "Hide" : "Show"}
+                          {magicLoading ? "Creating..." : "Create Wallet with Email OTP"}
                         </button>
-                      </div>
-                    </div>
-                    <div>
-                      <label className="field-label">Wallet Mode</label>
-                      <WalletModeSelector
-                        value={Number(importSigType)}
-                        onChange={(value) => setImportSigType(String(value))}
-                      />
-                    </div>
-                    {Number(importSigType) === 3 ? (
-                      <Field
-                        label="Deposit Wallet Address"
-                        value={importDepositWallet}
-                        onChange={setImportDepositWallet}
-                        placeholder="0x..."
-                      />
-                    ) : null}
-                    {Number(importSigType) !== 0 ? (
-                      <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
-                        {Number(importSigType) === 3
-                          ? "Deposit wallet address must already be deployed, funded, and approved before live trading."
-                          : "Proxy/Safe funder address is derived locally during import."}
-                      </div>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => void handleCreateImportedWalletProfile()}
-                      disabled={importLoading}
-                      className="ui-button ui-button--primary"
-                    >
-                      {importLoading ? "Importing..." : "Import Private Key Profile"}
-                    </button>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <label className="field-label">Private Key</label>
+                          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                            <input
+                              type={showImportPrivateKey ? "text" : "password"}
+                              value={importPrivateKey}
+                              onChange={(event) => setImportPrivateKey(event.target.value)}
+                              className="field-input"
+                              autoComplete="off"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowImportPrivateKey((value) => !value)}
+                              className="ui-button"
+                            >
+                              {showImportPrivateKey ? "Hide" : "Show"}
+                            </button>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="field-label">Wallet Mode</label>
+                          <WalletModeSelector
+                            value={Number(importSigType)}
+                            onChange={(value) => setImportSigType(String(value))}
+                          />
+                        </div>
+                        {Number(importSigType) === 3 ? (
+                          <Field
+                            label="Deposit Wallet Address"
+                            value={importDepositWallet}
+                            onChange={setImportDepositWallet}
+                            placeholder="0x..."
+                          />
+                        ) : null}
+                        {Number(importSigType) !== 0 ? (
+                          <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
+                            {Number(importSigType) === 3
+                              ? "Deposit wallet address must already be deployed, funded, and approved before live trading."
+                              : "Proxy/Safe funder address is derived locally during import."}
+                          </div>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => void handleCreateImportedWalletProfile()}
+                          disabled={importLoading}
+                          className="ui-button ui-button--primary"
+                        >
+                          {importLoading ? "Importing..." : "Import Private Key Profile"}
+                        </button>
+                      </>
+                    )}
                     <div className="text-sm leading-6 text-[var(--text-secondary)]">
                       Creates a separate profile. Existing profiles are not changed.
                     </div>

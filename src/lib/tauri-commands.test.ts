@@ -12,6 +12,8 @@ import {
   createProfile,
   derivePolymarketFunderAddresses,
   deriveWalletAddress,
+  desktopMagicFinish,
+  desktopMagicStart,
   exportConfig,
   getGeoAccessStatus,
   getSavedConfig,
@@ -259,6 +261,29 @@ describe("tauri command payload contracts", () => {
       deposit_wallet_address: "0xdeposit",
       signatureType: 3,
       signature_type: 3,
+    });
+  });
+
+  it("sends compatible payload keys for desktop Magic start", async () => {
+    await desktopMagicStart("user@example.com", "profile-1");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("desktop_magic_start", {
+      email: "user@example.com",
+      profileId: "profile-1",
+      profile_id: "profile-1",
+    });
+  });
+
+  it("sends compatible payload keys for desktop Magic finish", async () => {
+    await desktopMagicFinish("session-1", "did-token", "public-key");
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("desktop_magic_finish", {
+      desktopOnboardSessionId: "session-1",
+      desktop_onboard_session_id: "session-1",
+      didToken: "did-token",
+      did_token: "did-token",
+      rsaPublicKey: "public-key",
+      rsa_public_key: "public-key",
     });
   });
 

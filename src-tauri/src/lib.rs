@@ -78,6 +78,7 @@ const DESKTOP_SECRET_KEYS: &[&str] = &[
 const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
 const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
 const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
+const DEFAULT_DESKTOP_MAGIC_BRIDGE_BASE_URL: &str = "https://api-web.evplus.ai";
 const HOME_DB_REFRESH_MS: i64 = 15_000;
 const HOME_REMOTE_REFRESH_MS: i64 = 60_000;
 const HOME_REMOTE_ERROR_REFRESH_MS: i64 = 15_000;
@@ -1598,6 +1599,28 @@ fn ensure_admin_api_token(value: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+fn desktop_install_id(data_dir: &Path) -> Result<String, String> {
+    let path = data_dir.join("desktop-install-id");
+    if let Ok(value) = std::fs::read_to_string(&path) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    let install_id = format!("evpoly-desktop-{}", Uuid::new_v4());
+    std::fs::write(&path, install_id.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(install_id)
+}
+
+fn desktop_magic_bridge_base_url() -> String {
+    std::env::var("EVPOLY_DESKTOP_MAGIC_BRIDGE_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| value.starts_with("https://") || value.starts_with("http://"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_DESKTOP_MAGIC_BRIDGE_BASE_URL.to_string())
 }
 
 fn merge_config_object(existing: &Value, updates: &Value) -> Value {
@@ -5443,6 +5466,83 @@ fn open_logs_folder(data_dir: State<'_, AppDataDir>) -> Result<(), String> {
 
 // ── Onboard ──────────────────────────────────────────────────────────
 
+async fn post_desktop_magic_bridge(
+    operation: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let base_url = desktop_magic_bridge_base_url();
+    let url = format!("{base_url}/v1/desktop/magic/{operation}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("build Magic bridge client: {e}"))?;
+    let response = client
+        .post(url.as_str())
+        .header("accept", "application/json")
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| format!("Magic bridge request failed: {e}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Magic bridge response read failed: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("Magic bridge returned {}: {}", status, body));
+    }
+    serde_json::from_str(&body).map_err(|e| format!("parse Magic bridge response: {e}"))
+}
+
+#[tauri::command]
+async fn desktop_magic_start(
+    data_dir: State<'_, AppDataDir>,
+    email: String,
+    profile_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let email = email.trim();
+    if email.is_empty() {
+        return Err("email is required".to_string());
+    }
+    let install_id = desktop_install_id(&data_dir.0)?;
+    post_desktop_magic_bridge(
+        "start",
+        serde_json::json!({
+            "email": email,
+            "desktop_install_id": install_id,
+            "local_profile_id": profile_id.unwrap_or_default(),
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn desktop_magic_finish(
+    desktop_onboard_session_id: String,
+    did_token: String,
+    rsa_public_key: String,
+) -> Result<serde_json::Value, String> {
+    if desktop_onboard_session_id.trim().is_empty() {
+        return Err("desktop onboarding session is required".to_string());
+    }
+    if did_token.trim().is_empty() {
+        return Err("Magic DID token is required".to_string());
+    }
+    if rsa_public_key.trim().is_empty() {
+        return Err("RSA public key is required".to_string());
+    }
+    post_desktop_magic_bridge(
+        "finish",
+        serde_json::json!({
+            "desktop_onboard_session_id": desktop_onboard_session_id.trim(),
+            "did_token": did_token.trim(),
+            "rsa_public_key": rsa_public_key.trim(),
+            "rsa_algorithm": "RSA-OAEP",
+        }),
+    )
+    .await
+}
+
 #[tauri::command]
 async fn run_onboarding(
     data_dir: State<'_, AppDataDir>,
@@ -5722,6 +5822,8 @@ pub fn run() {
             get_data_dir_path,
             open_logs_folder,
             run_onboarding,
+            desktop_magic_start,
+            desktop_magic_finish,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

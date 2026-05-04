@@ -15,7 +15,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 // Official SDK imports for proper order signing
@@ -759,6 +759,11 @@ impl PolymarketApi {
             .map(|v| v.trim().to_ascii_lowercase())
             .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
             .unwrap_or(default)
+    }
+
+    fn order_submit_verbose_logs() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| Self::env_bool("EVPOLY_ORDER_SUBMIT_VERBOSE_LOGS", false))
     }
 
     fn env_i64(key: &str, default: i64) -> i64 {
@@ -3934,10 +3939,12 @@ impl PolymarketApi {
             .clone()
             .or_else(|| prepared.fallback_order_id.clone());
         if upstream_order_id.is_some() {
-            eprintln!(
-                "✅ Order placed successfully! Order ID: {}",
-                response.order_id
-            );
+            if Self::order_submit_verbose_logs() {
+                eprintln!(
+                    "✅ Order placed successfully! Order ID: {}",
+                    response.order_id
+                );
+            }
         } else if let Some(order_id) = normalized_order_id.as_deref() {
             warn!(
                 "Order post succeeded without upstream orderID; using local V2 order hash {}",
@@ -4233,10 +4240,12 @@ impl PolymarketApi {
         let size = rust_decimal::Decimal::from_str(&order.size)
             .context(format!("Failed to parse size: {}", order.size))?;
 
-        eprintln!(
-            "📤 Creating and posting order: {} {} {} @ {}",
-            order.side, order.size, order.token_id, order.price
-        );
+        if Self::order_submit_verbose_logs() {
+            eprintln!(
+                "📤 Creating and posting order: {} {} {} @ {}",
+                order.side, order.size, order.token_id, order.price
+            );
+        }
 
         // Enforce explicit order semantics for limit builder path.
         // Legacy: order_type="LIMIT" => GTD when expiration exists (or auto-injected for BUY),

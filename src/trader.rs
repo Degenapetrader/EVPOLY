@@ -1284,6 +1284,19 @@ impl Trader {
             .unwrap_or(default)
     }
 
+    fn order_submit_verbose_logs() -> bool {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        *ENABLED.get_or_init(|| Self::env_bool("EVPOLY_ORDER_SUBMIT_VERBOSE_LOGS", false))
+    }
+
+    fn trade_summary_max_pending_rows() -> usize {
+        std::env::var("EVPOLY_TRADE_SUMMARY_MAX_PENDING_ROWS")
+            .ok()
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            .unwrap_or(25)
+            .clamp(0, 500)
+    }
+
     fn constraint_cache_ttl_ms() -> i64 {
         std::env::var("EVPOLY_CONSTRAINT_CACHE_TTL_MS")
             .ok()
@@ -6017,32 +6030,35 @@ impl Trader {
         // Only profit target sell price (stop-loss disabled for limit order version)
         let sell_price = self.config.sell_price;
 
-        crate::log_println!("═══════════════════════════════════════════════════════════");
-        crate::log_println!("📋 PLACING LIMIT BUY ORDER");
-        crate::log_println!("═══════════════════════════════════════════════════════════");
-        crate::log_println!("📊 Order Details:");
-        crate::log_println!("   Token Type: {}", opportunity.token_type.display_name());
-        crate::log_println!("   Token ID: {}", opportunity.token_id);
-        crate::log_println!("   Condition ID: {}", opportunity.condition_id);
-        crate::log_println!("   Side: BUY (LIMIT)");
-        crate::log_println!("   Limit Price: ${:.6}", submit_price);
-        crate::log_println!("   Size: {:.6} shares", units);
-        crate::log_println!("   Investment Amount: ${:.2}", investment_amount);
-        if place_sell_orders {
-            crate::log_println!("   When filled, will place limit sell order:");
-            crate::log_println!("      - Sell at ${:.6} (profit target)", sell_price);
-            crate::log_println!("      - Stop-loss disabled for limit order version");
-        } else {
+        let verbose_order_logs = Self::order_submit_verbose_logs();
+        if verbose_order_logs {
+            crate::log_println!("═══════════════════════════════════════════════════════════");
+            crate::log_println!("📋 PLACING LIMIT BUY ORDER");
+            crate::log_println!("═══════════════════════════════════════════════════════════");
+            crate::log_println!("📊 Order Details:");
+            crate::log_println!("   Token Type: {}", opportunity.token_type.display_name());
+            crate::log_println!("   Token ID: {}", opportunity.token_id);
+            crate::log_println!("   Condition ID: {}", opportunity.condition_id);
+            crate::log_println!("   Side: BUY (LIMIT)");
+            crate::log_println!("   Limit Price: ${:.6}", submit_price);
+            crate::log_println!("   Size: {:.6} shares", units);
+            crate::log_println!("   Investment Amount: ${:.2}", investment_amount);
+            if place_sell_orders {
+                crate::log_println!("   When filled, will place limit sell order:");
+                crate::log_println!("      - Sell at ${:.6} (profit target)", sell_price);
+                crate::log_println!("      - Stop-loss disabled for limit order version");
+            } else {
+                crate::log_println!(
+                    "   When filled, no sell orders will be placed (log confirmation only)"
+                );
+            }
             crate::log_println!(
-                "   When filled, no sell orders will be placed (log confirmation only)"
+                "   Time elapsed: {}m {}s",
+                opportunity.time_elapsed_seconds / 60,
+                opportunity.time_elapsed_seconds % 60
             );
+            crate::log_println!("");
         }
-        crate::log_println!(
-            "   Time elapsed: {}m {}s",
-            opportunity.time_elapsed_seconds / 60,
-            opportunity.time_elapsed_seconds % 60
-        );
-        crate::log_println!("");
 
         if self.simulation_mode {
             crate::log_println!("🎮 SIMULATION MODE - Limit order NOT placed");
@@ -6213,7 +6229,9 @@ impl Trader {
             Some(submit_meta.to_string()),
         );
 
-        crate::log_println!("🚀 Placing limit buy order on exchange...");
+        if verbose_order_logs {
+            crate::log_println!("🚀 Placing limit buy order on exchange...");
+        }
         let api_call_started_ms = chrono::Utc::now().timestamp_millis();
         let mut place_result = self
             .submit_order_with_optional_batch(&order, strategy_id.as_str(), entry_mode)
@@ -6435,11 +6453,13 @@ impl Trader {
                     Some(ack_meta.to_string()),
                 );
 
-                crate::log_println!("   ✅ LIMIT BUY ORDER PLACED");
-                crate::log_println!("      Order ID: {:?}", response.order_id);
-                crate::log_println!("      Status: {}", response.status);
-                if let Some(msg) = &response.message {
-                    crate::log_println!("      Message: {}", msg);
+                if verbose_order_logs {
+                    crate::log_println!("   ✅ LIMIT BUY ORDER PLACED");
+                    crate::log_println!("      Order ID: {:?}", response.order_id);
+                    crate::log_println!("      Status: {}", response.status);
+                    if let Some(msg) = &response.message {
+                        crate::log_println!("      Message: {}", msg);
+                    }
                 }
 
                 // Store initial balance to detect fills
@@ -14886,12 +14906,14 @@ impl Trader {
         let (n, profit) = self.reporting_totals().await;
 
         // Copy needed pending data under lock, then release to minimize hold time.
+        let summary_limit = Self::trade_summary_max_pending_rows();
         let (pending_count, pending_list): (usize, Vec<(String, crate::models::PendingTrade)>) = {
             let pending = self.pending_trades.lock().await;
             let pc = pending.values().filter(|t| !t.sold).count();
             let list = pending
                 .iter()
                 .filter(|(_, t)| !t.sold)
+                .take(summary_limit)
                 .map(|(k, t)| (k.clone(), t.clone()))
                 .collect();
             (pc, list)
@@ -14947,6 +14969,13 @@ impl Trader {
                     p, trade.investment_amount
                 ));
                 out.push_str(&format!("{} \n", p));
+            }
+            if pending_count > pending_list.len() {
+                out.push_str(&format!(
+                    "{}... {} additional pending trade(s) hidden; set EVPOLY_TRADE_SUMMARY_MAX_PENDING_ROWS to inspect more.\n",
+                    p,
+                    pending_count - pending_list.len()
+                ));
             }
         }
         out.push_str(&format!(

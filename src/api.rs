@@ -49,6 +49,7 @@ sol! {
     interface IERC20 {
         function approve(address spender, uint256 value) external returns (bool);
         function allowance(address owner, address spender) external view returns (uint256);
+        function balanceOf(address owner) external view returns (uint256);
     }
 
     #[sol(rpc)]
@@ -77,6 +78,7 @@ const POLYMARKET_PUSD_COLLATERAL_ADDRESS: &str = "0xC011a7E12a19f7B1f670d46F03B0
 const USDC_BALANCE_CACHE_HIT_TTL_MS: i64 = 60_000;
 const USDC_BALANCE_CACHE_FALLBACK_TTL_MS: i64 = 180_000;
 const USDC_BALANCE_ALLOWANCE_UPDATE_TTL_MS: i64 = 30_000;
+const SAFE_BUY_READINESS_CACHE_TTL_MS: i64 = 30_000;
 const TICK_METADATA_RL_BACKOFF_BASE_MS: i64 = 1_000;
 const TICK_METADATA_RL_BACKOFF_MAX_MS: i64 = 30_000;
 const ACTIVE_MARKETS_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -162,6 +164,14 @@ pub struct ClobFeeModel {
 struct ClobAuthBackoffState {
     consecutive_failures: u32,
     retry_after_ms: i64,
+}
+
+#[derive(Debug, Clone)]
+struct SafeBuyReadinessSnapshot {
+    balance_raw: U256,
+    min_collateral_allowance_raw: U256,
+    operator_approval_ready: bool,
+    checked_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -426,6 +436,9 @@ pub struct PolymarketApi {
     usdc_balance_allowance_fetch_lock: Arc<tokio::sync::Mutex<()>>,
     usdc_balance_allowance_update_lock: Arc<tokio::sync::Mutex<()>>,
     last_usdc_balance_allowance_update_ms: Arc<tokio::sync::Mutex<Option<i64>>>,
+    cached_safe_buy_readiness: Arc<tokio::sync::Mutex<Option<SafeBuyReadinessSnapshot>>>,
+    safe_buy_readiness_fetch_lock: Arc<tokio::sync::Mutex<()>>,
+    trading_approval_lock: Arc<tokio::sync::Mutex<()>>,
     prewarmed_order_metadata: Arc<tokio::sync::Mutex<HashSet<String>>>,
     prewarming_order_metadata: Arc<tokio::sync::Mutex<HashSet<String>>>,
     tick_metadata_retry_after_ms_by_token: Arc<tokio::sync::Mutex<HashMap<String, i64>>>,
@@ -461,6 +474,130 @@ impl PolymarketApi {
             ..Eip712Domain::default()
         };
         Some(format!("{:#x}", order.eip712_signing_hash(&domain)))
+    }
+
+    fn posted_order_requires_order_id(effective_order_type: &str) -> bool {
+        !matches!(
+            effective_order_type.trim().to_ascii_uppercase().as_str(),
+            "FAK" | "FOK" | "IOC"
+        )
+    }
+
+    fn missing_post_order_id_error(
+        context: &str,
+        effective_order_type: &str,
+        response_status: &str,
+        token_id: &str,
+        side: &str,
+        size: &str,
+    ) -> anyhow::Error {
+        anyhow::anyhow!(
+            "{} succeeded without orderID for resting order (type={}, status={}, token={}, side={}, size={})",
+            context,
+            effective_order_type,
+            response_status,
+            token_id,
+            side,
+            size
+        )
+    }
+
+    fn estimate_limit_buy_total_cost_with_fees(
+        requested_usdc: Decimal,
+        price: Decimal,
+        fee_rate: Decimal,
+        fee_exponent: Decimal,
+        builder_maker_fee_rate: Decimal,
+    ) -> Result<Decimal> {
+        if requested_usdc <= Decimal::ZERO {
+            return Ok(Decimal::ZERO);
+        }
+        if price <= Decimal::ZERO {
+            anyhow::bail!("BUY limit fee estimate requires positive price: {}", price);
+        }
+
+        let base = price * (Decimal::ONE - price);
+        let base_f64: f64 = base.try_into().unwrap_or(0.0);
+        let exp_f64: f64 = fee_exponent.try_into().unwrap_or(0.0);
+        let platform_fee_rate =
+            fee_rate * Decimal::try_from(base_f64.powf(exp_f64)).unwrap_or_default();
+        let platform_fee = requested_usdc / price * platform_fee_rate;
+        Ok(requested_usdc + platform_fee + requested_usdc * builder_maker_fee_rate)
+    }
+
+    async fn ensure_limit_buy_balance_covers_fee(
+        &self,
+        handle: &ClobClientHandle,
+        token_id: U256,
+        price: Decimal,
+        requested_usdc: Decimal,
+    ) -> Result<()> {
+        if requested_usdc <= Decimal::ZERO {
+            return Ok(());
+        }
+        let balance = self.buy_collateral_balance_for_fee_sizing().await?;
+        let fee_probe_buffer = (requested_usdc * Decimal::new(20, 2)).max(Decimal::new(50, 2));
+        if balance >= requested_usdc + fee_probe_buffer {
+            return Ok(());
+        }
+
+        let market = handle
+            .client
+            .market_by_token(token_id)
+            .await
+            .context("Failed to resolve market for BUY limit fee sizing")?;
+        let market_info = handle
+            .client
+            .clob_market_info(&market.condition_id.to_string())
+            .await
+            .context("Failed to resolve CLOB market fee details for BUY limit fee sizing")?;
+        let fee = market_info.fee_details.unwrap_or_default();
+        let builder_maker_fee_rate = match self.v2_builder_code()? {
+            Some(code) if code != B256::ZERO => match handle.client.builder_fee_rate(code).await {
+                Ok(rate) => {
+                    Decimal::from(rate.builder_maker_fee_rate_bps) / Decimal::from(10_000_u32)
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to fetch builder maker fee rate for BUY limit fee sizing code={}; using default 0.2% builder maker fee: {}",
+                        code, e
+                    );
+                    Decimal::new(2, 3)
+                }
+            },
+            _ => Decimal::ZERO,
+        };
+
+        let min_order_size = market_info.min_order_size.max(Decimal::ZERO);
+        if min_order_size > Decimal::ZERO && requested_usdc < min_order_size {
+            anyhow::bail!(
+                "BUY limit notional is below Polymarket minimum order size. requested_usdc={} minimum_order_size={} price={}",
+                requested_usdc,
+                min_order_size,
+                price
+            );
+        }
+
+        let required_total = Self::estimate_limit_buy_total_cost_with_fees(
+            requested_usdc,
+            price,
+            fee.rate,
+            Decimal::from(fee.exponent),
+            builder_maker_fee_rate,
+        )?;
+        if balance < required_total {
+            let fee_reserve = (required_total - requested_usdc).max(Decimal::ZERO);
+            anyhow::bail!(
+                "Available pUSD balance cannot cover BUY order plus fee reserve. requested_usdc={} available_pusd={} estimated_fee_reserve={} estimated_required_total={} minimum_order_size={} price={}",
+                requested_usdc,
+                balance,
+                fee_reserve,
+                required_total,
+                min_order_size,
+                price
+            );
+        }
+        Ok(())
     }
 
     fn env_usize_clamped(key: &str, default: usize, min: usize, max: usize) -> usize {
@@ -559,6 +696,9 @@ impl PolymarketApi {
             usdc_balance_allowance_fetch_lock: Arc::new(tokio::sync::Mutex::new(())),
             usdc_balance_allowance_update_lock: Arc::new(tokio::sync::Mutex::new(())),
             last_usdc_balance_allowance_update_ms: Arc::new(tokio::sync::Mutex::new(None)),
+            cached_safe_buy_readiness: Arc::new(tokio::sync::Mutex::new(None)),
+            safe_buy_readiness_fetch_lock: Arc::new(tokio::sync::Mutex::new(())),
+            trading_approval_lock: Arc::new(tokio::sync::Mutex::new(())),
             prewarmed_order_metadata: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             prewarming_order_metadata: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             tick_metadata_retry_after_ms_by_token: Arc::new(
@@ -1080,6 +1220,204 @@ impl PolymarketApi {
         }
     }
 
+    async fn polygon_read_provider(&self) -> Result<impl alloy::providers::Provider + Clone> {
+        let mut provider_opt = None;
+        let mut last_connect_error: Option<anyhow::Error> = None;
+        for rpc_url in Self::polygon_rpc_http_urls() {
+            match ProviderBuilder::new().connect(rpc_url.as_str()).await {
+                Ok(provider) => {
+                    provider_opt = Some(provider);
+                    break;
+                }
+                Err(e) => {
+                    last_connect_error = Some(
+                        anyhow::Error::new(e)
+                            .context(format!("Failed to connect to Polygon RPC {}", rpc_url)),
+                    );
+                }
+            }
+        }
+        provider_opt.ok_or_else(|| {
+            last_connect_error.unwrap_or_else(|| {
+                anyhow::anyhow!("Failed to connect to Polygon RPC: no endpoint configured")
+            })
+        })
+    }
+
+    async fn get_safe_buy_readiness_snapshot(&self) -> Result<SafeBuyReadinessSnapshot> {
+        use polymarket_client_sdk_v2::types::address;
+
+        const PUSD_ADDRESS: Address = address!("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB");
+
+        let now_ms = Utc::now().timestamp_millis();
+        if let Some(cached) = self.cached_safe_buy_readiness.lock().await.clone() {
+            if now_ms.saturating_sub(cached.checked_at_ms) <= SAFE_BUY_READINESS_CACHE_TTL_MS {
+                return Ok(cached);
+            }
+        }
+
+        let _singleflight_guard = self.safe_buy_readiness_fetch_lock.lock().await;
+        let now_ms = Utc::now().timestamp_millis();
+        if let Some(cached) = self.cached_safe_buy_readiness.lock().await.clone() {
+            if now_ms.saturating_sub(cached.checked_at_ms) <= SAFE_BUY_READINESS_CACHE_TTL_MS {
+                return Ok(cached);
+            }
+        }
+
+        let account_to_check = self.resolve_trading_account_address()?;
+        let config = contract_config(POLYGON, false)
+            .ok_or_else(|| anyhow::anyhow!("Failed to get contract config from SDK"))?;
+        let neg_risk_config = contract_config(POLYGON, true)
+            .ok_or_else(|| anyhow::anyhow!("Failed to get neg risk contract config from SDK"))?;
+        let (collateral_targets, operator_targets) = Self::trading_approval_targets(
+            config.conditional_tokens,
+            config.exchange_v2.unwrap_or(config.exchange),
+            neg_risk_config
+                .exchange_v2
+                .unwrap_or(neg_risk_config.exchange),
+            neg_risk_config.neg_risk_adapter,
+        );
+
+        let provider = self.polygon_read_provider().await?;
+        let usdc = IERC20::new(PUSD_ADDRESS, provider.clone());
+        let ctf = IERC1155::new(config.conditional_tokens, provider.clone());
+
+        let balance_raw = usdc
+            .balanceOf(account_to_check)
+            .call()
+            .await
+            .context("Failed to fetch trading wallet pUSD balance")?;
+
+        let mut collateral_allowances = Vec::with_capacity(collateral_targets.len());
+        for (name, target) in &collateral_targets {
+            let allowance_raw = usdc
+                .allowance(account_to_check, *target)
+                .call()
+                .await
+                .with_context(|| format!("Failed to fetch pUSD allowance for {}", name))?;
+            collateral_allowances.push(allowance_raw);
+        }
+
+        let mut operator_approval_ready = true;
+        for (name, target) in &operator_targets {
+            let approved = ctf
+                .isApprovedForAll(account_to_check, *target)
+                .call()
+                .await
+                .with_context(|| format!("Failed to fetch CTF approval for {}", name))?;
+            if !approved {
+                operator_approval_ready = false;
+                break;
+            }
+        }
+
+        let snapshot = SafeBuyReadinessSnapshot {
+            balance_raw,
+            min_collateral_allowance_raw: Self::minimum_collateral_allowance_raw(
+                &collateral_allowances,
+            ),
+            operator_approval_ready,
+            checked_at_ms: now_ms,
+        };
+        *self.cached_safe_buy_readiness.lock().await = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    async fn invalidate_cached_safe_buy_readiness(&self) {
+        *self.cached_safe_buy_readiness.lock().await = None;
+    }
+
+    fn format_raw_usdc_for_display(value: Decimal) -> Decimal {
+        value / Decimal::from(1_000_000u64)
+    }
+
+    fn format_u256_raw_usdc_for_display(value: U256) -> String {
+        match u128::try_from(value) {
+            Ok(raw) => Self::format_raw_usdc_for_display(Decimal::from(raw)).to_string(),
+            Err(_) => "unlimited".to_string(),
+        }
+    }
+
+    async fn buy_collateral_balance_for_fee_sizing(&self) -> Result<Decimal> {
+        if self.uses_onchain_buy_collateral_readiness() {
+            let snapshot = self.get_safe_buy_readiness_snapshot().await?;
+            let raw = u128::try_from(snapshot.balance_raw)
+                .context("pUSD balance is too large to size BUY fee reserve")?;
+            return Ok(Self::format_raw_usdc_for_display(Decimal::from(raw)));
+        }
+
+        let (balance, _) = self.check_usdc_balance_allowance().await?;
+        Ok(Self::format_raw_usdc_for_display(balance))
+    }
+
+    fn minimum_collateral_allowance_raw(allowances: &[U256]) -> U256 {
+        allowances.iter().copied().min().unwrap_or(U256::ZERO)
+    }
+
+    async fn ensure_onchain_buy_collateral_ready(
+        &self,
+        required_usdc: Decimal,
+        context_label: &str,
+    ) -> Result<()> {
+        let required_usdc_raw = required_usdc * Decimal::from(1_000_000u64);
+        let required_usdc_raw_u256 = Self::parse_decimal_u256(
+            required_usdc_raw.round_dp(0).to_string().as_str(),
+            "required_usdc_raw",
+        )?;
+
+        let snapshot = self.get_safe_buy_readiness_snapshot().await?;
+        let balance_display = Self::format_u256_raw_usdc_for_display(snapshot.balance_raw);
+        if snapshot.balance_raw < required_usdc_raw_u256 {
+            anyhow::bail!(
+                "Insufficient pUSD balance for {}. Required: ${:.2}, available: ${}",
+                context_label,
+                required_usdc,
+                balance_display
+            );
+        }
+        if snapshot.min_collateral_allowance_raw >= required_usdc_raw_u256
+            && snapshot.operator_approval_ready
+        {
+            return Ok(());
+        }
+
+        let _approval_guard = self.trading_approval_lock.lock().await;
+        self.invalidate_cached_safe_buy_readiness().await;
+        let locked_snapshot = self.get_safe_buy_readiness_snapshot().await?;
+        let locked_balance_display =
+            Self::format_u256_raw_usdc_for_display(locked_snapshot.balance_raw);
+        let locked_allowance_display =
+            Self::format_u256_raw_usdc_for_display(locked_snapshot.min_collateral_allowance_raw);
+
+        if locked_snapshot.balance_raw < required_usdc_raw_u256 {
+            anyhow::bail!(
+                "Insufficient pUSD balance for {}. Required: ${:.2}, available: ${}",
+                context_label,
+                required_usdc,
+                locked_balance_display
+            );
+        }
+        if locked_snapshot.min_collateral_allowance_raw >= required_usdc_raw_u256
+            && locked_snapshot.operator_approval_ready
+        {
+            return Ok(());
+        }
+
+        warn!(
+            "Trading wallet BUY approval missing for {} required_pusd={} min_allowance_pusd={} operator_ready={}",
+            context_label,
+            required_usdc,
+            locked_allowance_display,
+            locked_snapshot.operator_approval_ready
+        );
+        anyhow::bail!(
+            "Trading approval is still pending for {}. Required: ${:.2}, available allowance: ${}",
+            context_label,
+            required_usdc,
+            locked_allowance_display
+        );
+    }
+
     async fn ensure_buy_collateral_ready(
         &self,
         required_usdc: Decimal,
@@ -1093,15 +1431,10 @@ impl PolymarketApi {
             );
         }
 
-        if self.is_deposit_wallet_mode() {
-            self.update_balance_allowance_for_collateral(false)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Failed to sync deposit-wallet pUSD allowance for {}",
-                        context_label
-                    )
-                })?;
+        if self.uses_onchain_buy_collateral_readiness() {
+            return self
+                .ensure_onchain_buy_collateral_ready(required_usdc, context_label)
+                .await;
         }
 
         let required_usdc_raw = required_usdc * Decimal::from(1_000_000u64);
@@ -1122,20 +1455,7 @@ impl PolymarketApi {
             return Ok(());
         }
 
-        if self.is_deposit_wallet_mode() {
-            tokio::time::sleep(Duration::from_millis(750)).await;
-            self.update_balance_allowance_for_collateral(true)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Failed to sync deposit-wallet pUSD allowance for {}",
-                        context_label
-                    )
-                })?;
-        } else {
-            self.invalidate_cached_usdc_balance_allowance().await;
-        }
-
+        self.invalidate_cached_usdc_balance_allowance().await;
         let (balance_after, allowance_after) = self
             .check_usdc_balance_allowance_inner(false)
             .await
@@ -1476,6 +1796,22 @@ impl PolymarketApi {
 
     fn is_deposit_wallet_mode(&self) -> bool {
         self.signature_type == Some(3) && self.has_deposit_wallet_fields()
+    }
+
+    fn is_safe_wallet_mode(&self) -> bool {
+        self.configured_proxy_wallet_address()
+            .ok()
+            .flatten()
+            .is_some()
+            && self.signature_type == Some(2)
+    }
+
+    fn uses_onchain_buy_collateral_readiness(&self) -> bool {
+        self.is_safe_wallet_mode() || self.is_deposit_wallet_mode()
+    }
+
+    pub fn supports_batch_order_posts(&self) -> bool {
+        !self.is_deposit_wallet_mode()
     }
 
     fn buy_order_required_usdc(order: &OrderRequest) -> Result<Option<Decimal>> {
@@ -3649,7 +3985,7 @@ impl PolymarketApi {
         let required_buy_usdc = Self::buy_order_required_usdc(order)?;
 
         for attempt in 1..=attempts {
-            if self.is_deposit_wallet_mode() {
+            if self.uses_onchain_buy_collateral_readiness() {
                 if let Some(required) = required_buy_usdc {
                     self.ensure_buy_collateral_ready(required, "limit BUY order")
                         .await?;
@@ -3745,7 +4081,7 @@ impl PolymarketApi {
         let required_buy_usdc = Self::buy_orders_required_usdc(orders)?;
 
         for attempt in 1..=attempts {
-            if self.is_deposit_wallet_mode() {
+            if self.uses_onchain_buy_collateral_readiness() {
                 if let Some(required) = required_buy_usdc {
                     self.ensure_buy_collateral_ready(required, "batch BUY orders")
                         .await?;
@@ -4177,9 +4513,13 @@ impl PolymarketApi {
         }
 
         let upstream_order_id = Self::normalize_post_order_id(response.order_id.as_str());
-        let normalized_order_id = upstream_order_id
-            .clone()
-            .or_else(|| prepared.fallback_order_id.clone());
+        let normalized_order_id = upstream_order_id.clone().or_else(|| {
+            if Self::posted_order_requires_order_id(prepared.effective_order_type.as_str()) {
+                None
+            } else {
+                prepared.fallback_order_id.clone()
+            }
+        });
         if upstream_order_id.is_some() {
             if Self::order_submit_verbose_logs() {
                 eprintln!(
@@ -4187,6 +4527,16 @@ impl PolymarketApi {
                     response.order_id
                 );
             }
+        } else if Self::posted_order_requires_order_id(prepared.effective_order_type.as_str()) {
+            let response_status = response.status.to_string();
+            return Err(Self::missing_post_order_id_error(
+                "Order post",
+                prepared.effective_order_type.as_str(),
+                response_status.as_str(),
+                prepared.token_id.as_str(),
+                prepared.side.as_str(),
+                prepared.size.as_str(),
+            ));
         } else if let Some(order_id) = normalized_order_id.as_deref() {
             warn!(
                 "Order post succeeded without upstream orderID; using local V2 order hash {}",
@@ -4365,7 +4715,33 @@ impl PolymarketApi {
             };
             if response.success {
                 let upstream_order_id = Self::normalize_post_order_id(response.order_id.as_str());
-                let normalized_order_id = upstream_order_id.or(fallback_order_id);
+                let normalized_order_id = upstream_order_id.clone().or_else(|| {
+                    if Self::posted_order_requires_order_id(effective_order_type.as_str()) {
+                        None
+                    } else {
+                        fallback_order_id
+                    }
+                });
+                if normalized_order_id.is_none()
+                    && Self::posted_order_requires_order_id(effective_order_type.as_str())
+                {
+                    let response_status = response.status.to_string();
+                    let error_msg = Self::missing_post_order_id_error(
+                        "Batch order post",
+                        effective_order_type.as_str(),
+                        response_status.as_str(),
+                        token_id.as_str(),
+                        side.as_str(),
+                        size.as_str(),
+                    )
+                    .to_string();
+                    results.push(BatchPlaceOrderResult {
+                        response: None,
+                        timing,
+                        error: Some(error_msg),
+                    });
+                    continue;
+                }
                 if response.order_id.trim().is_empty() && normalized_order_id.is_some() {
                     warn!(
                         "Batch order post succeeded without upstream orderID; using local V2 order hash (token={}, side={}, size={})",
@@ -4661,6 +5037,12 @@ impl PolymarketApi {
                             taker_probe_scale
                         );
                     }
+                    let approval_context = format!(
+                        "{} BUY order token={} price={} size={}",
+                        effective_order_type, order.token_id, price, size
+                    );
+                    self.ensure_buy_collateral_ready(usdc_notional, approval_context.as_str())
+                        .await?;
                     Amount::usdc(usdc_notional).context(format!(
                         "Failed to build FAK/FOK BUY amount (usdc={}): token={}",
                         usdc_notional, order.token_id
@@ -4738,6 +5120,18 @@ impl PolymarketApi {
             sign_ms += sign_started.elapsed().as_millis() as i64;
             signed
         } else {
+            if matches!(side, Side::Buy) {
+                let required_usdc = (size * price)
+                    .round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero);
+                self.ensure_limit_buy_balance_covers_fee(handle, token_id, price, required_usdc)
+                    .await?;
+                let approval_context = format!(
+                    "{} BUY order token={} price={} size={}",
+                    effective_order_type, order.token_id, price, size
+                );
+                self.ensure_buy_collateral_ready(required_usdc, approval_context.as_str())
+                    .await?;
+            }
             let mut order_builder = handle
                 .client
                 .limit_order()
@@ -7154,7 +7548,7 @@ impl PolymarketApi {
 
         // For BUY orders, check pUSD collateral balance and allowance before placing order.
         if matches!(side_enum, Side::Buy) {
-            if self.is_deposit_wallet_mode() {
+            if self.uses_onchain_buy_collateral_readiness() {
                 self.ensure_buy_collateral_ready(amount_decimal, "market BUY order")
                     .await?;
             } else {
@@ -8409,6 +8803,102 @@ mod tests {
         assert_eq!(
             sig_type.expect("signature type") as u8,
             SignatureType::Proxy as u8
+        );
+    }
+
+    #[test]
+    fn resting_order_posts_require_upstream_order_id() {
+        assert!(PolymarketApi::posted_order_requires_order_id("GTC"));
+        assert!(PolymarketApi::posted_order_requires_order_id("GTD"));
+        assert!(PolymarketApi::posted_order_requires_order_id("LIMIT"));
+        assert!(!PolymarketApi::posted_order_requires_order_id("FAK"));
+        assert!(!PolymarketApi::posted_order_requires_order_id("FOK"));
+        assert!(!PolymarketApi::posted_order_requires_order_id(" ioc "));
+    }
+
+    #[test]
+    fn limit_buy_fee_estimate_requires_balance_above_order_amount() {
+        let decimal = |raw: &str| Decimal::from_str(raw).expect("decimal");
+
+        let required_total = PolymarketApi::estimate_limit_buy_total_cost_with_fees(
+            decimal("5.00"),
+            decimal("0.49"),
+            decimal("0.50"),
+            decimal("2"),
+            decimal("0.002"),
+        )
+        .expect("fee estimate");
+
+        assert!(required_total > decimal("5.135148"));
+        assert!(required_total < decimal("5.50"));
+    }
+
+    #[test]
+    fn onchain_buy_readiness_covers_safe_and_deposit_wallets() {
+        let wallet = Some("0x0000000000000000000000000000000000000001".to_string());
+        let safe_api = PolymarketApi::new(
+            "https://gamma-api.polymarket.com".to_string(),
+            "https://clob.polymarket.com".to_string(),
+            None,
+            wallet.clone(),
+            None,
+            None,
+            Some(2),
+        );
+        let deposit_api = PolymarketApi::new(
+            "https://gamma-api.polymarket.com".to_string(),
+            "https://clob.polymarket.com".to_string(),
+            None,
+            None,
+            Some("0x0000000000000000000000000000000000000002".to_string()),
+            wallet.clone(),
+            Some(3),
+        );
+        let proxy_api = PolymarketApi::new(
+            "https://gamma-api.polymarket.com".to_string(),
+            "https://clob.polymarket.com".to_string(),
+            None,
+            wallet.clone(),
+            None,
+            None,
+            Some(1),
+        );
+        let eoa_api = PolymarketApi::new(
+            "https://gamma-api.polymarket.com".to_string(),
+            "https://clob.polymarket.com".to_string(),
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+        );
+
+        assert!(safe_api.uses_onchain_buy_collateral_readiness());
+        assert!(deposit_api.uses_onchain_buy_collateral_readiness());
+        assert!(!proxy_api.uses_onchain_buy_collateral_readiness());
+        assert!(!eoa_api.uses_onchain_buy_collateral_readiness());
+
+        assert!(safe_api.supports_batch_order_posts());
+        assert!(!deposit_api.supports_batch_order_posts());
+        assert!(proxy_api.supports_batch_order_posts());
+        assert!(eoa_api.supports_batch_order_posts());
+    }
+
+    #[test]
+    fn minimum_collateral_allowance_preserves_unlimited_values() {
+        let allowances = vec![U256::MAX, U256::MAX, U256::MAX];
+        assert_eq!(
+            PolymarketApi::minimum_collateral_allowance_raw(&allowances),
+            U256::MAX
+        );
+    }
+
+    #[test]
+    fn minimum_collateral_allowance_defaults_to_zero_when_empty() {
+        let allowances: Vec<U256> = Vec::new();
+        assert_eq!(
+            PolymarketApi::minimum_collateral_allowance_raw(&allowances),
+            U256::ZERO
         );
     }
 

@@ -538,7 +538,9 @@ impl Trader {
         entry_mode: EntryExecutionMode,
     ) -> Result<(OrderResponse, PlaceOrderTiming)> {
         if let Some(batch_tx) = self.batch_place_tx.as_ref() {
-            if Self::should_route_via_batch_place(strategy_id, entry_mode) {
+            if self.api.supports_batch_order_posts()
+                && Self::should_route_via_batch_place(strategy_id, entry_mode)
+            {
                 let (response_tx, response_rx) = tokio::sync::oneshot::channel();
                 let request = BatchPlaceRequest {
                     order: order.clone(),

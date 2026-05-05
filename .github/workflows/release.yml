@@ -114,7 +114,8 @@ jobs:
           if (!(Test-Path -LiteralPath $manifestPath)) {
             throw "latest.json was not published to the tagged Windows release"
           }
-          if (gh release view UI-latest *> $null) {
+          gh release view UI-latest *> $null
+          if ($LASTEXITCODE -eq 0) {
             gh release upload UI-latest "$manifestPath#latest.json" --clobber
           } else {
             gh release create UI-latest "$manifestPath#latest.json" --title "EVPoly Desktop latest" --notes "Stable updater manifest for EVPoly Desktop releases." --prerelease

@@ -462,7 +462,6 @@ export function Home() {
 
   const railItems = [
     { label: "Home", to: "/home" },
-    { label: "Bot Setup", to: "/bot-setup" },
     { label: "Settings", to: "/settings" },
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
   ];
@@ -933,7 +932,7 @@ export function Home() {
           <ProfileSwitcher
             activeProfileId={activeProfileId}
             onSwitch={(id) => void handleProfileSwitch(id)}
-            onCreateWallet={(method) => navigate("/bot-setup", { state: { createWalletMethod: method } })}
+            onCreateWallet={(method) => navigate("/settings", { state: { createWalletMethod: method } })}
           />
           <StatusBadge status={overview?.bot_state ?? "unknown"} />
           <button

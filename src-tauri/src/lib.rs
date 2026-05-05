@@ -79,6 +79,7 @@ const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
 const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
 const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
 const DEFAULT_DESKTOP_MAGIC_BRIDGE_BASE_URL: &str = "https://api-web.evplus.ai";
+const DEFAULT_POLYMARKET_BRIDGE_BASE_URL: &str = "https://bridge.polymarket.com";
 const HOME_DB_REFRESH_MS: i64 = 15_000;
 const HOME_REMOTE_REFRESH_MS: i64 = 60_000;
 const HOME_REMOTE_ERROR_REFRESH_MS: i64 = 15_000;
@@ -1624,6 +1625,15 @@ fn desktop_magic_bridge_base_url() -> String {
         .filter(|value| value.starts_with("https://") || value.starts_with("http://"))
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| DEFAULT_DESKTOP_MAGIC_BRIDGE_BASE_URL.to_string())
+}
+
+fn polymarket_bridge_base_url() -> String {
+    std::env::var("POLYMARKET_BRIDGE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| value.starts_with("https://") || value.starts_with("http://"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_POLYMARKET_BRIDGE_BASE_URL.to_string())
 }
 
 fn merge_config_object(existing: &Value, updates: &Value) -> Value {
@@ -5413,6 +5423,63 @@ fn derive_polymarket_funder_addresses(
 }
 
 #[tauri::command]
+async fn get_polymarket_deposit_addresses(address: String) -> Result<serde_json::Value, String> {
+    let address = address.trim().to_string();
+    if address.is_empty() {
+        return Ok(serde_json::json!({
+            "evm": Value::Null,
+            "solana": Value::Null,
+        }));
+    }
+
+    let url = format!("{}/deposit", polymarket_bridge_base_url());
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("build Polymarket bridge client: {e}"))?;
+    let response = client
+        .post(url.as_str())
+        .header("accept", "application/json")
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "address": address }))
+        .send()
+        .await
+        .map_err(|e| format!("Polymarket deposit address lookup failed: {e}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Polymarket deposit address response read failed: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Polymarket deposit address lookup returned {}: {}",
+            status, body
+        ));
+    }
+
+    let payload: Value = serde_json::from_str(&body)
+        .map_err(|e| format!("parse Polymarket deposit address response: {e}"))?;
+    let evm = payload
+        .pointer("/address/evm")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let solana = payload
+        .pointer("/address/svm")
+        .or_else(|| payload.pointer("/address/solana"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    Ok(serde_json::json!({
+        "evm": evm,
+        "solana": solana,
+    }))
+}
+
+#[tauri::command]
 async fn run_wallet_sync_now(
     profiles: State<'_, ProfileState>,
     wallet_sync: State<'_, WalletSyncState>,
@@ -5819,6 +5886,7 @@ pub fn run() {
             get_geo_access_status,
             derive_wallet_address,
             derive_polymarket_funder_addresses,
+            get_polymarket_deposit_addresses,
             run_wallet_sync_now,
             get_data_dir_path,
             open_logs_folder,

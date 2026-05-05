@@ -15,7 +15,6 @@ import { useWalletSyncStatus } from "../hooks/useWalletSyncStatus";
 import { completeDesktopMagicWalletOnboarding } from "../lib/desktop-magic-onboarding";
 import {
   DEFAULT_CONFIG,
-  VISIBLE_STRATEGIES,
   formatMaybeTime,
   formatUsd,
   mergeConfig,
@@ -28,6 +27,7 @@ import {
   exportConfig,
   getActiveProfileId,
   getDataDirPath,
+  getPolymarketDepositAddresses,
   getSavedConfig,
   importConfig,
   listProfiles,
@@ -203,10 +203,9 @@ function magicProfileName(email: string, profiles: Profile[]): string {
   return uniqueProfileName(`Magic ${localPart}`, profiles);
 }
 
-export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" }) {
+export function Config() {
   const navigate = useNavigate();
   const location = useLocation();
-  const botSetupMode = mode === "bot_setup";
   const { activeProfileId, setActiveProfileId, setAuthenticated } = useAppContext();
   const { status } = useBotStatus();
   const { overview } = useHomeOverview();
@@ -227,6 +226,15 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
   const [importDepositWallet, setImportDepositWallet] = useState("");
   const [importLoading, setImportLoading] = useState(false);
   const [showImportPrivateKey, setShowImportPrivateKey] = useState(false);
+  const [depositAddresses, setDepositAddresses] = useState<{
+    evm: string | null;
+    solana: string | null;
+  }>({ evm: null, solana: null });
+  const [depositAddressLoading, setDepositAddressLoading] = useState(false);
+  const [depositAddressError, setDepositAddressError] = useState<string | null>(null);
+  const [copiedDepositAddress, setCopiedDepositAddress] = useState<"evm" | "solana" | null>(
+    null
+  );
   const [logsOpen, setLogsOpen] = useState(false);
   const [exportPw, setExportPw] = useState("");
   const [importPw, setImportPw] = useState("");
@@ -282,12 +290,13 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
   }, [location.state]);
 
   const dirty = useMemo(() => JSON.stringify(config) !== savedSnapshot, [config, savedSnapshot]);
-  const enabledStrategies = VISIBLE_STRATEGIES.filter((strategy) => config.strategies[strategy.key]);
   const walletSyncDetails = useMemo(
     () => summarizeWalletSyncResult(walletSyncStatus?.last_result ?? null),
     [walletSyncStatus?.last_result]
   );
   const activeWalletAddress = activeFunderAddress(config);
+  const depositAddressLookupWallet = (activeWalletAddress || config.eoa_wallet).trim();
+  const depositAddressLookupReady = /^0x[a-fA-F0-9]{40}$/.test(depositAddressLookupWallet);
   const depositWalletMode = config.sig_type === 3;
 
   const setupReady = Boolean(
@@ -302,10 +311,45 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
 
   const railItems = [
     { label: "Home", to: "/home" },
-    { label: "Bot Setup", to: "/bot-setup" },
     { label: "Settings", to: "/settings" },
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
   ];
+
+  useEffect(() => {
+    let cancelled = false;
+    setDepositAddresses({ evm: null, solana: null });
+    setDepositAddressError(null);
+
+    if (!depositAddressLookupReady) {
+      setDepositAddressLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setDepositAddressLoading(true);
+    void getPolymarketDepositAddresses(depositAddressLookupWallet)
+      .then((addresses) => {
+        if (cancelled) return;
+        setDepositAddresses({
+          evm: addresses.evm?.trim() || null,
+          solana: addresses.solana?.trim() || null,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setDepositAddressError(getErrorText(err, "failed to load deposit addresses"));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setDepositAddressLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [depositAddressLookupReady, depositAddressLookupWallet]);
 
   const handleProfileSwitch = async (profileId: string) => {
     setActiveProfileId(profileId);
@@ -315,11 +359,7 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
 
   const handleSave = async () => {
     if (!activeProfileId) {
-      setSaveMessage(
-        botSetupMode
-          ? "Create or import a wallet profile first."
-          : "Create a profile first in the Profiles tab."
-      );
+      setSaveMessage("Create a profile first in the Profiles tab.");
       return;
     }
     setSaveLoading(true);
@@ -588,19 +628,34 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
     }
   };
 
+  const handleCopyDepositAddress = async (kind: "evm" | "solana", value: string | null) => {
+    const normalized = value?.trim();
+    if (!normalized) return;
+    await navigator.clipboard.writeText(normalized);
+    setCopiedDepositAddress(kind);
+    window.setTimeout(
+      () => setCopiedDepositAddress((current) => (current === kind ? null : current)),
+      1800
+    );
+  };
+
+  const depositAddressFooter = !depositAddressLookupReady
+    ? "Enter the active wallet address to show official Polymarket deposit addresses."
+    : depositAddressLoading
+    ? "Loading official Polymarket deposit addresses."
+    : depositAddressError
+    ? depositAddressError
+    : "Official wallet addresses for this bot. You can also log in to Polymarket and use the Relay deposit address; either option works.";
+
   return (
     <AppShell
       railSubtitle="BY EVPLUS"
       railLogoSrc="/logo.png"
       railLogoAlt="EVPlus"
       railItems={railItems}
-      eyebrow={botSetupMode ? "ONBOARDING" : "Settings"}
-      title={botSetupMode ? "Bot Setup" : "Settings"}
-      description={
-        botSetupMode
-          ? "Create or import a wallet profile, fund it, and save the relayer keys needed for trading."
-          : "Manage wallet setup, profiles, security, logs, and diagnostics."
-      }
+      eyebrow="Settings"
+      title="Settings"
+      description="Manage wallet setup, profiles, security, logs, and diagnostics."
       meta={
         <div className="flex flex-wrap items-center justify-end gap-3">
           <ProfileSwitcher
@@ -626,22 +681,20 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
       contentClassName="page-stack"
     >
       <div className="page-stack">
-        {!botSetupMode ? (
-          <div className="flex flex-wrap gap-2">
-            {(["setup", "profiles", "security", "diagnostics"] as SettingsTab[]).map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => setTab(item)}
-                className={`section-tab ${tab === item ? "section-tab--active" : ""}`.trim()}
-              >
-                {TAB_LABELS[item]}
-              </button>
-            ))}
-          </div>
-        ) : null}
+        <div className="flex flex-wrap gap-2">
+          {(["setup", "profiles", "security", "diagnostics"] as SettingsTab[]).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setTab(item)}
+              className={`section-tab ${tab === item ? "section-tab--active" : ""}`.trim()}
+            >
+              {TAB_LABELS[item]}
+            </button>
+          ))}
+        </div>
 
-        {(botSetupMode || tab === "setup") ? (
+        {tab === "setup" ? (
           <div className="page-stack">
             <div
               className={`status-strip ${
@@ -778,52 +831,48 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
 
               <div className="page-stack page-aside">
                 <SectionPanel
-                  title="Profile readiness"
-                  subtitle="Use this to confirm the current profile is fully wired before you trade."
+                  title="Deposit to Polymarket"
+                  subtitle="Official deposit addresses for the active wallet profile."
                 >
                   <div className="space-y-4">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <InfoPill tone={setupReady ? "accent" : "warning"}>
-                        {setupReady ? "Wallet Ready" : "Wallet Incomplete"}
-                      </InfoPill>
-                      {depositWalletMode ? (
-                        <InfoPill tone={credentialsReady ? "accent" : "warning"}>
-                          {credentialsReady ? "Runtime checks collateral" : "Needs onboarding"}
-                        </InfoPill>
-                      ) : (
-                        <InfoPill tone={onboardingReady ? "success" : "warning"}>
-                          {onboardingReady ? "Ready to trade" : "Needs onboarding"}
-                        </InfoPill>
-                      )}
+                    <div className="deposit-addresses">
+                      <div className="deposit-addresses__title">Deposit Addresses</div>
+                      {[
+                        { kind: "evm" as const, label: "EVM", value: depositAddresses.evm },
+                        { kind: "solana" as const, label: "SOL", value: depositAddresses.solana },
+                      ].map(({ kind, label, value }) => {
+                        const address = typeof value === "string" ? value.trim() : "";
+                        return (
+                          <div key={kind} className="deposit-address-row">
+                            <span className="deposit-address-row__label">{label}</span>
+                            <span className="deposit-address-row__value">
+                              {address ||
+                                (depositAddressLoading
+                                  ? "Loading..."
+                                  : depositAddressError
+                                  ? "Unavailable"
+                                  : "Preparing...")}
+                            </span>
+                            <button
+                              type="button"
+                              className="deposit-address-row__copy"
+                              disabled={!address}
+                              onClick={() =>
+                                void handleCopyDepositAddress(kind, address)
+                              }
+                            >
+                              {copiedDepositAddress === kind ? "Copied" : "Copy"}
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
-
-                    <div className="diagnostics-summary">
-                      <div className="diagnostics-summary__item">
-                        <div className="diagnostics-summary__label">Wallet mode</div>
-                        <div className="diagnostics-summary__value">
-                          {walletModeLabel(config.sig_type)}
-                        </div>
-                      </div>
-                      <div className="diagnostics-summary__item">
-                        <div className="diagnostics-summary__label">Enabled strategies</div>
-                        <div className="diagnostics-summary__value">
-                          {enabledStrategies.length}
-                        </div>
-                      </div>
-                      <div className="diagnostics-summary__item">
-                        <div className="diagnostics-summary__label">Profile</div>
-                        <div className="diagnostics-summary__value">
-                          {activeProfileId ? "Loaded" : "Not set"}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="text-sm leading-6 text-[var(--text-secondary)]">
-                      {enabledStrategies.length > 0
-                        ? `Active strategies: ${enabledStrategies
-                            .map((strategy) => strategy.label)
-                            .join(", ")}.`
-                        : "No strategies are enabled yet."}
+                    <div
+                      className={`deposit-addresses__note ${
+                        depositAddressError ? "deposit-addresses__note--warning" : ""
+                      }`.trim()}
+                    >
+                      {depositAddressFooter}
                     </div>
                   </div>
                 </SectionPanel>

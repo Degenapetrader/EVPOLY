@@ -18,6 +18,11 @@ export interface PolymarketFunderAddresses {
   deposit_wallet: string | null;
 }
 
+export interface PolymarketDepositAddresses {
+  evm: string | null;
+  solana: string | null;
+}
+
 export interface DesktopMagicStartResult {
   desktop_onboard_session_id?: string;
   session_id?: string;
@@ -724,6 +729,13 @@ export const derivePolymarketFunderAddresses = (
   invoke("derive_polymarket_funder_addresses", {
     privateKey,
     private_key: privateKey,
+  });
+
+export const getPolymarketDepositAddresses = (
+  address: string
+): Promise<PolymarketDepositAddresses> =>
+  invoke("get_polymarket_deposit_addresses", {
+    address,
   });
 
 export const desktopMagicStart = (

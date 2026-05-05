@@ -1887,6 +1887,81 @@ input[type="number"]::-webkit-inner-spin-button {
     word-break: break-word;
   }
 
+  .deposit-addresses {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .deposit-addresses__title {
+    color: var(--text-primary);
+    font-size: 0.96rem;
+    font-weight: 650;
+    letter-spacing: -0.03em;
+  }
+
+  .deposit-address-row {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.75rem;
+    border-radius: 1rem;
+    border: 1px solid var(--border);
+    background: rgba(8, 13, 21, 0.72);
+    padding: 0.8rem 0.85rem;
+  }
+
+  .deposit-address-row__label {
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+
+  .deposit-address-row__value {
+    min-width: 0;
+    color: var(--text-primary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+      "Courier New", monospace;
+    font-size: 0.86rem;
+    font-weight: 650;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .deposit-address-row__copy {
+    border-radius: 0.75rem;
+    border: 1px solid rgba(99, 181, 255, 0.26);
+    background: rgba(99, 181, 255, 0.1);
+    color: #86bfff;
+    font-size: 0.82rem;
+    font-weight: 650;
+    padding: 0.42rem 0.75rem;
+    transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+  }
+
+  .deposit-address-row__copy:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+  }
+
+  .deposit-address-row__copy:not(:disabled):hover {
+    border-color: rgba(99, 181, 255, 0.42);
+    background: rgba(99, 181, 255, 0.16);
+    color: var(--text-primary);
+  }
+
+  .deposit-addresses__note {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.6;
+  }
+
+  .deposit-addresses__note--warning {
+    color: #fbe8b6;
+  }
+
   .strategy-select {
     width: 100%;
     border-radius: 1rem;

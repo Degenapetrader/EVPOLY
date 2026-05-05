@@ -4780,8 +4780,10 @@ impl PolymarketApi {
                         "{} BUY order token={} price={} size={}",
                         effective_order_type, order.token_id, price, size
                     );
-                    self.ensure_buy_collateral_ready(usdc_notional, approval_context.as_str())
-                        .await?;
+                    if self.is_deposit_wallet_mode() {
+                        self.ensure_buy_collateral_ready(usdc_notional, approval_context.as_str())
+                            .await?;
+                    }
                     Amount::usdc(usdc_notional).context(format!(
                         "Failed to build FAK/FOK BUY amount (usdc={}): token={}",
                         usdc_notional, order.token_id
@@ -4868,8 +4870,10 @@ impl PolymarketApi {
                     "{} BUY order token={} price={} size={}",
                     effective_order_type, order.token_id, price, size
                 );
-                self.ensure_buy_collateral_ready(required_usdc, approval_context.as_str())
-                    .await?;
+                if self.is_deposit_wallet_mode() {
+                    self.ensure_buy_collateral_ready(required_usdc, approval_context.as_str())
+                        .await?;
+                }
             }
             let mut order_builder = handle
                 .client

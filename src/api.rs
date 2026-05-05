@@ -1798,16 +1798,8 @@ impl PolymarketApi {
         self.signature_type == Some(3) && self.has_deposit_wallet_fields()
     }
 
-    fn is_safe_wallet_mode(&self) -> bool {
-        self.configured_proxy_wallet_address()
-            .ok()
-            .flatten()
-            .is_some()
-            && self.signature_type == Some(2)
-    }
-
     fn uses_onchain_buy_collateral_readiness(&self) -> bool {
-        self.is_safe_wallet_mode() || self.is_deposit_wallet_mode()
+        self.is_deposit_wallet_mode()
     }
 
     pub fn supports_batch_order_posts(&self) -> bool {
@@ -8873,7 +8865,7 @@ mod tests {
             Some(0),
         );
 
-        assert!(safe_api.uses_onchain_buy_collateral_readiness());
+        assert!(!safe_api.uses_onchain_buy_collateral_readiness());
         assert!(deposit_api.uses_onchain_buy_collateral_readiness());
         assert!(!proxy_api.uses_onchain_buy_collateral_readiness());
         assert!(!eoa_api.uses_onchain_buy_collateral_readiness());

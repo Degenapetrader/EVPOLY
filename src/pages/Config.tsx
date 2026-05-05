@@ -886,7 +886,7 @@ export function Config() {
                       <div className="inline-alert inline-alert--warning">{walletProfileMessage}</div>
                     ) : null}
                     <div
-                      className="segmented-control"
+                      className="segmented-control segmented-control--two wallet-method-tabs"
                       role="radiogroup"
                       aria-label="Wallet profile creation method"
                     >

@@ -405,6 +405,21 @@ input[type="number"]::-webkit-inner-spin-button {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .wallet-method-tabs {
+    width: min(100%, 34rem);
+    gap: 0.35rem;
+    border-radius: 1rem;
+    padding: 0.32rem;
+  }
+
+  .wallet-method-tabs .segmented-control__option {
+    min-height: 3.15rem;
+    border-radius: 0.82rem;
+    font-size: 0.98rem;
+    font-weight: 700;
+    letter-spacing: 0;
+  }
+
   .segmented-control__option {
     min-width: 0;
     border: 1px solid transparent;

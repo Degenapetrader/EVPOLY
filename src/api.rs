@@ -76,6 +76,7 @@ const AUTO_REDEEM_OPERATOR_ADDRESS: &str = "0x05cD9922A5d37faE921Fc5Dee280A9dBc4
 const POLYMARKET_PUSD_COLLATERAL_ADDRESS: &str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
 const USDC_BALANCE_CACHE_HIT_TTL_MS: i64 = 60_000;
 const USDC_BALANCE_CACHE_FALLBACK_TTL_MS: i64 = 180_000;
+const USDC_BALANCE_ALLOWANCE_UPDATE_TTL_MS: i64 = 30_000;
 const TICK_METADATA_RL_BACKOFF_BASE_MS: i64 = 1_000;
 const TICK_METADATA_RL_BACKOFF_MAX_MS: i64 = 30_000;
 const ACTIVE_MARKETS_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -423,6 +424,8 @@ pub struct PolymarketApi {
     clob_auth_backoff_state: Arc<tokio::sync::Mutex<ClobAuthBackoffState>>,
     cached_usdc_balance_allowance: Arc<tokio::sync::Mutex<Option<(Decimal, Decimal, i64)>>>,
     usdc_balance_allowance_fetch_lock: Arc<tokio::sync::Mutex<()>>,
+    usdc_balance_allowance_update_lock: Arc<tokio::sync::Mutex<()>>,
+    last_usdc_balance_allowance_update_ms: Arc<tokio::sync::Mutex<Option<i64>>>,
     prewarmed_order_metadata: Arc<tokio::sync::Mutex<HashSet<String>>>,
     prewarming_order_metadata: Arc<tokio::sync::Mutex<HashSet<String>>>,
     tick_metadata_retry_after_ms_by_token: Arc<tokio::sync::Mutex<HashMap<String, i64>>>,
@@ -554,6 +557,8 @@ impl PolymarketApi {
             )),
             cached_usdc_balance_allowance: Arc::new(tokio::sync::Mutex::new(None)),
             usdc_balance_allowance_fetch_lock: Arc::new(tokio::sync::Mutex::new(())),
+            usdc_balance_allowance_update_lock: Arc::new(tokio::sync::Mutex::new(())),
+            last_usdc_balance_allowance_update_ms: Arc::new(tokio::sync::Mutex::new(None)),
             prewarmed_order_metadata: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             prewarming_order_metadata: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
             tick_metadata_retry_after_ms_by_token: Arc::new(
@@ -996,6 +1001,192 @@ impl PolymarketApi {
             .with_context(|| format!("Failed to parse {} as U256: {}", label, raw))
     }
 
+    async fn invalidate_cached_usdc_balance_allowance(&self) {
+        *self.cached_usdc_balance_allowance.lock().await = None;
+    }
+
+    fn has_sufficient_buy_collateral_allowance(
+        allowance_raw: Decimal,
+        required_usdc_raw: Decimal,
+    ) -> bool {
+        allowance_raw >= required_usdc_raw
+    }
+
+    async fn update_balance_allowance_for_collateral(&self, force: bool) -> Result<()> {
+        use polymarket_client_sdk_v2::clob::types::request::UpdateBalanceAllowanceRequest;
+
+        let _update_guard = self.usdc_balance_allowance_update_lock.lock().await;
+        let now_ms = Utc::now().timestamp_millis();
+        if !force {
+            let last_update = self.last_usdc_balance_allowance_update_ms.lock().await;
+            if let Some(last_ms) = *last_update {
+                if now_ms.saturating_sub(last_ms) <= USDC_BALANCE_ALLOWANCE_UPDATE_TTL_MS {
+                    self.invalidate_cached_usdc_balance_allowance().await;
+                    return Ok(());
+                }
+            }
+        }
+
+        let request = UpdateBalanceAllowanceRequest::builder()
+            .asset_type(AssetType::Collateral)
+            .build();
+        let handle = self
+            .get_or_create_clob_client()
+            .await
+            .context("Failed to authenticate for collateral update_balance_allowance")?;
+
+        match handle
+            .client
+            .update_balance_allowance(request.clone())
+            .await
+        {
+            Ok(_) => {
+                *self.last_usdc_balance_allowance_update_ms.lock().await =
+                    Some(Utc::now().timestamp_millis());
+                self.invalidate_cached_usdc_balance_allowance().await;
+                Ok(())
+            }
+            Err(first_err) => {
+                let first_msg = first_err.to_string();
+                let first_anyhow = anyhow::anyhow!(first_msg.clone());
+                if Self::should_invalidate_auth_cache(&first_anyhow) {
+                    warn!(
+                        "Collateral update_balance_allowance auth failure: {}. Re-authenticating once.",
+                        first_msg
+                    );
+                    self.invalidate_clob_client_cache().await;
+                    let fresh_handle = self.get_or_create_clob_client().await.context(
+                        "Failed to re-authenticate for collateral update_balance_allowance",
+                    )?;
+                    fresh_handle
+                        .client
+                        .update_balance_allowance(request)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to update collateral balance/allowance after auth refresh (first_error='{}')",
+                                first_msg
+                            )
+                        })?;
+                    *self.last_usdc_balance_allowance_update_ms.lock().await =
+                        Some(Utc::now().timestamp_millis());
+                    self.invalidate_cached_usdc_balance_allowance().await;
+                    Ok(())
+                } else {
+                    self.invalidate_cached_usdc_balance_allowance().await;
+                    Err(first_anyhow).context("Failed to update collateral balance/allowance cache")
+                }
+            }
+        }
+    }
+
+    async fn ensure_buy_collateral_ready(
+        &self,
+        required_usdc: Decimal,
+        context_label: &str,
+    ) -> Result<()> {
+        if required_usdc <= Decimal::ZERO {
+            anyhow::bail!(
+                "Invalid {} collateral requirement: {}",
+                context_label,
+                required_usdc
+            );
+        }
+
+        if self.is_deposit_wallet_mode() {
+            self.update_balance_allowance_for_collateral(false)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to sync deposit-wallet pUSD allowance for {}",
+                        context_label
+                    )
+                })?;
+        }
+
+        let required_usdc_raw = required_usdc * Decimal::from(1_000_000u64);
+        let (balance, allowance) = self
+            .check_usdc_balance_allowance_inner(false)
+            .await
+            .with_context(|| format!("Failed to check pUSD collateral for {}", context_label))?;
+
+        if balance < required_usdc_raw {
+            anyhow::bail!(
+                "Insufficient pUSD balance for {}. Required: ${:.2}, available: ${:.2}",
+                context_label,
+                required_usdc,
+                balance / Decimal::from(1_000_000u64)
+            );
+        }
+        if Self::has_sufficient_buy_collateral_allowance(allowance, required_usdc_raw) {
+            return Ok(());
+        }
+
+        if self.is_deposit_wallet_mode() {
+            tokio::time::sleep(Duration::from_millis(750)).await;
+            self.update_balance_allowance_for_collateral(true)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to sync deposit-wallet pUSD allowance for {}",
+                        context_label
+                    )
+                })?;
+        } else {
+            self.invalidate_cached_usdc_balance_allowance().await;
+        }
+
+        let (balance_after, allowance_after) = self
+            .check_usdc_balance_allowance_inner(false)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to re-check pUSD collateral after allowance sync for {}",
+                    context_label
+                )
+            })?;
+        if balance_after < required_usdc_raw {
+            anyhow::bail!(
+                "Insufficient pUSD balance for {} after sync. Required: ${:.2}, available: ${:.2}",
+                context_label,
+                required_usdc,
+                balance_after / Decimal::from(1_000_000u64)
+            );
+        }
+        if !Self::has_sufficient_buy_collateral_allowance(allowance_after, required_usdc_raw) {
+            anyhow::bail!(
+                "Insufficient pUSD allowance for {} after sync. Required: ${:.2}, allowance: ${:.2}",
+                context_label,
+                required_usdc,
+                allowance_after / Decimal::from(1_000_000u64)
+            );
+        }
+        Ok(())
+    }
+
+    async fn check_legacy_market_buy_collateral(&self, required_usdc: Decimal) -> Result<()> {
+        let required_usdc_raw = required_usdc * Decimal::from(1_000_000u64);
+        let (balance, allowance) = self
+            .check_usdc_balance_allowance()
+            .await
+            .context("Failed to check pUSD collateral for market BUY order")?;
+        if balance < required_usdc_raw {
+            anyhow::bail!(
+                "Insufficient pUSD balance for BUY order. Required: ${:.2}, available: ${:.2}",
+                required_usdc,
+                balance / Decimal::from(1_000_000u64)
+            );
+        }
+        if allowance < required_usdc_raw {
+            warn!(
+                "pUSD allowance is below market BUY order amount; continuing for legacy signer mode. required_usdc={} allowance_usdc={}",
+                required_usdc,
+                allowance / Decimal::from(1_000_000u64)
+            );
+        }
+        Ok(())
+    }
+
     fn derive_proxy_wallet_address(
         owner: AlloyAddress,
         proxy_factory: AlloyAddress,
@@ -1281,6 +1472,43 @@ impl PolymarketApi {
                 .as_deref()
                 .map(str::trim)
                 .is_some_and(|v| !v.is_empty())
+    }
+
+    fn is_deposit_wallet_mode(&self) -> bool {
+        self.signature_type == Some(3) && self.has_deposit_wallet_fields()
+    }
+
+    fn buy_order_required_usdc(order: &OrderRequest) -> Result<Option<Decimal>> {
+        if !order.side.eq_ignore_ascii_case("BUY") {
+            return Ok(None);
+        }
+        let price = Decimal::from_str(&order.price)
+            .with_context(|| format!("Failed to parse BUY order price: {}", order.price))?;
+        let size = Decimal::from_str(&order.size)
+            .with_context(|| format!("Failed to parse BUY order size: {}", order.size))?;
+        let required = price * size;
+        if required <= Decimal::ZERO {
+            anyhow::bail!(
+                "Invalid BUY order notional (size*price <= 0): size={} price={}",
+                order.size,
+                order.price
+            );
+        }
+        Ok(Some(required))
+    }
+
+    fn buy_orders_required_usdc(orders: &[OrderRequest]) -> Result<Option<Decimal>> {
+        let mut total = Decimal::ZERO;
+        for order in orders {
+            if let Some(required) = Self::buy_order_required_usdc(order)? {
+                total += required;
+            }
+        }
+        if total > Decimal::ZERO {
+            Ok(Some(total))
+        } else {
+            Ok(None)
+        }
     }
 
     fn require_no_deposit_wallet_fields_for_legacy_signature(&self) -> Result<()> {
@@ -3418,8 +3646,15 @@ impl PolymarketApi {
         timing.order_attribution_mode = attribution_mode;
         timing.builder_code_configured = builder_code_configured;
         let started = Instant::now();
+        let required_buy_usdc = Self::buy_order_required_usdc(order)?;
 
         for attempt in 1..=attempts {
+            if self.is_deposit_wallet_mode() {
+                if let Some(required) = required_buy_usdc {
+                    self.ensure_buy_collateral_ready(required, "limit BUY order")
+                        .await?;
+                }
+            }
             let get_client_started = Instant::now();
             let handle = self.get_or_create_clob_client().await?;
             timing.get_client_ms += get_client_started.elapsed().as_millis() as i64;
@@ -3507,8 +3742,15 @@ impl PolymarketApi {
         };
         let base_delay_ms = Self::order_retry_base_delay_ms();
         let mut last_err: Option<anyhow::Error> = None;
+        let required_buy_usdc = Self::buy_orders_required_usdc(orders)?;
 
         for attempt in 1..=attempts {
+            if self.is_deposit_wallet_mode() {
+                if let Some(required) = required_buy_usdc {
+                    self.ensure_buy_collateral_ready(required, "batch BUY orders")
+                        .await?;
+                }
+            }
             let get_client_started = Instant::now();
             let handle = self.get_or_create_clob_client().await?;
             let get_client_ms = get_client_started.elapsed().as_millis() as i64;
@@ -5291,8 +5533,9 @@ impl PolymarketApi {
     /// Check pUSD collateral balance and allowance for buying tokens.
     /// Returns (collateral_balance, collateral_allowance) as Decimal values.
     /// For BUY orders, you need pUSD balance and allowance to the Exchange contract.
-    pub async fn check_usdc_balance_allowance(
+    async fn check_usdc_balance_allowance_inner(
         &self,
+        sync_deposit_wallet: bool,
     ) -> Result<(rust_decimal::Decimal, rust_decimal::Decimal)> {
         // Use shared authenticated client and retry once to tolerate transient CLOB errors.
         // This avoids per-request re-auth churn on manual/open checks.
@@ -5324,11 +5567,8 @@ impl PolymarketApi {
             }
         }
 
-        if self.signature_type == Some(3) {
-            if let Err(err) = self
-                .update_balance_allowance_cache(None, AssetType::Collateral, "pUSD collateral")
-                .await
-            {
+        if self.is_deposit_wallet_mode() && sync_deposit_wallet {
+            if let Err(err) = self.update_balance_allowance_for_collateral(false).await {
                 warn!(
                     "Failed to sync deposit-wallet pUSD balance/allowance cache before balance check: {}",
                     err
@@ -5442,6 +5682,12 @@ impl PolymarketApi {
         ));
 
         Ok((balance, allowance))
+    }
+
+    pub async fn check_usdc_balance_allowance(
+        &self,
+    ) -> Result<(rust_decimal::Decimal, rust_decimal::Decimal)> {
+        self.check_usdc_balance_allowance_inner(true).await
     }
 
     /// Check token balance only (for redemption/portfolio scanning)
@@ -6908,48 +7154,12 @@ impl PolymarketApi {
 
         // For BUY orders, check pUSD collateral balance and allowance before placing order.
         if matches!(side_enum, Side::Buy) {
-            eprintln!("🔍 Checking pUSD balance and allowance before BUY order...");
-            match self.check_usdc_balance_allowance().await {
-                Ok((usdc_balance, usdc_allowance)) => {
-                    let usdc_balance_f64 =
-                        f64::try_from(usdc_balance / rust_decimal::Decimal::from(1_000_000u64))
-                            .unwrap_or(0.0);
-                    let usdc_allowance_f64 =
-                        f64::try_from(usdc_allowance / rust_decimal::Decimal::from(1_000_000u64))
-                            .unwrap_or(0.0);
-
-                    eprintln!("   pUSD Balance: ${:.2}", usdc_balance_f64);
-                    eprintln!("   pUSD Allowance: ${:.2}", usdc_allowance_f64);
-                    eprintln!("   Order Amount: ${:.2}", amount_decimal);
-
-                    if usdc_balance_f64 < f64::try_from(amount_decimal).unwrap_or(0.0) {
-                        anyhow::bail!(
-                            "Insufficient pUSD balance for BUY order.\n\
-                            Required: ${:.2}, Available: ${:.2}\n\
-                            Please wrap USDC.e to pUSD or deposit pUSD to your proxy wallet: {}",
-                            amount_decimal,
-                            usdc_balance_f64,
-                            self.proxy_wallet_address
-                                .as_deref()
-                                .unwrap_or("your wallet")
-                        );
-                    }
-
-                    if usdc_allowance_f64 < f64::try_from(amount_decimal).unwrap_or(0.0) {
-                        eprintln!(
-                            "   ⚠️  pUSD allowance (${:.2}) is less than order amount (${:.2})",
-                            usdc_allowance_f64, amount_decimal
-                        );
-                        eprintln!("   💡 The SDK should auto-approve pUSD on first attempt, but if this fails, you may need to approve pUSD manually.");
-                        eprintln!("   💡 Run: cargo run --bin test_allowance -- --check (to check pUSD approval status)");
-                    }
-                }
-                Err(e) => {
-                    eprintln!(
-                        "   ⚠️  Could not check pUSD balance/allowance: {} (continuing anyway)",
-                        e
-                    );
-                }
+            if self.is_deposit_wallet_mode() {
+                self.ensure_buy_collateral_ready(amount_decimal, "market BUY order")
+                    .await?;
+            } else {
+                self.check_legacy_market_buy_collateral(amount_decimal)
+                    .await?;
             }
         }
 

@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-05-05
+- Runtime wallet/order path: deposit-wallet BUY order collateral readiness now runs through limit, batch, and market BUY order paths, syncs CLOB collateral `update_balance_allowance` with auth-refresh retry/throttle, invalidates stale pUSD snapshots, and fails before submit if balance or allowance is still insufficient (`src/api.rs`).
+  - Affects all strategies that place BUY orders with Deposit Wallet mode, including MM 2.0 Sport/Non-S/Dual. Existing Proxy/Safe/EOA limit and batch order behavior remains unchanged; legacy market BUYs still hard-stop on insufficient pUSD balance and warn, rather than fail, on low allowance.
 - `mm_sport_v1` / MM 2.0 Polymarket WS lifecycle fix: market shard and user streams now reuse persistent SDK websocket clients and swap subscription scopes in place, subscribing the next scope before unsubscribing the old scope so normal candidate churn, stream restarts, and sticky-scope pruning do not remove and recreate SDK websocket channels (`src/polymarket_ws.rs`).
   - Applies to MM 2.0 Sport, Non-S, and Dual routes. FIFO/orderbook visibility keeps the existing 5s scope debounce for active/open-order markets, while scope churn should no longer accumulate hundreds of stale CLOB sockets or drive sustained multi-core CPU load.
 

@@ -203,9 +203,10 @@ function magicProfileName(email: string, profiles: Profile[]): string {
   return uniqueProfileName(`Magic ${localPart}`, profiles);
 }
 
-export function Config() {
+export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const botSetupMode = mode === "bot_setup";
   const { activeProfileId, setActiveProfileId, setAuthenticated } = useAppContext();
   const { status } = useBotStatus();
   const { overview } = useHomeOverview();
@@ -286,18 +287,22 @@ export function Config() {
     () => summarizeWalletSyncResult(walletSyncStatus?.last_result ?? null),
     [walletSyncStatus?.last_result]
   );
+  const activeWalletAddress = activeFunderAddress(config);
+  const depositWalletMode = config.sig_type === 3;
 
   const setupReady = Boolean(
-    config.private_key.trim() && (config.sig_type === 0 || activeFunderAddress(config))
+    config.private_key.trim() && (config.sig_type === 0 || activeWalletAddress)
   );
-  const onboardingReady = Boolean(
+  const credentialsReady = Boolean(
     setupReady &&
       config.alpha_key.trim() &&
       (config.relayer_remote_signer_token.trim() || config.remote_signer_token.trim())
   );
+  const onboardingReady = Boolean(credentialsReady && !depositWalletMode);
 
   const railItems = [
     { label: "Home", to: "/home" },
+    { label: "Bot Setup", to: "/bot-setup" },
     { label: "Settings", to: "/settings" },
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
   ];
@@ -310,7 +315,11 @@ export function Config() {
 
   const handleSave = async () => {
     if (!activeProfileId) {
-      setSaveMessage("Create a profile first in the Profiles tab.");
+      setSaveMessage(
+        botSetupMode
+          ? "Create or import a wallet profile first."
+          : "Create a profile first in the Profiles tab."
+      );
       return;
     }
     setSaveLoading(true);
@@ -585,9 +594,13 @@ export function Config() {
       railLogoSrc="/logo.png"
       railLogoAlt="EVPlus"
       railItems={railItems}
-      eyebrow="Settings"
-      title="Settings"
-      description="Manage wallet setup, profiles, security, logs, and diagnostics."
+      eyebrow={botSetupMode ? "ONBOARDING" : "Settings"}
+      title={botSetupMode ? "Bot Setup" : "Settings"}
+      description={
+        botSetupMode
+          ? "Create or import a wallet profile, fund it, and save the relayer keys needed for trading."
+          : "Manage wallet setup, profiles, security, logs, and diagnostics."
+      }
       meta={
         <div className="flex flex-wrap items-center justify-end gap-3">
           <ProfileSwitcher
@@ -613,31 +626,39 @@ export function Config() {
       contentClassName="page-stack"
     >
       <div className="page-stack">
-        <div className="flex flex-wrap gap-2">
-          {(["setup", "profiles", "security", "diagnostics"] as SettingsTab[]).map((item) => (
-            <button
-              key={item}
-              type="button"
-              onClick={() => setTab(item)}
-              className={`section-tab ${tab === item ? "section-tab--active" : ""}`.trim()}
-            >
-              {TAB_LABELS[item]}
-            </button>
-          ))}
-        </div>
+        {!botSetupMode ? (
+          <div className="flex flex-wrap gap-2">
+            {(["setup", "profiles", "security", "diagnostics"] as SettingsTab[]).map((item) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setTab(item)}
+                className={`section-tab ${tab === item ? "section-tab--active" : ""}`.trim()}
+              >
+                {TAB_LABELS[item]}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
-        {tab === "setup" ? (
+        {(botSetupMode || tab === "setup") ? (
           <div className="page-stack">
             <div
               className={`status-strip ${
-                onboardingReady ? "status-strip--success" : "status-strip--warning"
+                credentialsReady ? "status-strip--success" : "status-strip--warning"
               }`.trim()}
             >
               <div className="status-strip__title">
-                {onboardingReady ? "Onboarding complete" : "Finish wallet setup"}
+                {depositWalletMode && credentialsReady
+                  ? "Deposit wallet profile saved"
+                  : onboardingReady
+                  ? "Onboarding complete"
+                  : "Finish wallet setup"}
               </div>
               <div className="status-strip__copy">
-                {onboardingReady
+                {depositWalletMode && credentialsReady
+                  ? "Runtime verifies Deposit Wallet collateral balance and allowance before each BUY order."
+                  : onboardingReady
                   ? "This profile is ready to trade. Save changes any time you update the private key, wallet address, or relayer fields."
                   : "Set the wallet mode, private key, and wallet address when needed. Save will generate EVPOLY alpha and relayer signer credentials automatically."}
               </div>
@@ -765,9 +786,15 @@ export function Config() {
                       <InfoPill tone={setupReady ? "accent" : "warning"}>
                         {setupReady ? "Wallet Ready" : "Wallet Incomplete"}
                       </InfoPill>
-                      <InfoPill tone={onboardingReady ? "success" : "warning"}>
-                        {onboardingReady ? "Ready to trade" : "Needs onboarding"}
-                      </InfoPill>
+                      {depositWalletMode ? (
+                        <InfoPill tone={credentialsReady ? "accent" : "warning"}>
+                          {credentialsReady ? "Runtime checks collateral" : "Needs onboarding"}
+                        </InfoPill>
+                      ) : (
+                        <InfoPill tone={onboardingReady ? "success" : "warning"}>
+                          {onboardingReady ? "Ready to trade" : "Needs onboarding"}
+                        </InfoPill>
+                      )}
                     </div>
 
                     <div className="diagnostics-summary">

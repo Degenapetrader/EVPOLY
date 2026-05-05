@@ -10,7 +10,9 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-05-05
-- Runtime wallet/order path: Safe Wallet BUY readiness now uses the cached CLOB pUSD balance/allowance path again, while Deposit Wallet remains on the direct on-chain pUSD/approval readiness path (`src/api.rs`).
+- Runtime wallet/order path: Deposit Wallet BUY placement now uses the CLOB `balance_allowance` hot path instead of direct Polygon pUSD/approval reads, forcing a CLOB collateral `update_balance_allowance` sync only when the cached/read allowance is stale or insufficient (`src/api.rs`).
+  - Affects every strategy that submits BUY orders from Deposit Wallet profiles. On-chain pUSD/operator approval checks remain for onboarding/repair readiness, while live trading avoids 30-second Polygon RPC approval polling and keeps Deposit Wallet batch order posts disabled.
+- Runtime wallet/order path: Safe Wallet BUY readiness now uses the cached CLOB pUSD balance/allowance path again (`src/api.rs`).
   - Affects every strategy that submits BUY orders from Safe Wallet profiles. This restores pre-2.2.0 Safe behavior and avoids per-order Polygon RPC readiness checks blocking Premarket, Endgame, EVCurve, SessionBand, EVSnipe, and MM 2.0 BUY placement.
 - Runtime wallet/order path: Deposit Wallet and Safe BUY readiness now checks pUSD balance, pUSD allowances, and CTF operator approvals directly on Polygon before order build/post, Deposit Wallet skips batch order posts, resting orders fail when CLOB omits an upstream order ID, and limit BUYs verify fee reserve before signing (`src/api.rs`, `src/trader.rs`).
   - Affects every strategy that submits BUY orders through the shared Polymarket order API. Existing Proxy/EOA order paths keep the cached CLOB balance/allowance check, while Deposit Wallet and Safe paths no longer rely on stale CLOB collateral cache for live BUY readiness.

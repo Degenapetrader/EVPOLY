@@ -180,9 +180,10 @@ function importedProfileName(address: string, profiles: Profile[]): string {
   return uniqueProfileName(`Imported ${suffix}`, profiles);
 }
 
-export function Config() {
+export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" }) {
   const navigate = useNavigate();
   const location = useLocation();
+  const botSetupMode = mode === "bot_setup";
   const { activeProfileId, setActiveProfileId, setAuthenticated } = useAppContext();
   const { status } = useBotStatus();
   const { overview } = useHomeOverview();
@@ -270,6 +271,7 @@ export function Config() {
 
   const railItems = [
     { label: "Home", to: "/home" },
+    { label: "Bot Setup", to: "/bot-setup" },
     { label: "Settings", to: "/settings" },
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
   ];
@@ -282,7 +284,11 @@ export function Config() {
 
   const handleSave = async () => {
     if (!activeProfileId) {
-      setSaveMessage("Create a profile first in the Profiles tab.");
+      setSaveMessage(
+        botSetupMode
+          ? "Import a wallet profile first."
+          : "Create a profile first in the Profiles tab."
+      );
       return;
     }
     setSaveLoading(true);
@@ -487,9 +493,13 @@ export function Config() {
       railLogoSrc="/logo.png"
       railLogoAlt="EVPlus"
       railItems={railItems}
-      eyebrow="Settings"
-      title="Settings"
-      description="Manage wallet setup, profiles, security, logs, and diagnostics."
+      eyebrow={botSetupMode ? "ONBOARDING" : "Settings"}
+      title={botSetupMode ? "Bot Setup" : "Settings"}
+      description={
+        botSetupMode
+          ? "Import a wallet profile and save the relayer keys needed for trading."
+          : "Manage wallet setup, profiles, security, logs, and diagnostics."
+      }
       meta={
         <div className="flex flex-wrap items-center justify-end gap-3">
           <ProfileSwitcher
@@ -515,20 +525,22 @@ export function Config() {
       contentClassName="page-stack"
     >
       <div className="page-stack">
-        <div className="flex flex-wrap gap-2">
-          {(["setup", "profiles", "security", "diagnostics"] as SettingsTab[]).map((item) => (
-            <button
-              key={item}
-              type="button"
-              onClick={() => setTab(item)}
-              className={`section-tab ${tab === item ? "section-tab--active" : ""}`.trim()}
-            >
-              {TAB_LABELS[item]}
-            </button>
-          ))}
-        </div>
+        {!botSetupMode ? (
+          <div className="flex flex-wrap gap-2">
+            {(["setup", "profiles", "security", "diagnostics"] as SettingsTab[]).map((item) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setTab(item)}
+                className={`section-tab ${tab === item ? "section-tab--active" : ""}`.trim()}
+              >
+                {TAB_LABELS[item]}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
-        {tab === "setup" ? (
+        {(botSetupMode || tab === "setup") ? (
           <div className="page-stack">
             <div
               className={`status-strip ${

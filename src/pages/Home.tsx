@@ -19,6 +19,7 @@ import {
   DEFAULT_CONFIG,
   formatUsd,
   mergeConfig,
+  mmSportRouteDefaultCaps,
   parseNonNegative,
   setEVSnipePreHitEnabled,
   strategyControlSuffix,
@@ -568,6 +569,7 @@ export function Home() {
 
   const railItems = [
     { label: "Home", to: "/home" },
+    { label: "Bot Setup", to: "/bot-setup" },
     { label: "Settings", to: "/settings" },
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
   ];
@@ -802,6 +804,7 @@ export function Home() {
                           updateStrategySettingsSection(current, "mm_sport", {
                             ...current.strategy_settings.mm_sport,
                             discovery_route: value,
+                            ...mmSportRouteDefaultCaps(value),
                           })
                         )
                       }
@@ -1034,7 +1037,11 @@ export function Home() {
       }
       meta={
         <div className="flex flex-wrap items-center justify-end gap-3">
-          <ProfileSwitcher activeProfileId={activeProfileId} onSwitch={(id) => void handleProfileSwitch(id)} />
+          <ProfileSwitcher
+            activeProfileId={activeProfileId}
+            onSwitch={(id) => void handleProfileSwitch(id)}
+            onCreateWallet={(method) => navigate("/bot-setup", { state: { createWalletMethod: method } })}
+          />
           <StatusBadge status={overview?.bot_state ?? "unknown"} />
           <button
             type="button"

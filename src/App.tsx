@@ -60,6 +60,14 @@ function App() {
           />
           <Route path="/dashboard" element={<Navigate to="/home" replace />} />
           <Route
+            path="/bot-setup"
+            element={
+              <ProtectedRoute>
+                <Config mode="bot_setup" />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/settings"
             element={
               <ProtectedRoute>

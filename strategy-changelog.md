@@ -9,6 +9,10 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-05-05
+- `mm_sport_v1` / MM 2.0 Polymarket WS lifecycle fix: market shard and user streams now reuse persistent SDK websocket clients and swap subscription scopes in place, subscribing the next scope before unsubscribing the old scope so normal candidate churn, stream restarts, and sticky-scope pruning do not remove and recreate SDK websocket channels (`src/polymarket_ws.rs`).
+  - Applies to MM 2.0 Sport, Non-S, and Dual routes. FIFO/orderbook visibility keeps the existing 5s scope debounce for active/open-order markets, while scope churn should no longer accumulate hundreds of stale CLOB sockets or drive sustained multi-core CPU load.
+
 ### 2026-05-04
 - `mm_sport_v1` / MM 2.0 CPU/socket pressure reduction: hot markets with inventory/open orders still scan every pass, but fresh-entry candidates are now rotated by `EVPOLY_MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK=30`, MM 2.0 order submits are capped by `EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY=3`, detached submit tasks were replaced with directly cancellable timeout-wrapped submits, noisy collateral-budget scaling events are disabled unless `EVPOLY_MM_SPORT_VERBOSE_BUDGET_EVENTS=true`, and default HTTP pool/read/order-submit pressure caps were lowered (`src/main.rs`, `src/mm/mod.rs`, `src/api.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
   - Applies to MM 2.0 Sport, Non-S, and Dual routes. Exit/cancel/FIFO/inventory cleanup markets remain in scope each pass; only fresh-entry scan pressure and submit concurrency are throttled.

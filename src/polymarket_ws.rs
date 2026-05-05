@@ -2,7 +2,8 @@ use crate::api::PolymarketApi;
 use crate::event_log::log_event;
 use crate::models::{OrderBook, OrderBookEntry, TokenPrice};
 
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
+use polymarket_client_sdk_v2::auth::{state::Authenticated, Normal};
 use polymarket_client_sdk_v2::clob::types::{OrderStatusType, Side};
 use polymarket_client_sdk_v2::clob::ws;
 use polymarket_client_sdk_v2::clob::ws::types::response::{
@@ -14,6 +15,7 @@ use rust_decimal::Decimal;
 use serde_json::json;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
+use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Once;
@@ -111,7 +113,7 @@ impl Default for PolymarketWsConfig {
                 "EVPOLY_PM_WS_SCOPE_RECONNECT_DEBOUNCE_MS",
                 5_000,
             )
-            .clamp(0, 60_000),
+            .clamp(0, 300_000),
             reconnect_on_refresh: env_bool("EVPOLY_PM_WS_RECONNECT_ON_REFRESH", false),
             market_shards: env_u64("EVPOLY_PM_WS_MARKET_SHARDS", 2).clamp(1, 12) as u32,
             sticky_scope_ttl_ms: env_i64("EVPOLY_PM_WS_STICKY_SCOPE_TTL_MS", 900_000)
@@ -180,6 +182,12 @@ pub struct WsTradeSnapshot {
 }
 
 const WS_MARKET_TRADE_WINDOW_RETENTION_MS: i64 = 30_000;
+
+type MarketBookStream =
+    Pin<Box<dyn Stream<Item = polymarket_client_sdk_v2::Result<BookUpdate>> + Send>>;
+type MarketTradeStream =
+    Pin<Box<dyn Stream<Item = polymarket_client_sdk_v2::Result<LastTradePrice>> + Send>>;
+type UserWsStream = Pin<Box<dyn Stream<Item = polymarket_client_sdk_v2::Result<WsMessage>> + Send>>;
 
 #[derive(Debug, Clone)]
 pub struct WsOrderStatusSnapshot {
@@ -999,6 +1007,8 @@ async fn run_market_loop(
     let mut subscribed_market_superset: Vec<StickyTarget<B256>> = Vec::new();
     let mut discovery_log_state = DegradedLogState::default();
     let mut stream_log_state = DegradedLogState::default();
+    let mut market_client: Option<ws::Client> = None;
+    let mut market_teardown_guard: Option<U256> = None;
     loop {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let (asset_ids_all, market_ids_all, tracked_markets) = if now_ms < discovery_retry_after_ms
@@ -1123,9 +1133,9 @@ async fn run_market_loop(
         }
         let asset_ids_all = asset_update.values;
         let market_ids_all = market_update.values;
-        let tracked_markets = tracked_markets.max(market_ids_all.len());
-        let asset_ids = shard_vec(asset_ids_all.as_slice(), shard_idx, shard_count);
-        let market_ids = shard_vec(market_ids_all.as_slice(), shard_idx, shard_count);
+        let mut tracked_markets = tracked_markets.max(market_ids_all.len());
+        let mut asset_ids = shard_vec(asset_ids_all.as_slice(), shard_idx, shard_count);
+        let mut market_ids = shard_vec(market_ids_all.as_slice(), shard_idx, shard_count);
 
         if asset_ids.is_empty() {
             state.clear_market_connected(shard_idx);
@@ -1143,31 +1153,58 @@ async fn run_market_loop(
             continue;
         }
 
-        let client = match ws::Client::new(cfg.endpoint.as_str(), WsConnectionConfig::default()) {
-            Ok(v) => v,
-            Err(e) => {
-                state.set_market_connected(shard_idx, false);
-                log_event(
-                    "polymarket_ws_market_client_create_failed",
-                    json!({
-                        "error": e.to_string(),
-                        "endpoint": cfg.endpoint
-                    }),
-                );
-                sleep(Duration::from_secs(backoff_sec)).await;
-                backoff_sec = (backoff_sec * 2).min(cfg.backoff_max_sec);
-                continue;
+        let client = if let Some(client) = market_client.as_ref() {
+            client.clone()
+        } else {
+            match ws::Client::new(cfg.endpoint.as_str(), WsConnectionConfig::default()) {
+                Ok(v) => {
+                    market_client = Some(v);
+                    market_client
+                        .as_ref()
+                        .expect("market ws client inserted")
+                        .clone()
+                }
+                Err(e) => {
+                    state.set_market_connected(shard_idx, false);
+                    log_event(
+                        "polymarket_ws_market_client_create_failed",
+                        json!({
+                            "error": e.to_string(),
+                            "endpoint": cfg.endpoint
+                        }),
+                    );
+                    sleep(Duration::from_secs(backoff_sec)).await;
+                    backoff_sec = (backoff_sec * 2).min(cfg.backoff_max_sec);
+                    continue;
+                }
             }
         };
 
-        let book_stream = match client.subscribe_orderbook(asset_ids.clone()) {
+        let (mut book_stream, mut trade_stream) = match subscribe_market_stream_pair(
+            &client,
+            asset_ids.as_slice(),
+            shard_idx,
+            shard_count,
+            "initial_subscribe",
+        ) {
             Ok(v) => v,
             Err(e) => {
+                if let Some(guard_asset) = market_teardown_guard.take() {
+                    unsubscribe_market_asset_streams(
+                        &client,
+                        std::slice::from_ref(&guard_asset),
+                        1,
+                        "teardown_guard_release_after_subscribe_failed",
+                        shard_idx,
+                        shard_count,
+                    );
+                }
+                market_client = None;
                 state.set_market_connected(shard_idx, false);
                 log_event(
                     "polymarket_ws_market_subscribe_failed",
                     json!({
-                        "error": e.to_string(),
+                        "error": e,
                         "asset_count": asset_ids.len(),
                         "asset_count_all": asset_ids_all.len(),
                         "market_count": market_ids.len(),
@@ -1183,29 +1220,16 @@ async fn run_market_loop(
                 continue;
             }
         };
-        let trade_stream = match client.subscribe_last_trade_price(asset_ids.clone()) {
-            Ok(v) => v,
-            Err(e) => {
-                state.set_market_connected(shard_idx, false);
-                log_event(
-                    "polymarket_ws_market_trade_subscribe_failed",
-                    json!({
-                        "error": e.to_string(),
-                        "asset_count": asset_ids.len(),
-                        "asset_count_all": asset_ids_all.len(),
-                        "market_count": market_ids.len(),
-                        "market_count_all": market_ids_all.len(),
-                        "tracked_markets": tracked_markets
-                        ,
-                        "shard_idx": shard_idx,
-                        "shard_count": shard_count
-                    }),
-                );
-                sleep(Duration::from_secs(backoff_sec)).await;
-                backoff_sec = (backoff_sec * 2).min(cfg.backoff_max_sec);
-                continue;
-            }
-        };
+        if let Some(guard_asset) = market_teardown_guard.take() {
+            unsubscribe_market_asset_streams(
+                &client,
+                std::slice::from_ref(&guard_asset),
+                1,
+                "teardown_guard_release",
+                shard_idx,
+                shard_count,
+            );
+        }
 
         state.set_market_connected(shard_idx, true);
         stream_log_state.mark_recovered(
@@ -1231,8 +1255,6 @@ async fn run_market_loop(
             }),
         );
 
-        let mut book_stream = Box::pin(book_stream);
-        let mut trade_stream = Box::pin(trade_stream);
         let mut refresh_interval = tokio::time::interval(Duration::from_secs(cfg.refresh_sec));
         refresh_interval.tick().await;
         let mut refresh_reconnect = false;
@@ -1246,7 +1268,7 @@ async fn run_market_loop(
         let mut lag_ignored_last_log_ms = 0_i64;
         let mut last_scope_revision = state.subscription_scope_revision();
         let mut pending_scope_reconnect_at: Option<Instant> = None;
-        let sticky_scope_refresh_at = Instant::now()
+        let mut sticky_scope_refresh_at = Instant::now()
             + Duration::from_millis(
                 u64::try_from(cfg.sticky_scope_ttl_ms)
                     .ok()
@@ -1257,23 +1279,127 @@ async fn run_market_loop(
         loop {
             tokio::select! {
                 _ = sleep_until(sticky_scope_refresh_at) => {
-                    refresh_reconnect = true;
-                    log_event(
-                        "polymarket_ws_market_sticky_scope_refresh_reconnect",
-                        json!({
-                            "asset_count": asset_ids.len(),
-                            "asset_count_all": asset_ids_all.len(),
-                            "market_count": market_ids.len(),
-                            "market_count_all": market_ids_all.len(),
-                            "tracked_markets": tracked_markets,
-                            "sticky_scope_ttl_ms": cfg.sticky_scope_ttl_ms,
-                            "sticky_scope_max_assets": cfg.sticky_scope_max_assets,
-                            "sticky_scope_max_markets": cfg.sticky_scope_max_markets,
-                            "shard_idx": shard_idx,
-                            "shard_count": shard_count
-                        }),
-                    );
-                    break;
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    match discover_subscription_targets(
+                        api.as_ref(),
+                        &state,
+                        cfg.market_discovery_limit,
+                    )
+                    .await
+                    {
+                        Ok((next_asset_ids_all, next_market_ids_all, next_tracked_markets)) => {
+                            let (protected_asset_ids, protected_market_ids) =
+                                state.live_order_subscription_targets().await;
+                            let asset_update = update_sticky_targets(
+                                &mut subscribed_asset_superset,
+                                next_asset_ids_all,
+                                &protected_asset_ids,
+                                now_ms,
+                                cfg.sticky_scope_ttl_ms,
+                                cfg.sticky_scope_max_assets,
+                            );
+                            let market_update = update_sticky_targets(
+                                &mut subscribed_market_superset,
+                                next_market_ids_all,
+                                &protected_market_ids,
+                                now_ms,
+                                cfg.sticky_scope_ttl_ms,
+                                cfg.sticky_scope_max_markets,
+                            );
+                            let next_asset_ids_all = asset_update.values;
+                            let next_market_ids_all = market_update.values;
+                            let next_asset_ids =
+                                shard_vec(next_asset_ids_all.as_slice(), shard_idx, shard_count);
+                            let next_market_ids =
+                                shard_vec(next_market_ids_all.as_slice(), shard_idx, shard_count);
+                            if next_asset_ids.is_empty() {
+                                refresh_reconnect = true;
+                                log_event(
+                                    "polymarket_ws_market_sticky_scope_empty",
+                                    json!({
+                                        "prev_asset_count": asset_ids.len(),
+                                        "prev_market_count": market_ids.len(),
+                                        "tracked_markets": tracked_markets,
+                                        "shard_idx": shard_idx,
+                                        "shard_count": shard_count
+                                    }),
+                                );
+                                break;
+                            }
+                            let prev_asset_count = asset_ids.len();
+                            let prev_market_count = market_ids.len();
+                            let prev_tracked_markets = tracked_markets;
+                            if next_asset_ids != asset_ids {
+                                if let Err(error) = replace_market_stream_scope(
+                                    &client,
+                                    &mut book_stream,
+                                    &mut trade_stream,
+                                    &mut asset_ids,
+                                    next_asset_ids,
+                                    "sticky_scope_refresh",
+                                    shard_idx,
+                                    shard_count,
+                                ) {
+                                    market_client = None;
+                                    stream_log_state.mark_degraded(
+                                        "polymarket_ws_market_stream_degraded",
+                                        "polymarket_ws_market_stream_degraded_heartbeat",
+                                        "sticky_scope_resubscribe_failed",
+                                        json!({
+                                            "error": error,
+                                            "asset_count": asset_ids.len(),
+                                            "market_count": market_ids.len(),
+                                            "shard_idx": shard_idx,
+                                            "shard_count": shard_count
+                                        }),
+                                    );
+                                    break;
+                                }
+                            }
+                            market_ids = next_market_ids;
+                            tracked_markets = next_tracked_markets.max(market_ids.len());
+                            log_event(
+                                "polymarket_ws_market_sticky_scope_refreshed",
+                                json!({
+                                    "prev_asset_count": prev_asset_count,
+                                    "next_asset_count": asset_ids.len(),
+                                    "prev_market_count": prev_market_count,
+                                    "next_market_count": market_ids.len(),
+                                    "prev_tracked_markets": prev_tracked_markets,
+                                    "next_tracked_markets": tracked_markets,
+                                    "asset_expired_removed": asset_update.expired_removed,
+                                    "asset_capped_removed": asset_update.capped_removed,
+                                    "market_expired_removed": market_update.expired_removed,
+                                    "market_capped_removed": market_update.capped_removed,
+                                    "sticky_scope_ttl_ms": cfg.sticky_scope_ttl_ms,
+                                    "sticky_scope_max_assets": cfg.sticky_scope_max_assets,
+                                    "sticky_scope_max_markets": cfg.sticky_scope_max_markets,
+                                    "shard_idx": shard_idx,
+                                    "shard_count": shard_count
+                                }),
+                            );
+                        }
+                        Err(e) => {
+                            log_event(
+                                "polymarket_ws_market_sticky_scope_discovery_failed",
+                                json!({
+                                    "error": e.to_string(),
+                                    "asset_count": asset_ids.len(),
+                                    "market_count": market_ids.len(),
+                                    "tracked_markets": tracked_markets,
+                                    "shard_idx": shard_idx,
+                                    "shard_count": shard_count
+                                }),
+                            );
+                        }
+                    }
+                    sticky_scope_refresh_at = Instant::now()
+                        + Duration::from_millis(
+                            u64::try_from(cfg.sticky_scope_ttl_ms)
+                                .ok()
+                                .unwrap_or(900_000)
+                                .max(60_000),
+                        );
                 }
                 scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
                     let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
@@ -1285,19 +1411,21 @@ async fn run_market_loop(
                         0
                     };
                     if scope_wait_ms > 0 {
-                        log_event(
-                            "polymarket_ws_market_scope_reconnect_debounced",
-                            json!({
-                                "wait_ms": scope_wait_ms,
-                                "debounce_ms": scope_debounce_ms,
-                                "scope_revision": scope_revision,
-                                "shard_idx": shard_idx,
-                                "shard_count": shard_count
-                            }),
-                        );
                         last_scope_revision = scope_revision;
-                        pending_scope_reconnect_at =
-                            Some(Instant::now() + Duration::from_millis(scope_wait_ms));
+                        if pending_scope_reconnect_at.is_none() {
+                            log_event(
+                                "polymarket_ws_market_scope_reconnect_debounced",
+                                json!({
+                                    "wait_ms": scope_wait_ms,
+                                    "debounce_ms": scope_debounce_ms,
+                                    "scope_revision": scope_revision,
+                                    "shard_idx": shard_idx,
+                                    "shard_count": shard_count
+                                }),
+                            );
+                            pending_scope_reconnect_at =
+                                Some(Instant::now() + Duration::from_millis(scope_wait_ms));
+                        }
                         continue;
                     }
                     pending_scope_reconnect_at = None;
@@ -1327,26 +1455,60 @@ async fn run_market_loop(
                                         next_market_ids.as_slice(),
                                     );
                             if target_changed && target_added {
-                                refresh_reconnect = true;
-                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
-                                log_event(
-                                    "polymarket_ws_market_refresh_reconnect",
-                                    json!({
-                                        "reason": "subscription_scope_changed",
-                                        "scope_debounce_ms": scope_debounce_ms,
-                                        "scope_wait_ms": scope_wait_ms,
-                                        "prev_asset_count": asset_ids.len(),
-                                        "next_asset_count": next_asset_ids.len(),
-                                        "prev_market_count": market_ids.len(),
-                                        "next_market_count": next_market_ids.len(),
-                                        "prev_tracked_markets": tracked_markets,
-                                        "next_tracked_markets": next_tracked_markets,
-                                        "scope_revision": scope_revision,
-                                        "shard_idx": shard_idx,
-                                        "shard_count": shard_count
-                                    }),
-                                );
-                                break;
+                                let prev_asset_count = asset_ids.len();
+                                let prev_market_count = market_ids.len();
+                                let prev_tracked_markets = tracked_markets;
+                                match replace_market_stream_scope(
+                                    &client,
+                                    &mut book_stream,
+                                    &mut trade_stream,
+                                    &mut asset_ids,
+                                    next_asset_ids,
+                                    "subscription_scope_changed",
+                                    shard_idx,
+                                    shard_count,
+                                ) {
+                                    Ok(()) => {
+                                        market_ids = next_market_ids;
+                                        tracked_markets =
+                                            tracked_markets.max(next_tracked_markets).max(market_ids.len());
+                                        last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
+                                        pending_target_change = None;
+                                        log_event(
+                                            "polymarket_ws_market_scope_resubscribed",
+                                            json!({
+                                                "reason": "subscription_scope_changed",
+                                                "scope_debounce_ms": scope_debounce_ms,
+                                                "scope_wait_ms": scope_wait_ms,
+                                                "prev_asset_count": prev_asset_count,
+                                                "next_asset_count": asset_ids.len(),
+                                                "prev_market_count": prev_market_count,
+                                                "next_market_count": market_ids.len(),
+                                                "prev_tracked_markets": prev_tracked_markets,
+                                                "next_tracked_markets": next_tracked_markets,
+                                                "scope_revision": scope_revision,
+                                                "shard_idx": shard_idx,
+                                                "shard_count": shard_count
+                                            }),
+                                        );
+                                    }
+                                    Err(error) => {
+                                        market_client = None;
+                                        stream_log_state.mark_degraded(
+                                            "polymarket_ws_market_stream_degraded",
+                                            "polymarket_ws_market_stream_degraded_heartbeat",
+                                            "scope_resubscribe_failed",
+                                            json!({
+                                                "error": error,
+                                                "asset_count": asset_ids.len(),
+                                                "market_count": market_ids.len(),
+                                                "shard_idx": shard_idx,
+                                                "shard_count": shard_count
+                                            }),
+                                        );
+                                        break;
+                                    }
+                                }
                             } else if target_changed {
                                 log_event(
                                     "polymarket_ws_market_scope_shrink_deferred",
@@ -1415,26 +1577,60 @@ async fn run_market_loop(
                                         next_market_ids.as_slice(),
                                     );
                             if target_changed && target_added {
-                                refresh_reconnect = true;
-                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
-                                log_event(
-                                    "polymarket_ws_market_refresh_reconnect",
-                                    json!({
-                                        "reason": "subscription_scope_changed",
-                                        "scope_debounce_ms": scope_debounce_ms,
-                                        "scope_wait_ms": 0_u64,
-                                        "prev_asset_count": asset_ids.len(),
-                                        "next_asset_count": next_asset_ids.len(),
-                                        "prev_market_count": market_ids.len(),
-                                        "next_market_count": next_market_ids.len(),
-                                        "prev_tracked_markets": tracked_markets,
-                                        "next_tracked_markets": next_tracked_markets,
-                                        "scope_revision": scope_revision,
-                                        "shard_idx": shard_idx,
-                                        "shard_count": shard_count
-                                    }),
-                                );
-                                break;
+                                let prev_asset_count = asset_ids.len();
+                                let prev_market_count = market_ids.len();
+                                let prev_tracked_markets = tracked_markets;
+                                match replace_market_stream_scope(
+                                    &client,
+                                    &mut book_stream,
+                                    &mut trade_stream,
+                                    &mut asset_ids,
+                                    next_asset_ids,
+                                    "subscription_scope_changed",
+                                    shard_idx,
+                                    shard_count,
+                                ) {
+                                    Ok(()) => {
+                                        market_ids = next_market_ids;
+                                        tracked_markets =
+                                            tracked_markets.max(next_tracked_markets).max(market_ids.len());
+                                        last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
+                                        pending_target_change = None;
+                                        log_event(
+                                            "polymarket_ws_market_scope_resubscribed",
+                                            json!({
+                                                "reason": "subscription_scope_changed",
+                                                "scope_debounce_ms": scope_debounce_ms,
+                                                "scope_wait_ms": 0_u64,
+                                                "prev_asset_count": prev_asset_count,
+                                                "next_asset_count": asset_ids.len(),
+                                                "prev_market_count": prev_market_count,
+                                                "next_market_count": market_ids.len(),
+                                                "prev_tracked_markets": prev_tracked_markets,
+                                                "next_tracked_markets": next_tracked_markets,
+                                                "scope_revision": scope_revision,
+                                                "shard_idx": shard_idx,
+                                                "shard_count": shard_count
+                                            }),
+                                        );
+                                    }
+                                    Err(error) => {
+                                        market_client = None;
+                                        stream_log_state.mark_degraded(
+                                            "polymarket_ws_market_stream_degraded",
+                                            "polymarket_ws_market_stream_degraded_heartbeat",
+                                            "scope_resubscribe_failed",
+                                            json!({
+                                                "error": error,
+                                                "asset_count": asset_ids.len(),
+                                                "market_count": market_ids.len(),
+                                                "shard_idx": shard_idx,
+                                                "shard_count": shard_count
+                                            }),
+                                        );
+                                        break;
+                                    }
+                                }
                             } else if target_changed {
                                 log_event(
                                     "polymarket_ws_market_scope_shrink_deferred",
@@ -1601,28 +1797,62 @@ async fn run_market_loop(
                                     );
                                     continue;
                                 }
-                                refresh_reconnect = true;
-                                log_event(
-                                    "polymarket_ws_market_refresh_reconnect",
-                                    json!({
-                                        "reason": "subscription_target_changed",
-                                        "prev_asset_count": asset_ids.len(),
-                                        "next_asset_count": next_asset_ids.len(),
-                                        "prev_market_count": market_ids.len(),
-                                        "next_market_count": next_market_ids.len(),
-                                        "prev_tracked_markets": tracked_markets,
-                                        "next_tracked_markets": next_tracked_markets,
-                                        "confirmations": confirmations,
-                                        "required_confirmations": cfg.target_change_debounce_scans,
-                                        "hold_elapsed_ms": hold_elapsed_ms,
-                                        "hold_required_ms": hold_required_ms,
-                                        "delta_bps": max_delta_bps,
-                                        "min_delta_bps": cfg.target_change_min_delta_bps,
-                                        "shard_idx": shard_idx,
-                                        "shard_count": shard_count
-                                    }),
-                                );
-                                break;
+                                let prev_asset_count = asset_ids.len();
+                                let prev_market_count = market_ids.len();
+                                let prev_tracked_markets = tracked_markets;
+                                match replace_market_stream_scope(
+                                    &client,
+                                    &mut book_stream,
+                                    &mut trade_stream,
+                                    &mut asset_ids,
+                                    next_asset_ids,
+                                    "subscription_target_changed",
+                                    shard_idx,
+                                    shard_count,
+                                ) {
+                                    Ok(()) => {
+                                        market_ids = next_market_ids;
+                                        tracked_markets =
+                                            tracked_markets.max(next_tracked_markets).max(market_ids.len());
+                                        pending_target_change = None;
+                                        log_event(
+                                            "polymarket_ws_market_scope_resubscribed",
+                                            json!({
+                                                "reason": "subscription_target_changed",
+                                                "prev_asset_count": prev_asset_count,
+                                                "next_asset_count": asset_ids.len(),
+                                                "prev_market_count": prev_market_count,
+                                                "next_market_count": market_ids.len(),
+                                                "prev_tracked_markets": prev_tracked_markets,
+                                                "next_tracked_markets": next_tracked_markets,
+                                                "confirmations": confirmations,
+                                                "required_confirmations": cfg.target_change_debounce_scans,
+                                                "hold_elapsed_ms": hold_elapsed_ms,
+                                                "hold_required_ms": hold_required_ms,
+                                                "delta_bps": max_delta_bps,
+                                                "min_delta_bps": cfg.target_change_min_delta_bps,
+                                                "shard_idx": shard_idx,
+                                                "shard_count": shard_count
+                                            }),
+                                        );
+                                    }
+                                    Err(error) => {
+                                        market_client = None;
+                                        stream_log_state.mark_degraded(
+                                            "polymarket_ws_market_stream_degraded",
+                                            "polymarket_ws_market_stream_degraded_heartbeat",
+                                            "target_resubscribe_failed",
+                                            json!({
+                                                "error": error,
+                                                "asset_count": asset_ids.len(),
+                                                "market_count": market_ids.len(),
+                                                "shard_idx": shard_idx,
+                                                "shard_count": shard_count
+                                            }),
+                                        );
+                                        break;
+                                    }
+                                }
                             } else if pending_target_change.is_some() {
                                 pending_target_change = None;
                                 log_event(
@@ -1829,10 +2059,51 @@ async fn run_market_loop(
                 }),
             );
         }
-        drop(trade_stream);
+        let teardown_reason = if refresh_reconnect {
+            "scope_refresh"
+        } else {
+            "stream_restart"
+        };
+        let teardown_guard_armed = if let Some(guard_asset) = asset_ids.first().cloned() {
+            match client.subscribe_orderbook(vec![guard_asset]) {
+                Ok(_guard_stream) => {
+                    market_teardown_guard = Some(guard_asset);
+                    true
+                }
+                Err(e) => {
+                    market_client = None;
+                    log_event(
+                        "polymarket_ws_market_teardown_guard_failed",
+                        json!({
+                            "error": e.to_string(),
+                            "asset_count": asset_ids.len(),
+                            "reason": teardown_reason,
+                            "shard_idx": shard_idx,
+                            "shard_count": shard_count
+                        }),
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
         drop(book_stream);
+        drop(trade_stream);
+        if teardown_guard_armed {
+            unsubscribe_market_asset_streams(
+                &client,
+                asset_ids.as_slice(),
+                2,
+                teardown_reason,
+                shard_idx,
+                shard_count,
+            );
+        }
         drop(client);
-        state.set_market_connected(shard_idx, false);
+        if !refresh_reconnect {
+            state.set_market_connected(shard_idx, false);
+        }
         state.prune_stale(cfg.prune_after_ms).await;
         if !refresh_reconnect {
             let now_ms = chrono::Utc::now().timestamp_millis();
@@ -1903,6 +2174,8 @@ async fn run_user_loop(
     let mut subscribed_market_superset: Vec<StickyTarget<B256>> = Vec::new();
     let mut discovery_log_state = DegradedLogState::default();
     let mut user_stream_log_state = DegradedLogState::default();
+    let mut user_client: Option<ws::Client<Authenticated<Normal>>> = None;
+    let mut user_teardown_guard: Option<B256> = None;
     loop {
         let now_ms = chrono::Utc::now().timestamp_millis();
         let (_, market_ids, tracked_markets) = if now_ms < discovery_retry_after_ms {
@@ -1993,8 +2266,8 @@ async fn run_user_loop(
                 }),
             );
         }
-        let market_ids = market_update.values;
-        let tracked_markets = tracked_markets.max(market_ids.len());
+        let mut market_ids = market_update.values;
+        let mut tracked_markets = tracked_markets.max(market_ids.len());
 
         if market_ids.is_empty() {
             state.set_user_connected(false);
@@ -2002,32 +2275,17 @@ async fn run_user_loop(
             continue;
         }
 
-        let (credentials, address) = match api.ws_auth_context().await {
-            Ok(v) => v,
-            Err(e) => {
-                state.set_user_connected(false);
-                log_event(
-                    "polymarket_ws_user_auth_context_failed",
-                    json!({
-                        "error": e.to_string()
-                    }),
-                );
-                sleep(Duration::from_secs(backoff_sec)).await;
-                backoff_sec = (backoff_sec * 2).min(cfg.backoff_max_sec);
-                continue;
-            }
-        };
-
-        let unauth_client =
-            match ws::Client::new(cfg.endpoint.as_str(), WsConnectionConfig::default()) {
+        let client = if let Some(client) = user_client.as_ref() {
+            client.clone()
+        } else {
+            let (credentials, address) = match api.ws_auth_context().await {
                 Ok(v) => v,
                 Err(e) => {
                     state.set_user_connected(false);
                     log_event(
-                        "polymarket_ws_user_client_create_failed",
+                        "polymarket_ws_user_auth_context_failed",
                         json!({
-                            "error": e.to_string(),
-                            "endpoint": cfg.endpoint
+                            "error": e.to_string()
                         }),
                     );
                     sleep(Duration::from_secs(backoff_sec)).await;
@@ -2036,30 +2294,63 @@ async fn run_user_loop(
                 }
             };
 
-        let user_client = match unauth_client.authenticate(credentials, address) {
-            Ok(v) => v,
-            Err(e) => {
-                state.set_user_connected(false);
-                log_event(
-                    "polymarket_ws_user_authenticate_failed",
-                    json!({
-                        "error": e.to_string()
-                    }),
-                );
-                sleep(Duration::from_secs(backoff_sec)).await;
-                backoff_sec = (backoff_sec * 2).min(cfg.backoff_max_sec);
-                continue;
+            let unauth_client =
+                match ws::Client::new(cfg.endpoint.as_str(), WsConnectionConfig::default()) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        state.set_user_connected(false);
+                        log_event(
+                            "polymarket_ws_user_client_create_failed",
+                            json!({
+                                "error": e.to_string(),
+                                "endpoint": cfg.endpoint
+                            }),
+                        );
+                        sleep(Duration::from_secs(backoff_sec)).await;
+                        backoff_sec = (backoff_sec * 2).min(cfg.backoff_max_sec);
+                        continue;
+                    }
+                };
+
+            match unauth_client.authenticate(credentials, address) {
+                Ok(v) => {
+                    user_client = Some(v);
+                    user_client
+                        .as_ref()
+                        .expect("user ws client inserted")
+                        .clone()
+                }
+                Err(e) => {
+                    state.set_user_connected(false);
+                    log_event(
+                        "polymarket_ws_user_authenticate_failed",
+                        json!({
+                            "error": e.to_string()
+                        }),
+                    );
+                    sleep(Duration::from_secs(backoff_sec)).await;
+                    backoff_sec = (backoff_sec * 2).min(cfg.backoff_max_sec);
+                    continue;
+                }
             }
         };
 
-        let stream = match user_client.subscribe_user_events(market_ids.clone()) {
+        let mut stream = match subscribe_user_stream(&client, market_ids.as_slice()) {
             Ok(v) => v,
             Err(e) => {
+                if let Some(guard_market) = user_teardown_guard.take() {
+                    unsubscribe_user_markets(
+                        &client,
+                        std::slice::from_ref(&guard_market),
+                        "teardown_guard_release_after_subscribe_failed",
+                    );
+                }
+                user_client = None;
                 state.set_user_connected(false);
                 log_event(
                     "polymarket_ws_user_subscribe_failed",
                     json!({
-                        "error": e.to_string(),
+                        "error": e,
                         "market_count": market_ids.len(),
                         "tracked_markets": tracked_markets
                     }),
@@ -2069,6 +2360,13 @@ async fn run_user_loop(
                 continue;
             }
         };
+        if let Some(guard_market) = user_teardown_guard.take() {
+            unsubscribe_user_markets(
+                &client,
+                std::slice::from_ref(&guard_market),
+                "teardown_guard_release",
+            );
+        }
 
         backoff_sec = cfg.backoff_min_sec;
         state.set_user_connected(true);
@@ -2087,14 +2385,13 @@ async fn run_user_loop(
             }),
         );
 
-        let mut stream = Box::pin(stream);
         let mut refresh_interval = tokio::time::interval(Duration::from_secs(cfg.refresh_sec));
         refresh_interval.tick().await;
         let mut refresh_reconnect = false;
         let mut pending_target_change: Option<PendingUserTargetChange> = None;
         let mut last_scope_revision = state.subscription_scope_revision();
         let mut pending_scope_reconnect_at: Option<Instant> = None;
-        let sticky_scope_refresh_at = Instant::now()
+        let mut sticky_scope_refresh_at = Instant::now()
             + Duration::from_millis(
                 u64::try_from(cfg.sticky_scope_ttl_ms)
                     .ok()
@@ -2104,17 +2401,93 @@ async fn run_user_loop(
         loop {
             tokio::select! {
                 _ = sleep_until(sticky_scope_refresh_at) => {
-                    refresh_reconnect = true;
-                    log_event(
-                        "polymarket_ws_user_sticky_scope_refresh_reconnect",
-                        json!({
-                            "market_count": market_ids.len(),
-                            "tracked_markets": tracked_markets,
-                            "sticky_scope_ttl_ms": cfg.sticky_scope_ttl_ms,
-                            "sticky_scope_max_markets": cfg.sticky_scope_max_markets
-                        }),
-                    );
-                    break;
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    match discover_subscription_targets(
+                        api.as_ref(),
+                        &state,
+                        cfg.market_discovery_limit,
+                    )
+                    .await
+                    {
+                        Ok((_, next_market_ids, next_tracked_markets)) => {
+                            let (_, protected_market_ids) =
+                                state.live_order_subscription_targets().await;
+                            let market_update = update_sticky_targets(
+                                &mut subscribed_market_superset,
+                                next_market_ids,
+                                &protected_market_ids,
+                                now_ms,
+                                cfg.sticky_scope_ttl_ms,
+                                cfg.sticky_scope_max_markets,
+                            );
+                            let next_market_ids = market_update.values;
+                            if next_market_ids.is_empty() {
+                                refresh_reconnect = true;
+                                log_event(
+                                    "polymarket_ws_user_sticky_scope_empty",
+                                    json!({
+                                        "prev_market_count": market_ids.len(),
+                                        "tracked_markets": tracked_markets
+                                    }),
+                                );
+                                break;
+                            }
+                            let prev_market_count = market_ids.len();
+                            let prev_tracked_markets = tracked_markets;
+                            if next_market_ids != market_ids {
+                                if let Err(error) = replace_user_stream_scope(
+                                    &client,
+                                    &mut stream,
+                                    &mut market_ids,
+                                    next_market_ids,
+                                    "sticky_scope_refresh",
+                                ) {
+                                    user_client = None;
+                                    user_stream_log_state.mark_degraded(
+                                        "polymarket_ws_user_stream_degraded",
+                                        "polymarket_ws_user_stream_degraded_heartbeat",
+                                        "sticky_scope_resubscribe_failed",
+                                        json!({
+                                            "error": error,
+                                            "market_count": market_ids.len()
+                                        }),
+                                    );
+                                    break;
+                                }
+                            }
+                            tracked_markets = next_tracked_markets.max(market_ids.len());
+                            log_event(
+                                "polymarket_ws_user_sticky_scope_refreshed",
+                                json!({
+                                    "prev_market_count": prev_market_count,
+                                    "next_market_count": market_ids.len(),
+                                    "prev_tracked_markets": prev_tracked_markets,
+                                    "next_tracked_markets": tracked_markets,
+                                    "market_expired_removed": market_update.expired_removed,
+                                    "market_capped_removed": market_update.capped_removed,
+                                    "sticky_scope_ttl_ms": cfg.sticky_scope_ttl_ms,
+                                    "sticky_scope_max_markets": cfg.sticky_scope_max_markets
+                                }),
+                            );
+                        }
+                        Err(e) => {
+                            log_event(
+                                "polymarket_ws_user_sticky_scope_discovery_failed",
+                                json!({
+                                    "error": e.to_string(),
+                                    "market_count": market_ids.len(),
+                                    "tracked_markets": tracked_markets
+                                }),
+                            );
+                        }
+                    }
+                    sticky_scope_refresh_at = Instant::now()
+                        + Duration::from_millis(
+                            u64::try_from(cfg.sticky_scope_ttl_ms)
+                                .ok()
+                                .unwrap_or(900_000)
+                                .max(60_000),
+                        );
                 }
                 scope_revision = state.wait_for_subscription_scope_revision_after(last_scope_revision) => {
                     let scope_debounce_ms = cfg.subscription_scope_reconnect_debounce_ms;
@@ -2126,17 +2499,19 @@ async fn run_user_loop(
                         0
                     };
                     if scope_wait_ms > 0 {
-                        log_event(
-                            "polymarket_ws_user_scope_reconnect_debounced",
-                            json!({
-                                "wait_ms": scope_wait_ms,
-                                "debounce_ms": scope_debounce_ms,
-                                "scope_revision": scope_revision
-                            }),
-                        );
                         last_scope_revision = scope_revision;
-                        pending_scope_reconnect_at =
-                            Some(Instant::now() + Duration::from_millis(scope_wait_ms));
+                        if pending_scope_reconnect_at.is_none() {
+                            log_event(
+                                "polymarket_ws_user_scope_reconnect_debounced",
+                                json!({
+                                    "wait_ms": scope_wait_ms,
+                                    "debounce_ms": scope_debounce_ms,
+                                    "scope_revision": scope_revision
+                                }),
+                            );
+                            pending_scope_reconnect_at =
+                                Some(Instant::now() + Duration::from_millis(scope_wait_ms));
+                        }
                         continue;
                     }
                     pending_scope_reconnect_at = None;
@@ -2155,22 +2530,48 @@ async fn run_user_loop(
                             let target_added =
                                 target_change_has_additions(market_ids.as_slice(), next_market_ids.as_slice());
                             if target_changed && target_added {
-                                refresh_reconnect = true;
-                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
-                                log_event(
-                                    "polymarket_ws_user_refresh_reconnect",
-                                    json!({
-                                        "reason": "subscription_scope_changed",
-                                        "scope_debounce_ms": scope_debounce_ms,
-                                        "scope_wait_ms": scope_wait_ms,
-                                        "prev_market_count": market_ids.len(),
-                                        "next_market_count": next_market_ids.len(),
-                                        "prev_tracked_markets": tracked_markets,
-                                        "next_tracked_markets": next_tracked_markets,
-                                        "scope_revision": scope_revision
-                                    }),
-                                );
-                                break;
+                                let prev_market_count = market_ids.len();
+                                let prev_tracked_markets = tracked_markets;
+                                match replace_user_stream_scope(
+                                    &client,
+                                    &mut stream,
+                                    &mut market_ids,
+                                    next_market_ids,
+                                    "subscription_scope_changed",
+                                ) {
+                                    Ok(()) => {
+                                        tracked_markets =
+                                            tracked_markets.max(next_tracked_markets).max(market_ids.len());
+                                        last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
+                                        pending_target_change = None;
+                                        log_event(
+                                            "polymarket_ws_user_scope_resubscribed",
+                                            json!({
+                                                "reason": "subscription_scope_changed",
+                                                "scope_debounce_ms": scope_debounce_ms,
+                                                "scope_wait_ms": scope_wait_ms,
+                                                "prev_market_count": prev_market_count,
+                                                "next_market_count": market_ids.len(),
+                                                "prev_tracked_markets": prev_tracked_markets,
+                                                "next_tracked_markets": next_tracked_markets,
+                                                "scope_revision": scope_revision
+                                            }),
+                                        );
+                                    }
+                                    Err(error) => {
+                                        user_client = None;
+                                        user_stream_log_state.mark_degraded(
+                                            "polymarket_ws_user_stream_degraded",
+                                            "polymarket_ws_user_stream_degraded_heartbeat",
+                                            "scope_resubscribe_failed",
+                                            json!({
+                                                "error": error,
+                                                "market_count": market_ids.len()
+                                            }),
+                                        );
+                                        break;
+                                    }
+                                }
                             } else if target_changed {
                                 log_event(
                                     "polymarket_ws_user_scope_shrink_deferred",
@@ -2221,22 +2622,48 @@ async fn run_user_loop(
                             let target_added =
                                 target_change_has_additions(market_ids.as_slice(), next_market_ids.as_slice());
                             if target_changed && target_added {
-                                refresh_reconnect = true;
-                                last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
-                                log_event(
-                                    "polymarket_ws_user_refresh_reconnect",
-                                    json!({
-                                        "reason": "subscription_scope_changed",
-                                        "scope_debounce_ms": scope_debounce_ms,
-                                        "scope_wait_ms": 0_u64,
-                                        "prev_market_count": market_ids.len(),
-                                        "next_market_count": next_market_ids.len(),
-                                        "prev_tracked_markets": tracked_markets,
-                                        "next_tracked_markets": next_tracked_markets,
-                                        "scope_revision": scope_revision
-                                    }),
-                                );
-                                break;
+                                let prev_market_count = market_ids.len();
+                                let prev_tracked_markets = tracked_markets;
+                                match replace_user_stream_scope(
+                                    &client,
+                                    &mut stream,
+                                    &mut market_ids,
+                                    next_market_ids,
+                                    "subscription_scope_changed",
+                                ) {
+                                    Ok(()) => {
+                                        tracked_markets =
+                                            tracked_markets.max(next_tracked_markets).max(market_ids.len());
+                                        last_scope_reconnect_ms = chrono::Utc::now().timestamp_millis();
+                                        pending_target_change = None;
+                                        log_event(
+                                            "polymarket_ws_user_scope_resubscribed",
+                                            json!({
+                                                "reason": "subscription_scope_changed",
+                                                "scope_debounce_ms": scope_debounce_ms,
+                                                "scope_wait_ms": 0_u64,
+                                                "prev_market_count": prev_market_count,
+                                                "next_market_count": market_ids.len(),
+                                                "prev_tracked_markets": prev_tracked_markets,
+                                                "next_tracked_markets": next_tracked_markets,
+                                                "scope_revision": scope_revision
+                                            }),
+                                        );
+                                    }
+                                    Err(error) => {
+                                        user_client = None;
+                                        user_stream_log_state.mark_degraded(
+                                            "polymarket_ws_user_stream_degraded",
+                                            "polymarket_ws_user_stream_degraded_heartbeat",
+                                            "scope_resubscribe_failed",
+                                            json!({
+                                                "error": error,
+                                                "market_count": market_ids.len()
+                                            }),
+                                        );
+                                        break;
+                                    }
+                                }
                             } else if target_changed {
                                 log_event(
                                     "polymarket_ws_user_scope_shrink_deferred",
@@ -2369,24 +2796,50 @@ async fn run_user_loop(
                                     );
                                     continue;
                                 }
-                                refresh_reconnect = true;
-                                log_event(
-                                    "polymarket_ws_user_refresh_reconnect",
-                                    json!({
-                                        "reason": "subscription_target_changed",
-                                        "prev_market_count": market_ids.len(),
-                                        "next_market_count": next_market_ids.len(),
-                                        "prev_tracked_markets": tracked_markets,
-                                        "next_tracked_markets": next_tracked_markets,
-                                        "confirmations": confirmations,
-                                        "required_confirmations": cfg.target_change_debounce_scans,
-                                        "hold_elapsed_ms": hold_elapsed_ms,
-                                        "hold_required_ms": hold_required_ms,
-                                        "delta_bps": max_delta_bps,
-                                        "min_delta_bps": cfg.target_change_min_delta_bps
-                                    }),
-                                );
-                                break;
+                                let prev_market_count = market_ids.len();
+                                let prev_tracked_markets = tracked_markets;
+                                match replace_user_stream_scope(
+                                    &client,
+                                    &mut stream,
+                                    &mut market_ids,
+                                    next_market_ids,
+                                    "subscription_target_changed",
+                                ) {
+                                    Ok(()) => {
+                                        tracked_markets =
+                                            tracked_markets.max(next_tracked_markets).max(market_ids.len());
+                                        pending_target_change = None;
+                                        log_event(
+                                            "polymarket_ws_user_scope_resubscribed",
+                                            json!({
+                                                "reason": "subscription_target_changed",
+                                                "prev_market_count": prev_market_count,
+                                                "next_market_count": market_ids.len(),
+                                                "prev_tracked_markets": prev_tracked_markets,
+                                                "next_tracked_markets": next_tracked_markets,
+                                                "confirmations": confirmations,
+                                                "required_confirmations": cfg.target_change_debounce_scans,
+                                                "hold_elapsed_ms": hold_elapsed_ms,
+                                                "hold_required_ms": hold_required_ms,
+                                                "delta_bps": max_delta_bps,
+                                                "min_delta_bps": cfg.target_change_min_delta_bps
+                                            }),
+                                        );
+                                    }
+                                    Err(error) => {
+                                        user_client = None;
+                                        user_stream_log_state.mark_degraded(
+                                            "polymarket_ws_user_stream_degraded",
+                                            "polymarket_ws_user_stream_degraded_heartbeat",
+                                            "target_resubscribe_failed",
+                                            json!({
+                                                "error": error,
+                                                "market_count": market_ids.len()
+                                            }),
+                                        );
+                                        break;
+                                    }
+                                }
                             } else if pending_target_change.is_some() {
                                 pending_target_change = None;
                                 log_event("polymarket_ws_user_target_change_cleared", json!({}));
@@ -2439,9 +2892,41 @@ async fn run_user_loop(
                 }
             }
         }
+        let teardown_reason = if refresh_reconnect {
+            "scope_refresh"
+        } else {
+            "stream_restart"
+        };
+        let teardown_guard_armed = if let Some(guard_market) = market_ids.first().cloned() {
+            match client.subscribe_user_events(vec![guard_market]) {
+                Ok(_guard_stream) => {
+                    user_teardown_guard = Some(guard_market);
+                    true
+                }
+                Err(e) => {
+                    user_client = None;
+                    log_event(
+                        "polymarket_ws_user_teardown_guard_failed",
+                        json!({
+                            "error": e.to_string(),
+                            "market_count": market_ids.len(),
+                            "reason": teardown_reason
+                        }),
+                    );
+                    false
+                }
+            }
+        } else {
+            false
+        };
         drop(stream);
-        drop(user_client);
-        state.set_user_connected(false);
+        if teardown_guard_armed {
+            unsubscribe_user_markets(&client, market_ids.as_slice(), teardown_reason);
+        }
+        drop(client);
+        if !refresh_reconnect {
+            state.set_user_connected(false);
+        }
         state.prune_stale(cfg.prune_after_ms).await;
         if !refresh_reconnect {
             sleep(Duration::from_secs(backoff_sec)).await;
@@ -2497,6 +2982,146 @@ fn parse_missed_messages_count(err_text: &str) -> Option<u32> {
         return None;
     }
     digits.parse::<u32>().ok()
+}
+
+fn subscribe_market_stream_pair(
+    client: &ws::Client,
+    asset_ids: &[U256],
+    shard_idx: usize,
+    shard_count: usize,
+    reason: &str,
+) -> std::result::Result<(MarketBookStream, MarketTradeStream), String> {
+    if asset_ids.is_empty() {
+        return Err("asset_ids cannot be empty".to_string());
+    }
+    let book_stream = client
+        .subscribe_orderbook(asset_ids.to_vec())
+        .map_err(|e| e.to_string())?;
+    let trade_stream = match client.subscribe_last_trade_price(asset_ids.to_vec()) {
+        Ok(v) => v,
+        Err(e) => {
+            unsubscribe_market_asset_streams(client, asset_ids, 1, reason, shard_idx, shard_count);
+            return Err(e.to_string());
+        }
+    };
+    Ok((Box::pin(book_stream), Box::pin(trade_stream)))
+}
+
+fn replace_market_stream_scope(
+    client: &ws::Client,
+    book_stream: &mut MarketBookStream,
+    trade_stream: &mut MarketTradeStream,
+    current_asset_ids: &mut Vec<U256>,
+    next_asset_ids: Vec<U256>,
+    reason: &str,
+    shard_idx: usize,
+    shard_count: usize,
+) -> std::result::Result<(), String> {
+    if next_asset_ids == *current_asset_ids {
+        return Ok(());
+    }
+    let (next_book_stream, next_trade_stream) = subscribe_market_stream_pair(
+        client,
+        next_asset_ids.as_slice(),
+        shard_idx,
+        shard_count,
+        reason,
+    )?;
+    let old_asset_ids = std::mem::replace(current_asset_ids, next_asset_ids);
+    let old_book_stream = std::mem::replace(book_stream, next_book_stream);
+    let old_trade_stream = std::mem::replace(trade_stream, next_trade_stream);
+    drop(old_book_stream);
+    drop(old_trade_stream);
+    unsubscribe_market_asset_streams(
+        client,
+        old_asset_ids.as_slice(),
+        2,
+        reason,
+        shard_idx,
+        shard_count,
+    );
+    Ok(())
+}
+
+fn subscribe_user_stream(
+    client: &ws::Client<Authenticated<Normal>>,
+    market_ids: &[B256],
+) -> std::result::Result<UserWsStream, String> {
+    if market_ids.is_empty() {
+        return Err("market_ids cannot be empty".to_string());
+    }
+    client
+        .subscribe_user_events(market_ids.to_vec())
+        .map(|stream| Box::pin(stream) as UserWsStream)
+        .map_err(|e| e.to_string())
+}
+
+fn replace_user_stream_scope(
+    client: &ws::Client<Authenticated<Normal>>,
+    stream: &mut UserWsStream,
+    current_market_ids: &mut Vec<B256>,
+    next_market_ids: Vec<B256>,
+    reason: &str,
+) -> std::result::Result<(), String> {
+    if next_market_ids == *current_market_ids {
+        return Ok(());
+    }
+    let next_stream = subscribe_user_stream(client, next_market_ids.as_slice())?;
+    let old_market_ids = std::mem::replace(current_market_ids, next_market_ids);
+    let old_stream = std::mem::replace(stream, next_stream);
+    drop(old_stream);
+    unsubscribe_user_markets(client, old_market_ids.as_slice(), reason);
+    Ok(())
+}
+
+fn unsubscribe_market_asset_streams(
+    client: &ws::Client,
+    asset_ids: &[U256],
+    stream_count: u8,
+    reason: &str,
+    shard_idx: usize,
+    shard_count: usize,
+) {
+    if asset_ids.is_empty() || stream_count == 0 {
+        return;
+    }
+    for stream_idx in 0..stream_count {
+        if let Err(e) = client.unsubscribe_orderbook(asset_ids) {
+            log_event(
+                "polymarket_ws_market_unsubscribe_failed",
+                json!({
+                    "error": e.to_string(),
+                    "asset_count": asset_ids.len(),
+                    "stream_idx": stream_idx,
+                    "stream_count": stream_count,
+                    "reason": reason,
+                    "shard_idx": shard_idx,
+                    "shard_count": shard_count
+                }),
+            );
+            break;
+        }
+    }
+}
+
+fn unsubscribe_user_markets(
+    client: &ws::Client<Authenticated<Normal>>,
+    market_ids: &[B256],
+    reason: &str,
+) {
+    if market_ids.is_empty() {
+        return;
+    }
+    if let Err(e) = client.unsubscribe_user_events(market_ids) {
+        log_event(
+            "polymarket_ws_user_unsubscribe_failed",
+            json!({
+                "error": e.to_string(),
+                "market_count": market_ids.len(),
+                "reason": reason
+            }),
+        );
+    }
 }
 
 fn symmetric_diff_count_sorted<T: Ord>(left: &[T], right: &[T]) -> usize {
@@ -3002,6 +3627,7 @@ mod tests {
             &[
                 ("EVPOLY_PM_WS_MARKET_DISCOVERY_LIMIT", None),
                 ("EVPOLY_PM_WS_REFRESH_SEC", None),
+                ("EVPOLY_PM_WS_SCOPE_RECONNECT_DEBOUNCE_MS", None),
                 ("EVPOLY_PM_WS_STICKY_SCOPE_TTL_MS", None),
                 ("EVPOLY_PM_WS_STICKY_SCOPE_MAX_MARKETS", None),
                 ("EVPOLY_PM_WS_STICKY_SCOPE_MAX_ASSETS", None),
@@ -3010,6 +3636,7 @@ mod tests {
                 let cfg = PolymarketWsConfig::default();
                 assert_eq!(cfg.market_discovery_limit, 250);
                 assert_eq!(cfg.refresh_sec, 90);
+                assert_eq!(cfg.subscription_scope_reconnect_debounce_ms, 5_000);
                 assert_eq!(cfg.sticky_scope_ttl_ms, 900_000);
                 assert_eq!(cfg.sticky_scope_max_markets, 300);
                 assert_eq!(cfg.sticky_scope_max_assets, 650);

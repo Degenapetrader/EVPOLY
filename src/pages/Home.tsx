@@ -1059,10 +1059,10 @@ export function Home() {
               type="button"
               onClick={() => void handleOpenLiveProfile()}
               disabled={actionLoading}
-              className="ui-button ui-button--accent"
-              title={`Switch to ${liveProfileLabel}`}
-            >
-              Open Live Profile
+            className="ui-button ui-button--accent"
+            title={`Switch to ${liveProfileLabel}`}
+          >
+              Another Bot is Running
             </button>
           ) : (
             <>

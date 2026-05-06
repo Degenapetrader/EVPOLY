@@ -74,7 +74,11 @@ async fn raw_get(
 ) -> Result<Value> {
     let timestamp = Utc::now().timestamp();
     let parsed = reqwest::Url::parse(url)?;
-    let message = format!("{timestamp}GET{}", parsed.path());
+    let path_with_query = match parsed.query() {
+        Some(query) => format!("{}?{}", parsed.path(), query),
+        None => parsed.path().to_string(),
+    };
+    let message = format!("{timestamp}GET{path_with_query}");
     let signature = hmac_signature(secret_b64url, &message)?;
 
     let text = http

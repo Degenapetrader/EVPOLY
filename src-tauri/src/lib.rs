@@ -4416,6 +4416,13 @@ async fn ensure_generated_credentials(config: &mut DesktopConfig) -> Result<Vec<
             "not_required".to_string()
         };
     }
+    if config.sig_type == 3 {
+        if let Some(status) =
+            reconcile_desktop_magic_deposit_wallet(config.deposit_wallet.as_str()).await?
+        {
+            config.approval_status = status;
+        }
+    }
     config.onboarding_status = if clean_onboarding_ready(config) {
         "credentials_ready".to_string()
     } else {
@@ -5560,6 +5567,42 @@ async fn post_desktop_magic_bridge(
         return Err(format!("Magic bridge returned {}: {}", status, body));
     }
     serde_json::from_str(&body).map_err(|e| format!("parse Magic bridge response: {e}"))
+}
+
+async fn reconcile_desktop_magic_deposit_wallet(
+    deposit_wallet: &str,
+) -> Result<Option<String>, String> {
+    let deposit_wallet = deposit_wallet.trim();
+    if deposit_wallet.is_empty() {
+        return Ok(None);
+    }
+    let response = post_desktop_magic_bridge(
+        "reconcile",
+        serde_json::json!({
+            "deposit_wallet_address": deposit_wallet,
+        }),
+    )
+    .await?;
+    let status = response
+        .get("approval_status")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if response
+        .get("profile_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+        && status.as_deref() != Some("ready")
+    {
+        return Err(format!(
+            "Deposit Wallet approval is not ready yet (status: {}). Wait a minute and start again.",
+            status.as_deref().unwrap_or("unknown")
+        ));
+    }
+    Ok(status)
 }
 
 #[tauri::command]

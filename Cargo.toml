@@ -66,6 +66,7 @@ rust_decimal = "1.33"
 rust_decimal_macros = "1.33"
 hmac = "0.12"
 sha2 = "0.10"
+secrecy = "0.10"
 hex = "0.4"
 base64 = "0.21"
 polymarket_client_sdk_v2 = { version = "=0.6.0-canary.1", features = ["clob", "ctf", "ws", "gamma", "bridge"] }

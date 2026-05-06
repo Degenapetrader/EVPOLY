@@ -1,9 +1,15 @@
 # EVPoly Desktop Changelog
 
 ## Unreleased
+- Scoped overview PnL, latency, and liquidity rewards to the active desktop profile/wallet, and cleaned the rewards unavailable state for wallets without reward access.
+- Fixed Deposit Wallet allowance parsing and gated Deposit Wallet starts until the API bridge reports approval readiness.
+- Clarified the live-profile control label when another profile bot is already running.
 - Fixed MM 2.0 route cap normalization so Dual route migrates stale Sport-only or Non-S-only caps back to `50/50`, and Home route buttons save the route-default caps.
 - Added MM 2.0 Sport / Non-S sizing profiles in desktop config and settings UI.
 - Added a desktop runtime patch for Non-S sizing overrides that fall back to Sport values and apply only to fresh BUY sizing plus BUY-side ratio hygiene.
+
+## UI-v2.2.5 - 2026-05-06
+- Bumped desktop app/updater version to 2.2.5.
 
 ## UI-v2.1.0 - 2026-04-29
 - Added MM 2.0 inventory-exit max-loss control and Tauri config mapping.

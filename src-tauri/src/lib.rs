@@ -150,6 +150,8 @@ struct TradeActivityRecord {
 
 #[derive(Clone, Default)]
 struct HomeDbSummary {
+    profile_id: String,
+    wallet_address: String,
     fetched_at_ms: i64,
     pnl_today_utc: f64,
     ack_sample_count: u64,
@@ -180,6 +182,8 @@ impl HomeSlowOverviewSnapshot {
 
 #[derive(Clone)]
 struct HomeTradeStatsSnapshot {
+    profile_id: String,
+    wallet_address: String,
     fetched_at_ms: i64,
     value: Value,
 }
@@ -2922,19 +2926,27 @@ fn ack_latency_window_start_ms() -> i64 {
     Utc::now().timestamp_millis() - (24 * 60 * 60 * 1000)
 }
 
-fn query_pnl_today_utc(conn: &Connection) -> f64 {
+fn profile_stats_start_ms(profile: &Profile) -> i64 {
+    DateTime::parse_from_rfc3339(profile.created_at.as_str())
+        .ok()
+        .map(|dt| dt.timestamp_millis())
+        .unwrap_or(0)
+}
+
+fn query_pnl_today_utc(conn: &Connection, profile_start_ms: i64) -> f64 {
+    let start_ms = start_of_current_utc_day_ms().max(profile_start_ms);
     conn.query_row(
         "SELECT COALESCE(SUM(COALESCE(pnl_usd, 0.0)), 0.0) \
          FROM trade_events \
          WHERE event_type='EXIT' AND COALESCE(ts_ms, 0) >= ?1",
-        [start_of_current_utc_day_ms()],
+        [start_ms],
         |row| row.get(0),
     )
     .unwrap_or(0.0)
 }
 
-fn query_ack_latency_summary(conn: &Connection) -> (u64, Option<f64>, u64) {
-    let cutoff_ms = ack_latency_window_start_ms();
+fn query_ack_latency_summary(conn: &Connection, profile_start_ms: i64) -> (u64, Option<f64>, u64) {
+    let cutoff_ms = ack_latency_window_start_ms().max(profile_start_ms);
     let ack_latency_expr = r#"
 CASE
     WHEN COALESCE(json_valid(reason), 0) = 0 THEN NULL
@@ -3048,6 +3060,14 @@ async fn load_liquidity_rewards_overview(
     ))
 }
 
+fn clean_liquidity_rewards_error(error: String) -> String {
+    if error.contains("401") || error.to_ascii_lowercase().contains("unauthorized") {
+        "Rewards unavailable for this wallet.".to_string()
+    } else {
+        error
+    }
+}
+
 fn count_unknown_ack_warnings(data_dir: &Path, max_lines: usize) -> usize {
     let path = data_dir.join(FULL_DEBUG_LOG_NAME);
     let batch = match log_stream::read_log_tail(&path, None, max_lines.max(1)) {
@@ -3064,6 +3084,14 @@ fn count_unknown_ack_warnings(data_dir: &Path, max_lines: usize) -> usize {
                 || lower.contains("returned empty orderid")
         })
         .count()
+}
+
+fn count_unknown_ack_warnings_since(
+    data_dir: &Path,
+    max_lines: usize,
+    _profile_start_ms: i64,
+) -> usize {
+    count_unknown_ack_warnings(data_dir, max_lines)
 }
 
 fn format_api_timestamp(timestamp_secs: Option<i64>) -> Option<String> {
@@ -3578,50 +3606,6 @@ async fn build_home_overview_payload(
         )
     };
     let wallet_sync_status = wallet_sync.lock().map_err(|e| e.to_string())?.status();
-    let db_path = resolve_tracking_db_path(&data_dir.0);
-    let db_summary = {
-        let cached = overview_cache
-            .0
-            .lock()
-            .map_err(|e| e.to_string())?
-            .db_summary
-            .clone();
-        if let Some(summary) = cached.filter(|summary| {
-            !force_refresh && now_ms.saturating_sub(summary.fetched_at_ms) <= HOME_DB_REFRESH_MS
-        }) {
-            summary
-        } else {
-            let (pnl_today_utc, ack_sample_count, avg_ack_latency_ms, recent_ack_warning_count) =
-                Connection::open(&db_path)
-                    .ok()
-                    .map(|conn| {
-                        configure_tracking_connection(&conn);
-                        let pnl = query_pnl_today_utc(&conn);
-                        let (ack_count, ack_avg, ack_warnings) = query_ack_latency_summary(&conn);
-                        (pnl, ack_count, ack_avg, ack_warnings)
-                    })
-                    .unwrap_or((0.0, 0, None, 0));
-            let summary = HomeDbSummary {
-                fetched_at_ms: now_ms,
-                pnl_today_utc,
-                ack_sample_count,
-                avg_ack_latency_ms,
-                recent_ack_warning_count,
-            };
-            overview_cache
-                .0
-                .lock()
-                .map_err(|e| e.to_string())?
-                .db_summary = Some(summary.clone());
-            summary
-        }
-    };
-    let pnl_today_utc = db_summary.pnl_today_utc;
-    let ack_sample_count = db_summary.ack_sample_count;
-    let avg_ack_latency_ms = db_summary.avg_ack_latency_ms;
-    let recent_ack_warning_count = db_summary.recent_ack_warning_count;
-    let recent_unknown_ack_count = count_unknown_ack_warnings(&data_dir.0, 160) as u64;
-
     let (active_profile_id, maybe_profile, live_profile_name) = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
         let active_id = pm.get_active_profile_id();
@@ -3633,6 +3617,7 @@ async fn build_home_overview_payload(
             .map(|profile| profile.name);
         (active_id, active_profile, live_name)
     };
+    let db_path = resolve_tracking_db_path(&data_dir.0);
     let active_bot_state = active_profile_bot_state(
         bot_snapshot.0.as_str(),
         active_profile_id.as_deref(),
@@ -3667,14 +3652,66 @@ async fn build_home_overview_payload(
             "last_heartbeat_at_ms": Value::Null,
             "available_balance_error": Value::Null,
             "portfolio_value_error": Value::Null,
-            "ack_warning_count_recent": recent_ack_warning_count,
-            "avg_ack_latency_ms": avg_ack_latency_ms,
-            "ack_sample_count": ack_sample_count,
+            "ack_warning_count_recent": 0,
+            "avg_ack_latency_ms": Value::Null,
+            "ack_sample_count": 0,
             "warnings": [],
         }));
     };
 
     let wallet_address = profile.primary_wallet_address();
+    let profile_start_ms = profile_stats_start_ms(&profile);
+    let db_summary = {
+        let cached = overview_cache
+            .0
+            .lock()
+            .map_err(|e| e.to_string())?
+            .db_summary
+            .clone();
+        if let Some(summary) = cached.filter(|summary| {
+            !force_refresh
+                && summary.profile_id == profile.id
+                && summary
+                    .wallet_address
+                    .eq_ignore_ascii_case(wallet_address.as_str())
+                && now_ms.saturating_sub(summary.fetched_at_ms) <= HOME_DB_REFRESH_MS
+        }) {
+            summary
+        } else {
+            let (pnl_today_utc, ack_sample_count, avg_ack_latency_ms, recent_ack_warning_count) =
+                Connection::open(&db_path)
+                    .ok()
+                    .map(|conn| {
+                        configure_tracking_connection(&conn);
+                        let pnl = query_pnl_today_utc(&conn, profile_start_ms);
+                        let (ack_count, ack_avg, ack_warnings) =
+                            query_ack_latency_summary(&conn, profile_start_ms);
+                        (pnl, ack_count, ack_avg, ack_warnings)
+                    })
+                    .unwrap_or((0.0, 0, None, 0));
+            let summary = HomeDbSummary {
+                profile_id: profile.id.clone(),
+                wallet_address: wallet_address.clone(),
+                fetched_at_ms: now_ms,
+                pnl_today_utc,
+                ack_sample_count,
+                avg_ack_latency_ms,
+                recent_ack_warning_count,
+            };
+            overview_cache
+                .0
+                .lock()
+                .map_err(|e| e.to_string())?
+                .db_summary = Some(summary.clone());
+            summary
+        }
+    };
+    let pnl_today_utc = db_summary.pnl_today_utc;
+    let ack_sample_count = db_summary.ack_sample_count;
+    let avg_ack_latency_ms = db_summary.avg_ack_latency_ms;
+    let recent_ack_warning_count = db_summary.recent_ack_warning_count;
+    let recent_unknown_ack_count =
+        count_unknown_ack_warnings_since(&data_dir.0, 160, profile_start_ms) as u64;
     let slow_snapshot = {
         let cached = overview_cache
             .0
@@ -3733,8 +3770,8 @@ async fn build_home_overview_payload(
                 liquidity_rewards_error,
             ) = match rewards_result {
                 Ok(Ok((today, lifetime, as_of_utc))) => (today, lifetime, as_of_utc, None),
-                Ok(Err(err)) => (None, None, None, Some(err)),
-                Err(err) => (None, None, None, Some(err)),
+                Ok(Err(err)) => (None, None, None, Some(clean_liquidity_rewards_error(err))),
+                Err(err) => (None, None, None, Some(clean_liquidity_rewards_error(err))),
             };
             let snapshot = HomeSlowOverviewSnapshot {
                 profile_id: profile.id.clone(),
@@ -4943,7 +4980,7 @@ fn import_config(
 
 // ── Data (tracking.db) ──────────────────────────────────────────────
 
-fn build_trade_stats_value(data_dir: &Path) -> serde_json::Value {
+fn build_trade_stats_value(data_dir: &Path, profile_start_ms: i64) -> serde_json::Value {
     let empty = serde_json::json!({
         "total_pnl": 0.0,
         "win_rate": 0.0,
@@ -4961,18 +4998,20 @@ fn build_trade_stats_value(data_dir: &Path) -> serde_json::Value {
     };
 
     let total_trades: i64 = conn
-        .query_row("SELECT COALESCE(MAX(id), 0) FROM fills_v2", [], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM fills_v2 WHERE COALESCE(ts_ms, created_at_ms, 0) >= ?1",
+            [profile_start_ms],
+            |row| row.get(0),
+        )
         .unwrap_or(0);
     let total_pnl: f64 = conn
         .query_row(
-            "SELECT COALESCE(SUM(realized_pnl_usd), 0.0) FROM positions_v2",
-            [],
+            "SELECT COALESCE(SUM(realized_pnl_usd), 0.0) FROM positions_v2 WHERE COALESCE(opened_at_ms, updated_at_ms, 0) >= ?1",
+            [profile_start_ms],
             |row| row.get(0),
         )
         .unwrap_or(0.0);
-    let history_start_ms = start_of_current_utc_day_ms();
+    let history_start_ms = start_of_current_utc_day_ms().max(profile_start_ms);
     let (winning_trades, losing_trades): (i64, i64) = conn
         .query_row(
             "SELECT \
@@ -4989,7 +5028,8 @@ fn build_trade_stats_value(data_dir: &Path) -> serde_json::Value {
     } else {
         0.0
     };
-    let (ack_sample_count, avg_ack_latency_ms, _) = query_ack_latency_summary(&conn);
+    let (ack_sample_count, avg_ack_latency_ms, _) =
+        query_ack_latency_summary(&conn, profile_start_ms);
 
     let mut pnl_history = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
@@ -5031,22 +5071,61 @@ fn build_trade_stats_value(data_dir: &Path) -> serde_json::Value {
 #[tauri::command]
 fn get_trade_stats(
     data_dir: State<'_, AppDataDir>,
+    profiles: State<'_, ProfileState>,
     overview_cache: State<'_, HomeOverviewCacheState>,
 ) -> serde_json::Value {
     let now_ms = Utc::now().timestamp_millis();
+    let profile = {
+        let Ok(pm) = profiles.lock() else {
+            return serde_json::json!({
+                "total_pnl": 0.0,
+                "win_rate": 0.0,
+                "total_trades": 0,
+                "winning_trades": 0,
+                "losing_trades": 0,
+                "avg_ack_latency_ms": Value::Null,
+                "ack_sample_count": 0,
+                "pnl_history": []
+            });
+        };
+        match active_profile(&pm) {
+            Ok(profile) => profile,
+            Err(_) => {
+                return serde_json::json!({
+                    "total_pnl": 0.0,
+                    "win_rate": 0.0,
+                    "total_trades": 0,
+                    "winning_trades": 0,
+                    "losing_trades": 0,
+                    "avg_ack_latency_ms": Value::Null,
+                    "ack_sample_count": 0,
+                    "pnl_history": []
+                });
+            }
+        }
+    };
+    let wallet_address = profile.primary_wallet_address();
     if let Some(snapshot) = overview_cache
         .0
         .lock()
         .ok()
         .and_then(|cache| cache.trade_stats.clone())
-        .filter(|snapshot| now_ms.saturating_sub(snapshot.fetched_at_ms) <= TRADE_STATS_REFRESH_MS)
+        .filter(|snapshot| {
+            snapshot.profile_id == profile.id
+                && snapshot
+                    .wallet_address
+                    .eq_ignore_ascii_case(wallet_address.as_str())
+                && now_ms.saturating_sub(snapshot.fetched_at_ms) <= TRADE_STATS_REFRESH_MS
+        })
     {
         return snapshot.value;
     }
 
-    let value = build_trade_stats_value(&data_dir.0);
+    let value = build_trade_stats_value(&data_dir.0, profile_stats_start_ms(&profile));
     if let Ok(mut cache) = overview_cache.0.lock() {
         cache.trade_stats = Some(HomeTradeStatsSnapshot {
+            profile_id: profile.id,
+            wallet_address,
             fetched_at_ms: now_ms,
             value: value.clone(),
         });
@@ -5589,6 +5668,19 @@ async fn reconcile_desktop_magic_deposit_wallet(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    let funding_status = response
+        .get("funding_status")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let funding_balance = response
+        .get("funding_balance_pusd")
+        .and_then(|value| match value {
+            Value::Number(number) => number.as_f64(),
+            Value::String(text) => text.parse::<f64>().ok(),
+            _ => None,
+        })
+        .unwrap_or(0.0);
     if response
         .get("profile_id")
         .and_then(serde_json::Value::as_str)
@@ -5597,6 +5689,15 @@ async fn reconcile_desktop_magic_deposit_wallet(
         .is_some()
         && status.as_deref() != Some("ready")
     {
+        if funding_balance <= 0.0
+            || funding_status.eq_ignore_ascii_case("awaiting_deposit")
+            || funding_status.eq_ignore_ascii_case("unknown")
+        {
+            return Err(
+                "Polymarket account created. Deposit Fund to this wallet, then start the bot."
+                    .to_string(),
+            );
+        }
         return Err(format!(
             "Deposit Wallet approval is not ready yet (status: {}). Wait a minute and start again.",
             status.as_deref().unwrap_or("unknown")

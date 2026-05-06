@@ -962,7 +962,7 @@ export function Home() {
                   : "Stop the live bot before starting this profile"
               }
             >
-              {overview?.live_profile_id ? "Open Live Profile" : "Stop Live Bot"}
+              {overview?.live_profile_id ? "Another Bot is Running" : "Stop Live Bot"}
             </button>
           ) : (
             <>

@@ -166,6 +166,7 @@ fn parse_signature_type(raw: u8) -> Result<SignatureType, String> {
         0 => Ok(SignatureType::Eoa),
         1 => Ok(SignatureType::Proxy),
         2 => Ok(SignatureType::GnosisSafe),
+        3 => Ok(SignatureType::Poly1271),
         _ => Err(format!("unsupported POLY_SIGNATURE_TYPE={raw}")),
     }
 }
@@ -228,16 +229,18 @@ pub async fn fetch_open_orders(
         .await
         .map_err(|_| "portfolio clob auth timed out".to_string())?
         .map_err(|e| format!("portfolio clob auth: {e}"))?,
-        SignatureType::Proxy | SignatureType::GnosisSafe => tokio::time::timeout(
-            Duration::from_secs(REQUEST_TIMEOUT_SECS),
-            auth_builder
-                .funder(maker_address)
-                .signature_type(signature_type)
-                .authenticate(),
-        )
-        .await
-        .map_err(|_| "portfolio clob auth timed out".to_string())?
-        .map_err(|e| format!("portfolio clob auth: {e}"))?,
+        SignatureType::Proxy | SignatureType::GnosisSafe | SignatureType::Poly1271 => {
+            tokio::time::timeout(
+                Duration::from_secs(REQUEST_TIMEOUT_SECS),
+                auth_builder
+                    .funder(maker_address)
+                    .signature_type(signature_type)
+                    .authenticate(),
+            )
+            .await
+            .map_err(|_| "portfolio clob auth timed out".to_string())?
+            .map_err(|e| format!("portfolio clob auth: {e}"))?
+        }
         _ => return Err("unsupported signature type".to_string()),
     };
 

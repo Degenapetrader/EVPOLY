@@ -184,6 +184,15 @@ pub fn generate_env_file(
         "POLY_PROXY_WALLET_ADDRESS".into(),
         profile.proxy_wallet_address.trim().to_string(),
     );
+    let deposit_wallet = profile.deposit_wallet_address.trim().to_string();
+    let funder_wallet = profile.primary_wallet_address();
+    env_map.insert("POLY_DEPOSIT_WALLET_ADDRESS".into(), deposit_wallet.clone());
+    env_map.insert("POLY_FUNDER_WALLET_ADDRESS".into(), funder_wallet.clone());
+    if profile.signature_type == 3 {
+        // Keep legacy runtime code paths pointed at the active funder until the
+        // sidecar fully switches to POLY_FUNDER_WALLET_ADDRESS.
+        env_map.insert("POLY_PROXY_WALLET_ADDRESS".into(), funder_wallet);
+    }
 
     if let Some(obj) = profile.strategy_config.as_object() {
         for (k, v) in obj {
@@ -315,6 +324,12 @@ fn build_config_json(profile: &Profile) -> serde_json::Value {
     let enable_solana =
         bool_from_config(&profile.strategy_config, "POLY_ENABLE_SOLANA_TRADING", true);
     let enable_xrp = bool_from_config(&profile.strategy_config, "POLY_ENABLE_XRP_TRADING", true);
+    let funder_wallet = profile.primary_wallet_address();
+    let legacy_proxy_wallet = if profile.signature_type == 3 {
+        funder_wallet.clone()
+    } else {
+        profile.proxy_wallet_address.clone()
+    };
 
     serde_json::json!({
         "polymarket": {
@@ -324,7 +339,9 @@ fn build_config_json(profile: &Profile) -> serde_json::Value {
             "api_secret": "",
             "api_passphrase": "",
             "private_key": "",
-            "proxy_wallet_address": profile.proxy_wallet_address.clone(),
+            "proxy_wallet_address": legacy_proxy_wallet,
+            "deposit_wallet_address": profile.deposit_wallet_address.clone(),
+            "funder_wallet_address": funder_wallet,
             "signature_type": profile.signature_type
         },
         "trading": {
@@ -378,6 +395,7 @@ pub fn cleanup_env_file(path: &Path) {
 }
 
 pub fn cleanup_generated_env_files(data_dir: &Path) {
+    let protected_env_path = running_marker_env_path(data_dir);
     let Ok(entries) = std::fs::read_dir(data_dir) else {
         return;
     };
@@ -389,7 +407,30 @@ pub fn cleanup_generated_env_files(data_dir: &Path) {
         if !file_name.starts_with(".env.generated") {
             continue;
         }
+        if protected_env_path
+            .as_ref()
+            .map(|protected| same_path(protected, &path))
+            .unwrap_or(false)
+        {
+            continue;
+        }
         cleanup_env_file(&path);
+    }
+}
+
+fn running_marker_env_path(data_dir: &Path) -> Option<PathBuf> {
+    let json = std::fs::read_to_string(data_dir.join("running_bot.json")).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&json).ok()?;
+    value
+        .get("env_path")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => left == right,
     }
 }
 
@@ -413,6 +454,7 @@ mod tests {
             name: "desktop".to_string(),
             eoa_wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
             proxy_wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            deposit_wallet_address: String::new(),
             wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
             signature_type: 2,
             encrypted_secrets: String::new(),
@@ -441,6 +483,11 @@ mod tests {
         assert_eq!(config["trading"]["enable_xrp_trading"], false);
         assert_eq!(
             config["polymarket"]["proxy_wallet_address"],
+            "0x2222222222222222222222222222222222222222"
+        );
+        assert_eq!(config["polymarket"]["deposit_wallet_address"], "");
+        assert_eq!(
+            config["polymarket"]["funder_wallet_address"],
             "0x2222222222222222222222222222222222222222"
         );
         assert!(config["trading"]["dual_limit_price"].is_null());
@@ -515,9 +562,42 @@ mod tests {
         assert!(content.contains("POLY_POLYGON_RPC_HTTP_FALLBACK_URL=https://polygon-rpc.com"));
         assert!(content
             .contains("POLY_PROXY_WALLET_ADDRESS=0x2222222222222222222222222222222222222222"));
+        assert!(content.contains("POLY_DEPOSIT_WALLET_ADDRESS="));
+        assert!(content
+            .contains("POLY_FUNDER_WALLET_ADDRESS=0x2222222222222222222222222222222222222222"));
         assert!(content.contains("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN=shared-alpha-token"));
         assert!(content.contains("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN=shared-alpha-token"));
         assert!(content.contains("EVPOLY_MM_MARKET_MODE=auto"));
+
+        let _ = std::fs::remove_file(env_path);
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn generate_env_file_maps_deposit_wallet_to_funder_keys() {
+        let mut profile = sample_profile();
+        profile.signature_type = 3;
+        profile.proxy_wallet_address = String::new();
+        profile.deposit_wallet_address = "0x3333333333333333333333333333333333333333".to_string();
+        profile.normalize_wallet_fields();
+
+        let temp_dir = std::env::temp_dir().join(format!(
+            "evpoly-config-io-deposit-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let env_path =
+            generate_env_file(&profile, &HashMap::new(), &temp_dir).expect("generate env");
+        let content = std::fs::read_to_string(&env_path).expect("read env");
+
+        assert!(content.contains("POLY_SIGNATURE_TYPE=3"));
+        assert!(content
+            .contains("POLY_PROXY_WALLET_ADDRESS=0x3333333333333333333333333333333333333333"));
+        assert!(content
+            .contains("POLY_DEPOSIT_WALLET_ADDRESS=0x3333333333333333333333333333333333333333"));
+        assert!(content
+            .contains("POLY_FUNDER_WALLET_ADDRESS=0x3333333333333333333333333333333333333333"));
 
         let _ = std::fs::remove_file(env_path);
         let _ = std::fs::remove_dir_all(temp_dir);

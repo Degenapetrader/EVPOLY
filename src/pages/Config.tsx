@@ -12,9 +12,9 @@ import { useAppContext } from "../App";
 import { useBotStatus } from "../hooks/useBotStatus";
 import { useHomeOverview } from "../hooks/useHomeOverview";
 import { useWalletSyncStatus } from "../hooks/useWalletSyncStatus";
+import { completeDesktopMagicWalletOnboarding } from "../lib/desktop-magic-onboarding";
 import {
   DEFAULT_CONFIG,
-  VISIBLE_STRATEGIES,
   formatMaybeTime,
   formatUsd,
   mergeConfig,
@@ -27,6 +27,7 @@ import {
   exportConfig,
   getActiveProfileId,
   getDataDirPath,
+  getPolymarketDepositAddresses,
   getSavedConfig,
   importConfig,
   listProfiles,
@@ -83,20 +84,37 @@ function getErrorText(err: unknown, fallback: string): string {
 function walletModeLabel(sigType: number): string {
   if (sigType === 1) return "Proxy Wallet";
   if (sigType === 2) return "Safe Wallet";
+  if (sigType === 3) return "Deposit Wallet";
   return "EOA";
 }
 
 function walletModeHelp(sigType: number): string {
   if (sigType === 1) return "Use this if you signed up for Polymarket with email.";
   if (sigType === 2) return "Use this if you signed up for Polymarket with a Web3 wallet.";
+  if (sigType === 3) return "Use this for new API users with a deployed deposit wallet.";
   return "Use this if you want to pay gas fees yourself.";
 }
 
 const WALLET_MODE_OPTIONS = [
   { value: 1, label: "Proxy Wallet" },
   { value: 2, label: "Safe Wallet" },
+  { value: 3, label: "Deposit Wallet" },
   { value: 0, label: "EOA" },
 ] as const;
+
+function funderAddressLabel(sigType: number): string {
+  if (sigType === 3) return "Deposit Wallet Address";
+  return "Proxy Wallet Address";
+}
+
+function activeFunderAddress(config: BotConfig): string {
+  if (config.sig_type === 3) return config.deposit_wallet.trim();
+  return config.proxy_wallet.trim();
+}
+
+function matchesProxyOrSafe(sigType: number): boolean {
+  return sigType === 1 || sigType === 2;
+}
 
 function WalletModeSelector({
   value,
@@ -180,10 +198,14 @@ function importedProfileName(address: string, profiles: Profile[]): string {
   return uniqueProfileName(`Imported ${suffix}`, profiles);
 }
 
-export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" }) {
+function magicProfileName(email: string, profiles: Profile[]): string {
+  const localPart = email.split("@")[0]?.trim() || "Wallet";
+  return uniqueProfileName(`Magic ${localPart}`, profiles);
+}
+
+export function Config() {
   const navigate = useNavigate();
   const location = useLocation();
-  const botSetupMode = mode === "bot_setup";
   const { activeProfileId, setActiveProfileId, setAuthenticated } = useAppContext();
   const { status } = useBotStatus();
   const { overview } = useHomeOverview();
@@ -196,10 +218,23 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [walletProfileMessage, setWalletProfileMessage] = useState<string | null>(null);
+  const [createWalletMethod, setCreateWalletMethod] = useState<WalletProfileAction>("magic");
+  const [magicEmail, setMagicEmail] = useState("");
+  const [magicLoading, setMagicLoading] = useState(false);
   const [importPrivateKey, setImportPrivateKey] = useState("");
   const [importSigType, setImportSigType] = useState("2");
+  const [importDepositWallet, setImportDepositWallet] = useState("");
   const [importLoading, setImportLoading] = useState(false);
   const [showImportPrivateKey, setShowImportPrivateKey] = useState(false);
+  const [depositAddresses, setDepositAddresses] = useState<{
+    evm: string | null;
+    solana: string | null;
+  }>({ evm: null, solana: null });
+  const [depositAddressLoading, setDepositAddressLoading] = useState(false);
+  const [depositAddressError, setDepositAddressError] = useState<string | null>(null);
+  const [copiedDepositAddress, setCopiedDepositAddress] = useState<"evm" | "solana" | null>(
+    null
+  );
   const [logsOpen, setLogsOpen] = useState(false);
   const [exportPw, setExportPw] = useState("");
   const [importPw, setImportPw] = useState("");
@@ -247,34 +282,74 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
 
   useEffect(() => {
     const state = location.state as { createWalletMethod?: WalletProfileAction } | null;
-    if (state?.createWalletMethod === "private_key") {
+    if (state?.createWalletMethod === "magic" || state?.createWalletMethod === "private_key") {
+      setCreateWalletMethod(state.createWalletMethod);
       setTab("setup");
       setWalletProfileMessage(null);
     }
   }, [location.state]);
 
   const dirty = useMemo(() => JSON.stringify(config) !== savedSnapshot, [config, savedSnapshot]);
-  const enabledStrategies = VISIBLE_STRATEGIES.filter((strategy) => config.strategies[strategy.key]);
   const walletSyncDetails = useMemo(
     () => summarizeWalletSyncResult(walletSyncStatus?.last_result ?? null),
     [walletSyncStatus?.last_result]
   );
+  const activeWalletAddress = activeFunderAddress(config);
+  const depositAddressLookupWallet = (activeWalletAddress || config.eoa_wallet).trim();
+  const depositAddressLookupReady = /^0x[a-fA-F0-9]{40}$/.test(depositAddressLookupWallet);
+  const depositWalletMode = config.sig_type === 3;
 
   const setupReady = Boolean(
-    config.private_key.trim() && (config.sig_type === 0 || config.proxy_wallet.trim())
+    config.private_key.trim() && (config.sig_type === 0 || activeWalletAddress)
   );
-  const onboardingReady = Boolean(
+  const credentialsReady = Boolean(
     setupReady &&
       config.alpha_key.trim() &&
       (config.relayer_remote_signer_token.trim() || config.remote_signer_token.trim())
   );
+  const onboardingReady = Boolean(credentialsReady && !depositWalletMode);
 
   const railItems = [
     { label: "Home", to: "/home" },
-    { label: "Bot Setup", to: "/bot-setup" },
     { label: "Settings", to: "/settings" },
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
   ];
+
+  useEffect(() => {
+    let cancelled = false;
+    setDepositAddresses({ evm: null, solana: null });
+    setDepositAddressError(null);
+
+    if (!depositAddressLookupReady) {
+      setDepositAddressLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setDepositAddressLoading(true);
+    void getPolymarketDepositAddresses(depositAddressLookupWallet)
+      .then((addresses) => {
+        if (cancelled) return;
+        setDepositAddresses({
+          evm: addresses.evm?.trim() || null,
+          solana: addresses.solana?.trim() || null,
+        });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setDepositAddressError(getErrorText(err, "failed to load deposit addresses"));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setDepositAddressLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [depositAddressLookupReady, depositAddressLookupWallet]);
 
   const handleProfileSwitch = async (profileId: string) => {
     setActiveProfileId(profileId);
@@ -284,11 +359,7 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
 
   const handleSave = async () => {
     if (!activeProfileId) {
-      setSaveMessage(
-        botSetupMode
-          ? "Import a wallet profile first."
-          : "Create a profile first in the Profiles tab."
-      );
+      setSaveMessage("Create a profile first in the Profiles tab.");
       return;
     }
     setSaveLoading(true);
@@ -358,17 +429,19 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
     eoaWallet,
     signatureType,
     proxyWallet,
+    depositWallet,
   }: {
     profileName: string;
     privateKey: string;
     eoaWallet: string;
     signatureType: number;
     proxyWallet: string;
+    depositWallet: string;
   }) => {
     let createdProfileId: string | null = null;
     let activatedProfile = false;
     try {
-      const created = await createProfile(profileName, proxyWallet, signatureType);
+      const created = await createProfile(profileName, proxyWallet, signatureType, depositWallet);
       createdProfileId = created.id;
       const saved = mergeConfig(await getSavedConfig(created.id));
       const nextConfig = {
@@ -377,6 +450,7 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
         eoa_wallet: eoaWallet,
         sig_type: signatureType,
         proxy_wallet: proxyWallet,
+        deposit_wallet: depositWallet,
         alpha_key: "",
         relayer_remote_signer_token: "",
         relayer_submit_signer_url: "",
@@ -416,7 +490,7 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
       setWalletProfileMessage("Enter a private key.");
       return;
     }
-    if (!Number.isFinite(signatureType) || signatureType < 0 || signatureType > 2) {
+    if (!Number.isFinite(signatureType) || signatureType < 0 || signatureType > 3) {
       setWalletProfileMessage("Choose a valid wallet mode.");
       return;
     }
@@ -426,14 +500,21 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
     setSaveMessage(null);
     try {
       const funders = await derivePolymarketFunderAddresses(privateKey);
+      const depositWallet = signatureType === 3 ? importDepositWallet.trim() : "";
       const proxyWallet =
         signatureType === 0
           ? ""
           : signatureType === 1
             ? funders.proxy_wallet || ""
-            : funders.safe_wallet;
-      if (signatureType !== 0 && !proxyWallet) {
+            : signatureType === 2
+              ? funders.safe_wallet
+              : "";
+      if (matchesProxyOrSafe(signatureType) && !proxyWallet) {
         setWalletProfileMessage("Could not derive the proxy or safe wallet for this private key.");
+        return;
+      }
+      if (signatureType === 3 && !depositWallet) {
+        setWalletProfileMessage("Enter the deployed deposit wallet address.");
         return;
       }
       const profileName = importedProfileName(funders.eoa_wallet, profiles);
@@ -443,8 +524,10 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
         eoaWallet: funders.eoa_wallet,
         signatureType,
         proxyWallet,
+        depositWallet,
       });
       setImportPrivateKey("");
+      setImportDepositWallet("");
       setShowImportPrivateKey(false);
       const message = "Imported private key profile created and selected. Onboarding credentials are ready.";
       setWalletProfileMessage(message);
@@ -456,9 +539,67 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
     }
   };
 
+  const handleCreateMagicWalletProfile = async () => {
+    if (!magicEmail.trim()) {
+      setWalletProfileMessage("Enter an email address.");
+      return;
+    }
+
+    setMagicLoading(true);
+    setWalletProfileMessage(null);
+    setSaveMessage(null);
+    try {
+      const email = magicEmail.trim();
+      const result = await completeDesktopMagicWalletOnboarding(email, null);
+      if (result.signatureType !== 3) {
+        setWalletProfileMessage("Magic bridge did not return a Deposit Wallet account.");
+        return;
+      }
+      if (!result.depositWalletAddress) {
+        setWalletProfileMessage("Magic bridge did not return a deposit wallet address.");
+        return;
+      }
+      const funders = await derivePolymarketFunderAddresses(result.privateKey);
+      if (
+        result.signerAddress &&
+        funders.eoa_wallet.trim().toLowerCase() !== result.signerAddress.trim().toLowerCase()
+      ) {
+        throw new Error("Exported Magic private key does not match the provisioned signer.");
+      }
+
+      const profileName = magicProfileName(email, profiles);
+      await saveNewWalletProfile({
+        profileName,
+        privateKey: result.privateKey,
+        eoaWallet: funders.eoa_wallet,
+        signatureType: 3,
+        proxyWallet: "",
+        depositWallet: result.depositWalletAddress,
+      });
+      setMagicEmail("");
+      const statusText = result.provisioningStatus
+        ? ` Provisioning status: ${toStatusLabel(result.provisioningStatus)}.`
+        : "";
+      const message = `New Deposit Wallet profile created and selected.${statusText}`;
+      setWalletProfileMessage(message);
+      setSaveMessage(message);
+    } catch (err) {
+      setWalletProfileMessage(getErrorText(err, "failed to create Magic wallet profile"));
+    } finally {
+      setMagicLoading(false);
+    }
+  };
+
   const handleCreateProfile = async () => {
     try {
-      const created = await createProfile(createName.trim() || "New Profile", createProxy.trim(), Number(createSigType));
+      const signatureType = Number(createSigType);
+      const address = createProxy.trim();
+      const created = await createProfile(
+        createName.trim() || "New Profile",
+        matchesProxyOrSafe(signatureType) ? address : "",
+        signatureType,
+        signatureType === 3 ? address : ""
+      );
       await setActiveProfile(created.id);
       setActiveProfileId(created.id);
       await loadProfileConfig(created.id);
@@ -471,7 +612,7 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
   };
 
   const handleOpenCreateWallet = (method: WalletProfileAction) => {
-    if (method !== "private_key") return;
+    setCreateWalletMethod(method);
     setTab("setup");
     setWalletProfileMessage(null);
   };
@@ -487,19 +628,34 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
     }
   };
 
+  const handleCopyDepositAddress = async (kind: "evm" | "solana", value: string | null) => {
+    const normalized = value?.trim();
+    if (!normalized) return;
+    await navigator.clipboard.writeText(normalized);
+    setCopiedDepositAddress(kind);
+    window.setTimeout(
+      () => setCopiedDepositAddress((current) => (current === kind ? null : current)),
+      1800
+    );
+  };
+
+  const depositAddressFooter = !depositAddressLookupReady
+    ? "Enter the active wallet address to show official Polymarket deposit addresses."
+    : depositAddressLoading
+    ? "Loading official Polymarket deposit addresses."
+    : depositAddressError
+    ? depositAddressError
+    : "Official wallet addresses for this bot. You can also log in to Polymarket and use the Relay deposit address; either option works.";
+
   return (
     <AppShell
       railSubtitle="BY EVPLUS"
       railLogoSrc="/logo.png"
       railLogoAlt="EVPlus"
       railItems={railItems}
-      eyebrow={botSetupMode ? "ONBOARDING" : "Settings"}
-      title={botSetupMode ? "Bot Setup" : "Settings"}
-      description={
-        botSetupMode
-          ? "Import a wallet profile and save the relayer keys needed for trading."
-          : "Manage wallet setup, profiles, security, logs, and diagnostics."
-      }
+      eyebrow="Settings"
+      title="Settings"
+      description="Manage wallet setup, profiles, security, logs, and diagnostics."
       meta={
         <div className="flex flex-wrap items-center justify-end gap-3">
           <ProfileSwitcher
@@ -525,35 +681,39 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
       contentClassName="page-stack"
     >
       <div className="page-stack">
-        {!botSetupMode ? (
-          <div className="flex flex-wrap gap-2">
-            {(["setup", "profiles", "security", "diagnostics"] as SettingsTab[]).map((item) => (
-              <button
-                key={item}
-                type="button"
-                onClick={() => setTab(item)}
-                className={`section-tab ${tab === item ? "section-tab--active" : ""}`.trim()}
-              >
-                {TAB_LABELS[item]}
-              </button>
-            ))}
-          </div>
-        ) : null}
+        <div className="flex flex-wrap gap-2">
+          {(["setup", "profiles", "security", "diagnostics"] as SettingsTab[]).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setTab(item)}
+              className={`section-tab ${tab === item ? "section-tab--active" : ""}`.trim()}
+            >
+              {TAB_LABELS[item]}
+            </button>
+          ))}
+        </div>
 
-        {(botSetupMode || tab === "setup") ? (
+        {tab === "setup" ? (
           <div className="page-stack">
             <div
               className={`status-strip ${
-                onboardingReady ? "status-strip--success" : "status-strip--warning"
+                credentialsReady ? "status-strip--success" : "status-strip--warning"
               }`.trim()}
             >
               <div className="status-strip__title">
-                {onboardingReady ? "Onboarding complete" : "Finish wallet setup"}
+                {depositWalletMode && credentialsReady
+                  ? "Deposit wallet profile saved"
+                  : onboardingReady
+                  ? "Onboarding complete"
+                  : "Finish wallet setup"}
               </div>
               <div className="status-strip__copy">
-                {onboardingReady
-                  ? "This profile is ready to trade. Save changes any time you update the private key, proxy wallet, or relayer fields."
-                  : "Set the wallet mode, private key, and proxy wallet when needed. Save will generate EVPOLY alpha and relayer signer credentials automatically."}
+                {depositWalletMode && credentialsReady
+                  ? "Runtime verifies Deposit Wallet collateral balance and allowance before each BUY order."
+                  : onboardingReady
+                  ? "This profile is ready to trade. Save changes any time you update the private key, wallet address, or relayer fields."
+                  : "Set the wallet mode, private key, and wallet address when needed. Save will generate EVPOLY alpha and relayer signer credentials automatically."}
               </div>
             </div>
 
@@ -564,10 +724,14 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
               >
                 <div className="grid gap-4 xl:grid-cols-2">
                   <Field
-                    label="Proxy Wallet Address"
-                    value={config.proxy_wallet}
+                    label={funderAddressLabel(config.sig_type)}
+                    value={config.sig_type === 3 ? config.deposit_wallet : config.proxy_wallet}
                     onChange={(value) =>
-                      setConfig((current) => ({ ...current, proxy_wallet: value }))
+                      setConfig((current) =>
+                        current.sig_type === 3
+                          ? { ...current, deposit_wallet: value }
+                          : { ...current, proxy_wallet: value }
+                      )
                     }
                   />
 
@@ -667,97 +831,160 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
 
               <div className="page-stack page-aside">
                 <SectionPanel
-                  title="Profile readiness"
-                  subtitle="Use this to confirm the current profile is fully wired before you trade."
+                  title="Deposit to Polymarket"
+                  subtitle="Official deposit addresses for the active wallet profile."
                 >
                   <div className="space-y-4">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <InfoPill tone={setupReady ? "accent" : "warning"}>
-                        {setupReady ? "Wallet Ready" : "Wallet Incomplete"}
-                      </InfoPill>
-                      <InfoPill tone={onboardingReady ? "success" : "warning"}>
-                        {onboardingReady ? "Ready to trade" : "Needs onboarding"}
-                      </InfoPill>
+                    <div className="deposit-addresses">
+                      <div className="deposit-addresses__title">Deposit Addresses</div>
+                      {[
+                        { kind: "evm" as const, label: "EVM", value: depositAddresses.evm },
+                        { kind: "solana" as const, label: "SOL", value: depositAddresses.solana },
+                      ].map(({ kind, label, value }) => {
+                        const address = typeof value === "string" ? value.trim() : "";
+                        return (
+                          <div key={kind} className="deposit-address-row">
+                            <span className="deposit-address-row__label">{label}</span>
+                            <span className="deposit-address-row__value">
+                              {address ||
+                                (depositAddressLoading
+                                  ? "Loading..."
+                                  : depositAddressError
+                                  ? "Unavailable"
+                                  : "Preparing...")}
+                            </span>
+                            <button
+                              type="button"
+                              className="deposit-address-row__copy"
+                              disabled={!address}
+                              onClick={() =>
+                                void handleCopyDepositAddress(kind, address)
+                              }
+                            >
+                              {copiedDepositAddress === kind ? "Copied" : "Copy"}
+                            </button>
+                          </div>
+                        );
+                      })}
                     </div>
-
-                    <div className="diagnostics-summary">
-                      <div className="diagnostics-summary__item">
-                        <div className="diagnostics-summary__label">Wallet mode</div>
-                        <div className="diagnostics-summary__value">
-                          {walletModeLabel(config.sig_type)}
-                        </div>
-                      </div>
-                      <div className="diagnostics-summary__item">
-                        <div className="diagnostics-summary__label">Enabled strategies</div>
-                        <div className="diagnostics-summary__value">
-                          {enabledStrategies.length}
-                        </div>
-                      </div>
-                      <div className="diagnostics-summary__item">
-                        <div className="diagnostics-summary__label">Profile</div>
-                        <div className="diagnostics-summary__value">
-                          {activeProfileId ? "Loaded" : "Not set"}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="text-sm leading-6 text-[var(--text-secondary)]">
-                      {enabledStrategies.length > 0
-                        ? `Active strategies: ${enabledStrategies
-                            .map((strategy) => strategy.label)
-                            .join(", ")}.`
-                        : "No strategies are enabled yet."}
+                    <div
+                      className={`deposit-addresses__note ${
+                        depositAddressError ? "deposit-addresses__note--warning" : ""
+                      }`.trim()}
+                    >
+                      {depositAddressFooter}
                     </div>
                   </div>
                 </SectionPanel>
 
                 <SectionPanel
                   title="Create New Wallet Profile"
-                  subtitle="Create a separate local signing profile from an existing private key."
+                  subtitle="Create a separate local signing profile with email OTP or an existing private key."
                 >
                   <div className="space-y-4">
                     {walletProfileMessage ? (
                       <div className="inline-alert inline-alert--warning">{walletProfileMessage}</div>
                     ) : null}
-                    <div>
-                      <label className="field-label">Private Key</label>
-                      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-                        <input
-                          type={showImportPrivateKey ? "text" : "password"}
-                          value={importPrivateKey}
-                          onChange={(event) => setImportPrivateKey(event.target.value)}
-                          className="field-input"
-                          autoComplete="off"
+                    <div
+                      className="segmented-control segmented-control--two wallet-method-tabs"
+                      role="radiogroup"
+                      aria-label="Wallet profile creation method"
+                    >
+                      {[
+                        ["magic", "Email OTP"],
+                        ["private_key", "Private Key"],
+                      ].map(([value, label]) => {
+                        const active = createWalletMethod === value;
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            role="radio"
+                            aria-checked={active}
+                            onClick={() => setCreateWalletMethod(value as WalletProfileAction)}
+                            className={`segmented-control__option ${
+                              active ? "segmented-control__option--active" : ""
+                            }`.trim()}
+                          >
+                            {label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {createWalletMethod === "magic" ? (
+                      <>
+                        <Field
+                          label="Email"
+                          value={magicEmail}
+                          onChange={setMagicEmail}
+                          type="email"
                         />
+                        <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
+                          Magic email OTP creates a new Deposit Wallet profile. The private key is exported locally and saved into this encrypted desktop profile.
+                        </div>
                         <button
                           type="button"
-                          onClick={() => setShowImportPrivateKey((value) => !value)}
-                          className="ui-button"
+                          onClick={() => void handleCreateMagicWalletProfile()}
+                          disabled={magicLoading}
+                          className="ui-button ui-button--primary"
                         >
-                          {showImportPrivateKey ? "Hide" : "Show"}
+                          {magicLoading ? "Creating..." : "Create Wallet with Email OTP"}
                         </button>
-                      </div>
-                    </div>
-                    <div>
-                      <label className="field-label">Wallet Mode</label>
-                      <WalletModeSelector
-                        value={Number(importSigType)}
-                        onChange={(value) => setImportSigType(String(value))}
-                      />
-                    </div>
-                    {Number(importSigType) !== 0 ? (
-                      <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
-                        Proxy/Safe funder address is derived locally during import.
-                      </div>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => void handleCreateImportedWalletProfile()}
-                      disabled={importLoading}
-                      className="ui-button ui-button--primary"
-                    >
-                      {importLoading ? "Importing..." : "Import Private Key Profile"}
-                    </button>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <label className="field-label">Private Key</label>
+                          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                            <input
+                              type={showImportPrivateKey ? "text" : "password"}
+                              value={importPrivateKey}
+                              onChange={(event) => setImportPrivateKey(event.target.value)}
+                              className="field-input"
+                              autoComplete="off"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowImportPrivateKey((value) => !value)}
+                              className="ui-button"
+                            >
+                              {showImportPrivateKey ? "Hide" : "Show"}
+                            </button>
+                          </div>
+                        </div>
+                        <div>
+                          <label className="field-label">Wallet Mode</label>
+                          <WalletModeSelector
+                            value={Number(importSigType)}
+                            onChange={(value) => setImportSigType(String(value))}
+                          />
+                        </div>
+                        {Number(importSigType) === 3 ? (
+                          <Field
+                            label="Deposit Wallet Address"
+                            value={importDepositWallet}
+                            onChange={setImportDepositWallet}
+                            placeholder="0x..."
+                          />
+                        ) : null}
+                        {Number(importSigType) !== 0 ? (
+                          <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
+                            {Number(importSigType) === 3
+                              ? "Deposit wallet address must already be deployed, funded, and approved before live trading."
+                              : "Proxy/Safe funder address is derived locally during import."}
+                          </div>
+                        ) : null}
+                        <button
+                          type="button"
+                          onClick={() => void handleCreateImportedWalletProfile()}
+                          disabled={importLoading}
+                          className="ui-button ui-button--primary"
+                        >
+                          {importLoading ? "Importing..." : "Import Private Key Profile"}
+                        </button>
+                      </>
+                    )}
                     <div className="text-sm leading-6 text-[var(--text-secondary)]">
                       Creates a separate profile. Existing profiles are not changed.
                     </div>
@@ -822,12 +1049,14 @@ export function Config({ mode = "settings" }: { mode?: "settings" | "bot_setup" 
               <div className="space-y-4">
                 <Field label="Profile name" value={createName} onChange={setCreateName} />
                 <Field
-                  label="Proxy Wallet Address"
+                  label={funderAddressLabel(Number(createSigType))}
                   value={createProxy}
                   onChange={setCreateProxy}
                 />
                 <div className="text-sm leading-6 text-[var(--text-secondary)]">
-                  EOA address is derived from the private key during onboarding.
+                  {Number(createSigType) === 3
+                    ? "Use a deployed deposit wallet address for new API user profiles."
+                    : "EOA address is derived from the private key during onboarding."}
                 </div>
                 <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4 text-sm leading-6 text-[var(--text-secondary)]">
                   <div className="text-sm font-semibold text-[var(--text-primary)]">

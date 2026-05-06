@@ -6,6 +6,7 @@ EVPoly Setup Doctor checks the baseline setup fields a healthy profile should ha
 
 - private key
 - proxy wallet for proxy/safe modes
+- deposit wallet address for Deposit Wallet mode
 - remote signer token
 - remote market discovery token
 - Premarket alpha token
@@ -34,6 +35,7 @@ EVPoly automatically reuses the remote signer token for primary order signing un
 Setup Doctor does not generate:
 - `RELAYER_API_KEY`
 - `RELAYER_API_KEY_ADDRESS`
+- deployed/funded/approved deposit wallets
 
 Get those from:
 
@@ -62,4 +64,5 @@ Important:
 - Users normally only need the remote signer token. The primary order-signer token is handled internally and should not be entered manually in the normal flow.
 - Doctor is advisory only and should not be treated as a launch gate.
 - Relayer credentials are reported, not generated.
+- Deposit Wallet readiness is separate from Proxy/Safe readiness: the wallet must already be deployed, funded with pUSD, approved through a `WALLET` batch, and synced with CLOB `signature_type=3` before live trading.
 - Onboarding is expected to populate all remote token destinations for all strategies, not only enabled ones.

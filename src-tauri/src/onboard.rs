@@ -135,6 +135,8 @@ pub async fn run_alpha_onboarding_for_wallet(bound_wallet: &str) -> Result<Strin
 pub struct OnboardResult {
     pub eoa_wallet: Option<String>,
     pub bound_wallet: Option<String>,
+    pub deposit_wallet: Option<String>,
+    pub deposit_wallet_address: Option<String>,
     pub wallet_binding: Option<String>,
     pub alpha_key: Option<String>,
     pub relayer_remote_signer_token: Option<String>,
@@ -154,22 +156,31 @@ pub async fn run_onboarding(
     private_key: &str,
     signature_type: u8,
     proxy_wallet: &str,
+    deposit_wallet: &str,
 ) -> Result<OnboardResult, String> {
-    run_onboarding_with_existing_alpha(private_key, signature_type, proxy_wallet, None).await
+    run_onboarding_with_existing_alpha(
+        private_key,
+        signature_type,
+        proxy_wallet,
+        deposit_wallet,
+        None,
+    )
+    .await
 }
 
 pub async fn run_onboarding_with_existing_alpha(
     private_key: &str,
     signature_type: u8,
     proxy_wallet: &str,
+    deposit_wallet: &str,
     existing_alpha_key: Option<&str>,
 ) -> Result<OnboardResult, String> {
     let key = private_key.trim();
     if key.is_empty() {
         return Err("private key is required for onboarding".to_string());
     }
-    if !matches!(signature_type, 0..=2) {
-        return Err("signature_type must be 0, 1, or 2".to_string());
+    if !matches!(signature_type, 0..=3) {
+        return Err("signature_type must be 0, 1, 2, or 3".to_string());
     }
 
     let local_wallet: LocalWallet = key
@@ -184,6 +195,12 @@ pub async fn run_onboarding_with_existing_alpha(
             return Err("proxy_wallet is required when signature_type is 1 or 2".to_string());
         }
         proxy.to_string()
+    } else if signature_type == 3 {
+        let deposit = deposit_wallet.trim();
+        if deposit.is_empty() {
+            return Err("deposit_wallet is required when signature_type is 3".to_string());
+        }
+        deposit.to_string()
     } else {
         signature_wallet.clone()
     };
@@ -201,6 +218,9 @@ pub async fn run_onboarding_with_existing_alpha(
     });
     if matches!(signature_type, 1 | 2) {
         start_payload["proxy_wallet"] = Value::String(bind_wallet.clone());
+    } else if signature_type == 3 {
+        start_payload["deposit_wallet"] = Value::String(bind_wallet.clone());
+        start_payload["deposit_wallet_address"] = Value::String(bind_wallet.clone());
     }
     let start_response = post_json(&client, &start_url, &start_payload).await?;
     let challenge_id = start_response
@@ -230,6 +250,9 @@ pub async fn run_onboarding_with_existing_alpha(
     });
     if matches!(signature_type, 1 | 2) {
         finish_payload["proxy_wallet"] = Value::String(bind_wallet.clone());
+    } else if signature_type == 3 {
+        finish_payload["deposit_wallet"] = Value::String(bind_wallet.clone());
+        finish_payload["deposit_wallet_address"] = Value::String(bind_wallet.clone());
     }
     let finish_response = post_json(&client, &finish_url, &finish_payload).await?;
     let runtime = finish_response
@@ -275,6 +298,16 @@ pub async fn run_onboarding_with_existing_alpha(
     let mut result = OnboardResult {
         eoa_wallet: Some(derived_eoa.clone()),
         bound_wallet: Some(bind_wallet.clone()),
+        deposit_wallet: if signature_type == 3 {
+            Some(bind_wallet.clone())
+        } else {
+            None
+        },
+        deposit_wallet_address: if signature_type == 3 {
+            Some(bind_wallet.clone())
+        } else {
+            None
+        },
         wallet_binding: Some(wallet_binding_fingerprint(
             derived_eoa.as_str(),
             signature_type,
@@ -283,7 +316,7 @@ pub async fn run_onboarding_with_existing_alpha(
         alpha_key: Some(alpha_key),
         relayer_remote_signer_token: remote_signer_token.clone(),
         relayer_submit_signer_url,
-        approval_status: Some(if matches!(signature_type, 1 | 2) {
+        approval_status: Some(if matches!(signature_type, 1 | 2 | 3) {
             "not_checked".to_string()
         } else {
             "not_required".to_string()

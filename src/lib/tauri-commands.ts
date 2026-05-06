@@ -5,6 +5,7 @@ export interface Profile {
   name: string;
   eoa_wallet_address: string;
   proxy_wallet_address: string;
+  deposit_wallet_address: string;
   wallet_address: string;
   signature_type: number;
   created_at: string;
@@ -14,6 +15,38 @@ export interface PolymarketFunderAddresses {
   eoa_wallet: string;
   proxy_wallet: string | null;
   safe_wallet: string;
+  deposit_wallet: string | null;
+}
+
+export interface PolymarketDepositAddresses {
+  evm: string | null;
+  solana: string | null;
+}
+
+export interface DesktopMagicStartResult {
+  desktop_onboard_session_id?: string;
+  session_id?: string;
+  onboard_session_id?: string;
+  publishable_key?: string;
+  magic_publishable_key?: string;
+  magic?: {
+    publishable_key?: string;
+  };
+  [key: string]: unknown;
+}
+
+export interface DesktopMagicFinishResult {
+  encrypted_private_key?: string;
+  encryptedPrivateKey?: string;
+  signer_address?: string | null;
+  wallet_type?: string | null;
+  signature_type?: number | string | null;
+  safe_address?: string | null;
+  deposit_wallet_address?: string | null;
+  active_wallet_address?: string | null;
+  safe_status?: string | null;
+  provisioning_status?: string | null;
+  [key: string]: unknown;
 }
 
 export interface LogLine {
@@ -26,6 +59,13 @@ export interface LogTailBatch {
   next_cursor: number;
   reset: boolean;
   lines: LogLine[];
+}
+
+export interface PendingLinuxResumeOffer {
+  reason: "linux_update" | "previous_run" | string;
+  simulation: boolean;
+  profile_id?: string | null;
+  prepared_at_utc?: string | null;
 }
 
 export interface UiDashboardSummary {
@@ -255,6 +295,8 @@ export interface Position {
 export interface OnboardResult {
   eoa_wallet?: string;
   bound_wallet?: string;
+  deposit_wallet?: string;
+  deposit_wallet_address?: string;
   wallet_binding?: string;
   alpha_key?: string;
   relayer_remote_signer_token?: string;
@@ -302,13 +344,6 @@ export interface SetupDoctorResult {
   bot_was_running: boolean;
   bot_restarted: boolean;
   popup?: SetupDoctorPopup | null;
-}
-
-export interface PendingLinuxResumeOffer {
-  reason: "linux_update" | "previous_run" | string;
-  simulation: boolean;
-  profile_id?: string | null;
-  prepared_at_utc?: string | null;
 }
 
 export type WeekendPolicy = "off" | "pause";
@@ -459,6 +494,7 @@ export interface BotConfig {
   private_key: string;
   eoa_wallet: string;
   proxy_wallet: string;
+  deposit_wallet: string;
   sig_type: number;
   weekend_policy: WeekendPolicy;
   symbols: string[];
@@ -532,12 +568,15 @@ export const listProfiles = (): Promise<Profile[]> =>
 export const createProfile = (
   name: string,
   proxyWallet: string,
-  sigType: number
+  sigType: number,
+  depositWallet = ""
 ): Promise<Profile> =>
   invoke("create_profile", {
     name,
     proxyWalletAddress: proxyWallet,
     proxy_wallet_address: proxyWallet,
+    depositWalletAddress: depositWallet,
+    deposit_wallet_address: depositWallet,
     signatureType: sigType,
     signature_type: sigType,
   });
@@ -708,11 +747,43 @@ export const derivePolymarketFunderAddresses = (
     private_key: privateKey,
   });
 
+export const getPolymarketDepositAddresses = (
+  address: string
+): Promise<PolymarketDepositAddresses> =>
+  invoke("get_polymarket_deposit_addresses", {
+    address,
+  });
+
+export const desktopMagicStart = (
+  email: string,
+  profileId?: string | null
+): Promise<DesktopMagicStartResult> =>
+  invoke("desktop_magic_start", {
+    email,
+    profileId: profileId ?? null,
+    profile_id: profileId ?? null,
+  });
+
+export const desktopMagicFinish = (
+  desktopOnboardSessionId: string,
+  didToken: string,
+  rsaPublicKey: string
+): Promise<DesktopMagicFinishResult> =>
+  invoke("desktop_magic_finish", {
+    desktopOnboardSessionId,
+    desktop_onboard_session_id: desktopOnboardSessionId,
+    didToken,
+    did_token: didToken,
+    rsaPublicKey,
+    rsa_public_key: rsaPublicKey,
+  });
+
 // Onboarding
 export const runOnboarding = (
   privateKey: string,
   sigType: number,
-  proxyWallet: string
+  proxyWallet: string,
+  depositWallet = ""
 ): Promise<OnboardResult> =>
   invoke("run_onboarding", {
     privateKey,
@@ -721,6 +792,8 @@ export const runOnboarding = (
     signature_type: sigType,
     proxyWallet,
     proxy_wallet: proxyWallet,
+    depositWallet,
+    deposit_wallet: depositWallet,
   });
 
 export const runSetupDoctor = (): Promise<SetupDoctorResult> =>

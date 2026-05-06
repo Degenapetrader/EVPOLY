@@ -85,6 +85,8 @@ const DESKTOP_SECRET_KEYS: &[&str] = &[
 const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
 const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
 const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
+const DEFAULT_DESKTOP_MAGIC_BRIDGE_BASE_URL: &str = "https://api-web.evplus.ai";
+const DEFAULT_POLYMARKET_BRIDGE_BASE_URL: &str = "https://bridge.polymarket.com";
 const DESKTOP_INSTANCE_LOCK_NAME: &str = "desktop-instance.lock";
 #[cfg(target_os = "linux")]
 const DESKTOP_ACTIVATE_SOCKET_NAME: &str = "desktop-activate.sock";
@@ -452,6 +454,8 @@ struct DesktopConfig {
     private_key: String,
     eoa_wallet: String,
     proxy_wallet: String,
+    #[serde(default)]
+    deposit_wallet: String,
     sig_type: u8,
     #[serde(default = "default_weekend_policy")]
     weekend_policy: String,
@@ -530,6 +534,7 @@ struct DerivedPolymarketFunders {
     eoa_wallet: String,
     proxy_wallet: Option<String>,
     safe_wallet: String,
+    deposit_wallet: Option<String>,
 }
 
 #[derive(Default)]
@@ -553,6 +558,8 @@ struct PortableProfile {
     name: String,
     eoa_wallet_address: String,
     proxy_wallet_address: String,
+    #[serde(default)]
+    deposit_wallet_address: String,
     signature_type: u8,
     strategy_config: Value,
     sizing_config: Value,
@@ -679,6 +686,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
         private_key: String::new(),
         eoa_wallet,
         proxy_wallet,
+        deposit_wallet: String::new(),
         sig_type,
         weekend_policy: default_weekend_policy(),
         symbols: DESKTOP_SYMBOL_ORDER
@@ -1173,6 +1181,7 @@ fn polymarket_funders_from_private_key(
         eoa_wallet,
         proxy_wallet,
         safe_wallet,
+        deposit_wallet: None,
     })
 }
 
@@ -1183,6 +1192,12 @@ fn bound_wallet_for_config(config: &DesktopConfig, eoa_wallet: &str) -> Result<S
             return Err("proxy wallet is required for proxy or safe wallet mode".to_string());
         }
         Ok(proxy.to_string())
+    } else if config.sig_type == 3 {
+        let deposit = config.deposit_wallet.trim();
+        if deposit.is_empty() {
+            return Err("deposit wallet is required for deposit wallet mode".to_string());
+        }
+        Ok(deposit.to_string())
     } else {
         Ok(eoa_wallet.trim().to_string())
     }
@@ -1203,6 +1218,10 @@ fn clean_relayer_remote_signer_token(config: &DesktopConfig) -> String {
 
 fn clean_alpha_key_or_legacy_source(config: &DesktopConfig) -> String {
     config.alpha_key.trim().to_string()
+}
+
+fn wallet_mode_needs_approval_status(signature_type: u8) -> bool {
+    matches!(signature_type, 1 | 2 | 3)
 }
 
 fn clean_onboarding_ready(config: &DesktopConfig) -> bool {
@@ -1586,6 +1605,37 @@ fn ensure_admin_api_token(value: &str) -> String {
     }
 }
 
+fn desktop_install_id(data_dir: &Path) -> Result<String, String> {
+    let path = data_dir.join("desktop-install-id");
+    if let Ok(value) = std::fs::read_to_string(&path) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Ok(trimmed.to_string());
+        }
+    }
+    let install_id = format!("evpoly-desktop-{}", Uuid::new_v4());
+    std::fs::write(&path, install_id.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(install_id)
+}
+
+fn desktop_magic_bridge_base_url() -> String {
+    std::env::var("EVPOLY_DESKTOP_MAGIC_BRIDGE_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| value.starts_with("https://") || value.starts_with("http://"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_DESKTOP_MAGIC_BRIDGE_BASE_URL.to_string())
+}
+
+fn polymarket_bridge_base_url() -> String {
+    std::env::var("POLYMARKET_BRIDGE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| value.starts_with("https://") || value.starts_with("http://"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_POLYMARKET_BRIDGE_BASE_URL.to_string())
+}
+
 fn merge_config_object(existing: &Value, updates: &Value) -> Value {
     let mut merged = existing.as_object().cloned().unwrap_or_else(Map::new);
     if let Some(update_obj) = updates.as_object() {
@@ -1609,6 +1659,7 @@ fn portable_profile_from_profile(profile: &Profile) -> PortableProfile {
         name: profile.name.clone(),
         eoa_wallet_address: profile.eoa_wallet_address.clone(),
         proxy_wallet_address: profile.proxy_wallet_address.clone(),
+        deposit_wallet_address: profile.deposit_wallet_address.clone(),
         signature_type: profile.signature_type,
         strategy_config: profile.strategy_config.clone(),
         sizing_config: profile.sizing_config.clone(),
@@ -1617,7 +1668,15 @@ fn portable_profile_from_profile(profile: &Profile) -> PortableProfile {
 
 fn desktop_config_to_profile_payload(
     config: &DesktopConfig,
-) -> (Value, Value, HashMap<String, String>, String, String, u8) {
+) -> (
+    Value,
+    Value,
+    HashMap<String, String>,
+    String,
+    String,
+    String,
+    u8,
+) {
     let mut strategy = Map::new();
     let mut sizing = Map::new();
     let mut secrets = HashMap::new();
@@ -2337,6 +2396,7 @@ fn desktop_config_to_profile_payload(
         secrets,
         config.eoa_wallet.trim().to_string(),
         config.proxy_wallet.trim().to_string(),
+        config.deposit_wallet.trim().to_string(),
         config.sig_type,
     )
 }
@@ -4019,19 +4079,25 @@ fn create_profile(
     profiles: State<'_, ProfileState>,
     name: String,
     proxy_wallet_address: String,
+    deposit_wallet_address: Option<String>,
     signature_type: u8,
 ) -> Result<Profile, String> {
-    let default_config = default_desktop_config(
+    let mut default_config = default_desktop_config(
         String::new(),
         proxy_wallet_address.trim().to_string(),
         signature_type,
     );
+    default_config.deposit_wallet = deposit_wallet_address
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let (
         strategy_config,
         sizing_config,
         _,
         eoa_wallet_address,
         proxy_wallet_address,
+        deposit_wallet_address,
         signature_type,
     ) = desktop_config_to_profile_payload(&default_config);
 
@@ -4042,6 +4108,7 @@ fn create_profile(
             name,
             eoa_wallet_address,
             proxy_wallet_address,
+            deposit_wallet_address,
             signature_type,
             strategy_config,
             sizing_config,
@@ -4354,6 +4421,7 @@ fn apply_desktop_config_to_profile(
         new_secrets,
         eoa_wallet_address,
         proxy_wallet_address,
+        deposit_wallet_address,
         signature_type,
     ) = desktop_config_to_profile_payload(config);
 
@@ -4362,6 +4430,7 @@ fn apply_desktop_config_to_profile(
     profile.sizing_config = merge_config_object(&profile.sizing_config, &sizing_config);
     profile.eoa_wallet_address = eoa_wallet_address;
     profile.proxy_wallet_address = proxy_wallet_address;
+    profile.deposit_wallet_address = deposit_wallet_address;
     profile.signature_type = signature_type;
     profile.normalize_wallet_fields();
 
@@ -4486,6 +4555,7 @@ async fn ensure_generated_credentials(config: &mut DesktopConfig) -> Result<Vec<
                 config.private_key.as_str(),
                 config.sig_type,
                 config.proxy_wallet.as_str(),
+                config.deposit_wallet.as_str(),
                 if alpha_missing || wallet_changed {
                     None
                 } else {
@@ -4778,6 +4848,7 @@ async fn run_setup_doctor(
                 config.private_key.as_str(),
                 config.sig_type,
                 config.proxy_wallet.as_str(),
+                config.deposit_wallet.as_str(),
                 if alpha_missing {
                     None
                 } else {
@@ -5044,6 +5115,7 @@ fn import_config(
             imported.profile.name,
             imported.profile.eoa_wallet_address,
             imported.profile.proxy_wallet_address,
+            imported.profile.deposit_wallet_address,
             imported.profile.signature_type,
             imported.profile.strategy_config.clone(),
             imported.profile.sizing_config.clone(),
@@ -5598,6 +5670,63 @@ fn derive_polymarket_funder_addresses(
 }
 
 #[tauri::command]
+async fn get_polymarket_deposit_addresses(address: String) -> Result<serde_json::Value, String> {
+    let address = address.trim().to_string();
+    if address.is_empty() {
+        return Ok(serde_json::json!({
+            "evm": Value::Null,
+            "solana": Value::Null,
+        }));
+    }
+
+    let url = format!("{}/deposit", polymarket_bridge_base_url());
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("build Polymarket bridge client: {e}"))?;
+    let response = client
+        .post(url.as_str())
+        .header("accept", "application/json")
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "address": address }))
+        .send()
+        .await
+        .map_err(|e| format!("Polymarket deposit address lookup failed: {e}"))?;
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("Polymarket deposit address response read failed: {e}"))?;
+    if !status.is_success() {
+        return Err(format!(
+            "Polymarket deposit address lookup returned {}: {}",
+            status, body
+        ));
+    }
+
+    let payload: Value = serde_json::from_str(&body)
+        .map_err(|e| format!("parse Polymarket deposit address response: {e}"))?;
+    let evm = payload
+        .pointer("/address/evm")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let solana = payload
+        .pointer("/address/svm")
+        .or_else(|| payload.pointer("/address/solana"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+
+    Ok(serde_json::json!({
+        "evm": evm,
+        "solana": solana,
+    }))
+}
+
+#[tauri::command]
 async fn run_wallet_sync_now(
     profiles: State<'_, ProfileState>,
     wallet_sync: State<'_, WalletSyncState>,
@@ -5841,6 +5970,7 @@ async fn run_onboarding(
     private_key: String,
     signature_type: u8,
     proxy_wallet: String,
+    deposit_wallet: Option<String>,
 ) -> Result<serde_json::Value, String> {
     geo_access::ensure_geo_start_allowed()?;
     append_desktop_debug_line(
@@ -5854,16 +5984,21 @@ async fn run_onboarding(
         .as_str(),
     );
 
-    let result = onboard::run_onboarding(&private_key, signature_type, &proxy_wallet)
-        .await
-        .map_err(|e| {
-            append_desktop_debug_line(
-                &data_dir.0,
-                "ONBOARD",
-                format!("run_onboarding error: {e}").as_str(),
-            );
-            e
-        })?;
+    let result = onboard::run_onboarding(
+        &private_key,
+        signature_type,
+        &proxy_wallet,
+        deposit_wallet.as_deref().unwrap_or_default(),
+    )
+    .await
+    .map_err(|e| {
+        append_desktop_debug_line(
+            &data_dir.0,
+            "ONBOARD",
+            format!("run_onboarding error: {e}").as_str(),
+        );
+        e
+    })?;
 
     append_desktop_debug_line(
         &data_dir.0,
@@ -6135,11 +6270,14 @@ pub fn run() {
             get_geo_access_status,
             derive_wallet_address,
             derive_polymarket_funder_addresses,
+            get_polymarket_deposit_addresses,
             run_wallet_sync_now,
             get_data_dir_path,
             open_logs_folder,
             download_linux_update_deb,
             run_onboarding,
+            desktop_magic_start,
+            desktop_magic_finish,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -6169,6 +6307,7 @@ mod tests {
             name: "desktop".to_string(),
             eoa_wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
             proxy_wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            deposit_wallet_address: String::new(),
             wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
             signature_type: 1,
             encrypted_secrets: String::new(),
@@ -6212,7 +6351,7 @@ mod tests {
         );
         config.relayer_remote_signer_token = "remote-token".to_string();
 
-        let (_, _, secrets, _, _, _) = desktop_config_to_profile_payload(&config);
+        let (_, _, secrets, _, _, _, _) = desktop_config_to_profile_payload(&config);
 
         assert_eq!(
             secrets.get("EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN"),
@@ -6232,7 +6371,7 @@ mod tests {
         config.remote_signer_token = "remote-token".to_string();
         config.order_signer_primary_token_internal = "primary-token".to_string();
 
-        let (_, _, secrets, _, _, _) = desktop_config_to_profile_payload(&config);
+        let (_, _, secrets, _, _, _, _) = desktop_config_to_profile_payload(&config);
 
         assert!(!secrets.contains_key("EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN"));
         assert!(!secrets.contains_key("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN"));
@@ -6248,7 +6387,7 @@ mod tests {
         );
         config.strategy_settings.premarket.timeframes = vec!["15m".to_string(), "1h".to_string()];
 
-        let (strategy, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        let (strategy, _, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
         let strategy = strategy.as_object().expect("strategy object");
 
         assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_5M));
@@ -6268,7 +6407,7 @@ mod tests {
         );
         config.weekend_policy = "pause".to_string();
 
-        let (strategy, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        let (strategy, _, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
         let strategy = strategy.as_object().expect("strategy object");
 
         assert_eq!(
@@ -6294,7 +6433,7 @@ mod tests {
         config.strategy_settings.session_band.tau2_multiplier = 9.0;
         config.strategy_settings.session_band.tau1_multiplier = 9.0;
 
-        let (strategy, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        let (strategy, _, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
         let strategy = strategy.as_object().expect("strategy object");
 
         assert_eq!(
@@ -6352,7 +6491,7 @@ mod tests {
         config.strategy_settings.mm_sport.quote_cooldown_min_sec = 61.8;
         config.strategy_settings.mm_sport.quote_cooldown_max_sec = 10.0;
 
-        let (strategy, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        let (strategy, _, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
         let strategy = strategy.as_object().expect("strategy object");
         assert_eq!(
             strategy.get("EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP"),
@@ -6380,6 +6519,7 @@ mod tests {
             name: "desktop".to_string(),
             eoa_wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
             proxy_wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            deposit_wallet_address: String::new(),
             wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
             signature_type: 1,
             encrypted_secrets: String::new(),
@@ -6417,12 +6557,13 @@ mod tests {
         config.strategy_settings.mm_sport.quote_cooldown_min_sec = 12.0;
         config.strategy_settings.mm_sport.quote_cooldown_max_sec = 45.0;
 
-        let (strategy, sizing, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        let (strategy, sizing, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
         let profile = Profile {
             id: "p2".to_string(),
             name: "desktop".to_string(),
             eoa_wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
             proxy_wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            deposit_wallet_address: String::new(),
             wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
             signature_type: 1,
             encrypted_secrets: String::new(),
@@ -6487,12 +6628,13 @@ mod tests {
         config.strategy_settings.mm_sport.nonsport_max_share_ratio = 0.05;
         config.strategy_settings.mm_sport.nonsport_min_top_depth_usd = 900.0;
 
-        let (strategy, sizing, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        let (strategy, sizing, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
         let profile = Profile {
             id: "p3".to_string(),
             name: "desktop".to_string(),
             eoa_wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
             proxy_wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            deposit_wallet_address: String::new(),
             wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
             signature_type: 1,
             encrypted_secrets: String::new(),
@@ -6547,6 +6689,7 @@ mod tests {
             name: "desktop".to_string(),
             eoa_wallet_address: "0x1111111111111111111111111111111111111111".to_string(),
             proxy_wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
+            deposit_wallet_address: String::new(),
             wallet_address: "0x2222222222222222222222222222222222222222".to_string(),
             signature_type: 1,
             encrypted_secrets: String::new(),

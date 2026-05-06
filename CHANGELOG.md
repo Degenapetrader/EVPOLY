@@ -1,8 +1,12 @@
 # EVPoly Linux Changelog
 
 ## Unreleased
+- Ported desktop Deposit Wallet allowance parsing, start approval gating, profile-scoped overview metrics, and live-profile label fixes.
 - Added MM 2.0 Sport / Non-S sizing profiles in desktop config and settings UI.
 - Added a desktop runtime patch for Non-S sizing overrides that fall back to Sport values and apply only to fresh BUY sizing plus BUY-side ratio hygiene.
+
+## Linux-v2.2.5 - 2026-05-06
+- Bumped Linux app/updater version to 2.2.5.
 
 ## Linux-v2.1.0 - 2026-04-29
 - Added MM 2.0 inventory-exit max-loss control and Tauri config mapping.

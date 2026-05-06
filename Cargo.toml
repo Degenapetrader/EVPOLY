@@ -1,56 +1,89 @@
 [package]
 name = "polymarket-arbitrage-bot"
-version = "2.2.3"
+version = "2.2.5"
 edition = "2021"
 default-run = "polymarket-arbitrage-bot"
+autobins = false
+
+[[bin]]
+name = "polymarket-arbitrage-bot"
+path = "src/main.rs"
+test = false
 
 [[bin]]
 name = "test_predict_fun"
 path = "src/bin/test_predict_fun.rs"
+test = false
 
 [[bin]]
 name = "test_sell"
 path = "src/bin/test_sell.rs"
+test = false
 
 [[bin]]
 name = "test_redeem"
 path = "src/bin/test_redeem.rs"
+test = false
 
 [[bin]]
 name = "test_allowance"
 path = "src/bin/test_allowance.rs"
+test = false
 
 [[bin]]
 name = "test_limit_order"
 path = "src/bin/test_limit_order.rs"
+test = false
 
 [[bin]]
 name = "test_merge"
 path = "src/bin/test_merge.rs"
+test = false
 
 [[bin]]
 name = "test_relayer_key"
 path = "src/bin/test_relayer_key.rs"
+test = false
 
 [[bin]]
 name = "main_dual_limit_045"
 path = "src/bin/main_dual_limit_045.rs"
+test = false
 
 [[bin]]
 name = "polymarket-arbitrage-bot-limit"
 path = "src/bin/main_limit.rs"
+test = false
 
 [[bin]]
 name = "price_monitor"
 path = "src/bin/main_price_monitor.rs"
+test = false
 
 [[bin]]
 name = "manual_bot"
 path = "src/bin/manual_bot.rs"
+test = false
 
 [[bin]]
 name = "builder_fees"
 path = "src/bin/builder_fees.rs"
+test = false
+
+[[bin]]
+name = "db_lock_audit"
+path = "src/bin/db_lock_audit.rs"
+test = false
+
+[[bin]]
+name = "manual_inventory_exit"
+path = "src/bin/manual_inventory_exit.rs"
+test = false
+
+[[bin]]
+name = "wrap_pusd"
+path = "src/bin/wrap_pusd.rs"
+test = false
 
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }

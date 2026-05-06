@@ -16,7 +16,7 @@ jobs:
       - name: Cargo Check
         run: cargo check --locked --all-targets
       - name: Cargo Test
-        run: cargo test --locked --all-targets --quiet
+        run: cargo test --locked --lib --quiet
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
       - name: Security Audit

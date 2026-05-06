@@ -1,0 +1,371 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index c17ea98..49eeb32 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -3450,6 +3450,7 @@ dependencies = [
+  "rust_decimal",
+  "rust_decimal_macros",
+  "rustls",
++ "secrecy",
+  "serde",
+  "serde_json",
+  "sha2",
+diff --git a/Cargo.toml b/Cargo.toml
+index 2503142..5ddd2f3 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -66,6 +66,7 @@ rust_decimal = "1.33"
+ rust_decimal_macros = "1.33"
+ hmac = "0.12"
+ sha2 = "0.10"
++secrecy = "0.10"
+ hex = "0.4"
+ base64 = "0.21"
+ polymarket_client_sdk_v2 = { version = "=0.6.0-canary.1", features = ["clob", "ctf", "ws", "gamma", "bridge"] }
+diff --git a/src/api.rs b/src/api.rs
+index 9916d06..6f81127 100644
+--- a/src/api.rs
++++ b/src/api.rs
+@@ -2,15 +2,19 @@ use crate::models::*;
+ use crate::polymarket_ws::{SharedPolymarketWsState, WsOrderStatusSnapshot, WsTradeSnapshot};
+ use anyhow::{Context, Result};
+ use base64;
++use base64::engine::general_purpose::URL_SAFE;
+ use base64::Engine as _;
+ use hex;
++use hmac::{Hmac, Mac};
+ use log::{error, info, warn};
+ use reqwest::{Client, Proxy};
+ use rust_decimal::prelude::ToPrimitive;
+ use rust_decimal::Decimal;
+ use rust_decimal::RoundingStrategy;
++use secrecy::ExposeSecret as _;
+ use serde::{Deserialize, Serialize};
+ use serde_json::Value;
++use sha2::Sha256;
+ use std::borrow::Cow;
+ use std::collections::{HashMap, HashSet};
+ use std::str::FromStr;
+@@ -33,7 +37,7 @@ use polymarket_client_sdk_v2::clob::types::{
+     Amount, AssetType, OrderType, Side, SignatureType, SignedOrder as ClobSignedOrder,
+ };
+ use polymarket_client_sdk_v2::clob::{Client as ClobClient, Config as ClobConfig};
+-use polymarket_client_sdk_v2::{contract_config, derive_safe_wallet, POLYGON};
++use polymarket_client_sdk_v2::{contract_config, derive_safe_wallet, ToQueryParams as _, POLYGON};
+ 
+ // CTF (Conditional Token Framework) imports for redemption
+ // Based on docs: https://docs.polymarket.com/developers/builders/relayer-client#redeem-positions
+@@ -152,6 +156,81 @@ pub struct ClobClientHandle {
+     pub signer: PrivateKeySigner,
+ }
+ 
++#[derive(Debug, Clone, Deserialize)]
++struct ClobBalanceAllowanceCompatResponse {
++    balance: Decimal,
++    #[serde(default)]
++    allowance: Option<Value>,
++    #[serde(default)]
++    allowances: HashMap<Address, String>,
++}
++
++impl ClobBalanceAllowanceCompatResponse {
++    fn from_sdk_response(
++        response: polymarket_client_sdk_v2::clob::types::response::BalanceAllowanceResponse,
++    ) -> Self {
++        Self {
++            balance: response.balance,
++            allowance: None,
++            allowances: response.allowances,
++        }
++    }
++
++    fn parse_allowance_value(value: &Value) -> Option<Decimal> {
++        match value {
++            Value::String(raw) => Self::parse_allowance_str(raw),
++            Value::Number(raw) => Self::parse_allowance_str(&raw.to_string()),
++            _ => None,
++        }
++    }
++
++    fn parse_allowance_str(raw: &str) -> Option<Decimal> {
++        match Decimal::from_str(raw) {
++            Ok(value) => Some(value),
++            Err(_) if raw.chars().all(|ch| ch.is_ascii_digit()) => Some(Decimal::MAX),
++            Err(_) => None,
++        }
++    }
++
++    fn effective_allowance_for_exchange(&self, exchange_address: Address) -> Decimal {
++        if let Some(allowance) = self
++            .allowance
++            .as_ref()
++            .and_then(Self::parse_allowance_value)
++        {
++            if allowance > Decimal::ZERO {
++                return allowance;
++            }
++        }
++
++        let mut allowance = self
++            .allowances
++            .get(&exchange_address)
++            .and_then(|s| Self::parse_allowance_str(s))
++            .unwrap_or(Decimal::ZERO);
++        if allowance <= Decimal::ZERO {
++            let max_reported_allowance = self
++                .allowances
++                .values()
++                .filter_map(|raw| Self::parse_allowance_str(raw))
++                .fold(
++                    Decimal::ZERO,
++                    |acc, value| {
++                        if value > acc {
++                            value
++                        } else {
++                            acc
++                        }
++                    },
++                );
++            if max_reported_allowance > allowance {
++                allowance = max_reported_allowance;
++            }
++        }
++        allowance
++    }
++}
++
+ #[derive(Debug, Clone, Copy, Default)]
+ pub struct ClobFeeModel {
+     pub rate: f64,
+@@ -1205,6 +1284,106 @@ impl PolymarketApi {
+         }
+     }
+ 
++    fn clob_l2_headers(
++        handle: &ClobClientHandle,
++        request: &reqwest::Request,
++    ) -> Result<reqwest::header::HeaderMap> {
++        let timestamp = Utc::now().timestamp();
++        let credentials = handle.client.credentials();
++        let secret = credentials.secret().expose_secret();
++        let decoded_secret = URL_SAFE
++            .decode(secret)
++            .context("Failed to decode CLOB API secret for L2 signature")?;
++        let mut mac = Hmac::<Sha256>::new_from_slice(&decoded_secret)
++            .context("Failed to initialize CLOB L2 HMAC signer")?;
++        let body = request
++            .body()
++            .and_then(|body| body.as_bytes())
++            .map(String::from_utf8_lossy)
++            .map(|body| body.replace('\'', "\""))
++            .unwrap_or_default();
++        let message = format!(
++            "{}{}{}{}",
++            timestamp,
++            request.method(),
++            request.url().path(),
++            body
++        );
++        mac.update(message.as_bytes());
++        let signature = URL_SAFE.encode(mac.finalize().into_bytes());
++
++        let mut headers = reqwest::header::HeaderMap::new();
++        headers.insert(
++            "POLY_ADDRESS",
++            handle.client.address().to_checksum(None).parse()?,
++        );
++        headers.insert("POLY_API_KEY", credentials.key().to_string().parse()?);
++        headers.insert(
++            "POLY_PASSPHRASE",
++            credentials.passphrase().expose_secret().parse()?,
++        );
++        headers.insert("POLY_SIGNATURE", signature.parse()?);
++        headers.insert("POLY_TIMESTAMP", timestamp.to_string().parse()?);
++        Ok(headers)
++    }
++
++    async fn fetch_clob_balance_allowance_compat(
++        &self,
++        handle: &ClobClientHandle,
++        mut request: polymarket_client_sdk_v2::clob::types::request::BalanceAllowanceRequest,
++    ) -> Result<ClobBalanceAllowanceCompatResponse> {
++        let (_, signature_type) = self.resolve_clob_auth_config()?;
++        if request.signature_type.is_none() {
++            request.signature_type = signature_type;
++        }
++        let params = request.query_params(None);
++        let url = format!(
++            "{}/balance-allowance{}",
++            self.clob_url.trim_end_matches('/'),
++            params
++        );
++        let mut raw_request = self
++            .client
++            .request(reqwest::Method::GET, url)
++            .build()
++            .context("Failed to build CLOB balance-allowance request")?;
++        *raw_request.headers_mut() = Self::clob_l2_headers(handle, &raw_request)?;
++
++        let response = self
++            .client
++            .execute(raw_request)
++            .await
++            .context("Failed to send CLOB balance-allowance request")?;
++        let status = response.status();
++        let text = response
++            .text()
++            .await
++            .context("Failed to read CLOB balance-allowance response")?;
++        if !status.is_success() {
++            anyhow::bail!("CLOB balance-allowance HTTP {}: {}", status, text);
++        }
++        serde_json::from_str::<ClobBalanceAllowanceCompatResponse>(&text)
++            .with_context(|| format!("Failed to parse CLOB balance-allowance response: {}", text))
++    }
++
++    async fn get_collateral_balance_allowance_response(
++        &self,
++        handle: &ClobClientHandle,
++        request: polymarket_client_sdk_v2::clob::types::request::BalanceAllowanceRequest,
++    ) -> Result<ClobBalanceAllowanceCompatResponse> {
++        if self.is_deposit_wallet_mode() {
++            self.fetch_clob_balance_allowance_compat(handle, request)
++                .await
++        } else {
++            handle
++                .client
++                .balance_allowance(request)
++                .await
++                .map(ClobBalanceAllowanceCompatResponse::from_sdk_response)
++                .map_err(anyhow::Error::new)
++        }
++    }
++
+     fn format_raw_usdc_for_display(value: Decimal) -> Decimal {
+         value / Decimal::from(1_000_000u64)
+     }
+@@ -5718,7 +5897,9 @@ impl PolymarketApi {
+             .await
+             .context("Failed to initialize CLOB client for pUSD balance check")?;
+ 
+-        let balance_allowance_result = match handle.client.balance_allowance(build_request()).await
++        let balance_allowance_result = match self
++            .get_collateral_balance_allowance_response(&handle, build_request())
++            .await
+         {
+             Ok(resp) => Ok(resp),
+             Err(first_err) => {
+@@ -5734,7 +5915,10 @@ impl PolymarketApi {
+                         .get_or_create_clob_client()
+                         .await
+                         .context("Failed to re-authenticate CLOB client for pUSD balance check")?;
+-                    match fresh_handle.client.balance_allowance(build_request()).await {
++                    match self
++                        .get_collateral_balance_allowance_response(&fresh_handle, build_request())
++                        .await
++                    {
+                             Ok(resp) => Ok(resp),
+                             Err(second_err) => Err(anyhow::anyhow!(
+                                 "Failed to fetch pUSD balance and allowance after auth refresh (first_error='{}', second_error='{}')",
+@@ -5748,7 +5932,10 @@ impl PolymarketApi {
+                         first_msg
+                     ))
+                 } else {
+-                    match handle.client.balance_allowance(build_request()).await {
++                    match self
++                        .get_collateral_balance_allowance_response(&handle, build_request())
++                        .await
++                    {
+                             Ok(resp) => Ok(resp),
+                             Err(second_err) => Err(anyhow::anyhow!(
+                                 "Failed to fetch pUSD balance and allowance after transient retry (first_error='{}', second_error='{}')",
+@@ -5783,33 +5970,20 @@ impl PolymarketApi {
+             .ok_or_else(|| anyhow::anyhow!("Failed to get contract config"))?;
+         let exchange_address = config.exchange_v2.unwrap_or(config.exchange);
+ 
+-        // Allowances is a HashMap<Address, String> - prefer the configured exchange key.
+-        // Some signer/account modes can return the allowance under a different key, so
+-        // fall back to the max reported allowance when the configured exchange lookup is zero.
+-        let mut allowance = balance_allowance
+-            .allowances
+-            .get(&exchange_address)
+-            .and_then(|s| rust_decimal::Decimal::from_str(s).ok())
+-            .unwrap_or(rust_decimal::Decimal::ZERO);
+-        if allowance <= rust_decimal::Decimal::ZERO {
+-            let max_reported_allowance = balance_allowance
++        let allowance = balance_allowance.effective_allowance_for_exchange(exchange_address);
++        if balance_allowance.allowance.is_none()
++            && balance_allowance
+                 .allowances
+-                .values()
+-                .filter_map(|raw| rust_decimal::Decimal::from_str(raw).ok())
+-                .fold(rust_decimal::Decimal::ZERO, |acc, value| {
+-                    if value > acc {
+-                        value
+-                    } else {
+-                        acc
+-                    }
+-                });
+-            if max_reported_allowance > allowance {
+-                warn!(
+-                    "pUSD allowance for configured exchange {} missing/zero; using max reported allowance fallback",
+-                    exchange_address
+-                );
+-                allowance = max_reported_allowance;
+-            }
++                .get(&exchange_address)
++                .and_then(|s| ClobBalanceAllowanceCompatResponse::parse_allowance_str(s))
++                .unwrap_or(rust_decimal::Decimal::ZERO)
++                <= rust_decimal::Decimal::ZERO
++            && allowance > rust_decimal::Decimal::ZERO
++        {
++            warn!(
++                "pUSD allowance for configured exchange {} missing/zero; using reported allowance fallback",
++                exchange_address
++            );
+         }
+ 
+         *self.cached_usdc_balance_allowance.lock().await = Some((
+@@ -8576,6 +8750,42 @@ mod tests {
+         assert!(required_total < decimal("5.50"));
+     }
+ 
++    #[test]
++    fn clob_balance_allowance_compat_reads_singular_allowance() {
++        let exchange =
++            Address::from_str("0xE111180000d2663C0091e4f400237545B87B996B").expect("address");
++        let payload = r#"{
++            "balance": "5135148",
++            "allowance": "115792089237316195423570985008687907853269984665640564039457584007913129639935"
++        }"#;
++
++        let parsed: ClobBalanceAllowanceCompatResponse =
++            serde_json::from_str(payload).expect("response");
++
++        assert_eq!(parsed.balance, Decimal::from(5_135_148u64));
++        assert!(parsed.effective_allowance_for_exchange(exchange) > Decimal::from(5_135_148u64));
++    }
++
++    #[test]
++    fn clob_balance_allowance_compat_falls_back_to_allowance_map() {
++        let exchange =
++            Address::from_str("0xE111180000d2663C0091e4f400237545B87B996B").expect("address");
++        let payload = r#"{
++            "balance": "1000000",
++            "allowances": {
++                "0xE111180000d2663C0091e4f400237545B87B996B": "2000000"
++            }
++        }"#;
++
++        let parsed: ClobBalanceAllowanceCompatResponse =
++            serde_json::from_str(payload).expect("response");
++
++        assert_eq!(
++            parsed.effective_allowance_for_exchange(exchange),
++            Decimal::from(2_000_000u64)
++        );
++    }
++
+     #[test]
+     fn deposit_wallet_keeps_batch_order_posts_disabled() {
+         let wallet = Some("0x0000000000000000000000000000000000000001".to_string());

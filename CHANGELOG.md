@@ -1,5 +1,9 @@
 # EVPoly Changelog
 
+## v2.2.6 - 2026-05-07
+- Added shared `/balance-allowance` 429 backoff so concurrent BUY sizing checks reuse a fresh cached pUSD snapshot instead of spamming CLOB.
+- Skipped per-order single fallback after batch placement fails on `/balance-allowance` rate limits.
+
 ## v2.2.5 - 2026-05-06
 - Fixed Deposit Wallet CLOB balance/allowance parsing so runtime readiness uses the normalized CLOB collateral payload correctly.
 - Prepared the runtime branch for the v2.2.5 desktop and Linux UI release.

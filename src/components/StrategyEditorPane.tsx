@@ -1123,9 +1123,53 @@ export function StrategyEditorPane({
     }
 
     if (selectedStrategy === "endgame") {
+      const endgame = config.strategy_settings.endgame;
+      const tickSplit = [
+        ["tick0_multiplier", "Tick 0"],
+        ["tick1_multiplier", "Tick 1"],
+        ["tick2_multiplier", "Tick 2"],
+      ] as const;
+      const tickSplitTotal = tickSplit.reduce((total, [key]) => total + endgame[key], 0);
+
       return (
         <div className="space-y-4">
           {renderSymbolMultiplierCard()}
+          <div className="surface-panel">
+            <div className="surface-panel__header">
+              <div className="surface-panel__copy">
+                <h2 className="surface-panel__title">Tick Split</h2>
+                <p className="surface-panel__subtitle">
+                  Split the base size across Tick 0, Tick 1, and Tick 2.
+                </p>
+              </div>
+            </div>
+            <div className="surface-panel__body grid gap-4">
+              <div className="grid gap-4 md:grid-cols-3">
+                {tickSplit.map(([key, label]) => (
+                  <div key={key}>
+                    <label className="field-label">{label}</label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.05"
+                      value={endgame[key]}
+                      disabled={!canEdit}
+                      onChange={(event) =>
+                        patchEndgame({
+                          [key]: parseNonNegative(event.target.value, endgame[key]),
+                        })
+                      }
+                      className="field-input"
+                    />
+                  </div>
+                ))}
+              </div>
+              <div className="metric-detail">
+                Current total: {Math.round(tickSplitTotal * 100)}% | Rail tooltip:{" "}
+                {tickSplit.map(([key]) => Math.round(endgame[key] * 100)).join(" / ")}
+              </div>
+            </div>
+          </div>
         </div>
       );
     }

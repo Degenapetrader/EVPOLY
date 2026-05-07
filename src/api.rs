@@ -82,6 +82,7 @@ const POLYMARKET_PUSD_COLLATERAL_ADDRESS: &str = "0xC011a7E12a19f7B1f670d46F03B0
 const USDC_BALANCE_CACHE_HIT_TTL_MS: i64 = 60_000;
 const USDC_BALANCE_CACHE_FALLBACK_TTL_MS: i64 = 180_000;
 const USDC_BALANCE_ALLOWANCE_UPDATE_TTL_MS: i64 = 30_000;
+const USDC_BALANCE_ALLOWANCE_RL_BACKOFF_MS: i64 = 30_000;
 const TICK_METADATA_RL_BACKOFF_BASE_MS: i64 = 1_000;
 const TICK_METADATA_RL_BACKOFF_MAX_MS: i64 = 30_000;
 const ACTIVE_MARKETS_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
@@ -504,6 +505,7 @@ pub struct PolymarketApi {
     clob_auth_backoff_state: Arc<tokio::sync::Mutex<ClobAuthBackoffState>>,
     cached_usdc_balance_allowance: Arc<tokio::sync::Mutex<Option<(Decimal, Decimal, i64)>>>,
     usdc_balance_allowance_fetch_lock: Arc<tokio::sync::Mutex<()>>,
+    usdc_balance_allowance_retry_after_ms: Arc<tokio::sync::Mutex<i64>>,
     usdc_balance_allowance_update_lock: Arc<tokio::sync::Mutex<()>>,
     last_usdc_balance_allowance_update_ms: Arc<tokio::sync::Mutex<Option<i64>>>,
     prewarmed_order_metadata: Arc<tokio::sync::Mutex<HashSet<String>>>,
@@ -761,6 +763,7 @@ impl PolymarketApi {
             )),
             cached_usdc_balance_allowance: Arc::new(tokio::sync::Mutex::new(None)),
             usdc_balance_allowance_fetch_lock: Arc::new(tokio::sync::Mutex::new(())),
+            usdc_balance_allowance_retry_after_ms: Arc::new(tokio::sync::Mutex::new(0)),
             usdc_balance_allowance_update_lock: Arc::new(tokio::sync::Mutex::new(())),
             last_usdc_balance_allowance_update_ms: Arc::new(tokio::sync::Mutex::new(None)),
             prewarmed_order_metadata: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
@@ -1207,6 +1210,16 @@ impl PolymarketApi {
 
     async fn invalidate_cached_usdc_balance_allowance(&self) {
         *self.cached_usdc_balance_allowance.lock().await = None;
+    }
+
+    async fn set_usdc_balance_allowance_rate_limit_backoff(&self) -> i64 {
+        let retry_after_ms = Utc::now().timestamp_millis() + USDC_BALANCE_ALLOWANCE_RL_BACKOFF_MS;
+        *self.usdc_balance_allowance_retry_after_ms.lock().await = retry_after_ms;
+        retry_after_ms
+    }
+
+    async fn clear_usdc_balance_allowance_rate_limit_backoff(&self) {
+        *self.usdc_balance_allowance_retry_after_ms.lock().await = 0;
     }
 
     fn has_sufficient_buy_collateral_allowance(
@@ -5872,6 +5885,25 @@ impl PolymarketApi {
                 return Ok((cached_balance.clone(), cached_allowance.clone()));
             }
         }
+        let retry_after_ms = *self.usdc_balance_allowance_retry_after_ms.lock().await;
+        if retry_after_ms > now_ms {
+            let remaining_ms = retry_after_ms.saturating_sub(now_ms);
+            if let Some((cached_balance, cached_allowance, cached_ts_ms)) = cached_snapshot {
+                let age_ms = now_ms.saturating_sub(cached_ts_ms);
+                if age_ms <= USDC_BALANCE_CACHE_FALLBACK_TTL_MS {
+                    log::debug!(
+                        "pUSD balance check skipped during balance-allowance rate-limit backoff; using cached balance snapshot age_ms={} remaining_ms={}",
+                        age_ms,
+                        remaining_ms
+                    );
+                    return Ok((cached_balance, cached_allowance));
+                }
+            }
+            anyhow::bail!(
+                "pUSD balance-allowance rate-limit backoff active remaining_ms={}",
+                remaining_ms
+            );
+        }
 
         // Singleflight gate: only one in-flight collateral balance+allowance call.
         let _singleflight_guard = self.usdc_balance_allowance_fetch_lock.lock().await;
@@ -5881,6 +5913,26 @@ impl PolymarketApi {
             if now_ms.saturating_sub(*cached_ts_ms) <= USDC_BALANCE_CACHE_HIT_TTL_MS {
                 return Ok((cached_balance.clone(), cached_allowance.clone()));
             }
+        }
+        let retry_after_ms = *self.usdc_balance_allowance_retry_after_ms.lock().await;
+        if retry_after_ms > now_ms {
+            let remaining_ms = retry_after_ms.saturating_sub(now_ms);
+            if let Some((cached_balance, cached_allowance, cached_ts_ms)) = cached_snapshot.clone()
+            {
+                let age_ms = now_ms.saturating_sub(cached_ts_ms);
+                if age_ms <= USDC_BALANCE_CACHE_FALLBACK_TTL_MS {
+                    log::debug!(
+                        "pUSD balance check skipped during balance-allowance rate-limit backoff after singleflight wait; using cached balance snapshot age_ms={} remaining_ms={}",
+                        age_ms,
+                        remaining_ms
+                    );
+                    return Ok((cached_balance, cached_allowance));
+                }
+            }
+            anyhow::bail!(
+                "pUSD balance-allowance rate-limit backoff active remaining_ms={}",
+                remaining_ms
+            );
         }
 
         if self.is_deposit_wallet_mode() && sync_deposit_wallet {
@@ -5927,8 +5979,13 @@ impl PolymarketApi {
                             )),
                         }
                 } else if Self::is_rate_limit_error(&first_anyhow) {
+                    let retry_after_ms = self.set_usdc_balance_allowance_rate_limit_backoff().await;
+                    let remaining_ms = retry_after_ms
+                        .saturating_sub(Utc::now().timestamp_millis())
+                        .max(0);
                     Err(anyhow::anyhow!(
-                        "Failed to fetch pUSD balance and allowance (rate-limited; skipped immediate retry, first_error='{}')",
+                        "Failed to fetch pUSD balance and allowance (rate-limited; skipped immediate retry, backoff_ms={}, first_error='{}')",
+                        remaining_ms,
                         first_msg
                     ))
                 } else {
@@ -5963,6 +6020,7 @@ impl PolymarketApi {
                 return Err(err);
             }
         };
+        self.clear_usdc_balance_allowance_rate_limit_backoff().await;
 
         let balance = balance_allowance.balance;
         // Get allowance for the Exchange contract

@@ -372,8 +372,12 @@ impl Trader {
                                 .saturating_add(u64::try_from(jobs.len()).ok().unwrap_or(0));
                             summary_failed_count = summary_failed_count
                                 .saturating_add(u64::try_from(jobs.len()).ok().unwrap_or(0));
-                            summary_fallback_count = summary_fallback_count
-                                .saturating_add(u64::try_from(jobs.len()).ok().unwrap_or(0));
+                            let skip_single_fallback =
+                                Self::is_balance_allowance_rate_limit_error(&batch_err);
+                            if !skip_single_fallback {
+                                summary_fallback_count = summary_fallback_count
+                                    .saturating_add(u64::try_from(jobs.len()).ok().unwrap_or(0));
+                            }
                             log_event(
                                 "batch_place_submit",
                                 json!({
@@ -381,20 +385,35 @@ impl Trader {
                                     "success_count": 0,
                                     "failed_count": jobs.len(),
                                     "error": batch_err.to_string(),
-                                    "fallback": "single_order"
+                                    "fallback": if skip_single_fallback {
+                                        "skipped_balance_allowance_rate_limit"
+                                    } else {
+                                        "single_order"
+                                    }
                                 }),
                             );
-                            for job in jobs {
-                                let fallback =
-                                    api_for_batch.place_order_with_timing(&job.order).await;
-                                let _ = match fallback {
-                                    Ok(ok) => job.response_tx.send(Ok(ok)),
-                                    Err(single_err) => job.response_tx.send(Err(anyhow::anyhow!(
-                                        "batch place error: {}; single fallback error: {}",
-                                        batch_err,
-                                        single_err
-                                    ))),
-                                };
+                            if skip_single_fallback {
+                                for job in jobs {
+                                    let _ = job.response_tx.send(Err(anyhow::anyhow!(
+                                        "batch place error: {}; single fallback skipped: balance-allowance rate-limit",
+                                        batch_err
+                                    )));
+                                }
+                            } else {
+                                for job in jobs {
+                                    let fallback =
+                                        api_for_batch.place_order_with_timing(&job.order).await;
+                                    let _ = match fallback {
+                                        Ok(ok) => job.response_tx.send(Ok(ok)),
+                                        Err(single_err) => {
+                                            job.response_tx.send(Err(anyhow::anyhow!(
+                                                "batch place error: {}; single fallback error: {}",
+                                                batch_err,
+                                                single_err
+                                            )))
+                                        }
+                                    };
+                                }
                             }
                         }
                     }
@@ -524,6 +543,15 @@ impl Trader {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(2048)
             .max(64)
+    }
+
+    fn is_balance_allowance_rate_limit_error(error: &anyhow::Error) -> bool {
+        let msg = error.to_string().to_ascii_lowercase();
+        msg.contains("balance-allowance")
+            && (msg.contains("429")
+                || msg.contains("1015")
+                || msg.contains("rate-limit")
+                || msg.contains("rate limit"))
     }
 
     fn should_route_via_batch_place(strategy_id: &str, entry_mode: EntryExecutionMode) -> bool {
@@ -15056,6 +15084,17 @@ mod tests {
             redemption_attempts: 0,
             redemption_abandoned: false,
         }
+    }
+
+    #[test]
+    fn balance_allowance_rate_limit_error_skips_batch_single_fallback() {
+        let err = anyhow::anyhow!(
+            "Failed to fetch pUSD balance and allowance (rate-limited; skipped immediate retry, first_error='Status: error(429 Too Many Requests) making GET call to /balance-allowance with error code: 1015')"
+        );
+        assert!(Trader::is_balance_allowance_rate_limit_error(&err));
+
+        let other = anyhow::anyhow!("Failed to post V2 batch orders: 429 Too Many Requests");
+        assert!(!Trader::is_balance_allowance_rate_limit_error(&other));
     }
 
     #[test]

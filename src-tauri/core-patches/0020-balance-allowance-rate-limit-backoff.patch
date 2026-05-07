@@ -1,0 +1,222 @@
+diff --git a/src/api.rs b/src/api.rs
+index 6f81127..0d8abeb 100644
+--- a/src/api.rs
++++ b/src/api.rs
+@@ -82,6 +82,7 @@ const POLYMARKET_PUSD_COLLATERAL_ADDRESS: &str = "0xC011a7E12a19f7B1f670d46F03B0
+ const USDC_BALANCE_CACHE_HIT_TTL_MS: i64 = 60_000;
+ const USDC_BALANCE_CACHE_FALLBACK_TTL_MS: i64 = 180_000;
+ const USDC_BALANCE_ALLOWANCE_UPDATE_TTL_MS: i64 = 30_000;
++const USDC_BALANCE_ALLOWANCE_RL_BACKOFF_MS: i64 = 30_000;
+ const TICK_METADATA_RL_BACKOFF_BASE_MS: i64 = 1_000;
+ const TICK_METADATA_RL_BACKOFF_MAX_MS: i64 = 30_000;
+ const ACTIVE_MARKETS_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+@@ -504,6 +505,7 @@ pub struct PolymarketApi {
+     clob_auth_backoff_state: Arc<tokio::sync::Mutex<ClobAuthBackoffState>>,
+     cached_usdc_balance_allowance: Arc<tokio::sync::Mutex<Option<(Decimal, Decimal, i64)>>>,
+     usdc_balance_allowance_fetch_lock: Arc<tokio::sync::Mutex<()>>,
++    usdc_balance_allowance_retry_after_ms: Arc<tokio::sync::Mutex<i64>>,
+     usdc_balance_allowance_update_lock: Arc<tokio::sync::Mutex<()>>,
+     last_usdc_balance_allowance_update_ms: Arc<tokio::sync::Mutex<Option<i64>>>,
+     prewarmed_order_metadata: Arc<tokio::sync::Mutex<HashSet<String>>>,
+@@ -761,6 +763,7 @@ impl PolymarketApi {
+             )),
+             cached_usdc_balance_allowance: Arc::new(tokio::sync::Mutex::new(None)),
+             usdc_balance_allowance_fetch_lock: Arc::new(tokio::sync::Mutex::new(())),
++            usdc_balance_allowance_retry_after_ms: Arc::new(tokio::sync::Mutex::new(0)),
+             usdc_balance_allowance_update_lock: Arc::new(tokio::sync::Mutex::new(())),
+             last_usdc_balance_allowance_update_ms: Arc::new(tokio::sync::Mutex::new(None)),
+             prewarmed_order_metadata: Arc::new(tokio::sync::Mutex::new(HashSet::new())),
+@@ -1209,6 +1212,16 @@ impl PolymarketApi {
+         *self.cached_usdc_balance_allowance.lock().await = None;
+     }
+ 
++    async fn set_usdc_balance_allowance_rate_limit_backoff(&self) -> i64 {
++        let retry_after_ms = Utc::now().timestamp_millis() + USDC_BALANCE_ALLOWANCE_RL_BACKOFF_MS;
++        *self.usdc_balance_allowance_retry_after_ms.lock().await = retry_after_ms;
++        retry_after_ms
++    }
++
++    async fn clear_usdc_balance_allowance_rate_limit_backoff(&self) {
++        *self.usdc_balance_allowance_retry_after_ms.lock().await = 0;
++    }
++
+     fn has_sufficient_buy_collateral_allowance(
+         allowance_raw: Decimal,
+         required_usdc_raw: Decimal,
+@@ -5872,6 +5885,25 @@ impl PolymarketApi {
+                 return Ok((cached_balance.clone(), cached_allowance.clone()));
+             }
+         }
++        let retry_after_ms = *self.usdc_balance_allowance_retry_after_ms.lock().await;
++        if retry_after_ms > now_ms {
++            let remaining_ms = retry_after_ms.saturating_sub(now_ms);
++            if let Some((cached_balance, cached_allowance, cached_ts_ms)) = cached_snapshot {
++                let age_ms = now_ms.saturating_sub(cached_ts_ms);
++                if age_ms <= USDC_BALANCE_CACHE_FALLBACK_TTL_MS {
++                    log::debug!(
++                        "pUSD balance check skipped during balance-allowance rate-limit backoff; using cached balance snapshot age_ms={} remaining_ms={}",
++                        age_ms,
++                        remaining_ms
++                    );
++                    return Ok((cached_balance, cached_allowance));
++                }
++            }
++            anyhow::bail!(
++                "pUSD balance-allowance rate-limit backoff active remaining_ms={}",
++                remaining_ms
++            );
++        }
+ 
+         // Singleflight gate: only one in-flight collateral balance+allowance call.
+         let _singleflight_guard = self.usdc_balance_allowance_fetch_lock.lock().await;
+@@ -5882,6 +5914,26 @@ impl PolymarketApi {
+                 return Ok((cached_balance.clone(), cached_allowance.clone()));
+             }
+         }
++        let retry_after_ms = *self.usdc_balance_allowance_retry_after_ms.lock().await;
++        if retry_after_ms > now_ms {
++            let remaining_ms = retry_after_ms.saturating_sub(now_ms);
++            if let Some((cached_balance, cached_allowance, cached_ts_ms)) = cached_snapshot.clone()
++            {
++                let age_ms = now_ms.saturating_sub(cached_ts_ms);
++                if age_ms <= USDC_BALANCE_CACHE_FALLBACK_TTL_MS {
++                    log::debug!(
++                        "pUSD balance check skipped during balance-allowance rate-limit backoff after singleflight wait; using cached balance snapshot age_ms={} remaining_ms={}",
++                        age_ms,
++                        remaining_ms
++                    );
++                    return Ok((cached_balance, cached_allowance));
++                }
++            }
++            anyhow::bail!(
++                "pUSD balance-allowance rate-limit backoff active remaining_ms={}",
++                remaining_ms
++            );
++        }
+ 
+         if self.is_deposit_wallet_mode() && sync_deposit_wallet {
+             if let Err(err) = self.update_balance_allowance_for_collateral(false).await {
+@@ -5927,8 +5979,13 @@ impl PolymarketApi {
+                             )),
+                         }
+                 } else if Self::is_rate_limit_error(&first_anyhow) {
++                    let retry_after_ms = self.set_usdc_balance_allowance_rate_limit_backoff().await;
++                    let remaining_ms = retry_after_ms
++                        .saturating_sub(Utc::now().timestamp_millis())
++                        .max(0);
+                     Err(anyhow::anyhow!(
+-                        "Failed to fetch pUSD balance and allowance (rate-limited; skipped immediate retry, first_error='{}')",
++                        "Failed to fetch pUSD balance and allowance (rate-limited; skipped immediate retry, backoff_ms={}, first_error='{}')",
++                        remaining_ms,
+                         first_msg
+                     ))
+                 } else {
+@@ -5963,6 +6020,7 @@ impl PolymarketApi {
+                 return Err(err);
+             }
+         };
++        self.clear_usdc_balance_allowance_rate_limit_backoff().await;
+ 
+         let balance = balance_allowance.balance;
+         // Get allowance for the Exchange contract
+diff --git a/src/trader.rs b/src/trader.rs
+index 3a3e857..4cc3689 100644
+--- a/src/trader.rs
++++ b/src/trader.rs
+@@ -372,8 +372,12 @@ impl Trader {
+                                 .saturating_add(u64::try_from(jobs.len()).ok().unwrap_or(0));
+                             summary_failed_count = summary_failed_count
+                                 .saturating_add(u64::try_from(jobs.len()).ok().unwrap_or(0));
+-                            summary_fallback_count = summary_fallback_count
+-                                .saturating_add(u64::try_from(jobs.len()).ok().unwrap_or(0));
++                            let skip_single_fallback =
++                                Self::is_balance_allowance_rate_limit_error(&batch_err);
++                            if !skip_single_fallback {
++                                summary_fallback_count = summary_fallback_count
++                                    .saturating_add(u64::try_from(jobs.len()).ok().unwrap_or(0));
++                            }
+                             log_event(
+                                 "batch_place_submit",
+                                 json!({
+@@ -381,20 +385,35 @@ impl Trader {
+                                     "success_count": 0,
+                                     "failed_count": jobs.len(),
+                                     "error": batch_err.to_string(),
+-                                    "fallback": "single_order"
++                                    "fallback": if skip_single_fallback {
++                                        "skipped_balance_allowance_rate_limit"
++                                    } else {
++                                        "single_order"
++                                    }
+                                 }),
+                             );
+-                            for job in jobs {
+-                                let fallback =
+-                                    api_for_batch.place_order_with_timing(&job.order).await;
+-                                let _ = match fallback {
+-                                    Ok(ok) => job.response_tx.send(Ok(ok)),
+-                                    Err(single_err) => job.response_tx.send(Err(anyhow::anyhow!(
+-                                        "batch place error: {}; single fallback error: {}",
+-                                        batch_err,
+-                                        single_err
+-                                    ))),
+-                                };
++                            if skip_single_fallback {
++                                for job in jobs {
++                                    let _ = job.response_tx.send(Err(anyhow::anyhow!(
++                                        "batch place error: {}; single fallback skipped: balance-allowance rate-limit",
++                                        batch_err
++                                    )));
++                                }
++                            } else {
++                                for job in jobs {
++                                    let fallback =
++                                        api_for_batch.place_order_with_timing(&job.order).await;
++                                    let _ = match fallback {
++                                        Ok(ok) => job.response_tx.send(Ok(ok)),
++                                        Err(single_err) => {
++                                            job.response_tx.send(Err(anyhow::anyhow!(
++                                                "batch place error: {}; single fallback error: {}",
++                                                batch_err,
++                                                single_err
++                                            )))
++                                        }
++                                    };
++                                }
+                             }
+                         }
+                     }
+@@ -526,6 +545,15 @@ impl Trader {
+             .max(64)
+     }
+ 
++    fn is_balance_allowance_rate_limit_error(error: &anyhow::Error) -> bool {
++        let msg = error.to_string().to_ascii_lowercase();
++        msg.contains("balance-allowance")
++            && (msg.contains("429")
++                || msg.contains("1015")
++                || msg.contains("rate-limit")
++                || msg.contains("rate limit"))
++    }
++
+     fn should_route_via_batch_place(strategy_id: &str, entry_mode: EntryExecutionMode) -> bool {
+         strategy_id == crate::strategy::STRATEGY_ID_PREMARKET_V1
+             && matches!(entry_mode, EntryExecutionMode::Ladder)
+@@ -15058,6 +15086,17 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn balance_allowance_rate_limit_error_skips_batch_single_fallback() {
++        let err = anyhow::anyhow!(
++            "Failed to fetch pUSD balance and allowance (rate-limited; skipped immediate retry, first_error='Status: error(429 Too Many Requests) making GET call to /balance-allowance with error code: 1015')"
++        );
++        assert!(Trader::is_balance_allowance_rate_limit_error(&err));
++
++        let other = anyhow::anyhow!("Failed to post V2 batch orders: 429 Too Many Requests");
++        assert!(!Trader::is_balance_allowance_rate_limit_error(&other));
++    }
++
+     #[test]
+     fn ladder_trade_key_keeps_rung_identity() {
+         let key_a = Trader::limit_trade_key(

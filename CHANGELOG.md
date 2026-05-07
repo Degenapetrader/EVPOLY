@@ -1,9 +1,10 @@
 # EVPoly Linux Changelog
 
-## Unreleased
+## Linux-v2.2.6 - 2026-05-07
 - Ported desktop Deposit Wallet allowance parsing, start approval gating, profile-scoped overview metrics, and live-profile label fixes.
 - Added MM 2.0 Sport / Non-S sizing profiles in desktop config and settings UI.
 - Added a desktop runtime patch for Non-S sizing overrides that fall back to Sport values and apply only to fresh BUY sizing plus BUY-side ratio hygiene.
+- Added a runtime patch that backs off `/balance-allowance` 429s and skips noisy single-order fallback after balance rate limits.
 
 ## Linux-v2.2.5 - 2026-05-06
 - Bumped Linux app/updater version to 2.2.5.

@@ -546,12 +546,23 @@ impl Trader {
     }
 
     fn is_balance_allowance_rate_limit_error(error: &anyhow::Error) -> bool {
-        let msg = error.to_string().to_ascii_lowercase();
-        msg.contains("balance-allowance")
-            && (msg.contains("429")
+        let mut saw_balance_allowance = false;
+        let mut saw_rate_limit = false;
+        for cause in error.chain() {
+            let msg = cause.to_string().to_ascii_lowercase();
+            saw_balance_allowance |=
+                msg.contains("balance-allowance") || msg.contains("balance and allowance");
+            saw_rate_limit |= msg.contains("429")
                 || msg.contains("1015")
+                || msg.contains("too many requests")
                 || msg.contains("rate-limit")
-                || msg.contains("rate limit"))
+                || msg.contains("rate limit")
+                || msg.contains("backoff active");
+            if saw_balance_allowance && saw_rate_limit {
+                return true;
+            }
+        }
+        false
     }
 
     fn should_route_via_batch_place(strategy_id: &str, entry_mode: EntryExecutionMode) -> bool {
@@ -15093,8 +15104,25 @@ mod tests {
         );
         assert!(Trader::is_balance_allowance_rate_limit_error(&err));
 
+        let wrapped = anyhow::anyhow!(
+            "Status: error(429 Too Many Requests) making GET call to /balance-allowance with error code: 1015"
+        )
+        .context("Failed to fetch pUSD balance and allowance")
+        .context("batch place failed");
+        assert!(Trader::is_balance_allowance_rate_limit_error(&wrapped));
+
+        let backoff =
+            anyhow::anyhow!("pUSD balance-allowance rate-limit backoff active; retry_after_ms=123")
+                .context("batch place failed");
+        assert!(Trader::is_balance_allowance_rate_limit_error(&backoff));
+
         let other = anyhow::anyhow!("Failed to post V2 batch orders: 429 Too Many Requests");
         assert!(!Trader::is_balance_allowance_rate_limit_error(&other));
+
+        let no_rate_limit = anyhow::anyhow!("Failed to fetch pUSD balance and allowance");
+        assert!(!Trader::is_balance_allowance_rate_limit_error(
+            &no_rate_limit
+        ));
     }
 
     #[test]

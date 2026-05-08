@@ -9,6 +9,10 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-05-08
+- Runtime wallet/order path: non-Deposit Wallet limit BUYs now use only a fresh cached pUSD snapshot for the fee-reserve guard, so EOA/Proxy/Safe profiles no longer cold-call CLOB `/balance-allowance` before build/sign/post; Deposit Wallet BUYs route directly through the collateral readiness check, and the shared CLOB balance-allowance rate-limit backoff now arms on retry 429s (`src/api.rs`).
+  - Affects all strategies that submit BUY orders through the shared Polymarket order API, including Premarket, Endgame, EVCurve, SessionBand, EVSnipe, and MM 2.0. Existing env override `EVPOLY_ORDER_SUBMIT_CONCURRENCY` remains supported while its default increases from `4` to `16` to reduce cross-strategy submit queueing.
+
 ### 2026-05-05
 - Runtime wallet/order path: Deposit Wallet BUY placement now uses the CLOB `balance_allowance` hot path instead of direct Polygon pUSD/approval reads, forcing a CLOB collateral `update_balance_allowance` sync only when the cached/read allowance is stale or insufficient (`src/api.rs`).
   - Affects every strategy that submits BUY orders from Deposit Wallet profiles. On-chain pUSD/operator approval checks remain for onboarding/repair readiness, while live trading avoids 30-second Polygon RPC approval polling and keeps Deposit Wallet batch order posts disabled.

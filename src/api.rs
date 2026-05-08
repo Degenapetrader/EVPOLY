@@ -604,7 +604,15 @@ impl PolymarketApi {
         if requested_usdc <= Decimal::ZERO {
             return Ok(());
         }
-        let balance = self.buy_collateral_balance_for_fee_sizing().await?;
+        let Some(balance) = self
+            .fresh_cached_buy_collateral_balance_for_fee_sizing()
+            .await
+        else {
+            log::debug!(
+                "Skipping BUY limit fee reserve check without a fresh cached pUSD balance snapshot"
+            );
+            return Ok(());
+        };
         let fee_probe_buffer = (requested_usdc * Decimal::new(20, 2)).max(Decimal::new(50, 2));
         if balance >= requested_usdc + fee_probe_buffer {
             return Ok(());
@@ -736,7 +744,7 @@ impl PolymarketApi {
             ))),
             order_submit_semaphore: Arc::new(tokio::sync::Semaphore::new(Self::env_usize_clamped(
                 "EVPOLY_ORDER_SUBMIT_CONCURRENCY",
-                4,
+                16,
                 1,
                 128,
             ))),
@@ -1401,9 +1409,15 @@ impl PolymarketApi {
         value / Decimal::from(1_000_000u64)
     }
 
-    async fn buy_collateral_balance_for_fee_sizing(&self) -> Result<Decimal> {
-        let (balance, _) = self.check_usdc_balance_allowance().await?;
-        Ok(Self::format_raw_usdc_for_display(balance))
+    async fn fresh_cached_buy_collateral_balance_for_fee_sizing(&self) -> Option<Decimal> {
+        let now_ms = Utc::now().timestamp_millis();
+        let cached_snapshot = self.cached_usdc_balance_allowance.lock().await.clone();
+        let (balance, _, cached_ts_ms) = cached_snapshot?;
+        if now_ms.saturating_sub(cached_ts_ms) <= USDC_BALANCE_CACHE_HIT_TTL_MS {
+            Some(Self::format_raw_usdc_for_display(balance))
+        } else {
+            None
+        }
     }
 
     async fn ensure_buy_collateral_ready(
@@ -2303,11 +2317,13 @@ impl PolymarketApi {
     }
 
     fn is_rate_limit_error(error: &anyhow::Error) -> bool {
-        let msg = error.to_string().to_ascii_lowercase();
-        msg.contains("429")
-            || msg.contains("1015")
-            || msg.contains("rate limit")
-            || msg.contains("too many requests")
+        error.chain().any(|cause| {
+            let msg = cause.to_string().to_ascii_lowercase();
+            msg.contains("429")
+                || msg.contains("1015")
+                || msg.contains("rate limit")
+                || msg.contains("too many requests")
+        })
     }
 
     fn is_network_or_server_error(error: &anyhow::Error) -> bool {
@@ -5056,8 +5072,6 @@ impl PolymarketApi {
             if matches!(side, Side::Buy) {
                 let required_usdc = (size * price)
                     .round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero);
-                self.ensure_limit_buy_balance_covers_fee(handle, token_id, price, required_usdc)
-                    .await?;
                 let approval_context = format!(
                     "{} BUY order token={} price={} size={}",
                     effective_order_type, order.token_id, price, size
@@ -5065,6 +5079,14 @@ impl PolymarketApi {
                 if self.is_deposit_wallet_mode() {
                     self.ensure_buy_collateral_ready(required_usdc, approval_context.as_str())
                         .await?;
+                } else {
+                    self.ensure_limit_buy_balance_covers_fee(
+                        handle,
+                        token_id,
+                        price,
+                        required_usdc,
+                    )
+                    .await?;
                 }
             }
             let mut order_builder = handle
@@ -5955,9 +5977,20 @@ impl PolymarketApi {
         {
             Ok(resp) => Ok(resp),
             Err(first_err) => {
+                let first_is_rate_limited = Self::is_rate_limit_error(&first_err);
                 let first_msg = first_err.to_string();
                 let first_anyhow = anyhow::anyhow!(first_msg.clone());
-                if Self::should_invalidate_auth_cache(&first_anyhow) {
+                if first_is_rate_limited {
+                    let retry_after_ms = self.set_usdc_balance_allowance_rate_limit_backoff().await;
+                    let remaining_ms = retry_after_ms
+                        .saturating_sub(Utc::now().timestamp_millis())
+                        .max(0);
+                    Err(anyhow::anyhow!(
+                        "Failed to fetch pUSD balance and allowance (rate-limited; skipped immediate retry, backoff_ms={}, first_error='{}')",
+                        remaining_ms,
+                        first_msg
+                    ))
+                } else if Self::should_invalidate_auth_cache(&first_anyhow) {
                     warn!(
                         "pUSD balance check auth failure: {}. Re-authenticating once.",
                         first_msg
@@ -5971,35 +6004,61 @@ impl PolymarketApi {
                         .get_collateral_balance_allowance_response(&fresh_handle, build_request())
                         .await
                     {
-                            Ok(resp) => Ok(resp),
-                            Err(second_err) => Err(anyhow::anyhow!(
+                        Ok(resp) => Ok(resp),
+                        Err(second_err) => {
+                            let second_is_rate_limited = Self::is_rate_limit_error(&second_err);
+                            let second_msg = second_err.to_string();
+                            if second_is_rate_limited {
+                                let retry_after_ms =
+                                    self.set_usdc_balance_allowance_rate_limit_backoff().await;
+                                let remaining_ms = retry_after_ms
+                                    .saturating_sub(Utc::now().timestamp_millis())
+                                    .max(0);
+                                Err(anyhow::anyhow!(
+                                    "Failed to fetch pUSD balance and allowance after auth refresh (rate-limited; backoff_ms={}, first_error='{}', second_error='{}')",
+                                    remaining_ms,
+                                    first_msg,
+                                    second_msg
+                                ))
+                            } else {
+                                Err(anyhow::anyhow!(
                                 "Failed to fetch pUSD balance and allowance after auth refresh (first_error='{}', second_error='{}')",
                                 first_msg,
-                                second_err
-                            )),
+                                    second_msg
+                                ))
+                            }
                         }
-                } else if Self::is_rate_limit_error(&first_anyhow) {
-                    let retry_after_ms = self.set_usdc_balance_allowance_rate_limit_backoff().await;
-                    let remaining_ms = retry_after_ms
-                        .saturating_sub(Utc::now().timestamp_millis())
-                        .max(0);
-                    Err(anyhow::anyhow!(
-                        "Failed to fetch pUSD balance and allowance (rate-limited; skipped immediate retry, backoff_ms={}, first_error='{}')",
-                        remaining_ms,
-                        first_msg
-                    ))
+                    }
                 } else {
                     match self
                         .get_collateral_balance_allowance_response(&handle, build_request())
                         .await
                     {
-                            Ok(resp) => Ok(resp),
-                            Err(second_err) => Err(anyhow::anyhow!(
+                        Ok(resp) => Ok(resp),
+                        Err(second_err) => {
+                            let second_is_rate_limited = Self::is_rate_limit_error(&second_err);
+                            let second_msg = second_err.to_string();
+                            if second_is_rate_limited {
+                                let retry_after_ms =
+                                    self.set_usdc_balance_allowance_rate_limit_backoff().await;
+                                let remaining_ms = retry_after_ms
+                                    .saturating_sub(Utc::now().timestamp_millis())
+                                    .max(0);
+                                Err(anyhow::anyhow!(
+                                    "Failed to fetch pUSD balance and allowance after transient retry (rate-limited; backoff_ms={}, first_error='{}', second_error='{}')",
+                                    remaining_ms,
+                                    first_msg,
+                                    second_msg
+                                ))
+                            } else {
+                                Err(anyhow::anyhow!(
                                 "Failed to fetch pUSD balance and allowance after transient retry (first_error='{}', second_error='{}')",
                                 first_msg,
-                                second_err
-                            )),
+                                    second_msg
+                                ))
+                            }
                         }
+                    }
                 }
             }
         };
@@ -8806,6 +8865,60 @@ mod tests {
 
         assert!(required_total > decimal("5.135148"));
         assert!(required_total < decimal("5.50"));
+    }
+
+    #[test]
+    fn limit_buy_fee_sizing_cache_helper_uses_only_fresh_snapshot() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let api = PolymarketApi::new(
+                "https://gamma-api.polymarket.com".to_string(),
+                "https://clob.polymarket.com".to_string(),
+                None,
+                None,
+                None,
+                None,
+                Some(0),
+            );
+
+            assert!(api
+                .fresh_cached_buy_collateral_balance_for_fee_sizing()
+                .await
+                .is_none());
+
+            *api.cached_usdc_balance_allowance.lock().await = Some((
+                Decimal::from(1_234_567u64),
+                Decimal::ZERO,
+                Utc::now().timestamp_millis(),
+            ));
+            assert_eq!(
+                api.fresh_cached_buy_collateral_balance_for_fee_sizing()
+                    .await,
+                Some(Decimal::new(1_234_567, 6))
+            );
+
+            *api.cached_usdc_balance_allowance.lock().await = Some((
+                Decimal::from(1_234_567u64),
+                Decimal::ZERO,
+                Utc::now()
+                    .timestamp_millis()
+                    .saturating_sub(USDC_BALANCE_CACHE_HIT_TTL_MS + 1),
+            ));
+            assert!(api
+                .fresh_cached_buy_collateral_balance_for_fee_sizing()
+                .await
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn balance_allowance_rate_limit_detection_inspects_error_chain() {
+        let source = anyhow::anyhow!(
+            "Status: error(429 Too Many Requests) making GET call to /balance-allowance with error code: 1015"
+        );
+        let wrapped = source.context("Failed to fetch pUSD balance and allowance");
+
+        assert!(PolymarketApi::is_rate_limit_error(&wrapped));
     }
 
     #[test]

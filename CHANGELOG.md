@@ -1,5 +1,9 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.2.9 - 2026-05-08
+- Bumped Linux app/updater version to 2.2.9.
+- Repinned the bundled runtime sidecar to runtime v2.2.9 with the BUY hot-path balance-allowance performance fix.
+
 ## Linux-v2.2.6 - 2026-05-07
 - Ported desktop Deposit Wallet allowance parsing, start approval gating, profile-scoped overview metrics, and live-profile label fixes.
 - Added MM 2.0 Sport / Non-S sizing profiles in desktop config and settings UI.

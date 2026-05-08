@@ -1,5 +1,10 @@
 # EVPoly Changelog
 
+## v2.2.9 - 2026-05-08
+- Restored fast EOA/Proxy/Safe limit BUY submission by avoiding cold CLOB `/balance-allowance` fee-sizing probes on the hot path.
+- Kept Deposit Wallet BUY collateral readiness on the explicit pUSD balance/allowance path while avoiding duplicate fee preflight checks.
+- Hardened `/balance-allowance` 429 cooldown and batch fallback detection so rate-limited balance checks do not fan out into noisy single-order retries.
+
 ## v2.2.6 - 2026-05-07
 - Added shared `/balance-allowance` 429 backoff so concurrent BUY sizing checks reuse a fresh cached pUSD snapshot instead of spamming CLOB.
 - Skipped per-order single fallback after batch placement fails on `/balance-allowance` rate limits.

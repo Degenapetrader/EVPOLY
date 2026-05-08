@@ -1,5 +1,9 @@
 # EVPoly Desktop Changelog
 
+## UI-v2.2.9 - 2026-05-08
+- Bumped desktop app/updater version to 2.2.9.
+- Repinned the bundled runtime sidecar to runtime v2.2.9 with the BUY hot-path balance-allowance performance fix.
+
 ## UI-v2.2.6 - 2026-05-07
 - Scoped overview PnL, latency, and liquidity rewards to the active desktop profile/wallet, and cleaned the rewards unavailable state for wallets without reward access.
 - Fixed Deposit Wallet allowance parsing and gated Deposit Wallet starts until the API bridge reports approval readiness.

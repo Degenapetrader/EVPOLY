@@ -65,6 +65,11 @@ fn hmac_signature(secret_b64url: &str, message: &str) -> Result<String> {
     Ok(URL_SAFE.encode(result))
 }
 
+fn l2_hmac_message(method: &str, url: &str, timestamp: i64) -> Result<String> {
+    let parsed = reqwest::Url::parse(url)?;
+    Ok(format!("{timestamp}{method}{}", parsed.path()))
+}
+
 async fn raw_get(
     http: &reqwest::Client,
     url: &str,
@@ -74,12 +79,7 @@ async fn raw_get(
     secret_b64url: &str,
 ) -> Result<Value> {
     let timestamp = Utc::now().timestamp();
-    let parsed = reqwest::Url::parse(url)?;
-    let path_with_query = match parsed.query() {
-        Some(query) => format!("{}?{}", parsed.path(), query),
-        None => parsed.path().to_string(),
-    };
-    let message = format!("{timestamp}GET{path_with_query}");
+    let message = l2_hmac_message("GET", url, timestamp)?;
     let signature = hmac_signature(secret_b64url, &message)?;
 
     let text = http
@@ -242,4 +242,21 @@ pub async fn fetch_summary(
             .unwrap_or_else(|| Utc::now().to_rfc3339()),
         cache,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn l2_hmac_message_ignores_query_params() {
+        let message = l2_hmac_message(
+            "GET",
+            "https://clob.polymarket.com/rewards/user/total?date=2026-05-09&signature_type=2&maker_address=0xabc",
+            1778297912,
+        )
+        .expect("message");
+
+        assert_eq!(message, "1778297912GET/rewards/user/total");
+    }
 }

@@ -54,6 +54,20 @@ describe("desktop config MM 2.0 sizing profiles", () => {
     expect(merged.strategy_settings.mm_sport.quote_cooldown_max_sec).toBe(61);
   });
 
+  it("normalizes MM 2.0 entry price mode", () => {
+    expect(mergeConfig(null).strategy_settings.mm_sport.entry_price_mode).toBe("passive");
+    expect(
+      mergeConfig({
+        strategy_settings: { mm_sport: { entry_price_mode: "best-bid" } },
+      } as unknown as Partial<BotConfig>).strategy_settings.mm_sport.entry_price_mode
+    ).toBe("best_bid");
+    expect(
+      mergeConfig({
+        strategy_settings: { mm_sport: { entry_price_mode: "market" } },
+      } as unknown as Partial<BotConfig>).strategy_settings.mm_sport.entry_price_mode
+    ).toBe("passive");
+  });
+
   it("falls back missing Non-S sizing fields to Sport values", () => {
     const merged = mergeConfig({
       mm_tuning: {

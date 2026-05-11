@@ -136,6 +136,7 @@ const SAMPLE_CONFIG: BotConfig = {
       discovery_route: "sports",
       quote_size_mode: "multiple",
       nonsport_quote_size_mode: "multiple",
+      entry_price_mode: "passive",
       multiple_collateral_cap_mult: 0.45,
       nonsport_multiple_collateral_cap_mult: 0.45,
       depth_ratio_collateral_cap_mult: 0.9,

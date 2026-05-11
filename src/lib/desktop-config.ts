@@ -73,6 +73,13 @@ function normalizeMMSportQuoteSizeMode(value: string | undefined) {
   return value?.trim().toLowerCase() === "depth_ratio" ? "depth_ratio" : "multiple";
 }
 
+function normalizeMMSportEntryPriceMode(value: string | undefined) {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "best_bid" || normalized === "best-bid" || normalized === "bestbid"
+    ? "best_bid"
+    : "passive";
+}
+
 function normalizeMMSportDiscoveryRoute(value: string | undefined) {
   const normalized = value?.trim().toLowerCase();
   if (normalized === "nonsports" || normalized === "non-sports" || normalized === "non_sports") {
@@ -219,6 +226,7 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     discovery_route: "sports",
     quote_size_mode: "depth_ratio",
     nonsport_quote_size_mode: "depth_ratio",
+    entry_price_mode: "passive",
     multiple_collateral_cap_mult: 0.45,
     nonsport_multiple_collateral_cap_mult: 0.45,
     depth_ratio_collateral_cap_mult: 0.9,
@@ -484,6 +492,7 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
         nonsport_quote_size_mode: normalizeMMSportQuoteSizeMode(
           savedMmSport?.nonsport_quote_size_mode ?? sportQuoteSizeMode
         ),
+        entry_price_mode: normalizeMMSportEntryPriceMode(savedMmSport?.entry_price_mode),
         multiple_collateral_cap_mult: sportMultipleCollateralCap,
         nonsport_multiple_collateral_cap_mult:
           savedMmSport?.nonsport_multiple_collateral_cap_mult ?? sportMultipleCollateralCap,

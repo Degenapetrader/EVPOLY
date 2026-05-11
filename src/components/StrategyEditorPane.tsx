@@ -1851,6 +1851,42 @@ export function StrategyEditorPane({
             </div>
           </div>
 
+          <div className="surface-panel">
+            <div className="surface-panel__header">
+              <div className="surface-panel__copy">
+                <h2 className="surface-panel__title">Entry Price</h2>
+                <p className="surface-panel__subtitle">
+                  {mmSport.entry_price_mode === "best_bid"
+                    ? "Quotes at the current best bid while staying maker-only."
+                    : "Quotes one tick behind the current best bid."}
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ["passive", "Passive"],
+                  ["best_bid", "Best Bid"],
+                ].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    disabled={!canEdit}
+                    onClick={() =>
+                      patchMMSport({
+                        entry_price_mode:
+                          value as BotConfig["strategy_settings"]["mm_sport"]["entry_price_mode"],
+                      })
+                    }
+                    className={`mode-choice ${
+                      mmSport.entry_price_mode === value ? "mode-choice--active" : ""
+                    }`.trim()}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
             <div className="surface-panel">
               <div className="surface-panel__header">

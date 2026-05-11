@@ -711,6 +711,11 @@ input[type="number"]::-webkit-inner-spin-button {
     grid-template-columns: repeat(auto-fit, minmax(9.5rem, max-content));
   }
 
+  .mm-quote-grid--guard {
+    grid-template-columns: repeat(auto-fit, minmax(9.5rem, max-content));
+    gap: 0.75rem;
+  }
+
   .mm-quote-field {
     min-width: 9.5rem;
   }
@@ -746,6 +751,34 @@ input[type="number"]::-webkit-inner-spin-button {
     background: var(--border);
   }
 
+  .mm-quote-guard-groups {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.85rem;
+    align-items: stretch;
+  }
+
+  .mm-quote-guard-card {
+    display: grid;
+    align-content: start;
+    gap: 0.75rem;
+    border: 1px solid rgba(114, 145, 183, 0.14);
+    border-radius: 0.85rem;
+    background: rgba(8, 13, 21, 0.42);
+    padding: 0.9rem;
+  }
+
+  .mm-quote-guard-card h4 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-weight: 650;
+  }
+
+  .mm-quote-guard-card .field-input {
+    width: 9.8rem;
+  }
+
   @media (max-width: 900px) {
     .mm-quote-panel__header {
       align-items: flex-start;
@@ -758,6 +791,7 @@ input[type="number"]::-webkit-inner-spin-button {
     .mm-quote-grid,
     .mm-quote-grid--profile,
     .mm-quote-grid--scope,
+    .mm-quote-grid--guard,
     .mm-quote-grid--shared {
       grid-template-columns: 1fr;
     }
@@ -767,6 +801,18 @@ input[type="number"]::-webkit-inner-spin-button {
     .mm-quote-field--segment {
       width: 100%;
       min-width: 0;
+    }
+  }
+
+  @media (max-width: 1300px) {
+    .mm-quote-guard-groups {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 720px) {
+    .mm-quote-guard-groups {
+      grid-template-columns: 1fr;
     }
   }
 

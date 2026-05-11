@@ -1740,42 +1740,74 @@ export function StrategyEditorPane({
             <h3>Shared Guards</h3>
             <span>Controls that apply across Sport and Non-S profiles</span>
           </div>
-          <div className="mm-quote-grid mm-quote-grid--shared">
-            {renderNumberField("Min Top Bid", mmSport.min_entry_top_bid_price, (value) =>
-              patchMMSport({ min_entry_top_bid_price: value }),
-              { max: 1, step: 0.01 }
-            )}
-            {renderNumberField("FIFO Ratio", mmSport.fifo_max_share_ratio, (value) =>
-              patchMMSport({ fifo_max_share_ratio: value }),
-              { min: fifoRatioFloor, max: 0.99, step: 0.01 }
-            )}
-            {renderNumberField("Pause", mmSport.pause_after_fill_sec, (value) =>
-              patchMMSport({ pause_after_fill_sec: value })
-            )}
-            {renderNumberField("Expiry Min", mmSport.quote_expiry_min_sec, (value) =>
-              patchMMSport({ quote_expiry_min_sec: value })
-            )}
-            {renderNumberField("Expiry Max", mmSport.quote_expiry_max_sec, (value) =>
-              patchMMSport({ quote_expiry_max_sec: value })
-            )}
-            {renderNumberField("Cooldown Min", mmSport.quote_cooldown_min_sec, (value) => {
-              const nextMin = Math.floor(value);
-              patchMMSport({
-                quote_cooldown_min_sec: nextMin,
-                quote_cooldown_max_sec: Math.max(Math.floor(mmSport.quote_cooldown_max_sec), nextMin),
-              });
-            })}
-            {renderNumberField("Cooldown Max", mmSport.quote_cooldown_max_sec, (value) =>
-              patchMMSport({
-                quote_cooldown_max_sec: Math.max(Math.floor(value), Math.floor(mmSport.quote_cooldown_min_sec)),
-              })
-            )}
-            {renderNumberField("Exit Starts", mmSport.inventory_exit_start_hours, (value) =>
-              patchMMSport({ inventory_exit_start_hours: value })
-            )}
-            {renderNumberField("Non-S End Exit", mmSport.nonsport_end_exit_start_hours, (value) =>
-              patchMMSport({ nonsport_end_exit_start_hours: value })
-            )}
+          <div className="mm-quote-guard-groups">
+            <div className="mm-quote-guard-card">
+              <h4>Entry Safety</h4>
+              <div className="mm-quote-grid mm-quote-grid--guard">
+                {renderNumberField(
+                  "Min Top Bid",
+                  mmSport.min_entry_top_bid_price,
+                  (value) => patchMMSport({ min_entry_top_bid_price: value }),
+                  { max: 1, step: 0.01 }
+                )}
+                {renderNumberField(
+                  "FIFO Ratio",
+                  mmSport.fifo_max_share_ratio,
+                  (value) => patchMMSport({ fifo_max_share_ratio: value }),
+                  { min: fifoRatioFloor, max: 0.99, step: 0.01 }
+                )}
+              </div>
+            </div>
+            <div className="mm-quote-guard-card">
+              <h4>Re-entry Timing</h4>
+              <div className="mm-quote-grid mm-quote-grid--guard">
+                {renderNumberField("Pause After Fill", mmSport.pause_after_fill_sec, (value) =>
+                  patchMMSport({ pause_after_fill_sec: value })
+                )}
+                {renderNumberField("Cooldown Min", mmSport.quote_cooldown_min_sec, (value) => {
+                  const nextMin = Math.floor(value);
+                  patchMMSport({
+                    quote_cooldown_min_sec: nextMin,
+                    quote_cooldown_max_sec: Math.max(
+                      Math.floor(mmSport.quote_cooldown_max_sec),
+                      nextMin
+                    ),
+                  });
+                })}
+                {renderNumberField("Cooldown Max", mmSport.quote_cooldown_max_sec, (value) =>
+                  patchMMSport({
+                    quote_cooldown_max_sec: Math.max(
+                      Math.floor(value),
+                      Math.floor(mmSport.quote_cooldown_min_sec)
+                    ),
+                  })
+                )}
+              </div>
+            </div>
+            <div className="mm-quote-guard-card">
+              <h4>Quote Lifetime</h4>
+              <div className="mm-quote-grid mm-quote-grid--guard">
+                {renderNumberField("Quote Expiry Min", mmSport.quote_expiry_min_sec, (value) =>
+                  patchMMSport({ quote_expiry_min_sec: value })
+                )}
+                {renderNumberField("Quote Expiry Max", mmSport.quote_expiry_max_sec, (value) =>
+                  patchMMSport({ quote_expiry_max_sec: value })
+                )}
+              </div>
+            </div>
+            <div className="mm-quote-guard-card">
+              <h4>Exit Windows</h4>
+              <div className="mm-quote-grid mm-quote-grid--guard">
+                {renderNumberField("Sport Exit Starts", mmSport.inventory_exit_start_hours, (value) =>
+                  patchMMSport({ inventory_exit_start_hours: value })
+                )}
+                {renderNumberField(
+                  "Non-S Exit Starts",
+                  mmSport.nonsport_end_exit_start_hours,
+                  (value) => patchMMSport({ nonsport_end_exit_start_hours: value })
+                )}
+              </div>
+            </div>
           </div>
         </div>
       );

@@ -577,6 +577,168 @@ input[type="number"]::-webkit-inner-spin-button {
     color: var(--text-primary);
   }
 
+  .mm-quote-panel {
+    border-radius: 1rem;
+  }
+
+  .mm-quote-panel__header {
+    align-items: center;
+  }
+
+  .mm-quote-caps-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+    align-items: center;
+    justify-content: flex-end;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+  }
+
+  .mm-quote-caps-strip strong {
+    border: 1px solid var(--border);
+    border-radius: 0.65rem;
+    background: rgba(8, 13, 21, 0.84);
+    padding: 0.45rem 0.7rem;
+    color: var(--text-primary);
+    font-weight: 650;
+  }
+
+  .mm-quote-caps-strip em {
+    color: var(--text-muted);
+    font-style: normal;
+  }
+
+  .mm-quote-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 1rem 1.15rem 0;
+  }
+
+  .mm-quote-tab,
+  .mm-quote-segment__button {
+    border: 1px solid var(--border);
+    border-radius: 0.65rem;
+    background: rgba(8, 13, 21, 0.82);
+    color: var(--text-secondary);
+    padding: 0.62rem 0.9rem;
+    transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+  }
+
+  .mm-quote-tab--active,
+  .mm-quote-segment__button--active {
+    border-color: rgba(99, 181, 255, 0.3);
+    background: rgba(99, 181, 255, 0.14);
+    color: var(--text-primary);
+  }
+
+  .mm-quote-panel__body {
+    padding-top: 1rem;
+  }
+
+  .mm-quote-tab-panel {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .mm-quote-tab-panel__header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    align-items: baseline;
+  }
+
+  .mm-quote-tab-panel__header h3 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 1.05rem;
+    font-weight: 650;
+  }
+
+  .mm-quote-tab-panel__header span {
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+  }
+
+  .mm-quote-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(10.5rem, max-content));
+    gap: 1rem;
+    align-items: end;
+  }
+
+  .mm-quote-grid--profile {
+    grid-template-columns: minmax(16rem, max-content) repeat(auto-fit, minmax(10.5rem, max-content));
+  }
+
+  .mm-quote-grid--scope {
+    grid-template-columns: minmax(18rem, max-content) repeat(auto-fit, minmax(10.5rem, max-content));
+  }
+
+  .mm-quote-grid--shared {
+    grid-template-columns: repeat(auto-fit, minmax(9.5rem, max-content));
+  }
+
+  .mm-quote-field {
+    min-width: 9.5rem;
+  }
+
+  .mm-quote-field--segment {
+    min-width: 16rem;
+  }
+
+  .mm-quote-field .field-input {
+    width: 11.5rem;
+    min-height: 2.75rem;
+    border-radius: 0.65rem;
+    padding: 0.65rem 0.75rem;
+  }
+
+  .mm-quote-segment {
+    display: inline-flex;
+    gap: 0.3rem;
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    background: rgba(8, 13, 21, 0.72);
+    padding: 0.25rem;
+  }
+
+  .mm-quote-segment__button {
+    min-width: 6.7rem;
+    border-radius: 0.55rem;
+    padding: 0.58rem 0.75rem;
+  }
+
+  .mm-quote-divider {
+    height: 1px;
+    background: var(--border);
+  }
+
+  @media (max-width: 900px) {
+    .mm-quote-panel__header {
+      align-items: flex-start;
+    }
+
+    .mm-quote-caps-strip {
+      justify-content: flex-start;
+    }
+
+    .mm-quote-grid,
+    .mm-quote-grid--profile,
+    .mm-quote-grid--scope,
+    .mm-quote-grid--shared {
+      grid-template-columns: 1fr;
+    }
+
+    .mm-quote-field .field-input,
+    .mm-quote-field,
+    .mm-quote-field--segment {
+      width: 100%;
+      min-width: 0;
+    }
+  }
+
   .surface-panel__header--split {
     align-items: flex-start;
     justify-content: space-between;

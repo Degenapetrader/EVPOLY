@@ -68,6 +68,20 @@ describe("desktop config MM 2.0 sizing profiles", () => {
     ).toBe("passive");
   });
 
+  it("defaults and falls back MM 2.0 max quote share caps", () => {
+    expect(mergeConfig(null).strategy_settings.mm_sport).toMatchObject({
+      max_quote_shares: 0,
+      nonsport_max_quote_shares: 0,
+    });
+
+    const merged = mergeConfig({
+      strategy_settings: { mm_sport: { max_quote_shares: 250 } },
+    } as unknown as Partial<BotConfig>);
+
+    expect(merged.strategy_settings.mm_sport.max_quote_shares).toBe(250);
+    expect(merged.strategy_settings.mm_sport.nonsport_max_quote_shares).toBe(250);
+  });
+
   it("migrates stale route-default caps when the MM 2.0 route changes", () => {
     expect(
       mergeConfig({

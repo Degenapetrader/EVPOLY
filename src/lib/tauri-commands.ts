@@ -430,6 +430,8 @@ export interface MMSportSettings {
   inventory_exit_mode: MMSportInventoryExitMode;
   max_share_ratio: number;
   nonsport_max_share_ratio: number;
+  max_quote_shares: number;
+  nonsport_max_quote_shares: number;
   min_top_depth_usd: number;
   nonsport_min_top_depth_usd: number;
   min_entry_top_bid_price: number;

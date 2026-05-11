@@ -9,6 +9,10 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-05-11
+- `mm_sport_v1` / MM 2.0 sizing and entry-price controls: added optional Sport/Non-S max quote share caps with `EVPOLY_MM_SPORT_MAX_QUOTE_SHARES` and `EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES`, plus `EVPOLY_MM_SPORT_ENTRY_PRICE_MODE=passive|best_bid` for fresh BUY entry pricing (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`).
+  - Applies to MM 2.0 Sport, Non-S, and Dual routes. Defaults preserve existing behavior: quote share caps are disabled at `0`, and entry pricing remains passive one tick behind best bid unless `best_bid` is configured.
+
 ### 2026-05-08
 - Runtime wallet/order path: non-Deposit Wallet limit BUYs now use only a fresh cached pUSD snapshot for the fee-reserve guard, so EOA/Proxy/Safe profiles no longer cold-call CLOB `/balance-allowance` before build/sign/post; Deposit Wallet BUYs route directly through the collateral readiness check, and the shared CLOB balance-allowance rate-limit backoff now arms on retry 429s (`src/api.rs`).
   - Affects all strategies that submit BUY orders through the shared Polymarket order API, including Premarket, Endgame, EVCurve, SessionBand, EVSnipe, and MM 2.0. Existing env override `EVPOLY_ORDER_SUBMIT_CONCURRENCY` remains supported while its default increases from `4` to `16` to reduce cross-strategy submit queueing.

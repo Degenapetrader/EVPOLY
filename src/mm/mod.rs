@@ -28,6 +28,33 @@ impl MmSportQuoteSizeMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MmSportEntryPriceMode {
+    Passive,
+    BestBid,
+}
+
+impl MmSportEntryPriceMode {
+    fn from_env(raw: Option<String>) -> Self {
+        match raw
+            .unwrap_or_else(|| "passive".to_string())
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "best_bid" | "best-bid" | "bestbid" | "top_bid" | "top-bid" => Self::BestBid,
+            _ => Self::Passive,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Passive => "passive",
+            Self::BestBid => "best_bid",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MmSportDiscoveryRoute {
     Sports,
     NonSports,
@@ -96,6 +123,7 @@ pub struct MmSportSizingProfile {
     pub multiple_collateral_cap_mult: f64,
     pub depth_ratio_collateral_cap_mult: f64,
     pub max_share_ratio: f64,
+    pub max_quote_shares: f64,
     pub min_top_depth_usd: f64,
 }
 
@@ -115,6 +143,7 @@ pub struct MmSportConfig {
     pub discovery_route: MmSportDiscoveryRoute,
     pub quote_size_mode: MmSportQuoteSizeMode,
     pub nonsport_quote_size_mode: MmSportQuoteSizeMode,
+    pub entry_price_mode: MmSportEntryPriceMode,
     pub exit_mode: MmSportExitMode,
     pub quote_size_mult: f64,
     pub nonsport_quote_size_mult: f64,
@@ -131,6 +160,8 @@ pub struct MmSportConfig {
     pub reward_min_shares_cap: f64,
     pub max_share_ratio: f64,
     pub nonsport_max_share_ratio: f64,
+    pub max_quote_shares: f64,
+    pub nonsport_max_quote_shares: f64,
     pub fifo_max_share_ratio: f64,
     pub min_top_depth_usd: f64,
     pub nonsport_min_top_depth_usd: f64,
@@ -189,6 +220,8 @@ impl MmSportConfig {
             env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 185).clamp(quote_expiry_min_sec, 7_200);
         let quote_size_mode =
             MmSportQuoteSizeMode::from_env(std::env::var("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE").ok());
+        let entry_price_mode =
+            MmSportEntryPriceMode::from_env(std::env::var("EVPOLY_MM_SPORT_ENTRY_PRICE_MODE").ok());
         let quote_size_mult = env_f64("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2).clamp(0.1, 20.0);
         let multiple_collateral_cap_mult = env_f64_with_alias(
             "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT",
@@ -205,6 +238,9 @@ impl MmSportConfig {
         let max_share_ratio = env_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05).clamp(0.01, 0.99);
         let nonsport_max_share_ratio =
             env_f64("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", max_share_ratio).clamp(0.01, 0.99);
+        let max_quote_shares = env_f64("EVPOLY_MM_SPORT_MAX_QUOTE_SHARES", 0.0).max(0.0);
+        let nonsport_max_quote_shares =
+            env_f64("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES", 0.0).max(0.0);
         let fifo_ratio_floor =
             (max_share_ratio.max(nonsport_max_share_ratio) * 1.10).clamp(0.01, 0.99);
         let fifo_max_share_ratio =
@@ -247,6 +283,7 @@ impl MmSportConfig {
                     .ok()
                     .or_else(|| Some(quote_size_mode.as_str().to_string())),
             ),
+            entry_price_mode,
             exit_mode: MmSportExitMode::from_env(std::env::var("EVPOLY_MM_SPORT_EXIT_MODE").ok()),
             quote_size_mult,
             nonsport_quote_size_mult: env_f64(
@@ -289,6 +326,8 @@ impl MmSportConfig {
             reward_min_shares_cap: env_f64("EVPOLY_MM_SPORT_REWARD_MIN_SHARES_CAP", 0.0).max(0.0),
             max_share_ratio,
             nonsport_max_share_ratio,
+            max_quote_shares,
+            nonsport_max_quote_shares,
             fifo_max_share_ratio,
             min_top_depth_usd,
             nonsport_min_top_depth_usd: env_f64(
@@ -387,6 +426,7 @@ impl MmSportConfig {
                 multiple_collateral_cap_mult: self.multiple_collateral_cap_mult,
                 depth_ratio_collateral_cap_mult: self.depth_ratio_collateral_cap_mult,
                 max_share_ratio: self.max_share_ratio,
+                max_quote_shares: self.max_quote_shares,
                 min_top_depth_usd: self.min_top_depth_usd,
             }
         } else {
@@ -396,6 +436,7 @@ impl MmSportConfig {
                 multiple_collateral_cap_mult: self.nonsport_multiple_collateral_cap_mult,
                 depth_ratio_collateral_cap_mult: self.nonsport_depth_ratio_collateral_cap_mult,
                 max_share_ratio: self.nonsport_max_share_ratio,
+                max_quote_shares: self.nonsport_max_quote_shares,
                 min_top_depth_usd: self.nonsport_min_top_depth_usd,
             }
         }
@@ -618,15 +659,45 @@ mod tests {
     }
 
     #[test]
+    fn parse_mm_sport_entry_price_mode_from_env_value() {
+        assert_eq!(
+            MmSportEntryPriceMode::from_env(None),
+            MmSportEntryPriceMode::Passive
+        );
+        assert_eq!(
+            MmSportEntryPriceMode::from_env(Some("passive".to_string())),
+            MmSportEntryPriceMode::Passive
+        );
+        assert_eq!(
+            MmSportEntryPriceMode::from_env(Some("best_bid".to_string())),
+            MmSportEntryPriceMode::BestBid
+        );
+        assert_eq!(
+            MmSportEntryPriceMode::from_env(Some("top-bid".to_string())),
+            MmSportEntryPriceMode::BestBid
+        );
+        assert_eq!(
+            MmSportEntryPriceMode::from_env(Some("unknown".to_string())),
+            MmSportEntryPriceMode::Passive
+        );
+    }
+
+    #[test]
     fn mm_sport_config_defaults_to_normal_exit_mode_and_one_hour_side_pause() {
         with_mm_env(
             &[
+                ("EVPOLY_MM_SPORT_ENTRY_PRICE_MODE", None),
+                ("EVPOLY_MM_SPORT_MAX_QUOTE_SHARES", None),
+                ("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES", None),
                 ("EVPOLY_MM_SPORT_EXIT_MODE", None),
                 ("EVPOLY_MM_SPORT_NO_EXIT_SIDE_PAUSE_SEC", None),
                 ("EVPOLY_MM_SPORT_MATCH_ONLY", None),
             ],
             || {
                 let cfg = MmSportConfig::from_env();
+                assert_eq!(cfg.entry_price_mode, MmSportEntryPriceMode::Passive);
+                assert_eq!(cfg.max_quote_shares, 0.0);
+                assert_eq!(cfg.nonsport_max_quote_shares, 0.0);
                 assert_eq!(cfg.exit_mode, MmSportExitMode::Normal);
                 assert_eq!(cfg.no_exit_side_pause_sec, 3_600);
                 assert!(cfg.match_only);
@@ -711,6 +782,8 @@ mod tests {
                 ("EVPOLY_MM_SPORT_DISCOVERY_ROUTE", Some("dual")),
                 ("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", Some("0.10")),
                 ("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", Some("0.05")),
+                ("EVPOLY_MM_SPORT_MAX_QUOTE_SHARES", Some("1000")),
+                ("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES", Some("250")),
                 ("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", Some("0.09")),
                 ("EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP", Some("44")),
                 ("EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP", Some("33")),
@@ -728,6 +801,10 @@ mod tests {
                 let cfg = MmSportConfig::from_env();
                 assert_eq!(cfg.active_sport_market_cap, 44);
                 assert_eq!(cfg.active_nonsport_market_cap, 33);
+                assert_eq!(cfg.max_quote_shares, 1000.0);
+                assert_eq!(cfg.nonsport_max_quote_shares, 250.0);
+                assert_eq!(cfg.sizing_for_market(true).max_quote_shares, 1000.0);
+                assert_eq!(cfg.sizing_for_market(false).max_quote_shares, 250.0);
                 assert_eq!(cfg.quote_cooldown_min_sec, 12);
                 assert_eq!(cfg.quote_cooldown_max_sec, 45);
                 assert_eq!(cfg.quote_hold_min_sec, 25);
@@ -778,6 +855,7 @@ mod tests {
                 ("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE", Some("multiple")),
                 ("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", Some("2.0")),
                 ("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", Some("0.10")),
+                ("EVPOLY_MM_SPORT_MAX_QUOTE_SHARES", Some("1000")),
                 (
                     "EVPOLY_MM_SPORT_NONSPORT_QUOTE_SIZE_MODE",
                     Some("depth_ratio"),
@@ -792,6 +870,7 @@ mod tests {
                     Some("0.55"),
                 ),
                 ("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", Some("0.05")),
+                ("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES", Some("250")),
                 ("EVPOLY_MM_SPORT_NONSPORT_MIN_TOP_DEPTH_USD", Some("900")),
             ],
             || {
@@ -804,6 +883,8 @@ mod tests {
                 assert!((nonsport.multiple_collateral_cap_mult - 0.25).abs() < 1e-9);
                 assert!((nonsport.depth_ratio_collateral_cap_mult - 0.55).abs() < 1e-9);
                 assert!((nonsport.max_share_ratio - 0.05).abs() < 1e-9);
+                assert_eq!(sport.max_quote_shares, 1000.0);
+                assert_eq!(nonsport.max_quote_shares, 250.0);
                 assert!((nonsport.min_top_depth_usd - 900.0).abs() < 1e-9);
             },
         );

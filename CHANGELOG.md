@@ -1,5 +1,9 @@
 # EVPoly Changelog
 
+## v2.3.0 - 2026-05-11
+- Added MM 2.0 max quote share caps for Sport and Non-S routes.
+- Added MM 2.0 entry price mode so BUY entries can use passive one-tick-behind pricing or current best-bid pricing.
+
 ## v2.2.9 - 2026-05-08
 - Restored fast EOA/Proxy/Safe limit BUY submission by avoiding cold CLOB `/balance-allowance` fee-sizing probes on the hot path.
 - Kept Deposit Wallet BUY collateral readiness on the explicit pUSD balance/allowance path while avoiding duplicate fee preflight checks.

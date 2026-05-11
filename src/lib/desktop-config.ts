@@ -249,6 +249,8 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     inventory_exit_mode: "normal",
     max_share_ratio: 0.05,
     nonsport_max_share_ratio: 0.05,
+    max_quote_shares: 0,
+    nonsport_max_quote_shares: 0,
     min_top_depth_usd: 1100,
     nonsport_min_top_depth_usd: 1100,
     min_entry_top_bid_price: 0.1,
@@ -504,6 +506,9 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
         ),
         max_share_ratio: sportMaxShareRatio,
         nonsport_max_share_ratio: savedMmSport?.nonsport_max_share_ratio ?? sportMaxShareRatio,
+        max_quote_shares: savedMmSport?.max_quote_shares ?? 0,
+        nonsport_max_quote_shares:
+          savedMmSport?.nonsport_max_quote_shares ?? savedMmSport?.max_quote_shares ?? 0,
         min_top_depth_usd: sportMinTopDepthUsd,
         nonsport_min_top_depth_usd:
           savedMmSport?.nonsport_min_top_depth_usd ?? sportMinTopDepthUsd,

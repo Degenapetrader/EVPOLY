@@ -68,6 +68,52 @@ describe("desktop config MM 2.0 sizing profiles", () => {
     ).toBe("passive");
   });
 
+  it("defaults and falls back MM 2.0 max quote share caps", () => {
+    expect(mergeConfig(null).strategy_settings.mm_sport).toMatchObject({
+      max_quote_shares: 0,
+      nonsport_max_quote_shares: 0,
+    });
+
+    const merged = mergeConfig({
+      strategy_settings: { mm_sport: { max_quote_shares: 250 } },
+    } as unknown as Partial<BotConfig>);
+
+    expect(merged.strategy_settings.mm_sport.max_quote_shares).toBe(250);
+    expect(merged.strategy_settings.mm_sport.nonsport_max_quote_shares).toBe(250);
+  });
+
+  it("migrates stale route-default caps when the MM 2.0 route changes", () => {
+    expect(
+      mergeConfig({
+        strategy_settings: {
+          mm_sport: {
+            discovery_route: "dual",
+            active_sport_market_cap: 0,
+            active_nonsport_market_cap: 100,
+          },
+        },
+      } as Partial<BotConfig>).strategy_settings.mm_sport
+    ).toMatchObject({
+      active_sport_market_cap: 50,
+      active_nonsport_market_cap: 50,
+    });
+
+    expect(
+      mergeConfig({
+        strategy_settings: {
+          mm_sport: {
+            discovery_route: "sports",
+            active_sport_market_cap: 0,
+            active_nonsport_market_cap: 100,
+          },
+        },
+      } as Partial<BotConfig>).strategy_settings.mm_sport
+    ).toMatchObject({
+      active_sport_market_cap: 100,
+      active_nonsport_market_cap: 0,
+    });
+  });
+
   it("falls back missing Non-S sizing fields to Sport values", () => {
     const merged = mergeConfig({
       mm_tuning: {

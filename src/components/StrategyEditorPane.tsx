@@ -489,7 +489,9 @@ export function StrategyEditorPane({
   saveMessage?: string | null;
 }) {
   const [selectedSection, setSelectedSection] = useState<StrategyEditorSection>("general");
-  const [mmSportSizingProfile, setMmSportSizingProfile] = useState<"sport" | "nonsport">("sport");
+  const [mmSportQuoteSizingTab, setMmSportQuoteSizingTab] = useState<
+    "scope" | "sport" | "nonsport" | "shared"
+  >("sport");
 
   const visibleSections = useMemo(() => strategySections(selectedStrategy), [selectedStrategy]);
   const canEdit = Boolean(activeProfileId);
@@ -1505,726 +1507,348 @@ export function StrategyEditorPane({
 
     if (selectedStrategy === "mm_sport") {
       const mmSport = config.strategy_settings.mm_sport;
-      const sizingProfileIsNonSport = mmSportSizingProfile === "nonsport";
-      const sizingProfileLabel = sizingProfileIsNonSport ? "Non-S" : "Sport";
-      const sizingQuoteMode = sizingProfileIsNonSport
-        ? mmSport.nonsport_quote_size_mode
-        : mmSport.quote_size_mode;
-      const sizingUsesDepthRatio = sizingQuoteMode === "depth_ratio";
-      const sizingQuoteMultiplier = sizingProfileIsNonSport
-        ? config.mm_tuning.nonsport_quote_size_multiplier
-        : config.mm_tuning.sport_quote_size_multiplier;
-      const sizingMultipleCap = sizingProfileIsNonSport
-        ? mmSport.nonsport_multiple_collateral_cap_mult
-        : mmSport.multiple_collateral_cap_mult;
-      const sizingDepthRatioCap = sizingProfileIsNonSport
-        ? mmSport.nonsport_depth_ratio_collateral_cap_mult
-        : mmSport.depth_ratio_collateral_cap_mult;
-      const sizingMaxShareRatio = sizingProfileIsNonSport
-        ? mmSport.nonsport_max_share_ratio
-        : mmSport.max_share_ratio;
-      const sizingMinTopDepthUsd = sizingProfileIsNonSport
-        ? mmSport.nonsport_min_top_depth_usd
-        : mmSport.min_top_depth_usd;
       const fifoRatioFloor = Math.min(
         0.99,
         Math.max(0.01, Math.max(mmSport.max_share_ratio, mmSport.nonsport_max_share_ratio) * 1.1)
       );
-      const patchSizingProfile = (
-        patch: Partial<BotConfig["strategy_settings"]["mm_sport"]>
-      ) => patchMMSport(patch);
-      const updateSizingMultiplier = (value: number) =>
-        setConfig((current) => ({
-          ...current,
-          mm_tuning: {
-            ...current.mm_tuning,
-            [sizingProfileIsNonSport
-              ? "nonsport_quote_size_multiplier"
-              : "sport_quote_size_multiplier"]: value,
-          },
-        }));
+      const renderNumberField = (
+        label: string,
+        value: number,
+        onValue: (value: number) => void,
+        options: { min?: number | string; max?: number | string; step?: number | string } = {}
+      ) => (
+        <div className="mm-quote-field">
+          <label className="field-label">{label}</label>
+          <input
+            type="number"
+            min={options.min ?? 0}
+            max={options.max}
+            step={options.step ?? 1}
+            value={value}
+            disabled={!canEdit}
+            onChange={(event) => onValue(parseNonNegative(event.target.value, value))}
+            className="field-input"
+          />
+        </div>
+      );
+      const renderSegment = <T extends string,>(
+        items: readonly [T, string][],
+        active: T,
+        onSelect: (value: T) => void
+      ) => (
+        <div className="mm-quote-segment">
+          {items.map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              disabled={!canEdit}
+              onClick={() => onSelect(value)}
+              className={`mm-quote-segment__button ${
+                active === value ? "mm-quote-segment__button--active" : ""
+              }`.trim()}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      );
+      const renderProfileTab = (isNonSport: boolean) => {
+        const label = isNonSport ? "Non-S" : "Sport";
+        const quoteMode = isNonSport ? mmSport.nonsport_quote_size_mode : mmSport.quote_size_mode;
+        const quoteMultiplier = isNonSport
+          ? config.mm_tuning.nonsport_quote_size_multiplier
+          : config.mm_tuning.sport_quote_size_multiplier;
+        const multipleCap = isNonSport
+          ? mmSport.nonsport_multiple_collateral_cap_mult
+          : mmSport.multiple_collateral_cap_mult;
+        const depthCap = isNonSport
+          ? mmSport.nonsport_depth_ratio_collateral_cap_mult
+          : mmSport.depth_ratio_collateral_cap_mult;
+        const maxQuoteShares = isNonSport ? mmSport.nonsport_max_quote_shares : mmSport.max_quote_shares;
+        const maxShareRatio = isNonSport ? mmSport.nonsport_max_share_ratio : mmSport.max_share_ratio;
+        const minTopDepthUsd = isNonSport ? mmSport.nonsport_min_top_depth_usd : mmSport.min_top_depth_usd;
+        const patchProfile = (patch: Partial<BotConfig["strategy_settings"]["mm_sport"]>) =>
+          patchMMSport(patch);
+        const updateMultiplier = (value: number) =>
+          setConfig((current) => ({
+            ...current,
+            mm_tuning: {
+              ...current.mm_tuning,
+              [isNonSport ? "nonsport_quote_size_multiplier" : "sport_quote_size_multiplier"]: value,
+            },
+          }));
+
+        return (
+          <div className="mm-quote-tab-panel">
+            <div className="mm-quote-tab-panel__header">
+              <h3>{label} Profile</h3>
+              <span>{isNonSport ? "Non-sport route sizing" : "Sports route sizing"}</span>
+            </div>
+            <div className="mm-quote-grid mm-quote-grid--profile">
+              <div className="mm-quote-field mm-quote-field--segment">
+                <label className="field-label">Size Mode</label>
+                {renderSegment(
+                  [
+                    ["multiple", "Multiple"],
+                    ["depth_ratio", "Depth Ratio"],
+                  ] as const,
+                  quoteMode,
+                  (value) =>
+                    patchProfile(
+                      isNonSport
+                        ? { nonsport_quote_size_mode: value }
+                        : { quote_size_mode: value }
+                    )
+                )}
+              </div>
+              {renderNumberField("Quote Multiplier", quoteMultiplier, updateMultiplier, { step: 0.1 })}
+              {renderNumberField(
+                `${label} Max Quote Shares`,
+                maxQuoteShares,
+                (value) =>
+                  patchProfile(
+                    isNonSport ? { nonsport_max_quote_shares: value } : { max_quote_shares: value }
+                  )
+              )}
+              {renderNumberField(
+                "pUSD Cap",
+                multipleCap,
+                (value) =>
+                  patchProfile(
+                    isNonSport
+                      ? { nonsport_multiple_collateral_cap_mult: value }
+                      : { multiple_collateral_cap_mult: value }
+                  ),
+                { max: 1, step: 0.01 }
+              )}
+            </div>
+            <div className="mm-quote-divider" />
+            <div className="mm-quote-grid">
+              {renderNumberField(
+                "Max Share Ratio",
+                maxShareRatio,
+                (value) =>
+                  patchProfile(
+                    isNonSport ? { nonsport_max_share_ratio: value } : { max_share_ratio: value }
+                  ),
+                { max: 0.99, step: 0.01 }
+              )}
+              {renderNumberField(
+                "Min Depth USD",
+                minTopDepthUsd,
+                (value) =>
+                  patchProfile(
+                    isNonSport ? { nonsport_min_top_depth_usd: value } : { min_top_depth_usd: value }
+                  )
+              )}
+              {renderNumberField(
+                "Depth pUSD Cap",
+                depthCap,
+                (value) =>
+                  patchProfile(
+                    isNonSport
+                      ? { nonsport_depth_ratio_collateral_cap_mult: value }
+                      : { depth_ratio_collateral_cap_mult: value }
+                  ),
+                { max: 1, step: 0.01 }
+              )}
+            </div>
+          </div>
+        );
+      };
+      const renderScopeTab = () => (
+        <div className="mm-quote-tab-panel">
+          <div className="mm-quote-tab-panel__header">
+            <h3>Scope</h3>
+            <span>Route, discovery caps, and reward floor</span>
+          </div>
+          <div className="mm-quote-grid mm-quote-grid--scope">
+            <div className="mm-quote-field mm-quote-field--segment">
+              <label className="field-label">Discovery Route</label>
+              {renderSegment(
+                [
+                  ["sports", "Sports"],
+                  ["nonsports", "Non-S"],
+                  ["dual", "Dual"],
+                ] as const,
+                mmSport.discovery_route,
+                (value) =>
+                  patchMMSport({
+                    discovery_route: value,
+                    ...mmSportRouteDefaultCaps(value),
+                  })
+              )}
+            </div>
+            {renderNumberField("Sport Market Cap", mmSport.active_sport_market_cap, (value) =>
+              patchMMSport({ active_sport_market_cap: Math.floor(value) })
+            )}
+            {renderNumberField("Non-S Market Cap", mmSport.active_nonsport_market_cap, (value) =>
+              patchMMSport({ active_nonsport_market_cap: Math.floor(value) })
+            )}
+            {renderNumberField("Min Reward / Day", mmSport.min_reward_rate_per_day, (value) =>
+              patchMMSport({ min_reward_rate_per_day: value })
+            )}
+            {renderNumberField("Reward Floor Cap", mmSport.reward_min_shares_cap, (value) =>
+              patchMMSport({ reward_min_shares_cap: value })
+            )}
+            <div className="mm-quote-field mm-quote-field--segment">
+              <label className="field-label">Entry Price</label>
+              {renderSegment(
+                [
+                  ["passive", "Passive"],
+                  ["best_bid", "Best Bid"],
+                ] as const,
+                mmSport.entry_price_mode,
+                (value) => patchMMSport({ entry_price_mode: value })
+              )}
+            </div>
+          </div>
+        </div>
+      );
+      const renderSharedTab = () => (
+        <div className="mm-quote-tab-panel">
+          <div className="mm-quote-tab-panel__header">
+            <h3>Shared Guards</h3>
+            <span>Controls that apply across Sport and Non-S profiles</span>
+          </div>
+          <div className="mm-quote-grid mm-quote-grid--shared">
+            {renderNumberField("Min Top Bid", mmSport.min_entry_top_bid_price, (value) =>
+              patchMMSport({ min_entry_top_bid_price: value }),
+              { max: 1, step: 0.01 }
+            )}
+            {renderNumberField("FIFO Ratio", mmSport.fifo_max_share_ratio, (value) =>
+              patchMMSport({ fifo_max_share_ratio: value }),
+              { min: fifoRatioFloor, max: 0.99, step: 0.01 }
+            )}
+            {renderNumberField("Pause", mmSport.pause_after_fill_sec, (value) =>
+              patchMMSport({ pause_after_fill_sec: value })
+            )}
+            {renderNumberField("Expiry Min", mmSport.quote_expiry_min_sec, (value) =>
+              patchMMSport({ quote_expiry_min_sec: value })
+            )}
+            {renderNumberField("Expiry Max", mmSport.quote_expiry_max_sec, (value) =>
+              patchMMSport({ quote_expiry_max_sec: value })
+            )}
+            {renderNumberField("Cooldown Min", mmSport.quote_cooldown_min_sec, (value) => {
+              const nextMin = Math.floor(value);
+              patchMMSport({
+                quote_cooldown_min_sec: nextMin,
+                quote_cooldown_max_sec: Math.max(Math.floor(mmSport.quote_cooldown_max_sec), nextMin),
+              });
+            })}
+            {renderNumberField("Cooldown Max", mmSport.quote_cooldown_max_sec, (value) =>
+              patchMMSport({
+                quote_cooldown_max_sec: Math.max(Math.floor(value), Math.floor(mmSport.quote_cooldown_min_sec)),
+              })
+            )}
+            {renderNumberField("Exit Starts", mmSport.inventory_exit_start_hours, (value) =>
+              patchMMSport({ inventory_exit_start_hours: value })
+            )}
+            {renderNumberField("Non-S End Exit", mmSport.nonsport_end_exit_start_hours, (value) =>
+              patchMMSport({ nonsport_end_exit_start_hours: value })
+            )}
+          </div>
+        </div>
+      );
 
       return (
         <div className="space-y-4">
-          <div className="surface-panel">
-            <div className="surface-panel__header">
+          <div className="surface-panel mm-quote-panel">
+            <div className="surface-panel__header mm-quote-panel__header">
               <div className="surface-panel__copy">
                 <h2 className="surface-panel__title">Quote Sizing</h2>
                 <p className="surface-panel__subtitle">
-                  Choose how MM 2.0 sizes quotes and caps pUSD collateral exposure.
+                  Tabbed MM 2.0 controls with compact fixed-width fields.
                 </p>
+              </div>
+              <div className="mm-quote-caps-strip">
+                <span>Max Quote Shares</span>
+                <strong>Sport {mmSport.max_quote_shares || 0}</strong>
+                <strong>Non-S {mmSport.nonsport_max_quote_shares || 0}</strong>
+                <em>0 = uncapped</em>
               </div>
             </div>
-            <div className="surface-panel__body grid gap-4">
-              <div>
-                <label className="field-label">Discovery Route</label>
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    ["sports", "Sports"],
-                    ["nonsports", "Non-sports"],
-                    ["dual", "Dual"],
-                  ].map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      disabled={!canEdit}
-                      onClick={() =>
-                        patchMMSport({
-                          discovery_route: value as BotConfig["strategy_settings"]["mm_sport"]["discovery_route"],
-                          ...mmSportRouteDefaultCaps(value),
-                        })
-                      }
-                      className={`mode-choice ${
-                        mmSport.discovery_route === value ? "mode-choice--active" : ""
-                      }`.trim()}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                  Sports keeps pregame sports checks active. Non-sports uses reward markets without sports metadata. Dual includes both with duplicate markets merged.
-                </p>
-              </div>
-              <div>
-                <label className="field-label">Sizing Profile</label>
-                <div className="flex flex-wrap gap-2">
-                  {([
-                    ["sport", "Sport"],
-                    ["nonsport", "Non-S"],
-                  ] as const).map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      onClick={() => setMmSportSizingProfile(value)}
-                      className={`mode-choice ${
-                        mmSportSizingProfile === value ? "mode-choice--active" : ""
-                      }`.trim()}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                  Dual route applies the matching profile per market. Missing Non-S values fall back to Sport defaults.
-                </p>
-              </div>
-              <div>
-                <label className="field-label">{sizingProfileLabel} Quote Size Mode</label>
-                <div className="flex flex-wrap gap-2">
-                  {[
-                    ["multiple", "Quote Multiple"],
-                    ["depth_ratio", "Depth Ratio"],
-                  ].map(([value, label]) => (
-                    <button
-                      key={value}
-                      type="button"
-                      disabled={!canEdit}
-                      onClick={() =>
-                        patchSizingProfile(
-                          sizingProfileIsNonSport
-                            ? {
-                                nonsport_quote_size_mode:
-                                  value as BotConfig["strategy_settings"]["mm_sport"]["quote_size_mode"],
-                              }
-                            : {
-                                quote_size_mode:
-                                  value as BotConfig["strategy_settings"]["mm_sport"]["quote_size_mode"],
-                              }
-                        )
-                      }
-                      className={`mode-choice ${
-                        sizingQuoteMode === value ? "mode-choice--active" : ""
-                      }`.trim()}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                  {sizingUsesDepthRatio
-                    ? "Depth Ratio sizes quotes from visible book depth and pUSD collateral."
-                    : "Quote Multiple sizes from the reward minimum share target."}
-                </p>
-              </div>
-              {sizingUsesDepthRatio ? (
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div>
-                    <label className="field-label">{sizingProfileLabel} Max Share Ratio</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
-                      value={sizingMaxShareRatio}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchSizingProfile(
-                          sizingProfileIsNonSport
-                            ? {
-                                nonsport_max_share_ratio: parseNonNegative(
-                                  event.target.value,
-                                  sizingMaxShareRatio
-                                ),
-                              }
-                            : {
-                                max_share_ratio: parseNonNegative(
-                                  event.target.value,
-                                  sizingMaxShareRatio
-                                ),
-                              }
-                        )
-                      }
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Use a decimal ratio, so 0.05 means 5% of visible bid depth across the passive quote band.
-                    </p>
-                  </div>
-                  <div>
-                    <label className="field-label">{sizingProfileLabel} Min Visible Depth (USD)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={sizingMinTopDepthUsd}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchSizingProfile(
-                          sizingProfileIsNonSport
-                            ? {
-                                nonsport_min_top_depth_usd: parseNonNegative(
-                                  event.target.value,
-                                  sizingMinTopDepthUsd
-                                ),
-                              }
-                            : {
-                                min_top_depth_usd: parseNonNegative(
-                                  event.target.value,
-                                  sizingMinTopDepthUsd
-                                ),
-                              }
-                        )
-                      }
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Depth Ratio mode stays out when combined visible bid depth across the passive band is too thin.
-                    </p>
-                  </div>
-                  <div>
-                    <label className="field-label">{sizingProfileLabel} Depth Ratio pUSD Cap</label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                      value={sizingDepthRatioCap}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchSizingProfile(
-                          sizingProfileIsNonSport
-                            ? {
-                                nonsport_depth_ratio_collateral_cap_mult: parseNonNegative(
-                                  event.target.value,
-                                  sizingDepthRatioCap
-                                ),
-                              }
-                            : {
-                                depth_ratio_collateral_cap_mult: parseNonNegative(
-                                  event.target.value,
-                                  sizingDepthRatioCap
-                                ),
-                              }
-                        )
-                      }
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      pUSD collateral cap used by Depth Ratio entry sizing.
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="field-label">{sizingProfileLabel} Quote Size Multiplier</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.1"
-                      value={sizingQuoteMultiplier}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        updateSizingMultiplier(
-                          parseNonNegative(
-                            event.target.value,
-                            sizingQuoteMultiplier
-                          )
-                        )
-                      }
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      1.2 means MM 2.0 quotes at 120% of the reward minimum share size.
-                    </p>
-                  </div>
-                  <div>
-                    <label className="field-label">{sizingProfileLabel} Multiple pUSD Cap</label>
-                    <input
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.01"
-                      value={sizingMultipleCap}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchSizingProfile(
-                          sizingProfileIsNonSport
-                            ? {
-                                nonsport_multiple_collateral_cap_mult: parseNonNegative(
-                                  event.target.value,
-                                  sizingMultipleCap
-                                ),
-                              }
-                            : {
-                                multiple_collateral_cap_mult: parseNonNegative(
-                                  event.target.value,
-                                  sizingMultipleCap
-                                ),
-                              }
-                        )
-                      }
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      pUSD collateral cap used by Quote Multiple entry sizing.
-                    </p>
-                  </div>
-                </div>
-              )}
-              <div>
-                <label className="field-label">Min Entry Top Bid</label>
-                <input
-                  type="number"
-                  min="0"
-                  max="1"
-                  step="0.01"
-                  value={mmSport.min_entry_top_bid_price}
-                  disabled={!canEdit}
-                  onChange={(event) =>
-                    patchMMSport({
-                      min_entry_top_bid_price: parseNonNegative(
-                        event.target.value,
-                        mmSport.min_entry_top_bid_price
-                      ),
-                    })
-                  }
-                  className="field-input"
-                />
-                <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                  MM 2.0 skips fresh paired entries when either side has a top bid below this price.
-                </p>
-              </div>
-              <div>
-                <label className="field-label">FIFO Cancel Ratio</label>
-                <input
-                  type="number"
-                  min={fifoRatioFloor}
-                  max="0.99"
-                  step="0.01"
-                  value={mmSport.fifo_max_share_ratio}
-                  disabled={!canEdit}
-                  onChange={(event) =>
-                    patchMMSport({
-                      fifo_max_share_ratio: parseNonNegative(
-                        event.target.value,
-                        mmSport.fifo_max_share_ratio
-                      ),
-                    })
-                  }
-                  className="field-input"
-                />
-                <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                  FIFO cancels only at or above this ratio. Runtime clamps it to at least {fifoRatioFloor.toFixed(3)} based on the larger Sport/Non-S sizing ratio.
-                </p>
-              </div>
+            <div className="mm-quote-tabs">
+              {([
+                ["scope", "Scope"],
+                ["sport", "Sport"],
+                ["nonsport", "Non-S"],
+                ["shared", "Shared"],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setMmSportQuoteSizingTab(value)}
+                  className={`mm-quote-tab ${
+                    mmSportQuoteSizingTab === value ? "mm-quote-tab--active" : ""
+                  }`.trim()}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="surface-panel__body mm-quote-panel__body">
+              {mmSportQuoteSizingTab === "scope" ? renderScopeTab() : null}
+              {mmSportQuoteSizingTab === "sport" ? renderProfileTab(false) : null}
+              {mmSportQuoteSizingTab === "nonsport" ? renderProfileTab(true) : null}
+              {mmSportQuoteSizingTab === "shared" ? renderSharedTab() : null}
             </div>
           </div>
 
-          <div className="surface-panel">
-            <div className="surface-panel__header">
-              <div className="surface-panel__copy">
-                <h2 className="surface-panel__title">Entry Price</h2>
-                <p className="surface-panel__subtitle">
-                  {mmSport.entry_price_mode === "best_bid"
-                    ? "Quotes at the current best bid while staying maker-only."
-                    : "Quotes one tick behind the current best bid."}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {[
-                  ["passive", "Passive"],
-                  ["best_bid", "Best Bid"],
-                ].map(([value, label]) => (
-                  <button
-                    key={value}
-                    type="button"
-                    disabled={!canEdit}
-                    onClick={() =>
-                      patchMMSport({
-                        entry_price_mode:
-                          value as BotConfig["strategy_settings"]["mm_sport"]["entry_price_mode"],
-                      })
-                    }
-                    className={`mode-choice ${
-                      mmSport.entry_price_mode === value ? "mode-choice--active" : ""
-                    }`.trim()}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,0.9fr)]">
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)]">
             <div className="surface-panel">
               <div className="surface-panel__header">
                 <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Pacing</h2>
+                  <h2 className="surface-panel__title">Inventory Exit</h2>
                   <p className="surface-panel__subtitle">
-                    Control when MM 2.0 starts cleanup and how long it cools down after a fill.
+                    Choose how MM 2.0 cleans up existing exposure.
                   </p>
                 </div>
               </div>
               <div className="surface-panel__body grid gap-4">
                 <div>
-                  <label className="field-label">Min Reward Rate Per Day</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={mmSport.min_reward_rate_per_day}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchMMSport({
-                        min_reward_rate_per_day: parseNonNegative(
-                          event.target.value,
-                          mmSport.min_reward_rate_per_day
-                        ),
-                      })
-                      }
-                      className="field-input"
-                    />
-                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    Minimum daily liquidity reward rate a market must offer before MM 2.0
-                    will quote it.
-                  </p>
-                </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="field-label">Sport Fresh Market Cap</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={mmSport.active_sport_market_cap}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({
-                          active_sport_market_cap: Math.floor(
-                            parseNonNegative(
-                              event.target.value,
-                              mmSport.active_sport_market_cap
-                            )
-                          ),
-                        })
-                      }
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Fresh sports markets ranked by reward/day. Open orders and inventory stay in scope.
-                    </p>
+                  <label className="field-label">Inventory Exit Mode</label>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      ["normal", "Auto"],
+                      ["aggressive", "Aggressive"],
+                      ["no_exit", "Feeling Lucky"],
+                    ].map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        disabled={!canEdit}
+                        onClick={() =>
+                          patchMMSport({
+                            inventory_exit_mode:
+                              value as BotConfig["strategy_settings"]["mm_sport"]["inventory_exit_mode"],
+                          })
+                        }
+                        className={`mode-choice ${
+                          mmSport.inventory_exit_mode === value ? "mode-choice--active" : ""
+                        }`.trim()}
+                      >
+                        {label}
+                      </button>
+                    ))}
                   </div>
-                  <div>
-                    <label className="field-label">Non-S Fresh Market Cap</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={mmSport.active_nonsport_market_cap}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({
-                          active_nonsport_market_cap: Math.floor(
-                            parseNonNegative(
-                              event.target.value,
-                              mmSport.active_nonsport_market_cap
-                            )
-                          ),
-                        })
-                      }
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Fresh non-sport markets ranked by reward/day. Dual uses separate Sport and Non-S caps.
-                    </p>
-                  </div>
-                </div>
-                <div>
-                  <label className="field-label">Pause After Fill (Sec)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={mmSport.pause_after_fill_sec}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchMMSport({
-                        pause_after_fill_sec: parseNonNegative(
-                          event.target.value,
-                          mmSport.pause_after_fill_sec
-                        ),
-                      })
-                      }
-                      className="field-input"
-                    />
-                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    After a buy fill, `Auto` waits this long before normal cleanup starts. If the
-                    market reaches the inventory-exit window first, cleanup can still begin sooner.
-                  </p>
-                </div>
-                <div>
-                  <label className="field-label">Inventory Exit Starts (Hours)</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={mmSport.inventory_exit_start_hours}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchMMSport({
-                        inventory_exit_start_hours: parseNonNegative(
-                          event.target.value,
-                          mmSport.inventory_exit_start_hours
-                        ),
-                      })
-                    }
-                    className="field-input"
-                  />
-                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    MM 2.0 stops opening fresh entry quotes and switches into inventory cleanup
-                    this many hours before game start.
-                  </p>
-                </div>
-                <div>
-                  <label className="field-label">Non-S End Exit Hours</label>
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    value={mmSport.nonsport_end_exit_start_hours}
-                    disabled={!canEdit}
-                    onChange={(event) =>
-                      patchMMSport({
-                        nonsport_end_exit_start_hours: parseNonNegative(
-                          event.target.value,
-                          mmSport.nonsport_end_exit_start_hours
-                        ),
-                      })
-                    }
-                    className="field-input"
-                  />
-                  <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                    Non-sport markets stop opening fresh entry quotes this many hours before market end.
-                  </p>
-                </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="field-label">Quote Expiry Min (Sec)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={mmSport.quote_expiry_min_sec}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({
-                          quote_expiry_min_sec: parseNonNegative(
-                            event.target.value,
-                            mmSport.quote_expiry_min_sec
-                          ),
-                        })
-                      }
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Shortest quote lifetime MM 2.0 will use before refreshing a resting entry.
-                    </p>
-                  </div>
-                  <div>
-                    <label className="field-label">Quote Expiry Max (Sec)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={mmSport.quote_expiry_max_sec}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({
-                          quote_expiry_max_sec: parseNonNegative(
-                            event.target.value,
-                            mmSport.quote_expiry_max_sec
-                          ),
-                        })
-                      }
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Longest quote lifetime MM 2.0 will allow when market conditions stay calm.
-                    </p>
-                  </div>
-                </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="field-label">Quote Cooldown Min (Sec)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={mmSport.quote_cooldown_min_sec}
-                      disabled={!canEdit}
-                      onChange={(event) => {
-                        const nextMin = Math.floor(
-                          parseNonNegative(event.target.value, mmSport.quote_cooldown_min_sec)
-                        );
-                        patchMMSport({
-                          quote_cooldown_min_sec: nextMin,
-                          quote_cooldown_max_sec: Math.max(
-                            Math.floor(mmSport.quote_cooldown_max_sec),
-                            nextMin
-                          ),
-                        });
-                      }}
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Shortest random pause before fresh BUY re-entry after FIFO cancel or natural expiry.
-                    </p>
-                  </div>
-                  <div>
-                    <label className="field-label">Quote Cooldown Max (Sec)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={mmSport.quote_cooldown_max_sec}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({
-                          quote_cooldown_max_sec: Math.max(
-                            Math.floor(
-                              parseNonNegative(
-                                event.target.value,
-                                mmSport.quote_cooldown_max_sec
-                              )
-                            ),
-                            Math.floor(mmSport.quote_cooldown_min_sec)
-                          ),
-                        })
-                      }
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Longest random pause before fresh BUY re-entry after churn.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              <MMSportFiltersPanel
-                mmSport={mmSport}
-                canEdit={canEdit}
-                patchMMSport={patchMMSport}
-              />
-
-              <div className="surface-panel">
-                <div className="surface-panel__header">
-                  <div className="surface-panel__copy">
-                    <h2 className="surface-panel__title">Inventory Exit</h2>
-                    <p className="surface-panel__subtitle">
-                      Choose how MM 2.0 cleans up existing exposure.
-                    </p>
-                  </div>
-                </div>
-                <div className="surface-panel__body grid gap-4">
-                  <div>
-                    <label className="field-label">Inventory Exit Mode</label>
-                    <div className="flex flex-wrap gap-2">
-                      {[
-                        ["normal", "Auto"],
-                        ["aggressive", "Aggressive"],
-                        ["no_exit", "Feeling Lucky"],
-                      ].map(([value, label]) => (
-                        <button
-                          key={value}
-                          type="button"
-                          disabled={!canEdit}
-                          onClick={() =>
-                            patchMMSport({
-                              inventory_exit_mode:
-                                value as BotConfig["strategy_settings"]["mm_sport"]["inventory_exit_mode"],
-                            })
-                          }
-                          className={`mode-choice ${
-                            mmSport.inventory_exit_mode === value ? "mode-choice--active" : ""
-                          }`.trim()}
-                        >
-                          {label}
-                        </button>
-                      ))}
+                  {mmSport.inventory_exit_mode === "no_exit" ? (
+                    <div className="inline-alert inline-alert--warning">
+                      Feeling Lucky is high risk because cleanup exits are disabled.
                     </div>
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      {mmSport.inventory_exit_mode === "aggressive"
-                        ? "Aggressive starts trying to sell the position immediately after a fill instead of waiting for the normal cooldown."
-                        : mmSport.inventory_exit_mode === "no_exit"
-                          ? "Feeling Lucky disables forced cleanup exits. Inventory can stay open into live play or all the way to settlement."
-                          : "Auto uses the normal cleanup path and best-effort inventory exits."}
-                    </p>
-                    {mmSport.inventory_exit_mode === "no_exit" ? (
-                      <div className="inline-alert inline-alert--warning">
-                        Feeling Lucky is high risk because cleanup exits are disabled.
-                      </div>
-                    ) : null}
-                  </div>
-                  <div>
-                    <label className="field-label">Max Loss (Cents)</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="1"
-                      value={mmSport.inventory_exit_max_loss_cents}
-                      disabled={!canEdit}
-                      onChange={(event) =>
-                        patchMMSport({
-                          inventory_exit_max_loss_cents: parseNonNegative(
-                            event.target.value,
-                            mmSport.inventory_exit_max_loss_cents
-                          ),
-                        })
-                      }
-                      className="field-input"
-                    />
-                    <p className="mt-2 text-sm text-[var(--text-secondary)]">
-                      Exit quotes will not be placed more than this many cents below the tracked
-                      average entry price.
-                    </p>
-                  </div>
+                  ) : null}
                 </div>
+                {renderNumberField("Max Loss (Cents)", mmSport.inventory_exit_max_loss_cents, (value) =>
+                  patchMMSport({ inventory_exit_max_loss_cents: value })
+                )}
               </div>
             </div>
+
+            <MMSportFiltersPanel
+              mmSport={mmSport}
+              canEdit={canEdit}
+              patchMMSport={patchMMSport}
+            />
           </div>
         </div>
       );

@@ -338,6 +338,8 @@ struct DesktopMmSportSettings {
     inventory_exit_mode: String,
     max_share_ratio: f64,
     nonsport_max_share_ratio: f64,
+    max_quote_shares: f64,
+    nonsport_max_quote_shares: f64,
     min_top_depth_usd: f64,
     nonsport_min_top_depth_usd: f64,
     min_entry_top_bid_price: f64,
@@ -1048,6 +1050,14 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 nonsport_max_share_ratio: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO",
                     config_io::env_template_default_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05),
+                ),
+                max_quote_shares: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_MAX_QUOTE_SHARES",
+                    0.0,
+                ),
+                nonsport_max_quote_shares: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES",
+                    config_io::env_template_default_f64("EVPOLY_MM_SPORT_MAX_QUOTE_SHARES", 0.0),
                 ),
                 min_top_depth_usd: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD",
@@ -2212,6 +2222,14 @@ fn desktop_config_to_profile_payload(
         number_to_json(config.strategy_settings.mm_sport.nonsport_max_share_ratio),
     );
     strategy.insert(
+        "EVPOLY_MM_SPORT_MAX_QUOTE_SHARES".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.max_quote_shares),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES".to_string(),
+        number_to_json(config.strategy_settings.mm_sport.nonsport_max_quote_shares),
+    );
+    strategy.insert(
         "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD".to_string(),
         number_to_json(config.strategy_settings.mm_sport.min_top_depth_usd),
     );
@@ -2532,6 +2550,11 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "EVPOLY_MM_SPORT_MAX_SHARE_RATIO",
         config_io::env_template_default_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05),
     );
+    let mm_sport_max_quote_shares = f64_from_object(
+        &strategy,
+        "EVPOLY_MM_SPORT_MAX_QUOTE_SHARES",
+        config_io::env_template_default_f64("EVPOLY_MM_SPORT_MAX_QUOTE_SHARES", 0.0),
+    );
     let mm_sport_min_top_depth_usd = f64_from_object(
         &strategy,
         "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD",
@@ -2745,6 +2768,8 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 ),
                 "max_share_ratio": mm_sport_max_share_ratio,
                 "nonsport_max_share_ratio": f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", mm_sport_max_share_ratio),
+                "max_quote_shares": mm_sport_max_quote_shares,
+                "nonsport_max_quote_shares": f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES", mm_sport_max_quote_shares),
                 "min_top_depth_usd": mm_sport_min_top_depth_usd,
                 "nonsport_min_top_depth_usd": f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_MIN_TOP_DEPTH_USD", mm_sport_min_top_depth_usd),
                 "min_entry_top_bid_price": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", 0.10)),
@@ -6579,18 +6604,26 @@ mod tests {
         config.strategy_settings.mm_sport.entry_price_mode = "best_bid".to_string();
         config.strategy_settings.mm_sport.max_share_ratio = 0.4;
         config.strategy_settings.mm_sport.fifo_max_share_ratio = 0.5;
+        config.strategy_settings.mm_sport.max_quote_shares = 250.0;
+        config.strategy_settings.mm_sport.nonsport_max_quote_shares = 125.0;
         config.strategy_settings.mm_sport.active_sport_market_cap = 77.0;
         config.strategy_settings.mm_sport.active_nonsport_market_cap = 33.0;
         config.strategy_settings.mm_sport.quote_cooldown_min_sec = 12.0;
         config.strategy_settings.mm_sport.quote_cooldown_max_sec = 45.0;
 
         let (strategy, sizing, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        let strategy_object = strategy.as_object().expect("strategy object");
         assert_eq!(
-            strategy
-                .as_object()
-                .expect("strategy object")
-                .get("EVPOLY_MM_SPORT_ENTRY_PRICE_MODE"),
+            strategy_object.get("EVPOLY_MM_SPORT_ENTRY_PRICE_MODE"),
             Some(&serde_json::json!("best_bid"))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_MAX_QUOTE_SHARES"),
+            Some(&serde_json::json!(250.0))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES"),
+            Some(&serde_json::json!(125.0))
         );
         let profile = Profile {
             id: "p2".to_string(),
@@ -6625,6 +6658,14 @@ mod tests {
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["fifo_max_share_ratio"],
             serde_json::json!(0.5)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["max_quote_shares"],
+            serde_json::json!(250.0)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["nonsport_max_quote_shares"],
+            serde_json::json!(125.0)
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["active_sport_market_cap"],

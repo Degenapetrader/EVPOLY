@@ -301,6 +301,7 @@ struct DesktopMmSportSettings {
     discovery_route: String,
     quote_size_mode: String,
     nonsport_quote_size_mode: String,
+    entry_price_mode: String,
     multiple_collateral_cap_mult: f64,
     nonsport_multiple_collateral_cap_mult: f64,
     depth_ratio_collateral_cap_mult: f64,
@@ -348,6 +349,13 @@ fn normalize_mm_sport_quote_size_mode(value: &str) -> &'static str {
     match value.trim().to_ascii_lowercase().as_str() {
         "depth_ratio" | "depth-ratio" | "ratio" => "depth_ratio",
         _ => "multiple",
+    }
+}
+
+fn normalize_mm_sport_entry_price_mode(value: &str) -> &'static str {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "best_bid" | "best-bid" | "bestbid" | "top_bid" | "top-bid" => "best_bid",
+        _ => "passive",
     }
 }
 
@@ -923,6 +931,12 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     })
                     .as_deref()
                     .unwrap_or("depth_ratio"),
+                )
+                .to_string(),
+                entry_price_mode: normalize_mm_sport_entry_price_mode(
+                    config_io::env_template_default_string("EVPOLY_MM_SPORT_ENTRY_PRICE_MODE")
+                        .as_deref()
+                        .unwrap_or("passive"),
                 )
                 .to_string(),
                 multiple_collateral_cap_mult: config_io::env_template_default_f64(
@@ -2015,6 +2029,15 @@ fn desktop_config_to_profile_payload(
         ),
     );
     strategy.insert(
+        "EVPOLY_MM_SPORT_ENTRY_PRICE_MODE".to_string(),
+        Value::String(
+            normalize_mm_sport_entry_price_mode(
+                config.strategy_settings.mm_sport.entry_price_mode.as_str(),
+            )
+            .to_string(),
+        ),
+    );
+    strategy.insert(
         "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT".to_string(),
         number_to_json(
             config
@@ -2699,6 +2722,9 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 ),
                 "nonsport_quote_size_mode": normalize_mm_sport_quote_size_mode(
                     string_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_QUOTE_SIZE_MODE", mm_sport_quote_size_mode.as_str()).as_str()
+                ),
+                "entry_price_mode": normalize_mm_sport_entry_price_mode(
+                    string_from_object(&strategy, "EVPOLY_MM_SPORT_ENTRY_PRICE_MODE", "passive").as_str()
                 ),
                 "multiple_collateral_cap_mult": mm_sport_multiple_collateral_cap_mult,
                 "nonsport_multiple_collateral_cap_mult": f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT", mm_sport_multiple_collateral_cap_mult),
@@ -6325,6 +6351,7 @@ mod tests {
             1,
         );
         config.strategy_settings.mm_sport.quote_size_mode = "depth_ratio".to_string();
+        config.strategy_settings.mm_sport.entry_price_mode = "best_bid".to_string();
         config.strategy_settings.mm_sport.max_share_ratio = 0.4;
         config.strategy_settings.mm_sport.fifo_max_share_ratio = 0.5;
         config.strategy_settings.mm_sport.active_sport_market_cap = 77.0;
@@ -6333,6 +6360,13 @@ mod tests {
         config.strategy_settings.mm_sport.quote_cooldown_max_sec = 45.0;
 
         let (strategy, sizing, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
+        assert_eq!(
+            strategy
+                .as_object()
+                .expect("strategy object")
+                .get("EVPOLY_MM_SPORT_ENTRY_PRICE_MODE"),
+            Some(&serde_json::json!("best_bid"))
+        );
         let profile = Profile {
             id: "p2".to_string(),
             name: "desktop".to_string(),
@@ -6354,6 +6388,10 @@ mod tests {
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["quote_size_mode"],
             serde_json::json!("depth_ratio")
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["entry_price_mode"],
+            serde_json::json!("best_bid")
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["max_share_ratio"],

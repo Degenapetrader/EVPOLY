@@ -1,5 +1,9 @@
 # EVPoly Desktop Changelog
 
+## UI-v2.3.1 - 2026-05-11
+- Added an MM 2.0 Entry Price control for Passive vs Best Bid mode.
+- Bumped desktop app/updater version to 2.3.1.
+
 ## UI-v2.2.9 - 2026-05-08
 - Bumped desktop app/updater version to 2.2.9.
 - Repinned the bundled runtime sidecar to runtime v2.2.9 with the BUY hot-path balance-allowance performance fix.

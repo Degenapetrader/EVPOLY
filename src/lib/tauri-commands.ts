@@ -399,6 +399,7 @@ export interface MMRewardsSettings {
 }
 
 export type MMSportQuoteSizeMode = "multiple" | "depth_ratio";
+export type MMSportEntryPriceMode = "passive" | "best_bid";
 export type MMSportInventoryExitMode = "normal" | "aggressive" | "no_exit";
 export type MMSportDiscoveryRoute = "sports" | "nonsports" | "dual";
 
@@ -406,6 +407,7 @@ export interface MMSportSettings {
   discovery_route: MMSportDiscoveryRoute;
   quote_size_mode: MMSportQuoteSizeMode;
   nonsport_quote_size_mode: MMSportQuoteSizeMode;
+  entry_price_mode: MMSportEntryPriceMode;
   multiple_collateral_cap_mult: number;
   nonsport_multiple_collateral_cap_mult: number;
   depth_ratio_collateral_cap_mult: number;

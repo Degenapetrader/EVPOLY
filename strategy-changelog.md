@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-05-12
+- `evsnipe_v1`: aligned the local runtime with the SaaS EVSnipe fast path by adding an indexed hit-trigger watchlist, optional Binance price-cache broadcast, materialized EVSnipe FAK submit intent, no-fill outcome release without cooldown, confirm-hit protection against later pre-hit legs, and selected-token metadata prewarm controls (`src/evsnipe.rs`, `src/main.rs`, `src/trader.rs`, `src/entry_idempotency.rs`, `.env.example`, `.env.full.example`, `docs/evsnipe_v1.md`).
+  - Applies only to EVSnipe hit-market entries. Default per-hit size is now `5` pUSD, default EVSnipe strategy cap is now `10000` pUSD, and remote-first EVSnipe discovery remains unchanged.
 - `mm_sport_v1` / MM 2.0 multiple sizing: fixed the multiple-mode pUSD collateral cap at `0.45` and removed the Sport/Non-S multiple pUSD cap env overrides (`EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT`, `EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT`) from runtime templates (`src/mm/mod.rs`, `.env.example`, `.env.full.example`).
   - Applies to MM 2.0 Sport, Non-S, and Dual routes when multiple sizing is selected. Quote multiplier, max quote shares, and depth-ratio controls remain unchanged.
 - `mm_sport_v1` / MM 2.0 depth-ratio sizing: fixed the depth-ratio pUSD collateral cap at `0.45` and removed the Sport/Non-S depth-ratio pUSD cap env overrides (`EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT`, `EVPOLY_MM_SPORT_NONSPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT`) from runtime templates (`src/mm/mod.rs`, `.env.example`, `.env.full.example`).

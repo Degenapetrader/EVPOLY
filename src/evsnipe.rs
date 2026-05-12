@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio::time::sleep;
 use tokio_tungstenite::connect_async;
 
@@ -177,6 +177,243 @@ impl EvsnipeMarketSpec {
 }
 
 #[derive(Debug, Clone)]
+pub struct EvsnipePriceSnapshot {
+    pub symbol: String,
+    pub price: f64,
+    pub prev_price: Option<f64>,
+    pub trade_ts_ms: i64,
+    pub recv_ts_ms: i64,
+    pub seq: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct EvsnipePriceUpdate {
+    pub symbol: String,
+    pub price: f64,
+    pub prev_price: Option<f64>,
+    pub trade_ts_ms: i64,
+    pub recv_ts_ms: i64,
+    pub seq: u64,
+}
+
+#[derive(Debug, Default)]
+struct EvsnipePriceCacheInner {
+    seq: u64,
+    prices: HashMap<String, EvsnipePriceSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EvsnipePriceCache {
+    inner: Arc<StdMutex<EvsnipePriceCacheInner>>,
+    tx: broadcast::Sender<EvsnipePriceUpdate>,
+}
+
+impl EvsnipePriceCache {
+    pub fn new(channel_capacity: usize) -> Self {
+        let (tx, _) = broadcast::channel(channel_capacity.max(128));
+        Self {
+            inner: Arc::new(StdMutex::new(EvsnipePriceCacheInner::default())),
+            tx,
+        }
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<EvsnipePriceUpdate> {
+        self.tx.subscribe()
+    }
+
+    pub fn latest(&self, symbol: &str) -> Option<EvsnipePriceSnapshot> {
+        let key = normalize_symbol(symbol);
+        self.inner
+            .lock()
+            .ok()
+            .and_then(|inner| inner.prices.get(key.as_str()).cloned())
+    }
+
+    pub fn upsert_trade(
+        &self,
+        symbol: &str,
+        price: f64,
+        trade_ts_ms: i64,
+        recv_ts_ms: i64,
+    ) -> Option<EvsnipePriceUpdate> {
+        if !price.is_finite() || price <= 0.0 || trade_ts_ms <= 0 || recv_ts_ms <= 0 {
+            return None;
+        }
+        let symbol = normalize_symbol(symbol);
+        if symbol.is_empty() {
+            return None;
+        }
+
+        let update = {
+            let mut inner = self.inner.lock().ok()?;
+            let prev_price = inner
+                .prices
+                .get(symbol.as_str())
+                .map(|snapshot| snapshot.price);
+            if let Some(old) = inner.prices.get(symbol.as_str()) {
+                if trade_ts_ms < old.trade_ts_ms {
+                    return None;
+                }
+            }
+            inner.seq = inner.seq.saturating_add(1);
+            let snapshot = EvsnipePriceSnapshot {
+                symbol: symbol.clone(),
+                price,
+                prev_price,
+                trade_ts_ms,
+                recv_ts_ms,
+                seq: inner.seq,
+            };
+            inner.prices.insert(symbol.clone(), snapshot.clone());
+            EvsnipePriceUpdate {
+                symbol,
+                price,
+                prev_price,
+                trade_ts_ms,
+                recv_ts_ms,
+                seq: snapshot.seq,
+            }
+        };
+
+        let _ = self.tx.send(update.clone());
+        Some(update)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EvsnipeIndexedTrigger {
+    pub spec: EvsnipeMarketSpec,
+    pub pre_triggered: bool,
+    pub confirm_triggered: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct EvsnipeSymbolSpecIndex {
+    specs: Vec<EvsnipeMarketSpec>,
+    up_by_strike: Vec<(f64, usize)>,
+    down_by_strike: Vec<(f64, usize)>,
+}
+
+fn indexed_by_symbol(
+    by_symbol: &HashMap<String, Vec<EvsnipeMarketSpec>>,
+) -> HashMap<String, EvsnipeSymbolSpecIndex> {
+    let mut out = HashMap::new();
+    for (symbol, specs) in by_symbol {
+        let symbol_norm = normalize_symbol(symbol);
+        if symbol_norm.is_empty() {
+            continue;
+        }
+        let mut idx = EvsnipeSymbolSpecIndex::default();
+        for spec in specs.iter().filter(|spec| spec.is_hit_rule()) {
+            let pos = idx.specs.len();
+            idx.specs.push(spec.clone());
+            match spec.rule {
+                EvsnipeRule::HitUpHighGte => idx.up_by_strike.push((spec.strike_price, pos)),
+                EvsnipeRule::HitDownLowLte => idx.down_by_strike.push((spec.strike_price, pos)),
+                _ => {}
+            }
+        }
+        idx.up_by_strike.sort_by(|a, b| a.0.total_cmp(&b.0));
+        idx.down_by_strike.sort_by(|a, b| a.0.total_cmp(&b.0));
+        out.insert(symbol_norm, idx);
+    }
+    out
+}
+
+impl EvsnipeSymbolSpecIndex {
+    fn triggered_hit_specs(
+        &self,
+        prev_price: f64,
+        price: f64,
+        pre_trigger_bps: f64,
+        now_sec: i64,
+    ) -> Vec<EvsnipeIndexedTrigger> {
+        if !prev_price.is_finite() || !price.is_finite() || prev_price <= 0.0 || price <= 0.0 {
+            return Vec::new();
+        }
+
+        let mut touched: HashSet<usize> = HashSet::new();
+        if price >= prev_price {
+            for (strike, idx) in self.up_by_strike.iter() {
+                if *strike <= prev_price {
+                    continue;
+                }
+                if *strike > price {
+                    break;
+                }
+                touched.insert(*idx);
+            }
+        } else {
+            for (strike, idx) in self.down_by_strike.iter().rev() {
+                if *strike >= prev_price {
+                    continue;
+                }
+                if *strike < price {
+                    break;
+                }
+                touched.insert(*idx);
+            }
+        }
+
+        if pre_trigger_bps > 0.0 {
+            let band = (pre_trigger_bps / 10_000.0).max(0.0);
+            if band > 0.0 {
+                let up_max = price / (1.0 - band).max(0.000_001);
+                for (strike, idx) in self.up_by_strike.iter() {
+                    if *strike <= price {
+                        continue;
+                    }
+                    if *strike > up_max {
+                        break;
+                    }
+                    touched.insert(*idx);
+                }
+                let down_min = price / (1.0 + band).max(0.000_001);
+                for (strike, idx) in self.down_by_strike.iter().rev() {
+                    if *strike >= price {
+                        continue;
+                    }
+                    if *strike < down_min {
+                        break;
+                    }
+                    touched.insert(*idx);
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        for idx in touched {
+            let Some(spec) = self.specs.get(idx) else {
+                continue;
+            };
+            if let Some(end_ts) = spec.effective_end_ts() {
+                if end_ts > 0 && now_sec >= end_ts {
+                    continue;
+                }
+            }
+            let pre_triggered = pre_trigger_bps > 0.0
+                && spec.entered_pre_hit_window(prev_price, price, pre_trigger_bps);
+            let confirm_triggered = spec.crossed_on_trade(prev_price, price);
+            if !pre_triggered && !confirm_triggered {
+                continue;
+            }
+            out.push(EvsnipeIndexedTrigger {
+                spec: spec.clone(),
+                pre_triggered,
+                confirm_triggered,
+            });
+        }
+        out.sort_by(|a, b| {
+            a.spec
+                .condition_id
+                .cmp(&b.spec.condition_id)
+                .then_with(|| a.spec.yes_token_id.cmp(&b.spec.yes_token_id))
+        });
+        out
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct EvsnipeConfig {
     pub enable: bool,
     pub symbols: Vec<String>,
@@ -196,8 +433,6 @@ pub struct EvsnipeConfig {
     pub max_inflight_tasks: usize,
 }
 
-const EVSNIPE_INTERNAL_STRATEGY_CAP_USD: f64 = 1_000_000_000_000.0;
-
 impl EvsnipeConfig {
     pub fn from_env() -> Self {
         Self {
@@ -215,7 +450,7 @@ impl EvsnipeConfig {
             anchor_refresh_sec: env_u64("EVPOLY_EVSNIPE_ANCHOR_REFRESH_SEC", 14_400).max(60),
             anchor_drift_refresh_pct: env_f64("EVPOLY_EVSNIPE_ANCHOR_DRIFT_REFRESH_PCT", 0.03)
                 .clamp(0.0, 1.0),
-            size_usd: env_f64("EVPOLY_EVSNIPE_SIZE_USD", 10.0)
+            size_usd: env_f64("EVPOLY_EVSNIPE_SIZE_USD", 5.0)
                 .max(1.0)
                 .min(50_000.0),
             pre_trigger_bps: env_f64("EVPOLY_EVSNIPE_PRE_TRIGGER_BPS", 1.0).clamp(0.0, 100.0),
@@ -226,13 +461,115 @@ impl EvsnipeConfig {
                 .max(1)
                 .min(8),
             binance_stale_ms: env_i64("EVPOLY_EVSNIPE_BINANCE_STALE_MS", 1_200).max(200),
-            strategy_cap_usd: env_f64(
-                "EVPOLY_EVSNIPE_STRATEGY_CAP_USD",
-                EVSNIPE_INTERNAL_STRATEGY_CAP_USD,
-            )
-            .max(1.0)
-            .min(EVSNIPE_INTERNAL_STRATEGY_CAP_USD),
+            strategy_cap_usd: env_f64("EVPOLY_EVSNIPE_STRATEGY_CAP_USD", 10_000.0).max(1.0),
             max_inflight_tasks: env_usize("EVPOLY_EVSNIPE_MAX_INFLIGHT_TASKS", 16).max(1),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EvsnipeSpecIndex {
+    by_symbol: HashMap<String, EvsnipeSymbolSpecIndex>,
+    pub version: u64,
+    pub updated_ms: i64,
+}
+
+impl EvsnipeSpecIndex {
+    pub fn from_by_symbol(
+        by_symbol: &HashMap<String, Vec<EvsnipeMarketSpec>>,
+        version: u64,
+        updated_ms: i64,
+    ) -> Self {
+        Self {
+            by_symbol: indexed_by_symbol(by_symbol),
+            version,
+            updated_ms,
+        }
+    }
+
+    pub fn triggers_for_trade(
+        &self,
+        symbol: &str,
+        prev_price: f64,
+        price: f64,
+        pre_trigger_bps: f64,
+        now_sec: i64,
+    ) -> Vec<EvsnipeIndexedTrigger> {
+        let key = normalize_symbol(symbol);
+        self.by_symbol
+            .get(key.as_str())
+            .map(|idx| idx.triggered_hit_specs(prev_price, price, pre_trigger_bps, now_sec))
+            .unwrap_or_default()
+    }
+
+    pub fn candidates_for_tick(
+        &self,
+        symbol: &str,
+        prev_price: f64,
+        price: f64,
+        pre_trigger_bps: f64,
+    ) -> Vec<EvsnipeMarketSpec> {
+        self.triggers_for_trade(
+            symbol,
+            prev_price,
+            price,
+            pre_trigger_bps,
+            chrono::Utc::now().timestamp(),
+        )
+        .into_iter()
+        .map(|trigger| trigger.spec)
+        .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EvsnipeSpecIndexStore {
+    inner: Arc<StdMutex<Arc<EvsnipeSpecIndex>>>,
+}
+
+impl EvsnipeSpecIndexStore {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(StdMutex::new(Arc::new(EvsnipeSpecIndex::default()))),
+        }
+    }
+
+    pub fn replace(&self, index: EvsnipeSpecIndex) {
+        if let Ok(mut guard) = self.inner.lock() {
+            *guard = Arc::new(index);
+        }
+    }
+
+    pub fn latest(&self) -> Arc<EvsnipeSpecIndex> {
+        self.inner
+            .lock()
+            .map(|guard| Arc::clone(&guard))
+            .unwrap_or_else(|_| Arc::new(EvsnipeSpecIndex::default()))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EvsnipeFastRuntimeConfig {
+    pub price_cache_enabled: bool,
+    pub indexed_trigger_enabled: bool,
+    pub fast_submit_enabled: bool,
+    pub nonblocking_enqueue_enabled: bool,
+    pub require_prewarmed_metadata: bool,
+    pub trigger_max_age_ms: i64,
+}
+
+impl EvsnipeFastRuntimeConfig {
+    pub fn from_env() -> Self {
+        Self {
+            price_cache_enabled: env_bool("EVPOLY_EVSNIPE_PRICE_CACHE_ENABLE", false),
+            indexed_trigger_enabled: true,
+            fast_submit_enabled: true,
+            nonblocking_enqueue_enabled: true,
+            require_prewarmed_metadata: env_bool(
+                "EVPOLY_EVSNIPE_REQUIRE_PREWARMED_METADATA",
+                false,
+            ),
+            trigger_max_age_ms: env_i64("EVPOLY_EVSNIPE_TRIGGER_MAX_AGE_MS", 250).max(25),
         }
     }
 }
@@ -1457,6 +1794,14 @@ pub fn spawn_binance_trade_streams(
     symbols: &[String],
     tx: mpsc::Sender<BinanceTradeTick>,
 ) -> Vec<tokio::task::JoinHandle<()>> {
+    spawn_binance_trade_streams_with_price_cache(symbols, tx, None)
+}
+
+pub fn spawn_binance_trade_streams_with_price_cache(
+    symbols: &[String],
+    tx: mpsc::Sender<BinanceTradeTick>,
+    price_cache: Option<EvsnipePriceCache>,
+) -> Vec<tokio::task::JoinHandle<()>> {
     let mut handles = Vec::new();
     let mut seen = HashSet::new();
     for symbol in symbols {
@@ -1464,7 +1809,11 @@ pub fn spawn_binance_trade_streams(
         if symbol_norm.is_empty() || !seen.insert(symbol_norm.clone()) {
             continue;
         }
-        handles.push(spawn_single_symbol_trade_stream(symbol_norm, tx.clone()));
+        handles.push(spawn_single_symbol_trade_stream(
+            symbol_norm,
+            tx.clone(),
+            price_cache.clone(),
+        ));
     }
     handles
 }
@@ -1491,9 +1840,11 @@ pub fn spawn_binance_kline_close_streams(
 fn spawn_single_symbol_trade_stream(
     symbol: String,
     tx: mpsc::Sender<BinanceTradeTick>,
+    price_cache: Option<EvsnipePriceCache>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let send_timeout_ms = env_u64("EVPOLY_EVSNIPE_TICK_SEND_TIMEOUT_MS", 60).clamp(5, 500);
+        let tick_drop_if_full = env_bool("EVPOLY_EVSNIPE_TICK_DROP_IF_FULL", true);
         let stream = binance_trade_stream_url(symbol.as_str());
         let mut backoff_sec: u64 = 1;
         let mut dropped_events: u64 = 0;
@@ -1506,7 +1857,8 @@ fn spawn_single_symbol_trade_stream(
                             "strategy_id": "evsnipe_v1",
                             "symbol": symbol,
                             "stream": stream,
-                            "tick_send_timeout_ms": send_timeout_ms
+                            "tick_send_timeout_ms": send_timeout_ms,
+                            "tick_drop_if_full": tick_drop_if_full
                         }),
                     );
                     backoff_sec = 1;
@@ -1538,18 +1890,19 @@ fn spawn_single_symbol_trade_stream(
                             trade_ts_ms: trade.trade_time_ms,
                             recv_ts_ms: chrono::Utc::now().timestamp_millis(),
                         };
+                        if let Some(cache) = price_cache.as_ref() {
+                            let _ = cache.upsert_trade(
+                                tick.symbol.as_str(),
+                                tick.price,
+                                tick.trade_ts_ms,
+                                tick.recv_ts_ms,
+                            );
+                            continue;
+                        }
                         match tx.try_send(tick) {
                             Ok(_) => {}
                             Err(tokio::sync::mpsc::error::TrySendError::Full(tick_full)) => {
-                                // Bounded spillway: wait briefly before dropping to reduce
-                                // burst losses while preserving real-time behavior.
-                                let sent = tokio::time::timeout(
-                                    Duration::from_millis(send_timeout_ms),
-                                    tx.send(tick_full),
-                                )
-                                .await
-                                .is_ok();
-                                if !sent {
+                                if tick_drop_if_full {
                                     dropped_events = dropped_events.saturating_add(1);
                                     if dropped_events == 1 || dropped_events % 500 == 0 {
                                         log_event(
@@ -1558,9 +1911,34 @@ fn spawn_single_symbol_trade_stream(
                                                 "strategy_id": "evsnipe_v1",
                                                 "symbol": symbol,
                                                 "dropped_events": dropped_events,
-                                                "reason": "channel_full_timeout"
+                                                "reason": "channel_full_drop",
+                                                "trade_ts_ms": tick_full.trade_ts_ms,
+                                                "recv_ts_ms": tick_full.recv_ts_ms
                                             }),
                                         );
+                                    }
+                                } else {
+                                    // Bounded spillway: wait briefly before dropping to reduce
+                                    // burst losses while preserving real-time behavior.
+                                    let sent = tokio::time::timeout(
+                                        Duration::from_millis(send_timeout_ms),
+                                        tx.send(tick_full),
+                                    )
+                                    .await
+                                    .is_ok();
+                                    if !sent {
+                                        dropped_events = dropped_events.saturating_add(1);
+                                        if dropped_events == 1 || dropped_events % 500 == 0 {
+                                            log_event(
+                                                "evsnipe_binance_tick_drop",
+                                                json!({
+                                                    "strategy_id": "evsnipe_v1",
+                                                    "symbol": symbol,
+                                                    "dropped_events": dropped_events,
+                                                    "reason": "channel_full_timeout"
+                                                }),
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -1870,11 +2248,45 @@ mod tests {
     }
 
     #[test]
-    fn evsnipe_config_defaults_to_ten_dollars() {
+    fn evsnipe_config_defaults_to_five_dollars() {
         with_evsnipe_env(&[("EVPOLY_EVSNIPE_SIZE_USD", None)], || {
             let cfg = EvsnipeConfig::from_env();
-            assert!((cfg.size_usd - 10.0).abs() < 1e-9);
+            assert!((cfg.size_usd - 5.0).abs() < 1e-9);
         });
+    }
+
+    #[test]
+    fn fast_runtime_defaults_low_latency_paths_on() {
+        with_evsnipe_env(
+            &[
+                ("EVPOLY_EVSNIPE_INDEXED_TRIGGER_ENABLE", None),
+                ("EVPOLY_EVSNIPE_FAST_SUBMIT_ENABLE", None),
+                ("EVPOLY_EVSNIPE_NONBLOCKING_ENQUEUE_ENABLE", None),
+            ],
+            || {
+                let cfg = EvsnipeFastRuntimeConfig::from_env();
+                assert!(cfg.indexed_trigger_enabled);
+                assert!(cfg.fast_submit_enabled);
+                assert!(cfg.nonblocking_enqueue_enabled);
+            },
+        );
+    }
+
+    #[test]
+    fn fast_runtime_env_cannot_disable_low_latency_path() {
+        with_evsnipe_env(
+            &[
+                ("EVPOLY_EVSNIPE_INDEXED_TRIGGER_ENABLE", Some("false")),
+                ("EVPOLY_EVSNIPE_FAST_SUBMIT_ENABLE", Some("false")),
+                ("EVPOLY_EVSNIPE_NONBLOCKING_ENQUEUE_ENABLE", Some("false")),
+            ],
+            || {
+                let cfg = EvsnipeFastRuntimeConfig::from_env();
+                assert!(cfg.indexed_trigger_enabled);
+                assert!(cfg.fast_submit_enabled);
+                assert!(cfg.nonblocking_enqueue_enabled);
+            },
+        );
     }
 
     #[test]

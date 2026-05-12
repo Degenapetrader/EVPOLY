@@ -19,6 +19,7 @@ use log::{debug, warn};
 use polymarket_client_sdk_v2::clob::types::response::OpenOrderResponse;
 use polymarket_client_sdk_v2::clob::types::OrderStatusType;
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -45,6 +46,28 @@ pub const STRATEGY_ID_MANUAL_PREMARKET_V1: &str = "manual_premarket_v1";
 pub const STRATEGY_ID_MANUAL_PREMARKET_TAKER_V1: &str = "manual_premarket_taker_v1";
 pub const STRATEGY_ID_MANUAL_CHASE_LIMIT_V1: &str = "manual_chase_limit_v1";
 pub const STRATEGY_ID_MANUAL_CHASE_LIMIT_TAKER_V1: &str = "manual_chase_limit_taker_v1";
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EvsnipeOrderIntent {
+    pub request_id: String,
+    pub symbol: String,
+    pub condition_id: String,
+    pub market_slug: String,
+    pub token_id: String,
+    pub token_type: String,
+    pub rule: String,
+    pub hit_leg: String,
+    pub strike_price: f64,
+    pub strike_price_upper: Option<f64>,
+    pub end_ts: Option<i64>,
+    pub trigger_price: f64,
+    pub prev_price: f64,
+    pub binance_trade_ts_ms: i64,
+    pub binance_recv_ts_ms: i64,
+    pub decision_ts_ms: i64,
+    pub limit_price: f64,
+    pub size_usd: f64,
+}
 
 #[derive(Debug, Clone, Default)]
 struct EntryAckEmptyOrderIdLogWindow {
@@ -5754,6 +5777,389 @@ impl Trader {
             LimitBuyExecutionOptions::default(),
         )
         .await
+    }
+
+    pub async fn execute_evsnipe_buy_fast(
+        &self,
+        opportunity: &BuyOpportunity,
+        intent: &EvsnipeOrderIntent,
+        source_timeframe: Option<&str>,
+        request_id: Option<&str>,
+    ) -> Result<()> {
+        let strategy_id = crate::strategy::STRATEGY_ID_EVSNIPE_V1;
+        let entry_mode = EntryExecutionMode::Evsnipe;
+        let source_timeframe = Self::normalize_timeframe_label(source_timeframe);
+        let request_id = request_id
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| Some(intent.request_id.clone()));
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let max_trigger_age_ms = std::env::var("EVPOLY_EVSNIPE_TRIGGER_MAX_AGE_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            .unwrap_or(250)
+            .clamp(25, 5_000);
+        let trigger_age_ms = now_ms.saturating_sub(intent.binance_recv_ts_ms).max(0);
+        if trigger_age_ms > max_trigger_age_ms {
+            let reason = format!(
+                "evsnipe_trigger_stale: trigger_age_ms={} max_trigger_age_ms={}",
+                trigger_age_ms, max_trigger_age_ms
+            );
+            self.record_entry_precheck_failure(
+                strategy_id,
+                source_timeframe.as_str(),
+                entry_mode,
+                opportunity,
+                Some(intent.limit_price),
+                None,
+                None,
+                reason.clone(),
+            );
+            return Err(anyhow!(reason));
+        }
+
+        if intent.token_id.trim() != opportunity.token_id.trim()
+            || !intent
+                .condition_id
+                .trim()
+                .eq_ignore_ascii_case(opportunity.condition_id.trim())
+        {
+            let reason = format!(
+                "evsnipe_context_identity_mismatch: intent_token={} opportunity_token={} intent_condition={} opportunity_condition={}",
+                intent.token_id, opportunity.token_id, intent.condition_id, opportunity.condition_id
+            );
+            self.record_entry_precheck_failure(
+                strategy_id,
+                source_timeframe.as_str(),
+                entry_mode,
+                opportunity,
+                Some(intent.limit_price),
+                None,
+                None,
+                reason.clone(),
+            );
+            return Err(anyhow!(reason));
+        }
+
+        if Self::env_bool_named("EVPOLY_EVSNIPE_REQUIRE_PREWARMED_METADATA", false)
+            && !self
+                .api
+                .prewarm_token_metadata(opportunity.token_id.as_str())
+                .await
+                .unwrap_or(false)
+        {
+            let reason = "evsnipe_metadata_not_prewarmed".to_string();
+            self.record_entry_precheck_failure(
+                strategy_id,
+                source_timeframe.as_str(),
+                entry_mode,
+                opportunity,
+                Some(intent.limit_price),
+                None,
+                None,
+                reason.clone(),
+            );
+            return Err(anyhow!(reason));
+        }
+
+        let submit_price = intent
+            .limit_price
+            .max(0.000_001)
+            .min(opportunity.bid_price.max(intent.limit_price).max(0.000_001));
+        let target_size_usd = intent.size_usd.max(0.0);
+        let units = target_size_usd / submit_price.max(0.000_001);
+        let investment_amount = units.max(0.0) * submit_price.max(0.0);
+        if !units.is_finite() || units <= 0.0 || !investment_amount.is_finite() {
+            let reason = format!(
+                "evsnipe_invalid_size: units={:.8} notional={:.8}",
+                units, investment_amount
+            );
+            self.record_entry_precheck_failure(
+                strategy_id,
+                source_timeframe.as_str(),
+                entry_mode,
+                opportunity,
+                Some(submit_price),
+                Some(units),
+                Some(investment_amount),
+                reason.clone(),
+            );
+            return Err(anyhow!(reason));
+        }
+
+        let trade_key = Self::limit_trade_key(
+            entry_mode,
+            opportunity.period_timestamp,
+            &opportunity.token_id,
+            submit_price,
+            source_timeframe.as_str(),
+            strategy_id,
+            request_id.as_deref(),
+        );
+        let reservation_key = format!("{}:{}:{}", entry_mode.as_str(), strategy_id, trade_key);
+        let Some(_strategy_entry_slot_guard) = EntrySlotGuard::acquire(reservation_key.clone())
+        else {
+            let reason = format!("evsnipe_fast_duplicate_slot_reserved: {}", reservation_key);
+            self.record_entry_precheck_failure(
+                strategy_id,
+                source_timeframe.as_str(),
+                entry_mode,
+                opportunity,
+                Some(submit_price),
+                Some(units),
+                Some(investment_amount),
+                reason.clone(),
+            );
+            return Err(anyhow!(reason));
+        };
+
+        let provisional_order_id = Self::local_pending_order_id(
+            entry_mode,
+            source_timeframe.as_str(),
+            opportunity.period_timestamp,
+            &opportunity.token_id,
+            trade_key.as_str(),
+        );
+        let submit_ts_ms = chrono::Utc::now().timestamp_millis();
+        let order = OrderRequest {
+            token_id: opportunity.token_id.clone(),
+            side: "BUY".to_string(),
+            size: format!("{:.2}", units),
+            price: format!("{:.2}", submit_price),
+            order_type: "FAK".to_string(),
+            expiration_ts: None,
+            post_only: None,
+        };
+
+        if self.simulation_mode {
+            log_event(
+                "evsnipe_fast_submit_simulated",
+                json!({
+                    "strategy_id": strategy_id,
+                    "request_id": request_id.as_deref(),
+                    "symbol": intent.symbol.as_str(),
+                    "condition_id": opportunity.condition_id.as_str(),
+                    "token_id": opportunity.token_id.as_str(),
+                    "trigger_kind": intent.hit_leg.as_str(),
+                    "size_usd": target_size_usd,
+                    "submit_price": submit_price
+                }),
+            );
+            return Ok(());
+        }
+
+        let api_call_started_ms = chrono::Utc::now().timestamp_millis();
+        let place_result = self
+            .submit_order_with_optional_batch(&order, strategy_id, entry_mode)
+            .await;
+        match place_result {
+            Ok((response, api_timing)) => {
+                let ack_ts_ms = chrono::Utc::now().timestamp_millis();
+                let tracking_order_id = response
+                    .order_id
+                    .clone()
+                    .unwrap_or_else(|| provisional_order_id.clone());
+                let ack_latency_ms = ack_ts_ms.saturating_sub(submit_ts_ms);
+                let pre_api_ms = api_call_started_ms.saturating_sub(submit_ts_ms);
+                let submit_meta = json!({
+                    "phase": "submit",
+                    "order_kind": "evsnipe_fast_fak_buy",
+                    "request_id": request_id.as_deref(),
+                    "trigger_kind": intent.hit_leg.as_str(),
+                    "symbol": intent.symbol.as_str(),
+                    "market_slug": intent.market_slug.as_str(),
+                    "strike_price": intent.strike_price,
+                    "strike_price_upper": intent.strike_price_upper,
+                    "trigger_price": intent.trigger_price,
+                    "prev_price": intent.prev_price,
+                    "binance_trade_ts_ms": intent.binance_trade_ts_ms,
+                    "binance_recv_ts_ms": intent.binance_recv_ts_ms,
+                    "decision_ts_ms": intent.decision_ts_ms,
+                    "trigger_age_ms": trigger_age_ms,
+                    "submit_ts_ms": submit_ts_ms,
+                    "pre_api_ms": pre_api_ms,
+                    "token_id": opportunity.token_id.as_str(),
+                    "trade_key": trade_key.as_str()
+                });
+                self.record_trade_event_for_strategy(
+                    Some(strategy_id),
+                    Some(format!(
+                        "entry_submit:{}:{}:{}:{}",
+                        opportunity.period_timestamp,
+                        opportunity.token_id,
+                        request_id.as_deref().unwrap_or("none"),
+                        submit_ts_ms
+                    )),
+                    opportunity.period_timestamp,
+                    Some(source_timeframe.as_str()),
+                    Some(opportunity.condition_id.clone()),
+                    Some(opportunity.token_id.clone()),
+                    Some(opportunity.token_type.display_name().to_string()),
+                    Some("BUY".to_string()),
+                    "ENTRY_SUBMIT",
+                    Some(submit_price),
+                    Some(units),
+                    Some(investment_amount),
+                    None,
+                    Some(submit_meta.to_string()),
+                );
+
+                let ack_meta = json!({
+                    "phase": "ack",
+                    "order_kind": "evsnipe_fast_fak_buy",
+                    "request_id": request_id.as_deref(),
+                    "order_id": tracking_order_id.as_str(),
+                    "status": response.status.as_str(),
+                    "message": response.message.as_deref(),
+                    "ack_ts_ms": ack_ts_ms,
+                    "ack_latency_ms": ack_latency_ms,
+                    "pre_api_ms": pre_api_ms,
+                    "api_total_ms": api_timing.total_api_ms,
+                    "api_get_client_ms": api_timing.get_client_ms,
+                    "api_prewarm_ms": api_timing.prewarm_ms,
+                    "api_prewarm_cache_hit": api_timing.prewarm_cache_hit,
+                    "api_build_order_ms": api_timing.build_order_ms,
+                    "api_sign_ms": api_timing.sign_ms,
+                    "api_post_order_ms": api_timing.post_order_ms,
+                    "api_retry_count": api_timing.retry_count,
+                    "api_order_type_effective": api_timing.order_type_effective.as_str()
+                });
+                self.record_trade_event_for_strategy(
+                    Some(strategy_id),
+                    Some(format!(
+                        "entry_ack:{}:{}:{}:{}",
+                        opportunity.period_timestamp,
+                        opportunity.token_id,
+                        request_id.as_deref().unwrap_or("none"),
+                        ack_ts_ms
+                    )),
+                    opportunity.period_timestamp,
+                    Some(source_timeframe.as_str()),
+                    Some(opportunity.condition_id.clone()),
+                    Some(opportunity.token_id.clone()),
+                    Some(opportunity.token_type.display_name().to_string()),
+                    Some("BUY".to_string()),
+                    "ENTRY_ACK",
+                    Some(submit_price),
+                    Some(units),
+                    Some(investment_amount),
+                    None,
+                    Some(ack_meta.to_string()),
+                );
+
+                let mut pending = self.pending_trades.lock().await;
+                pending.insert(
+                    trade_key.clone(),
+                    PendingTrade {
+                        token_id: opportunity.token_id.clone(),
+                        condition_id: opportunity.condition_id.clone(),
+                        token_type: opportunity.token_type.clone(),
+                        investment_amount,
+                        units,
+                        purchase_price: submit_price,
+                        sell_price: submit_price,
+                        timestamp: std::time::Instant::now(),
+                        market_timestamp: opportunity.period_timestamp,
+                        source_timeframe: source_timeframe.clone(),
+                        strategy_id: strategy_id.to_string(),
+                        entry_mode: entry_mode.as_str().to_string(),
+                        order_id: Some(tracking_order_id.clone()),
+                        end_timestamp: intent.end_ts.and_then(|v| u64::try_from(v).ok()),
+                        sold: false,
+                        confirmed_balance: None,
+                        buy_order_confirmed: false,
+                        limit_sell_orders_placed: false,
+                        no_sell: true,
+                        claim_on_closure: true,
+                        sell_attempts: 0,
+                        redemption_attempts: 0,
+                        redemption_abandoned: false,
+                    },
+                );
+                drop(pending);
+
+                self.upsert_pending_order_tracking_for_strategy(
+                    &tracking_order_id,
+                    &trade_key,
+                    &opportunity.token_id,
+                    source_timeframe.as_str(),
+                    entry_mode.as_str(),
+                    Some(strategy_id),
+                    Some(Self::token_family(&opportunity.token_type)),
+                    opportunity.period_timestamp,
+                    submit_price,
+                    investment_amount,
+                    "BUY",
+                    "OPEN",
+                    Some(opportunity.condition_id.as_str()),
+                )?;
+                if tracking_order_id != provisional_order_id {
+                    self.upsert_pending_order_tracking_for_strategy(
+                        &provisional_order_id,
+                        &trade_key,
+                        &opportunity.token_id,
+                        source_timeframe.as_str(),
+                        entry_mode.as_str(),
+                        Some(strategy_id),
+                        Some(Self::token_family(&opportunity.token_type)),
+                        opportunity.period_timestamp,
+                        submit_price,
+                        investment_amount,
+                        "BUY",
+                        "SUPERSEDED",
+                        Some(opportunity.condition_id.as_str()),
+                    )?;
+                }
+
+                log_event(
+                    "evsnipe_fast_submit_ack",
+                    json!({
+                        "strategy_id": strategy_id,
+                        "request_id": request_id.as_deref(),
+                        "symbol": intent.symbol.as_str(),
+                        "condition_id": opportunity.condition_id.as_str(),
+                        "token_id": opportunity.token_id.as_str(),
+                        "trigger_kind": intent.hit_leg.as_str(),
+                        "order_id": tracking_order_id.as_str(),
+                        "trigger_age_ms": trigger_age_ms,
+                        "pre_api_ms": pre_api_ms,
+                        "api_total_ms": api_timing.total_api_ms,
+                        "ack_latency_ms": ack_latency_ms
+                    }),
+                );
+                Ok(())
+            }
+            Err(error) => {
+                let failed_ts_ms = chrono::Utc::now().timestamp_millis();
+                self.record_entry_precheck_failure(
+                    strategy_id,
+                    source_timeframe.as_str(),
+                    entry_mode,
+                    opportunity,
+                    Some(submit_price),
+                    Some(units),
+                    Some(investment_amount),
+                    Self::classify_entry_failure_reason(&error),
+                );
+                log_event(
+                    "evsnipe_fast_submit_failed",
+                    json!({
+                        "strategy_id": strategy_id,
+                        "request_id": request_id.as_deref(),
+                        "symbol": intent.symbol.as_str(),
+                        "condition_id": opportunity.condition_id.as_str(),
+                        "token_id": opportunity.token_id.as_str(),
+                        "trigger_kind": intent.hit_leg.as_str(),
+                        "trigger_age_ms": trigger_age_ms,
+                        "failed_ts_ms": failed_ts_ms,
+                        "error": error.to_string()
+                    }),
+                );
+                Err(error)
+            }
+        }
     }
 
     pub async fn execute_limit_buy_with_options(

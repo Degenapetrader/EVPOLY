@@ -165,6 +165,7 @@ pub struct EnqueueDecision {
 pub struct EnqueueDedupe {
     cooldown_ms: i64,
     cooldown_evcurve_ms: i64,
+    cooldown_evsnipe_ms: i64,
     seen_until_ms: HashMap<EntryLogicalKey, i64>,
 }
 
@@ -176,9 +177,15 @@ impl EnqueueDedupe {
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(cooldown_ms.max(5_000))
             .max(0);
+        let cooldown_evsnipe_ms = std::env::var("EVPOLY_ENTRY_DEDUPE_COOLDOWN_EVSNIPE_MS")
+            .ok()
+            .and_then(|v| v.parse::<i64>().ok())
+            .unwrap_or(cooldown_ms.min(100).max(0))
+            .max(0);
         Self {
             cooldown_ms,
             cooldown_evcurve_ms,
+            cooldown_evsnipe_ms,
             seen_until_ms: HashMap::new(),
         }
     }
@@ -186,6 +193,8 @@ impl EnqueueDedupe {
     fn cooldown_for_key_ms(&self, key: &EntryLogicalKey) -> i64 {
         if key.strategy_id == "evcurve_v1" {
             self.cooldown_evcurve_ms
+        } else if key.strategy_id == "evsnipe_v1" {
+            self.cooldown_evsnipe_ms
         } else {
             self.cooldown_ms
         }
@@ -210,6 +219,10 @@ impl EnqueueDedupe {
             reason: None,
             retry_at_ms: None,
         }
+    }
+
+    pub fn forget(&mut self, key: &EntryLogicalKey) {
+        self.seen_until_ms.remove(key);
     }
 
     fn prune(&mut self, now_ms: i64) {
@@ -456,6 +469,10 @@ impl WorkerIdempotency {
         }
 
         until_ms
+    }
+
+    pub fn finish_without_cooldown(&mut self, key: &EntryLogicalKey, scope: &EntryScopeKey) {
+        self.release_in_flight(key, scope);
     }
 
     pub fn in_flight_count_for_scope(&self, scope: &EntryScopeKey) -> usize {

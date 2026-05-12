@@ -79,7 +79,9 @@ use polymarket_arbitrage_bot::tracking_db::{
     MmSportHolderSnapshotRecord, MmSportMarketRiskRecord, MmSportWalletProfileRecord,
     PendingOrderRecord, StrategyFeatureSnapshotIntentRecord, TrackingDb, TradeEventRecord,
 };
-use polymarket_arbitrage_bot::trader::{EntryExecutionMode, LimitBuyExecutionOptions, Trader};
+use polymarket_arbitrage_bot::trader::{
+    EntryExecutionMode, EvsnipeOrderIntent, LimitBuyExecutionOptions, Trader,
+};
 use polymarket_arbitrage_bot::weekend_policy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -212,8 +214,63 @@ struct ArbiterExecutionRequest {
     rung_id: Option<String>,
     place_sell_orders: bool,
     source_timeframe: Option<String>,
+    evsnipe_intent: Option<EvsnipeOrderIntent>,
+    evsnipe_submit_outcome: Option<EvsnipeSubmitOutcomeSender>,
     timing: ArbiterExecutionTiming,
 }
+
+type EvsnipeSubmitOutcomeSender =
+    Arc<StdMutex<Option<tokio::sync::oneshot::Sender<EvsnipeSubmitOutcome>>>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvsnipeSubmitOutcome {
+    Submitted,
+    NoFill,
+    Failed,
+}
+
+struct SubmitOutcomeGuard<T: Copy> {
+    sender: Option<Arc<StdMutex<Option<tokio::sync::oneshot::Sender<T>>>>>,
+    sent: bool,
+    default_outcome: T,
+}
+
+impl<T: Copy> SubmitOutcomeGuard<T> {
+    fn new(
+        sender: Option<Arc<StdMutex<Option<tokio::sync::oneshot::Sender<T>>>>>,
+        default_outcome: T,
+    ) -> Self {
+        Self {
+            sender,
+            sent: false,
+            default_outcome,
+        }
+    }
+
+    fn send(&mut self, outcome: T) {
+        if self.sent {
+            return;
+        }
+        self.sent = true;
+        let Some(sender) = self.sender.as_ref() else {
+            return;
+        };
+        let Ok(mut guard) = sender.lock() else {
+            return;
+        };
+        if let Some(tx) = guard.take() {
+            let _ = tx.send(outcome);
+        }
+    }
+}
+
+impl<T: Copy> Drop for SubmitOutcomeGuard<T> {
+    fn drop(&mut self) {
+        self.send(self.default_outcome);
+    }
+}
+
+type EvsnipeSubmitOutcomeGuard = SubmitOutcomeGuard<EvsnipeSubmitOutcome>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArbiterEnqueueResult {
@@ -546,10 +603,46 @@ fn evsnipe_hit_leg_condition_id(leg_key: &str) -> &str {
     leg_key.split(':').next().unwrap_or(leg_key)
 }
 
-fn evsnipe_hit_leg_blocked(state: &EvsnipeRuntimeState, condition_id: &str, leg_key: &str) -> bool {
-    state.fired_conditions.contains(condition_id)
-        || state.fired_hit_legs.contains(leg_key)
-        || state.inflight_hit_legs.contains(leg_key)
+fn evsnipe_hit_leg_blocked(
+    state: &EvsnipeRuntimeState,
+    condition_id: &str,
+    leg: EvsnipeHitLeg,
+) -> bool {
+    if state.fired_conditions.contains(condition_id) {
+        return true;
+    }
+
+    let leg_key = evsnipe_hit_leg_key(condition_id, leg);
+    if state.fired_hit_legs.contains(leg_key.as_str())
+        || state.inflight_hit_legs.contains(leg_key.as_str())
+    {
+        return true;
+    }
+
+    if leg == EvsnipeHitLeg::Pre {
+        let confirm_key = evsnipe_hit_leg_key(condition_id, EvsnipeHitLeg::Confirm);
+        if state.fired_hit_legs.contains(confirm_key.as_str())
+            || state.inflight_hit_legs.contains(confirm_key.as_str())
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn evsnipe_release_reserved_leg(
+    state: &mut EvsnipeRuntimeState,
+    condition_id: &str,
+    leg_size_usd: f64,
+) {
+    if let Some(total) = state.reserved_usd_by_condition.get_mut(condition_id) {
+        *total = (*total - leg_size_usd).max(0.0);
+        if *total < 1e-9 {
+            state.reserved_usd_by_condition.remove(condition_id);
+        }
+    }
+    state.used_strategy_usd = (state.used_strategy_usd - leg_size_usd).max(0.0);
 }
 
 fn evsnipe_condition_expiry_ts(end_ts: Option<i64>, now_sec: i64, max_days_to_expiry: u64) -> i64 {
@@ -6923,6 +7016,10 @@ async fn main() -> Result<()> {
                 while let Some(mut request) = worker_rx.recv().await {
                     let now_ms = chrono::Utc::now().timestamp_millis();
                     request.timing.worker_start_ts_ms = Some(now_ms);
+                    let mut evsnipe_submit_outcome_guard = EvsnipeSubmitOutcomeGuard::new(
+                        request.evsnipe_submit_outcome.clone(),
+                        EvsnipeSubmitOutcome::Failed,
+                    );
                     let mut arbiter_budget_guard = Some(ArbiterBudgetGuard::new(
                         arbiter_budget_ledger_for_exec.clone(),
                         request.request_id.clone(),
@@ -6954,14 +7051,26 @@ async fn main() -> Result<()> {
                     let logical_key = logical_entry_key_from_request(&request);
                     let scope_key = logical_entry_scope_from_request(&request);
                     let rung_id = request_rung_id(&request);
+                    let evsnipe_fast_submit_enabled = request.intent.strategy_id
+                        == STRATEGY_ID_EVSNIPE_V1
+                        && matches!(request.entry_mode, EntryExecutionMode::Evsnipe)
+                        && request.evsnipe_intent.is_some();
+                    let evsnipe_bypass_worker_caps = evsnipe_fast_submit_enabled
+                        && env_bool_named("EVPOLY_EVSNIPE_BYPASS_GENERIC_WORKER_CAPS", true);
+                    let evsnipe_bypass_submit_semaphore = evsnipe_fast_submit_enabled
+                        && env_bool_named("EVPOLY_EVSNIPE_BYPASS_SUBMIT_SEMAPHORE", true);
                     let fastlane_strategy = matches!(
                         request.intent.strategy_id.as_str(),
                         STRATEGY_ID_ENDGAME_SWEEP_V1 | STRATEGY_ID_SESSIONBAND_V1
-                    );
+                    ) || evsnipe_bypass_worker_caps;
                     let fastlane_nonblocking_submit = matches!(
                         request.intent.strategy_id.as_str(),
                         STRATEGY_ID_ENDGAME_SWEEP_V1 | STRATEGY_ID_SESSIONBAND_V1
-                    );
+                    ) || evsnipe_fast_submit_enabled;
+                    let bypass_submit_semaphore = matches!(
+                        request.intent.strategy_id.as_str(),
+                        STRATEGY_ID_ENDGAME_SWEEP_V1 | STRATEGY_ID_SESSIONBAND_V1
+                    ) || evsnipe_bypass_submit_semaphore;
                     let begin = {
                         let gate_wait_started = Instant::now();
                         let mut gate = worker_idempotency_for_exec.lock().await;
@@ -7341,7 +7450,7 @@ async fn main() -> Result<()> {
                         .expect("arbiter budget guard missing before submit spawn");
                     let submit_task = async move {
                         let _budget_guard = budget_guard_for_submit;
-                        let _submit_permit = if fastlane_strategy {
+                        let _submit_permit = if bypass_submit_semaphore {
                             None
                         } else {
                             match submit_semaphore_for_exec.acquire_owned().await {
@@ -7589,22 +7698,77 @@ async fn main() -> Result<()> {
                             }
                         }
 
-                        if let Err(e) = trader_for_submit
-                            .execute_limit_buy_with_options(
-                                &request.opportunity,
-                                request.entry_mode,
-                                request.place_sell_orders,
-                                Some(units),
-                                request.source_timeframe.as_deref(),
-                                Some(request.intent.strategy_id.as_str()),
-                                Some(request.request_id.as_str()),
-                                request.limit_buy_options,
-                            )
-                            .await
+                        let submit_result = if request.intent.strategy_id == STRATEGY_ID_EVSNIPE_V1
+                            && matches!(request.entry_mode, EntryExecutionMode::Evsnipe)
+                            && request.evsnipe_intent.is_some()
                         {
+                            trader_for_submit
+                                .execute_evsnipe_buy_fast(
+                                    &request.opportunity,
+                                    request.evsnipe_intent.as_ref().expect("checked is_some"),
+                                    request.source_timeframe.as_deref(),
+                                    Some(request.request_id.as_str()),
+                                )
+                                .await
+                        } else {
+                            trader_for_submit
+                                .execute_limit_buy_with_options(
+                                    &request.opportunity,
+                                    request.entry_mode,
+                                    request.place_sell_orders,
+                                    Some(units),
+                                    request.source_timeframe.as_deref(),
+                                    Some(request.intent.strategy_id.as_str()),
+                                    Some(request.request_id.as_str()),
+                                    request.limit_buy_options,
+                                )
+                                .await
+                        };
+                        if let Err(e) = submit_result {
                             let err_text = e.to_string();
                             let err_kind = classify_submit_error_kind(err_text.as_str());
                             let class = classify_entry_error(err_text.as_str());
+                            let evsnipe_no_fill = request.intent.strategy_id
+                                == STRATEGY_ID_EVSNIPE_V1
+                                && matches!(request.entry_mode, EntryExecutionMode::Evsnipe)
+                                && (err_kind == "no_match_fak_fok"
+                                    || err_text
+                                        .to_ascii_lowercase()
+                                        .contains("evsnipe_fak_no_fill"));
+                            if evsnipe_no_fill {
+                                let mut gate = worker_idempotency_for_submit.lock().await;
+                                gate.finish_without_cooldown(
+                                    &logical_key_for_submit,
+                                    &scope_key_for_submit,
+                                );
+                                drop(gate);
+                                evsnipe_submit_outcome_guard.send(EvsnipeSubmitOutcome::NoFill);
+                                log_event(
+                                    "evsnipe_submit_no_fill",
+                                    json!({
+                                        "request_id": request.request_id,
+                                        "logical_key": logical_key_for_submit.as_compact_string(),
+                                        "strategy_id": request.intent.strategy_id,
+                                        "timeframe": scope_key_for_submit.timeframe,
+                                        "entry_mode": request.entry_mode.as_str(),
+                                        "rung_id": rung_id_for_submit,
+                                        "period_timestamp": request.opportunity.period_timestamp,
+                                        "token_id": request.opportunity.token_id,
+                                        "error": err_text,
+                                        "worker_pool": pool_label_for_submit
+                                    }),
+                                );
+                                request.timing.worker_done_ts_ms =
+                                    Some(chrono::Utc::now().timestamp_millis());
+                                log_arbiter_request_timing(
+                                    &request,
+                                    pool_label_for_submit,
+                                    worker_index,
+                                    "reject_no_match_fak_fok",
+                                    Some("evsnipe_no_fill"),
+                                );
+                                return;
+                            }
                             let cooldown_until_ms = {
                                 let mut gate = worker_idempotency_for_submit.lock().await;
                                 gate.finish_failure(
@@ -7716,6 +7880,7 @@ async fn main() -> Result<()> {
                             );
                             return;
                         }
+                        evsnipe_submit_outcome_guard.send(EvsnipeSubmitOutcome::Submitted);
 
                         let mut gate = worker_idempotency_for_submit.lock().await;
                         gate.finish_success(
@@ -9621,6 +9786,8 @@ async fn main() -> Result<()> {
                             rung_id: Some(format!("tick{}", plan.tick_index)),
                             place_sell_orders: false,
                             source_timeframe: Some(timeframe.as_str().to_string()),
+                            evsnipe_intent: None,
+                            evsnipe_submit_outcome: None,
                             timing: ArbiterExecutionTiming::new_decision(
                                 chrono::Utc::now().timestamp_millis(),
                             )
@@ -11539,6 +11706,8 @@ async fn main() -> Result<()> {
                                             )),
                                             place_sell_orders: false,
                                             source_timeframe: Some(timeframe.as_str().to_string()),
+                                            evsnipe_intent: None,
+                                            evsnipe_submit_outcome: None,
                                             timing: ArbiterExecutionTiming::new_decision(
                                                 chrono::Utc::now().timestamp_millis(),
                                             ),
@@ -12140,6 +12309,8 @@ async fn main() -> Result<()> {
                                                         source_timeframe: Some(
                                                             timeframe.as_str().to_string(),
                                                         ),
+                                                        evsnipe_intent: None,
+                                                        evsnipe_submit_outcome: None,
                                                         timing:
                                                             ArbiterExecutionTiming::new_decision(
                                                                 chrono::Utc::now()
@@ -12737,6 +12908,8 @@ async fn main() -> Result<()> {
                                                     source_timeframe: Some(
                                                         timeframe.as_str().to_string(),
                                                     ),
+                                                    evsnipe_intent: None,
+                                                    evsnipe_submit_outcome: None,
                                                     timing: ArbiterExecutionTiming::new_decision(
                                                         chrono::Utc::now().timestamp_millis(),
                                                     ),
@@ -13708,6 +13881,8 @@ async fn main() -> Result<()> {
                                                         source_timeframe: Some(
                                                             timeframe.as_str().to_string(),
                                                         ),
+                                                        evsnipe_intent: None,
+                                                        evsnipe_submit_outcome: None,
                                                         timing:
                                                             ArbiterExecutionTiming::new_decision(
                                                                 chrono::Utc::now()
@@ -14197,6 +14372,8 @@ async fn main() -> Result<()> {
                                                 source_timeframe: Some(
                                                     timeframe.as_str().to_string(),
                                                 ),
+                                                evsnipe_intent: None,
+                                                evsnipe_submit_outcome: None,
                                                 timing: ArbiterExecutionTiming::new_decision(
                                                     chrono::Utc::now().timestamp_millis(),
                                                 ),
@@ -15314,6 +15491,8 @@ async fn main() -> Result<()> {
                                 rung_id: Some(format!("s{}_tau{}", session_index, tau_sec)),
                                 place_sell_orders: false,
                                 source_timeframe: Some(timeframe.as_str().to_string()),
+                                evsnipe_intent: None,
+                                evsnipe_submit_outcome: None,
                                 timing: ArbiterExecutionTiming::new_decision(
                                     chrono::Utc::now().timestamp_millis(),
                                 )
@@ -15398,6 +15577,7 @@ async fn main() -> Result<()> {
 
     let evsnipe_cfg = Arc::new(evsnipe::EvsnipeConfig::from_env());
     if evsnipe_cfg.enable {
+        let evsnipe_fast_cfg = Arc::new(evsnipe::EvsnipeFastRuntimeConfig::from_env());
         let symbols = symbol_ownership::filter_symbols_for_strategy(
             STRATEGY_ID_EVSNIPE_V1,
             &evsnipe_cfg.symbols,
@@ -15445,19 +15625,34 @@ async fn main() -> Result<()> {
             .and_then(|v| v.trim().parse::<usize>().ok())
             .unwrap_or(40_000)
             .max(2_000);
-        let _evsnipe_binance_handles =
-            evsnipe::spawn_binance_trade_streams(symbols.as_slice(), evsnipe_tick_tx.clone());
+        let evsnipe_tick_drop_if_full = env_bool_named("EVPOLY_EVSNIPE_TICK_DROP_IF_FULL", true);
+        let evsnipe_price_cache_requested = evsnipe_fast_cfg.price_cache_enabled;
+        let evsnipe_price_cache = if evsnipe_price_cache_requested && evsnipe_tick_drop_if_full {
+            Some(evsnipe::EvsnipePriceCache::new(evsnipe_tick_channel_cap))
+        } else {
+            None
+        };
+        let _evsnipe_binance_handles = evsnipe::spawn_binance_trade_streams_with_price_cache(
+            symbols.as_slice(),
+            evsnipe_tick_tx.clone(),
+            evsnipe_price_cache.clone(),
+        );
         log_event(
             "evsnipe_tick_channel_config",
             json!({
                 "strategy_id": STRATEGY_ID_EVSNIPE_V1,
-                "tick_channel_cap": evsnipe_tick_channel_cap
+                "tick_channel_cap": evsnipe_tick_channel_cap,
+                "price_cache_requested": evsnipe_price_cache_requested,
+                "price_cache_enabled": evsnipe_price_cache.is_some(),
+                "tick_drop_if_full": evsnipe_tick_drop_if_full
             }),
         );
 
         let watchlist_by_symbol: Arc<
             tokio::sync::RwLock<std::collections::HashMap<String, Vec<evsnipe::EvsnipeMarketSpec>>>,
         > = Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+        let evsnipe_spec_index = evsnipe::EvsnipeSpecIndexStore::new();
+        let evsnipe_spec_index_for_refresh = evsnipe_spec_index.clone();
         let watchlist_for_refresh = watchlist_by_symbol.clone();
         let evsnipe_cfg_for_refresh = evsnipe_cfg.clone();
         let api_for_evsnipe_refresh = api.clone();
@@ -15474,8 +15669,18 @@ async fn main() -> Result<()> {
                 String,
                 i64,
             > = std::collections::HashMap::new();
-            let evsnipe_selected_token_prewarm_cooldown_ms = 180_000_i64;
-            let evsnipe_selected_token_prewarm_max_tokens_per_refresh = 6_usize;
+            let evsnipe_selected_token_prewarm_cooldown_ms =
+                std::env::var("EVPOLY_EVSNIPE_SELECTED_TOKEN_PREWARM_COOLDOWN_MS")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<i64>().ok())
+                    .unwrap_or(180_000)
+                    .clamp(1_000, 3_600_000);
+            let evsnipe_selected_token_prewarm_max_tokens_per_refresh =
+                std::env::var("EVPOLY_EVSNIPE_SELECTED_TOKEN_PREWARM_MAX_TOKENS_PER_REFRESH")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+                    .unwrap_or(64)
+                    .max(1);
             let evsnipe_watchlist_max_specs = std::env::var("EVPOLY_EVSNIPE_WATCHLIST_MAX_SPECS")
                 .ok()
                 .and_then(|v| v.trim().parse::<usize>().ok())
@@ -15698,6 +15903,13 @@ async fn main() -> Result<()> {
                         let active_hit_specs = evsnipe_watchlist_hit_count(&active_by_symbol);
                         let active_symbol_breakdown =
                             evsnipe_watchlist_symbol_breakdown(&active_by_symbol);
+                        evsnipe_spec_index_for_refresh.replace(
+                            evsnipe::EvsnipeSpecIndex::from_by_symbol(
+                                &active_by_symbol,
+                                u64::try_from(now_ms.max(0)).ok().unwrap_or(0),
+                                now_ms,
+                            ),
+                        );
                         {
                             let mut guard = watchlist_for_refresh.write().await;
                             *guard = active_by_symbol;
@@ -15772,6 +15984,9 @@ async fn main() -> Result<()> {
         });
 
         let evsnipe_cfg_for_trade = evsnipe_cfg.clone();
+        let evsnipe_fast_cfg_for_trade = evsnipe_fast_cfg.clone();
+        let evsnipe_spec_index_for_trade = evsnipe_spec_index.clone();
+        let evsnipe_price_cache_for_trade = evsnipe_price_cache.clone();
         let watchlist_for_trade = watchlist_by_symbol.clone();
         let arbiter_exec_tx_for_evsnipe_trade = arbiter_exec_tx_for_evsnipe.clone();
         let enqueue_dedupe_for_evsnipe_trade = enqueue_dedupe_for_evsnipe.clone();
@@ -15841,8 +16056,40 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             let mut last_price_by_symbol: std::collections::HashMap<String, f64> =
                 std::collections::HashMap::new();
+            let mut price_update_rx = evsnipe_price_cache_for_trade
+                .as_ref()
+                .map(|cache| cache.subscribe());
 
-            while let Some(tick) = evsnipe_tick_rx.recv().await {
+            loop {
+                let (tick, tick_prev_price) = if let Some(rx) = price_update_rx.as_mut() {
+                    match rx.recv().await {
+                        Ok(update) => (
+                            evsnipe::BinanceTradeTick {
+                                symbol: update.symbol,
+                                price: update.price,
+                                trade_ts_ms: update.trade_ts_ms,
+                                recv_ts_ms: update.recv_ts_ms,
+                            },
+                            update.prev_price,
+                        ),
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            log_event(
+                                "evsnipe_price_cache_lagged",
+                                json!({
+                                    "strategy_id": STRATEGY_ID_EVSNIPE_V1,
+                                    "skipped_updates": skipped
+                                }),
+                            );
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                } else {
+                    let Some(tick) = evsnipe_tick_rx.recv().await else {
+                        break;
+                    };
+                    (tick, None)
+                };
                 let now_ms = chrono::Utc::now().timestamp_millis();
                 if tick.recv_ts_ms <= 0
                     || now_ms.saturating_sub(tick.recv_ts_ms)
@@ -15851,11 +16098,24 @@ async fn main() -> Result<()> {
                     continue;
                 }
                 let symbol = evsnipe::normalize_symbol(tick.symbol.as_str());
-                let prev_price = last_price_by_symbol.insert(symbol.clone(), tick.price);
+                let local_prev_price = last_price_by_symbol.insert(symbol.clone(), tick.price);
+                let prev_price = tick_prev_price.or(local_prev_price).or_else(|| {
+                    evsnipe_price_cache_for_trade
+                        .as_ref()
+                        .and_then(|cache| cache.latest(symbol.as_str()))
+                        .and_then(|snapshot| snapshot.prev_price)
+                });
                 let Some(prev_price) = prev_price else {
                     continue;
                 };
-                let candidates = {
+                let candidates = if evsnipe_fast_cfg_for_trade.indexed_trigger_enabled {
+                    evsnipe_spec_index_for_trade.latest().candidates_for_tick(
+                        symbol.as_str(),
+                        prev_price,
+                        tick.price,
+                        evsnipe_cfg_for_trade.pre_trigger_bps,
+                    )
+                } else {
                     let guard = watchlist_for_trade.read().await;
                     guard.get(symbol.as_str()).cloned().unwrap_or_default()
                 };
@@ -15885,12 +16145,11 @@ async fn main() -> Result<()> {
                         continue;
                     }
 
-                    let mut triggered_legs = Vec::with_capacity(2);
-                    if pre_leg_triggered {
-                        triggered_legs.push(EvsnipeHitLeg::Pre);
-                    }
+                    let mut triggered_legs = Vec::with_capacity(1);
                     if confirm_leg_triggered {
                         triggered_legs.push(EvsnipeHitLeg::Confirm);
+                    } else if pre_leg_triggered {
+                        triggered_legs.push(EvsnipeHitLeg::Pre);
                     }
 
                     for hit_leg in triggered_legs {
@@ -15905,11 +16164,8 @@ async fn main() -> Result<()> {
                                 now_ms.saturating_div(1_000),
                                 evsnipe_cfg_for_trade.max_days_to_expiry,
                             );
-                            if evsnipe_hit_leg_blocked(
-                                &state,
-                                spec.condition_id.as_str(),
-                                leg_key.as_str(),
-                            ) {
+                            if evsnipe_hit_leg_blocked(&state, spec.condition_id.as_str(), hit_leg)
+                            {
                                 continue;
                             }
                             let already_reserved = state
@@ -15921,14 +16177,33 @@ async fn main() -> Result<()> {
                             let pre_leg_size = (evsnipe_cfg_for_trade.size_usd
                                 * evsnipe_cfg_for_trade.pre_leg_ratio)
                                 .max(0.0);
+                            let pre_leg_key =
+                                evsnipe_hit_leg_key(spec.condition_id.as_str(), EvsnipeHitLeg::Pre);
+                            let pre_leg_fired = state.fired_hit_legs.contains(pre_leg_key.as_str());
+                            let pre_leg_inflight =
+                                state.inflight_hit_legs.contains(pre_leg_key.as_str());
                             leg_size_usd = match hit_leg {
                                 EvsnipeHitLeg::Pre => pre_leg_size,
                                 EvsnipeHitLeg::Confirm => {
-                                    (evsnipe_cfg_for_trade.size_usd - already_reserved).max(0.0)
+                                    if pre_leg_fired || pre_leg_inflight {
+                                        (evsnipe_cfg_for_trade.size_usd - already_reserved).max(0.0)
+                                    } else {
+                                        evsnipe_cfg_for_trade.size_usd
+                                    }
                                 }
                             };
                             if leg_size_usd < 1.0 {
-                                state.fired_hit_legs.insert(leg_key.clone());
+                                log_event(
+                                    "evsnipe_skip_leg_size_below_min",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_EVSNIPE_V1,
+                                        "condition_id": spec.condition_id,
+                                        "symbol": spec.symbol,
+                                        "hit_leg": hit_leg.as_str(),
+                                        "leg_size_usd": leg_size_usd,
+                                        "min_leg_size_usd": 1.0
+                                    }),
+                                );
                                 continue;
                             }
                             if state.used_strategy_usd + leg_size_usd
@@ -15961,9 +16236,12 @@ async fn main() -> Result<()> {
                         let state_for_task = evsnipe_state_for_trade.clone();
                         let arbiter_exec_tx_for_task = arbiter_exec_tx_for_evsnipe_trade.clone();
                         let enqueue_dedupe_for_task = enqueue_dedupe_for_evsnipe_trade.clone();
+                        let evsnipe_cfg_for_task = evsnipe_cfg_for_trade.clone();
+                        let evsnipe_fast_cfg_for_task = evsnipe_fast_cfg_for_trade.clone();
                         let symbol_for_task = symbol.clone();
                         let spec_for_task = spec.clone();
                         let tick_for_task = tick.clone();
+                        let prev_price_for_task = prev_price;
                         let leg_key_for_task = leg_key.clone();
                         let hit_leg_for_task = hit_leg;
                         let leg_size_for_task = leg_size_usd;
@@ -15975,19 +16253,11 @@ async fn main() -> Result<()> {
                             Err(_) => {
                                 let mut state = evsnipe_state_for_trade.lock().await;
                                 state.inflight_hit_legs.remove(leg_key.as_str());
-                                if let Some(total) = state
-                                    .reserved_usd_by_condition
-                                    .get_mut(spec.condition_id.as_str())
-                                {
-                                    *total = (*total - leg_size_usd).max(0.0);
-                                    if *total < 1e-9 {
-                                        state
-                                            .reserved_usd_by_condition
-                                            .remove(spec.condition_id.as_str());
-                                    }
-                                }
-                                state.used_strategy_usd =
-                                    (state.used_strategy_usd - leg_size_usd).max(0.0);
+                                evsnipe_release_reserved_leg(
+                                    &mut state,
+                                    spec.condition_id.as_str(),
+                                    leg_size_usd,
+                                );
                                 if now_ms.saturating_sub(state.busy_log_last_ms) >= 5_000 {
                                     state.busy_log_last_ms = now_ms;
                                     log_event(
@@ -16008,7 +16278,6 @@ async fn main() -> Result<()> {
 
                         tokio::spawn(async move {
                             let _permit = permit;
-                            let mut sent = false;
                             // Hit-market EVSnipe should fire directly from the Binance trigger.
                             // Do not block on a PM orderbook fetch/shape check before enqueue.
                             let submit_limit_price = 0.99_f64;
@@ -16048,13 +16317,12 @@ async fn main() -> Result<()> {
                                 target_size_usd: leg_size_for_task,
                                 score: 0.0,
                             };
+                            let token_type =
+                                token_type_for_market_symbol(symbol_for_task.as_str(), direction);
                             let opportunity = polymarket_arbitrage_bot::detector::BuyOpportunity {
                                 condition_id: spec_for_task.condition_id.clone(),
                                 token_id: spec_for_task.yes_token_id.clone(),
-                                token_type: token_type_for_market_symbol(
-                                    symbol_for_task.as_str(),
-                                    direction,
-                                ),
+                                token_type: token_type.clone(),
                                 bid_price: submit_limit_price,
                                 expected_edge_bps: 0.0,
                                 expected_fill_prob: 0.98,
@@ -16063,6 +16331,34 @@ async fn main() -> Result<()> {
                                 time_elapsed_seconds: 0,
                                 use_market_order: false,
                             };
+                            let decision_ts_ms = chrono::Utc::now().timestamp_millis();
+                            let trigger_age_ms = decision_ts_ms
+                                .saturating_sub(tick_for_task.recv_ts_ms)
+                                .max(0);
+                            let evsnipe_order_intent = EvsnipeOrderIntent {
+                                request_id: request_id.clone(),
+                                symbol: symbol_for_task.clone(),
+                                condition_id: spec_for_task.condition_id.clone(),
+                                market_slug: spec_for_task.slug.clone(),
+                                token_id: spec_for_task.yes_token_id.clone(),
+                                token_type: token_type.display_name().to_string(),
+                                rule: spec_for_task.rule_label().to_string(),
+                                hit_leg: hit_leg_for_task.as_str().to_string(),
+                                strike_price: spec_for_task.strike_price,
+                                strike_price_upper: spec_for_task.strike_price_upper,
+                                end_ts: spec_for_task.effective_end_ts(),
+                                trigger_price: tick_for_task.price,
+                                prev_price: prev_price_for_task,
+                                binance_trade_ts_ms: tick_for_task.trade_ts_ms,
+                                binance_recv_ts_ms: tick_for_task.recv_ts_ms,
+                                decision_ts_ms,
+                                limit_price: submit_limit_price,
+                                size_usd: leg_size_for_task,
+                            };
+                            let (submit_outcome_tx, submit_outcome_rx) =
+                                tokio::sync::oneshot::channel::<EvsnipeSubmitOutcome>();
+                            let submit_outcome_sender =
+                                Arc::new(StdMutex::new(Some(submit_outcome_tx)));
 
                             let request = ArbiterExecutionRequest {
                                 request_id: request_id.clone(),
@@ -16077,23 +16373,39 @@ async fn main() -> Result<()> {
                                 )),
                                 place_sell_orders: false,
                                 source_timeframe: Some(Timeframe::D1.as_str().to_string()),
-                                timing: ArbiterExecutionTiming::new_decision(
-                                    chrono::Utc::now().timestamp_millis(),
-                                ),
+                                evsnipe_intent: Some(evsnipe_order_intent),
+                                evsnipe_submit_outcome: Some(submit_outcome_sender),
+                                timing: ArbiterExecutionTiming::new_decision(decision_ts_ms)
+                                    .with_proxy_snapshot(
+                                        Some(tick_for_task.trade_ts_ms),
+                                        Some(trigger_age_ms),
+                                    ),
                             };
 
-                            match enqueue_arbiter_request(
-                                &arbiter_exec_tx_for_task,
-                                &enqueue_dedupe_for_task,
-                                request,
-                                "evsnipe",
-                            )
-                            .await
-                            {
-                                Ok(ArbiterEnqueueResult::Sent)
-                                | Ok(ArbiterEnqueueResult::Deduped) => {
-                                    sent = true;
+                            let mut enqueue_sent = false;
+                            let enqueue_result =
+                                if evsnipe_fast_cfg_for_task.nonblocking_enqueue_enabled {
+                                    enqueue_arbiter_request_fast(
+                                        &arbiter_exec_tx_for_task,
+                                        &enqueue_dedupe_for_task,
+                                        request,
+                                        "evsnipe",
+                                    )
+                                    .await
+                                } else {
+                                    enqueue_arbiter_request(
+                                        &arbiter_exec_tx_for_task,
+                                        &enqueue_dedupe_for_task,
+                                        request,
+                                        "evsnipe",
+                                    )
+                                    .await
+                                };
+                            match enqueue_result {
+                                Ok(ArbiterEnqueueResult::Sent) => {
+                                    enqueue_sent = true;
                                 }
+                                Ok(ArbiterEnqueueResult::Deduped) => {}
                                 Ok(ArbiterEnqueueResult::SkippedWeekendPause) => {}
                                 Err(e) => {
                                     warn!(
@@ -16104,6 +16416,16 @@ async fn main() -> Result<()> {
                                     );
                                 }
                             }
+
+                            let submit_outcome = if enqueue_sent {
+                                match submit_outcome_rx.await {
+                                    Ok(outcome) => outcome,
+                                    Err(_) => EvsnipeSubmitOutcome::Failed,
+                                }
+                            } else {
+                                EvsnipeSubmitOutcome::Failed
+                            };
+                            let sent = submit_outcome == EvsnipeSubmitOutcome::Submitted;
 
                             let mut state = state_for_task.lock().await;
                             state.inflight_hit_legs.remove(leg_key_for_task.as_str());
@@ -16130,23 +16452,33 @@ async fn main() -> Result<()> {
                                         "best_ask": best_ask_hint,
                                         "book_precheck_bypassed": true,
                                         "size_usd": leg_size_for_task,
-                                        "used_strategy_usd": state.used_strategy_usd
+                                        "used_strategy_usd": state.used_strategy_usd,
+                                        "strategy_cap_usd": evsnipe_cfg_for_task.strategy_cap_usd
                                     }),
                                 );
                             } else {
-                                if let Some(total) = state
-                                    .reserved_usd_by_condition
-                                    .get_mut(spec_for_task.condition_id.as_str())
-                                {
-                                    *total = (*total - leg_size_for_task).max(0.0);
-                                    if *total < 1e-9 {
-                                        state
-                                            .reserved_usd_by_condition
-                                            .remove(spec_for_task.condition_id.as_str());
-                                    }
-                                }
-                                state.used_strategy_usd =
-                                    (state.used_strategy_usd - leg_size_for_task).max(0.0);
+                                evsnipe_release_reserved_leg(
+                                    &mut state,
+                                    spec_for_task.condition_id.as_str(),
+                                    leg_size_for_task,
+                                );
+                                log_event(
+                                    "evsnipe_trigger_not_submitted",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_EVSNIPE_V1,
+                                        "symbol": spec_for_task.symbol,
+                                        "condition_id": spec_for_task.condition_id,
+                                        "token_id": spec_for_task.yes_token_id,
+                                        "hit_leg": hit_leg_for_task.as_str(),
+                                        "enqueue_sent": enqueue_sent,
+                                        "submit_outcome": match submit_outcome {
+                                            EvsnipeSubmitOutcome::Submitted => "submitted",
+                                            EvsnipeSubmitOutcome::NoFill => "no_fill",
+                                            EvsnipeSubmitOutcome::Failed => "failed",
+                                        },
+                                        "size_usd": leg_size_for_task
+                                    }),
+                                );
                             }
                         });
                     }
@@ -22286,6 +22618,8 @@ async fn main() -> Result<()> {
                             rung_id: Some(rung_id.clone()),
                             place_sell_orders: false,
                             source_timeframe: Some(intent.timeframe.as_str().to_string()),
+                            evsnipe_intent: None,
+                            evsnipe_submit_outcome: None,
                             timing: ArbiterExecutionTiming::new_decision(
                                 chrono::Utc::now().timestamp_millis(),
                             ),
@@ -23660,6 +23994,119 @@ async fn enqueue_arbiter_request(
         }),
     );
     Ok(ArbiterEnqueueResult::Sent)
+}
+
+async fn enqueue_arbiter_request_fast(
+    tx: &tokio::sync::mpsc::Sender<ArbiterExecutionRequest>,
+    dedupe_shards: &Arc<Vec<tokio::sync::Mutex<EnqueueDedupe>>>,
+    mut request: ArbiterExecutionRequest,
+    source: &'static str,
+) -> Result<ArbiterEnqueueResult> {
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    if weekend_policy::should_pause_new_entries_now(request.intent.strategy_id.as_str()) {
+        log_event(
+            "strategy_skip_weekend_pause",
+            json!({
+                "request_id": request.request_id,
+                "strategy_id": request.intent.strategy_id,
+                "timeframe": request_timeframe_label(&request),
+                "entry_mode": request.entry_mode.as_str(),
+                "period_timestamp": request.opportunity.period_timestamp,
+                "token_id": request.opportunity.token_id,
+                "source": source,
+                "policy": weekend_policy::weekend_policy_from_env().as_str(),
+                "fast_enqueue": true
+            }),
+        );
+        return Ok(ArbiterEnqueueResult::SkippedWeekendPause);
+    }
+
+    let logical_key = logical_entry_key_from_request(&request);
+    let rung_id = request_rung_id(&request);
+    let shard_idx = enqueue_dedupe_shard_index(&logical_key, dedupe_shards.len());
+    let request_id = request.request_id.clone();
+    let strategy_id = request.intent.strategy_id.clone();
+    let timeframe = request_timeframe_label(&request);
+    let entry_mode = request.entry_mode.as_str().to_string();
+    let period_timestamp = request.opportunity.period_timestamp;
+    let token_id = request.opportunity.token_id.clone();
+    let logical_key_string = logical_key.as_compact_string();
+
+    let decision = {
+        let dedupe_wait_started = Instant::now();
+        let mut guard = dedupe_shards[shard_idx].lock().await;
+        let dedupe_wait_ms = i64::try_from(dedupe_wait_started.elapsed().as_millis())
+            .ok()
+            .unwrap_or(i64::MAX);
+        log_runtime_contention(
+            "enqueue_dedupe_lock_fast",
+            dedupe_wait_ms,
+            json!({
+                "source": source,
+                "shard_idx": shard_idx,
+                "request_id": request_id,
+                "strategy_id": strategy_id,
+                "timeframe": timeframe,
+                "entry_mode": entry_mode,
+                "rung_id": rung_id
+            }),
+        );
+        guard.should_forward(&logical_key, now_ms)
+    };
+    if !decision.forwarded {
+        log_event(
+            "entry_enqueue_deduped",
+            json!({
+                "source": source,
+                "request_id": request_id,
+                "logical_key": logical_key_string,
+                "strategy_id": strategy_id,
+                "timeframe": timeframe,
+                "entry_mode": entry_mode,
+                "rung_id": rung_id,
+                "period_timestamp": period_timestamp,
+                "token_id": token_id,
+                "side": "BUY",
+                "reason": format!("{:?}", decision.reason),
+                "retry_at_ms": decision.retry_at_ms,
+                "fast_enqueue": true
+            }),
+        );
+        return Ok(ArbiterEnqueueResult::Deduped);
+    }
+
+    if request.timing.enqueue_ts_ms.is_none() {
+        request.timing.enqueue_ts_ms = Some(now_ms);
+    }
+
+    match tx.try_send(request) {
+        Ok(()) => Ok(ArbiterEnqueueResult::Sent),
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_request)) => {
+            let mut guard = dedupe_shards[shard_idx].lock().await;
+            guard.forget(&logical_key);
+            log_event(
+                "entry_enqueue_fast_queue_full",
+                json!({
+                    "source": source,
+                    "request_id": request_id,
+                    "logical_key": logical_key_string,
+                    "strategy_id": strategy_id,
+                    "timeframe": timeframe,
+                    "entry_mode": entry_mode,
+                    "period_timestamp": period_timestamp,
+                    "token_id": token_id,
+                    "queue_capacity": tx.capacity(),
+                    "queue_max_capacity": tx.max_capacity()
+                }),
+            );
+            Err(anyhow::anyhow!("arbiter channel full for fast enqueue"))
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_request)) => {
+            let mut guard = dedupe_shards[shard_idx].lock().await;
+            guard.forget(&logical_key);
+            Err(anyhow::anyhow!("arbiter channel closed for fast enqueue"))
+        }
+    }
 }
 
 async fn enqueue_arbiter_requests_batch(
@@ -28665,9 +29112,40 @@ mod tests {
     fn evsnipe_confirmed_condition_blocks_later_pre_leg() {
         let mut state = EvsnipeRuntimeState::default();
         state.fired_conditions.insert("cond-a".to_string());
-        let leg_key = evsnipe_hit_leg_key("cond-a", EvsnipeHitLeg::Pre);
 
-        assert!(evsnipe_hit_leg_blocked(&state, "cond-a", leg_key.as_str()));
+        assert!(evsnipe_hit_leg_blocked(
+            &state,
+            "cond-a",
+            EvsnipeHitLeg::Pre
+        ));
+    }
+
+    #[test]
+    fn evsnipe_confirm_inflight_blocks_later_pre_leg() {
+        let mut state = EvsnipeRuntimeState::default();
+        state
+            .inflight_hit_legs
+            .insert(evsnipe_hit_leg_key("cond-a", EvsnipeHitLeg::Confirm));
+
+        assert!(evsnipe_hit_leg_blocked(
+            &state,
+            "cond-a",
+            EvsnipeHitLeg::Pre
+        ));
+    }
+
+    #[test]
+    fn evsnipe_confirm_fired_blocks_later_pre_leg() {
+        let mut state = EvsnipeRuntimeState::default();
+        state
+            .fired_hit_legs
+            .insert(evsnipe_hit_leg_key("cond-a", EvsnipeHitLeg::Confirm));
+
+        assert!(evsnipe_hit_leg_blocked(
+            &state,
+            "cond-a",
+            EvsnipeHitLeg::Pre
+        ));
     }
 
     #[test]
@@ -28676,12 +29154,11 @@ mod tests {
         state
             .fired_hit_legs
             .insert(evsnipe_hit_leg_key("cond-a", EvsnipeHitLeg::Pre));
-        let confirm_key = evsnipe_hit_leg_key("cond-a", EvsnipeHitLeg::Confirm);
 
         assert!(!evsnipe_hit_leg_blocked(
             &state,
             "cond-a",
-            confirm_key.as_str()
+            EvsnipeHitLeg::Confirm
         ));
     }
 

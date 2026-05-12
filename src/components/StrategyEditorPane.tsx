@@ -1645,9 +1645,6 @@ export function StrategyEditorPane({
         const quoteMultiplier = isNonSport
           ? config.mm_tuning.nonsport_quote_size_multiplier
           : config.mm_tuning.sport_quote_size_multiplier;
-        const multipleCap = isNonSport
-          ? mmSport.nonsport_multiple_collateral_cap_mult
-          : mmSport.multiple_collateral_cap_mult;
         const maxQuoteShares = isNonSport ? mmSport.nonsport_max_quote_shares : mmSport.max_quote_shares;
         const maxShareRatio = isNonSport ? mmSport.nonsport_max_share_ratio : mmSport.max_share_ratio;
         const minTopDepthUsd = isNonSport ? mmSport.nonsport_min_top_depth_usd : mmSport.min_top_depth_usd;
@@ -1704,17 +1701,6 @@ export function StrategyEditorPane({
                   patchProfile(
                     isNonSport ? { nonsport_max_quote_shares: value } : { max_quote_shares: value }
                   )
-              )}
-              {renderNumberField(
-                "pUSD Cap",
-                multipleCap,
-                (value) =>
-                  patchProfile(
-                    isNonSport
-                      ? { nonsport_multiple_collateral_cap_mult: value }
-                      : { multiple_collateral_cap_mult: value }
-                  ),
-                { max: 1, step: 0.01 }
               )}
             </div>
             <div className="mm-quote-divider" />

@@ -376,7 +376,6 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
     saved?.mm_tuning?.sport_quote_size_multiplier ??
     DEFAULT_CONFIG.mm_tuning.sport_quote_size_multiplier;
   const sportMultipleCollateralCap =
-    savedMmSport?.multiple_collateral_cap_mult ??
     DEFAULT_CONFIG.strategy_settings.mm_sport.multiple_collateral_cap_mult;
   const sportDepthRatioCollateralCap =
     DEFAULT_CONFIG.strategy_settings.mm_sport.depth_ratio_collateral_cap_mult;
@@ -504,8 +503,7 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
         ),
         entry_price_mode: normalizeMMSportEntryPriceMode(savedMmSport?.entry_price_mode),
         multiple_collateral_cap_mult: sportMultipleCollateralCap,
-        nonsport_multiple_collateral_cap_mult:
-          savedMmSport?.nonsport_multiple_collateral_cap_mult ?? sportMultipleCollateralCap,
+        nonsport_multiple_collateral_cap_mult: sportMultipleCollateralCap,
         depth_ratio_collateral_cap_mult: sportDepthRatioCollateralCap,
         nonsport_depth_ratio_collateral_cap_mult: sportDepthRatioCollateralCap,
         inventory_exit_mode: normalizeMMSportInventoryExitMode(

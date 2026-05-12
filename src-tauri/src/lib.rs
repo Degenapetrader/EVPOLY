@@ -302,10 +302,6 @@ struct DesktopMmSportSettings {
     quote_size_mode: String,
     nonsport_quote_size_mode: String,
     entry_price_mode: String,
-    multiple_collateral_cap_mult: f64,
-    nonsport_multiple_collateral_cap_mult: f64,
-    depth_ratio_collateral_cap_mult: f64,
-    nonsport_depth_ratio_collateral_cap_mult: f64,
     min_reward_rate_per_day: f64,
     match_only: bool,
     allowed_sport_league_codes: String,
@@ -949,19 +945,6 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                         .unwrap_or("passive"),
                 )
                 .to_string(),
-                multiple_collateral_cap_mult: config_io::env_template_default_f64(
-                    "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT",
-                    0.45,
-                ),
-                nonsport_multiple_collateral_cap_mult: config_io::env_template_default_f64(
-                    "EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT",
-                    config_io::env_template_default_f64(
-                        "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT",
-                        0.45,
-                    ),
-                ),
-                depth_ratio_collateral_cap_mult: 0.45,
-                nonsport_depth_ratio_collateral_cap_mult: 0.45,
                 min_reward_rate_per_day: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY",
                     5.0,
@@ -2063,24 +2046,6 @@ fn desktop_config_to_profile_payload(
         ),
     );
     strategy.insert(
-        "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT".to_string(),
-        number_to_json(
-            config
-                .strategy_settings
-                .mm_sport
-                .multiple_collateral_cap_mult,
-        ),
-    );
-    strategy.insert(
-        "EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT".to_string(),
-        number_to_json(
-            config
-                .strategy_settings
-                .mm_sport
-                .nonsport_multiple_collateral_cap_mult,
-        ),
-    );
-    strategy.insert(
         "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY".to_string(),
         number_to_json(config.strategy_settings.mm_sport.min_reward_rate_per_day),
     );
@@ -2573,11 +2538,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT",
         config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2),
     );
-    let mm_sport_multiple_collateral_cap_mult = f64_from_object(
-        &strategy,
-        "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT",
-        config_io::env_template_default_f64("EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", 0.45),
-    );
+    let mm_sport_multiple_collateral_cap_mult = 0.45;
     let mm_sport_depth_ratio_collateral_cap_mult = 0.45;
     let mm_sport_max_share_ratio = f64_from_object(
         &strategy,
@@ -2780,7 +2741,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                     string_from_object(&strategy, "EVPOLY_MM_SPORT_ENTRY_PRICE_MODE", "passive").as_str()
                 ),
                 "multiple_collateral_cap_mult": mm_sport_multiple_collateral_cap_mult,
-                "nonsport_multiple_collateral_cap_mult": f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT", mm_sport_multiple_collateral_cap_mult),
+                "nonsport_multiple_collateral_cap_mult": mm_sport_multiple_collateral_cap_mult,
                 "depth_ratio_collateral_cap_mult": mm_sport_depth_ratio_collateral_cap_mult,
                 "nonsport_depth_ratio_collateral_cap_mult": mm_sport_depth_ratio_collateral_cap_mult,
                 "min_reward_rate_per_day": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 5.0)),
@@ -6553,10 +6514,6 @@ mod tests {
         config.mm_tuning.nonsport_quote_size_multiplier = 0.7;
         config.strategy_settings.mm_sport.quote_size_mode = "multiple".to_string();
         config.strategy_settings.mm_sport.nonsport_quote_size_mode = "depth_ratio".to_string();
-        config
-            .strategy_settings
-            .mm_sport
-            .nonsport_multiple_collateral_cap_mult = 0.25;
         config.strategy_settings.mm_sport.nonsport_max_share_ratio = 0.05;
         config.strategy_settings.mm_sport.nonsport_min_top_depth_usd = 900.0;
 
@@ -6589,7 +6546,7 @@ mod tests {
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_multiple_collateral_cap_mult"],
-            serde_json::json!(0.25)
+            serde_json::json!(0.45)
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_depth_ratio_collateral_cap_mult"],
@@ -6610,7 +6567,6 @@ mod tests {
         let mut strategy = serde_json::json!({
             "EVPOLY_MM_SPORT_QUOTE_SIZE_MODE": "multiple",
             "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT": 2.0,
-            "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT": 0.30,
             "EVPOLY_MM_SPORT_MAX_SHARE_RATIO": 0.12,
             "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD": 1500.0
         });
@@ -6643,7 +6599,7 @@ mod tests {
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_multiple_collateral_cap_mult"],
-            serde_json::json!(0.30)
+            serde_json::json!(0.45)
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_depth_ratio_collateral_cap_mult"],

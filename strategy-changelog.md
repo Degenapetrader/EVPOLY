@@ -10,8 +10,10 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-05-12
+- `mm_sport_v1` / MM 2.0 multiple sizing: fixed the multiple-mode pUSD collateral cap at `0.45` and removed the Sport/Non-S multiple pUSD cap env overrides (`EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT`, `EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT`) from runtime templates (`src/mm/mod.rs`, `.env.example`, `.env.full.example`).
+  - Applies to MM 2.0 Sport, Non-S, and Dual routes when multiple sizing is selected. Quote multiplier, max quote shares, and depth-ratio controls remain unchanged.
 - `mm_sport_v1` / MM 2.0 depth-ratio sizing: fixed the depth-ratio pUSD collateral cap at `0.45` and removed the Sport/Non-S depth-ratio pUSD cap env overrides (`EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT`, `EVPOLY_MM_SPORT_NONSPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT`) from runtime templates (`src/mm/mod.rs`, `.env.example`, `.env.full.example`).
-  - Applies to MM 2.0 Sport, Non-S, and Dual routes when depth-ratio sizing is selected. Multiple-mode pUSD collateral caps remain configurable.
+  - Applies to MM 2.0 Sport, Non-S, and Dual routes when depth-ratio sizing is selected.
 - `mm_sport_v1` / MM 2.0 FIFO and Non-S entry schedule controls: decoupled `EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO` from Sport/Non-S quote sizing ratios so FIFO can cancel around its own configured depth ratio, and added optional UTC Non-S fresh-entry windows with `EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_*` (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`).
   - Applies to MM 2.0 Sport, Non-S, and Dual routes. Sports market discovery and quoting behavior are unchanged; Non-S schedule gates only fresh BUY entries and still allows existing inventory to enter cleanup/exit flow.
 

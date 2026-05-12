@@ -166,6 +166,10 @@ pub struct MmSportConfig {
     pub min_top_depth_usd: f64,
     pub nonsport_min_top_depth_usd: f64,
     pub nonsport_end_exit_start_sec: u64,
+    pub nonsport_entry_schedule_enabled: bool,
+    pub nonsport_entry_schedule_days_utc: Vec<u8>,
+    pub nonsport_entry_schedule_start_minute_utc: u16,
+    pub nonsport_entry_schedule_end_minute_utc: u16,
     pub min_entry_top_bid_price: f64,
     pub allow_sponsored_rewards: bool,
     pub sponsored_reward_min_share: f64,
@@ -241,11 +245,18 @@ impl MmSportConfig {
         let max_quote_shares = env_f64("EVPOLY_MM_SPORT_MAX_QUOTE_SHARES", 0.0).max(0.0);
         let nonsport_max_quote_shares =
             env_f64("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES", 0.0).max(0.0);
-        let fifo_ratio_floor =
-            (max_share_ratio.max(nonsport_max_share_ratio) * 1.10).clamp(0.01, 0.99);
         let fifo_max_share_ratio =
-            env_f64("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", fifo_ratio_floor)
-                .clamp(fifo_ratio_floor, 0.99);
+            env_f64("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", 0.2).clamp(0.01, 0.99);
+        let nonsport_entry_schedule_start_minute_utc = env_u64(
+            "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC",
+            13 * 60,
+        )
+        .min(1_439) as u16;
+        let nonsport_entry_schedule_end_minute_utc = env_u64(
+            "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC",
+            4 * 60,
+        )
+        .min(1_439) as u16;
         let quote_cooldown_min_sec =
             env_u64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC", 10).clamp(0, 3_600);
         let quote_cooldown_max_sec = env_u64("EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC", 60)
@@ -340,6 +351,15 @@ impl MmSportConfig {
                 172_800,
             )
             .clamp(0, 2_592_000),
+            nonsport_entry_schedule_enabled: env_bool(
+                "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE",
+                false,
+            ),
+            nonsport_entry_schedule_days_utc: parse_mm_sport_weekdays_env(
+                "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC",
+            ),
+            nonsport_entry_schedule_start_minute_utc,
+            nonsport_entry_schedule_end_minute_utc,
             min_entry_top_bid_price: env_f64("EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", 0.10)
                 .clamp(0.0, 0.99),
             allow_sponsored_rewards: env_bool("EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS", true),
@@ -443,12 +463,11 @@ impl MmSportConfig {
     }
 
     pub fn fifo_ratio_floor(&self) -> f64 {
-        (self.max_share_ratio.max(self.nonsport_max_share_ratio) * 1.10).clamp(0.01, 0.99)
+        0.01
     }
 
     pub fn effective_fifo_max_share_ratio(&self) -> f64 {
-        self.fifo_max_share_ratio
-            .clamp(self.fifo_ratio_floor(), 0.99)
+        self.fifo_max_share_ratio.clamp(0.01, 0.99)
     }
 }
 
@@ -552,6 +571,39 @@ fn parse_mm_sport_sport_league_codes_env(key: &str) -> Vec<String> {
 fn parse_mm_sport_blocked_competition_levels_env(key: &str) -> Vec<String> {
     const ALLOWED: [&str; 4] = ["low", "medium", "high", "unknown"];
     parse_string_list_from_allowed_env(key, &ALLOWED)
+}
+
+fn parse_mm_sport_weekdays_env(key: &str) -> Vec<u8> {
+    let Some(raw) = std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    else {
+        return vec![1, 2, 3, 4, 5];
+    };
+    let mut out = Vec::new();
+    for value in raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let weekday = match value.to_ascii_lowercase().as_str() {
+            "none" => return Vec::new(),
+            "all" | "*" => return vec![1, 2, 3, 4, 5, 6, 7],
+            "mon" | "monday" | "1" => 1,
+            "tue" | "tues" | "tuesday" | "2" => 2,
+            "wed" | "wednesday" | "3" => 3,
+            "thu" | "thur" | "thurs" | "thursday" | "4" => 4,
+            "fri" | "friday" | "5" => 5,
+            "sat" | "saturday" | "6" => 6,
+            "sun" | "sunday" | "0" | "7" => 7,
+            _ => continue,
+        };
+        if !out.contains(&weekday) {
+            out.push(weekday);
+        }
+    }
+    out
 }
 
 fn env_u64(key: &str, default: u64) -> u64 {
@@ -761,6 +813,22 @@ mod tests {
                     "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC",
                     Some("86400.0"),
                 ),
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE",
+                    Some("true"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC",
+                    Some("mon,wed,7"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC",
+                    Some("780"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC",
+                    Some("240"),
+                ),
                 ("EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", Some("0.15")),
                 ("EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS", Some("false")),
                 ("EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE", Some("0.65")),
@@ -768,6 +836,10 @@ mod tests {
             || {
                 let cfg = MmSportConfig::from_env();
                 assert_eq!(cfg.nonsport_end_exit_start_sec, 86_400);
+                assert!(cfg.nonsport_entry_schedule_enabled);
+                assert_eq!(cfg.nonsport_entry_schedule_days_utc, vec![1, 3, 7]);
+                assert_eq!(cfg.nonsport_entry_schedule_start_minute_utc, 780);
+                assert_eq!(cfg.nonsport_entry_schedule_end_minute_utc, 240);
                 assert!((cfg.min_entry_top_bid_price - 0.15).abs() < 1e-9);
                 assert!(!cfg.allow_sponsored_rewards);
                 assert!((cfg.sponsored_reward_min_share - 0.65).abs() < 1e-9);
@@ -814,8 +886,25 @@ mod tests {
                 assert_eq!(cfg.fresh_scan_markets_per_tick, 24);
                 assert_eq!(cfg.order_submit_concurrency, 4);
                 assert!(cfg.verbose_budget_events);
-                assert!((cfg.fifo_ratio_floor() - 0.11).abs() < 1e-9);
-                assert!((cfg.effective_fifo_max_share_ratio() - 0.11).abs() < 1e-9);
+                assert!((cfg.fifo_ratio_floor() - 0.01).abs() < 1e-9);
+                assert!((cfg.effective_fifo_max_share_ratio() - 0.09).abs() < 1e-9);
+            },
+        );
+    }
+
+    #[test]
+    fn mm_sport_fifo_ratio_is_independent_from_quote_ratio() {
+        with_mm_env(
+            &[
+                ("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", Some("0.60")),
+                ("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", Some("0.60")),
+                ("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", Some("0.20")),
+            ],
+            || {
+                let cfg = MmSportConfig::from_env();
+                assert!((cfg.fifo_max_share_ratio - 0.20).abs() < 1e-9);
+                assert!((cfg.fifo_ratio_floor() - 0.01).abs() < 1e-9);
+                assert!((cfg.effective_fifo_max_share_ratio() - 0.20).abs() < 1e-9);
             },
         );
     }

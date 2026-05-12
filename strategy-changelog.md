@@ -9,6 +9,10 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-05-12
+- `mm_sport_v1` / MM 2.0 FIFO and Non-S entry schedule controls: decoupled `EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO` from Sport/Non-S quote sizing ratios so FIFO can cancel around its own configured depth ratio, and added optional UTC Non-S fresh-entry windows with `EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_*` (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`).
+  - Applies to MM 2.0 Sport, Non-S, and Dual routes. Sports market discovery and quoting behavior are unchanged; Non-S schedule gates only fresh BUY entries and still allows existing inventory to enter cleanup/exit flow.
+
 ### 2026-05-11
 - `mm_sport_v1` / MM 2.0 sizing and entry-price controls: added optional Sport/Non-S max quote share caps with `EVPOLY_MM_SPORT_MAX_QUOTE_SHARES` and `EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES`, plus `EVPOLY_MM_SPORT_ENTRY_PRICE_MODE=passive|best_bid` for fresh BUY entry pricing (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`).
   - Applies to MM 2.0 Sport, Non-S, and Dual routes. Defaults preserve existing behavior: quote share caps are disabled at `0`, and entry pricing remains passive one tick behind best bid unless `best_bid` is configured.

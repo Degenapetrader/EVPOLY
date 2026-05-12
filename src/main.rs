@@ -1451,6 +1451,38 @@ fn mm_sport_nonsport_end_entry_halt(
     now_ms >= market_end_ts_ms.saturating_sub(window_ms)
 }
 
+fn mm_sport_nonsport_entry_schedule_allows_now(now_ms: i64, cfg: &mm::MmSportConfig) -> bool {
+    if !cfg.nonsport_entry_schedule_enabled {
+        return true;
+    }
+    let Some(now) = chrono::DateTime::<Utc>::from_timestamp_millis(now_ms) else {
+        return false;
+    };
+    let days = cfg.nonsport_entry_schedule_days_utc.as_slice();
+    if days.is_empty() {
+        return false;
+    }
+
+    let minute_of_day = now.hour().saturating_mul(60).saturating_add(now.minute());
+    let today = now.weekday().number_from_monday() as u8;
+    let start = u32::from(cfg.nonsport_entry_schedule_start_minute_utc).min(1_439);
+    let end = u32::from(cfg.nonsport_entry_schedule_end_minute_utc).min(1_439);
+    if start == end {
+        return days.contains(&today);
+    }
+    if start < end {
+        return days.contains(&today) && minute_of_day >= start && minute_of_day < end;
+    }
+    if minute_of_day >= start {
+        return days.contains(&today);
+    }
+    if minute_of_day < end {
+        let previous_day = if today == 1 { 7 } else { today - 1 };
+        return days.contains(&previous_day);
+    }
+    false
+}
+
 fn mm_sport_reward_min_shares_cap_blocks_market(
     reward_min_size_shares: f64,
     shares_cap: f64,
@@ -18832,8 +18864,15 @@ async fn main() -> Result<()> {
                                 market.market_end_ts_ms,
                                 mm_sport_cfg_for_loop.nonsport_end_exit_start_sec,
                             );
+                        let nonsport_entry_schedule_halt = !market.is_sports_market
+                            && !mm_sport_nonsport_entry_schedule_allows_now(
+                                now_ms,
+                                &mm_sport_cfg_for_loop,
+                            );
+                        let nonsport_fresh_entry_halt =
+                            nonsport_end_entry_halt || nonsport_entry_schedule_halt;
                         let inventory_exit_mode = market_mode_flags.inventory_exit_mode
-                            || (nonsport_end_entry_halt
+                            || (nonsport_fresh_entry_halt
                                 && condition_has_inventory
                                 && mm_sport_cfg_for_loop.exit_mode != mm::MmSportExitMode::NoExit)
                             || (fallback_exit_only
@@ -18875,7 +18914,7 @@ async fn main() -> Result<()> {
                             }
                             continue;
                         }
-                        if nonsport_end_entry_halt {
+                        if nonsport_fresh_entry_halt {
                             let buy_rows = market_rows
                                 .iter()
                                 .filter(|row| row.side.eq_ignore_ascii_case("BUY"))
@@ -18899,8 +18938,13 @@ async fn main() -> Result<()> {
                             {
                                 last_nonsport_end_entry_halt_log_ms_by_condition
                                     .insert(market.condition_id.clone(), now_ms);
+                                let event_name = if nonsport_entry_schedule_halt {
+                                    "mm_sport_nonsport_entry_schedule_halt"
+                                } else {
+                                    "mm_sport_nonsport_end_entry_halt"
+                                };
                                 log_event(
-                                    "mm_sport_nonsport_end_entry_halt",
+                                    event_name,
                                     json!({
                                         "strategy_id": STRATEGY_ID_MM_SPORT_V1,
                                         "condition_id": market.condition_id,
@@ -18908,6 +18952,11 @@ async fn main() -> Result<()> {
                                         "market_end_ts_ms": market.market_end_ts_ms,
                                         "seconds_to_end": (market.market_end_ts_ms.saturating_sub(now_ms) / 1_000).max(0),
                                         "nonsport_end_exit_start_sec": mm_sport_cfg_for_loop.nonsport_end_exit_start_sec,
+                                        "nonsport_end_entry_halt": nonsport_end_entry_halt,
+                                        "nonsport_entry_schedule_halt": nonsport_entry_schedule_halt,
+                                        "nonsport_entry_schedule_days_utc": mm_sport_cfg_for_loop.nonsport_entry_schedule_days_utc.as_slice(),
+                                        "nonsport_entry_schedule_start_minute_utc": mm_sport_cfg_for_loop.nonsport_entry_schedule_start_minute_utc,
+                                        "nonsport_entry_schedule_end_minute_utc": mm_sport_cfg_for_loop.nonsport_entry_schedule_end_minute_utc,
                                         "condition_has_inventory": condition_has_inventory,
                                         "inventory_exit_mode": inventory_exit_mode,
                                         "buy_cancel_count": buy_rows.len()
@@ -20370,6 +20419,7 @@ async fn main() -> Result<()> {
                                             "market_end_ts_ms": market.market_end_ts_ms,
                                             "prestart_quote_halt": prestart_quote_halt,
                                             "nonsport_end_entry_halt": nonsport_end_entry_halt,
+                                            "nonsport_entry_schedule_halt": nonsport_entry_schedule_halt,
                                             "inventory_triggered_exit_mode": post_pause_inventory_exit_mode,
                                             "condition_has_inventory": condition_has_inventory,
                                             "fill_pause_active": fill_pause_active,
@@ -27476,6 +27526,7 @@ async fn fetch_best_price_with_ts_with_retry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use std::sync::{Mutex, OnceLock};
 
     fn admin_env_lock() -> &'static Mutex<()> {
@@ -28047,6 +28098,83 @@ mod tests {
         ));
         assert!(!mm_sport_nonsport_end_entry_halt(end_ts_ms, 0, window_sec));
         assert!(!mm_sport_nonsport_end_entry_halt(end_ts_ms, end_ts_ms, 0));
+    }
+
+    #[test]
+    fn mm_sport_nonsport_entry_schedule_uses_utc_window() {
+        with_admin_env(
+            &[
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE",
+                    Some("true"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC",
+                    Some("mon,tue,wed,thu,fri"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC",
+                    Some("780"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC",
+                    Some("240"),
+                ),
+            ],
+            || {
+                let cfg = mm::MmSportConfig::from_env();
+                let utc_ms = |year, month, day, hour, minute| {
+                    Utc.with_ymd_and_hms(year, month, day, hour, minute, 0)
+                        .single()
+                        .unwrap()
+                        .timestamp_millis()
+                };
+
+                assert!(mm_sport_nonsport_entry_schedule_allows_now(
+                    utc_ms(2026, 5, 11, 14, 0),
+                    &cfg
+                ));
+                assert!(!mm_sport_nonsport_entry_schedule_allows_now(
+                    utc_ms(2026, 5, 11, 12, 59),
+                    &cfg
+                ));
+                assert!(mm_sport_nonsport_entry_schedule_allows_now(
+                    utc_ms(2026, 5, 12, 3, 59),
+                    &cfg
+                ));
+                assert!(mm_sport_nonsport_entry_schedule_allows_now(
+                    utc_ms(2026, 5, 16, 3, 59),
+                    &cfg
+                ));
+                assert!(!mm_sport_nonsport_entry_schedule_allows_now(
+                    utc_ms(2026, 5, 16, 4, 0),
+                    &cfg
+                ));
+                assert!(!mm_sport_nonsport_entry_schedule_allows_now(
+                    utc_ms(2026, 5, 17, 14, 0),
+                    &cfg
+                ));
+            },
+        );
+    }
+
+    #[test]
+    fn mm_sport_nonsport_entry_schedule_disabled_allows_any_time() {
+        with_admin_env(
+            &[(
+                "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE",
+                Some("false"),
+            )],
+            || {
+                let cfg = mm::MmSportConfig::from_env();
+                let now_ms = Utc
+                    .with_ymd_and_hms(2026, 5, 17, 14, 0, 0)
+                    .single()
+                    .unwrap()
+                    .timestamp_millis();
+                assert!(mm_sport_nonsport_entry_schedule_allows_now(now_ms, &cfg));
+            },
+        );
     }
 
     #[test]

@@ -233,12 +233,7 @@ impl MmSportConfig {
             0.45,
         )
         .clamp(0.0, 1.0);
-        let depth_ratio_collateral_cap_mult = env_f64_with_alias(
-            "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
-            "EVPOLY_MM_SPORT_DEPTH_RATIO_USDC_CAP_MULT",
-            0.90,
-        )
-        .clamp(0.0, 1.0);
+        let depth_ratio_collateral_cap_mult = 0.45;
         let max_share_ratio = env_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05).clamp(0.01, 0.99);
         let nonsport_max_share_ratio =
             env_f64("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", max_share_ratio).clamp(0.01, 0.99);
@@ -314,11 +309,7 @@ impl MmSportConfig {
             )
             .clamp(0.0, 1.0),
             depth_ratio_collateral_cap_mult,
-            nonsport_depth_ratio_collateral_cap_mult: env_f64(
-                "EVPOLY_MM_SPORT_NONSPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
-                depth_ratio_collateral_cap_mult,
-            )
-            .clamp(0.0, 1.0),
+            nonsport_depth_ratio_collateral_cap_mult: depth_ratio_collateral_cap_mult,
             market_allowlist_keywords: parse_string_list_env(
                 "EVPOLY_MM_SPORT_MARKET_ALLOWLIST_KEYWORDS",
             ),
@@ -916,10 +907,6 @@ mod tests {
                 ("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE", Some("multiple")),
                 ("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", Some("2.0")),
                 ("EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", Some("0.40")),
-                (
-                    "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
-                    Some("0.80"),
-                ),
                 ("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", Some("0.10")),
                 ("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", Some("1200")),
             ],
@@ -934,6 +921,8 @@ mod tests {
                         .abs()
                         < 1e-9
                 );
+                assert!((sport.depth_ratio_collateral_cap_mult - 0.45).abs() < 1e-9);
+                assert!((nonsport.depth_ratio_collateral_cap_mult - 0.45).abs() < 1e-9);
                 assert!((nonsport.max_share_ratio - sport.max_share_ratio).abs() < 1e-9);
                 assert!((nonsport.min_top_depth_usd - sport.min_top_depth_usd).abs() < 1e-9);
             },
@@ -954,10 +943,6 @@ mod tests {
                     "EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT",
                     Some("0.25"),
                 ),
-                (
-                    "EVPOLY_MM_SPORT_NONSPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
-                    Some("0.55"),
-                ),
                 ("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", Some("0.05")),
                 ("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES", Some("250")),
                 ("EVPOLY_MM_SPORT_NONSPORT_MIN_TOP_DEPTH_USD", Some("900")),
@@ -970,7 +955,7 @@ mod tests {
                 assert_eq!(nonsport.quote_size_mode, MmSportQuoteSizeMode::DepthRatio);
                 assert!((nonsport.quote_size_mult - 0.7).abs() < 1e-9);
                 assert!((nonsport.multiple_collateral_cap_mult - 0.25).abs() < 1e-9);
-                assert!((nonsport.depth_ratio_collateral_cap_mult - 0.55).abs() < 1e-9);
+                assert!((nonsport.depth_ratio_collateral_cap_mult - 0.45).abs() < 1e-9);
                 assert!((nonsport.max_share_ratio - 0.05).abs() < 1e-9);
                 assert_eq!(sport.max_quote_shares, 1000.0);
                 assert_eq!(nonsport.max_quote_shares, 250.0);
@@ -994,10 +979,6 @@ mod tests {
                 ("EVPOLY_MM_SPORT_DISCOVERY_ROUTE", Some("dual")),
                 ("EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", Some("0.40")),
                 (
-                    "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
-                    Some("0.85"),
-                ),
-                (
                     "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES",
                     Some("nba,mlb,bad"),
                 ),
@@ -1015,7 +996,7 @@ mod tests {
                 let cfg = MmSportConfig::from_env();
                 assert_eq!(cfg.discovery_route, MmSportDiscoveryRoute::Dual);
                 assert!((cfg.multiple_collateral_cap_mult - 0.40).abs() < f64::EPSILON);
-                assert!((cfg.depth_ratio_collateral_cap_mult - 0.85).abs() < f64::EPSILON);
+                assert!((cfg.depth_ratio_collateral_cap_mult - 0.45).abs() < f64::EPSILON);
                 assert_eq!(cfg.allowed_sport_league_codes, vec!["nba", "mlb"]);
                 assert_eq!(cfg.blocked_competition_levels, vec!["high", "unknown"]);
                 assert_eq!(cfg.market_blacklist_keywords, vec!["spread", "total"]);
@@ -1025,18 +1006,16 @@ mod tests {
     }
 
     #[test]
-    fn mm_sport_config_accepts_legacy_usdc_cap_aliases() {
+    fn mm_sport_config_accepts_legacy_multiple_usdc_cap_alias() {
         with_mm_env(
             &[
                 ("EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", None),
-                ("EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT", None),
                 ("EVPOLY_MM_SPORT_MULTIPLE_USDC_CAP_MULT", Some("0.35")),
-                ("EVPOLY_MM_SPORT_DEPTH_RATIO_USDC_CAP_MULT", Some("0.75")),
             ],
             || {
                 let cfg = MmSportConfig::from_env();
                 assert!((cfg.multiple_collateral_cap_mult - 0.35).abs() < f64::EPSILON);
-                assert!((cfg.depth_ratio_collateral_cap_mult - 0.75).abs() < f64::EPSILON);
+                assert!((cfg.depth_ratio_collateral_cap_mult - 0.45).abs() < f64::EPSILON);
             },
         );
     }

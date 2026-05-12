@@ -70,6 +70,67 @@ function sizePreview(baseSize: number, symbolMultiplier: number, timeframeMultip
 
 type MMSportSettings = BotConfig["strategy_settings"]["mm_sport"];
 
+const MM_SPORT_SCHEDULE_DAYS = [
+  ["mon", "Mon"],
+  ["tue", "Tue"],
+  ["wed", "Wed"],
+  ["thu", "Thu"],
+  ["fri", "Fri"],
+  ["sat", "Sat"],
+  ["sun", "Sun"],
+] as const;
+
+type MMSportScheduleDay = (typeof MM_SPORT_SCHEDULE_DAYS)[number][0];
+
+function parseMMSportScheduleDays(value: string): Set<MMSportScheduleDay> {
+  const selected = new Set<MMSportScheduleDay>();
+  value
+    .split(",")
+    .map((day) => day.trim().toLowerCase())
+    .forEach((day) => {
+      const normalized =
+        day === "monday" || day === "1"
+          ? "mon"
+          : day === "tuesday" || day === "tues" || day === "2"
+            ? "tue"
+            : day === "wednesday" || day === "3"
+              ? "wed"
+              : day === "thursday" || day === "thur" || day === "thurs" || day === "4"
+                ? "thu"
+                : day === "friday" || day === "5"
+                  ? "fri"
+                  : day === "saturday" || day === "6"
+                    ? "sat"
+                    : day === "sunday" || day === "0" || day === "7"
+                      ? "sun"
+                      : day;
+      if (MM_SPORT_SCHEDULE_DAYS.some(([code]) => code === normalized)) {
+        selected.add(normalized as MMSportScheduleDay);
+      }
+    });
+  return selected;
+}
+
+function formatMMSportScheduleDays(days: Set<MMSportScheduleDay>) {
+  const ordered = MM_SPORT_SCHEDULE_DAYS.map(([code]) => code).filter((code) => days.has(code));
+  return ordered.length ? ordered.join(",") : "none";
+}
+
+function minuteToTimeInput(value: number) {
+  const minute = Math.max(0, Math.min(1439, Math.floor(value)));
+  const hours = Math.floor(minute / 60);
+  const minutes = minute % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function timeInputToMinute(value: string, fallback: number) {
+  const [hoursRaw, minutesRaw] = value.split(":");
+  const hours = Number(hoursRaw);
+  const minutes = Number(minutesRaw);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return fallback;
+  return Math.max(0, Math.min(1439, Math.floor(hours) * 60 + Math.floor(minutes)));
+}
+
 const MM_SPORT_FILTER_CODE_ORDER = [
   "american_football",
   "basketball",
@@ -490,7 +551,7 @@ export function StrategyEditorPane({
 }) {
   const [selectedSection, setSelectedSection] = useState<StrategyEditorSection>("general");
   const [mmSportQuoteSizingTab, setMmSportQuoteSizingTab] = useState<
-    "scope" | "sport" | "nonsport" | "shared"
+    "scope" | "sport" | "nonsport" | "shared" | "exit"
   >("sport");
 
   const visibleSections = useMemo(() => strategySections(selectedStrategy), [selectedStrategy]);
@@ -1536,10 +1597,7 @@ export function StrategyEditorPane({
 
     if (selectedStrategy === "mm_sport") {
       const mmSport = config.strategy_settings.mm_sport;
-      const fifoRatioFloor = Math.min(
-        0.99,
-        Math.max(0.01, Math.max(mmSport.max_share_ratio, mmSport.nonsport_max_share_ratio) * 1.1)
-      );
+      const fifoRatioFloor = 0.01;
       const renderNumberField = (
         label: string,
         value: number,
@@ -1606,6 +1664,17 @@ export function StrategyEditorPane({
               [isNonSport ? "nonsport_quote_size_multiplier" : "sport_quote_size_multiplier"]: value,
             },
           }));
+        const scheduleEnabled = mmSport.nonsport_entry_schedule_enabled;
+        const scheduleDays = parseMMSportScheduleDays(mmSport.nonsport_entry_schedule_days_utc);
+        const toggleScheduleDay = (day: MMSportScheduleDay) => {
+          const next = new Set(scheduleDays);
+          if (next.has(day)) {
+            next.delete(day);
+          } else {
+            next.add(day);
+          }
+          patchProfile({ nonsport_entry_schedule_days_utc: formatMMSportScheduleDays(next) });
+        };
 
         return (
           <div className="mm-quote-tab-panel">
@@ -1682,6 +1751,88 @@ export function StrategyEditorPane({
                 { max: 1, step: 0.01 }
               )}
             </div>
+            {isNonSport ? (
+              <>
+                <div className="mm-quote-divider" />
+                <div
+                  className={`mm-active-hours ${
+                    scheduleEnabled ? "" : "mm-active-hours--disabled"
+                  }`.trim()}
+                >
+                  <div className="mm-active-hours__header">
+                    <div>
+                      <h4>Active Hours (UTC)</h4>
+                      <span>Fresh entries only. Exits still run.</span>
+                    </div>
+                    {renderSegment(
+                      [
+                        ["off", "Off"],
+                        ["on", "On"],
+                      ] as const,
+                      scheduleEnabled ? "on" : "off",
+                      (value) =>
+                        patchProfile({ nonsport_entry_schedule_enabled: value === "on" })
+                    )}
+                  </div>
+                  <div className="mm-active-hours__grid">
+                    <div className="mm-active-hours__days">
+                      <label className="field-label">Days</label>
+                      <div className="mm-day-chip-row">
+                        {MM_SPORT_SCHEDULE_DAYS.map(([day, dayLabel]) => (
+                          <button
+                            key={day}
+                            type="button"
+                            disabled={!canEdit || !scheduleEnabled}
+                            onClick={() => toggleScheduleDay(day)}
+                            className={`mm-day-chip ${
+                              scheduleDays.has(day) ? "mm-day-chip--active" : ""
+                            }`.trim()}
+                          >
+                            {dayLabel}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mm-quote-field">
+                      <label className="field-label">Start UTC</label>
+                      <input
+                        type="time"
+                        value={minuteToTimeInput(
+                          mmSport.nonsport_entry_schedule_start_minute_utc
+                        )}
+                        disabled={!canEdit || !scheduleEnabled}
+                        onChange={(event) =>
+                          patchProfile({
+                            nonsport_entry_schedule_start_minute_utc: timeInputToMinute(
+                              event.target.value,
+                              mmSport.nonsport_entry_schedule_start_minute_utc
+                            ),
+                          })
+                        }
+                        className="field-input"
+                      />
+                    </div>
+                    <div className="mm-quote-field">
+                      <label className="field-label">End UTC</label>
+                      <input
+                        type="time"
+                        value={minuteToTimeInput(mmSport.nonsport_entry_schedule_end_minute_utc)}
+                        disabled={!canEdit || !scheduleEnabled}
+                        onChange={(event) =>
+                          patchProfile({
+                            nonsport_entry_schedule_end_minute_utc: timeInputToMinute(
+                              event.target.value,
+                              mmSport.nonsport_entry_schedule_end_minute_utc
+                            ),
+                          })
+                        }
+                        className="field-input"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </>
+            ) : null}
           </div>
         );
       };
@@ -1811,6 +1962,36 @@ export function StrategyEditorPane({
           </div>
         </div>
       );
+      const renderExitTab = () => (
+        <div className="mm-quote-tab-panel">
+          <div className="mm-quote-tab-panel__header">
+            <h3>Inventory Exit</h3>
+            <span>Cleanup behavior for existing exposure</span>
+          </div>
+          <div className="mm-quote-grid mm-quote-grid--exit">
+            <div className="mm-quote-field mm-quote-field--segment">
+              <label className="field-label">Exit Mode</label>
+              {renderSegment(
+                [
+                  ["normal", "Auto"],
+                  ["aggressive", "Aggressive"],
+                  ["no_exit", "Lucky"],
+                ] as const,
+                mmSport.inventory_exit_mode,
+                (value) => patchMMSport({ inventory_exit_mode: value })
+              )}
+            </div>
+            {renderNumberField("Max Loss (Cents)", mmSport.inventory_exit_max_loss_cents, (value) =>
+              patchMMSport({ inventory_exit_max_loss_cents: value })
+            )}
+            {mmSport.inventory_exit_mode === "no_exit" ? (
+              <div className="inline-alert inline-alert--warning mm-exit-warning">
+                Cleanup exits are disabled.
+              </div>
+            ) : null}
+          </div>
+        </div>
+      );
 
       return (
         <div className="space-y-4">
@@ -1835,6 +2016,7 @@ export function StrategyEditorPane({
                 ["sport", "Sport"],
                 ["nonsport", "Non-S"],
                 ["shared", "Shared"],
+                ["exit", "Exit"],
               ] as const).map(([value, label]) => (
                 <button
                   key={value}
@@ -1853,64 +2035,15 @@ export function StrategyEditorPane({
               {mmSportQuoteSizingTab === "sport" ? renderProfileTab(false) : null}
               {mmSportQuoteSizingTab === "nonsport" ? renderProfileTab(true) : null}
               {mmSportQuoteSizingTab === "shared" ? renderSharedTab() : null}
+              {mmSportQuoteSizingTab === "exit" ? renderExitTab() : null}
             </div>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)]">
-            <div className="surface-panel">
-              <div className="surface-panel__header">
-                <div className="surface-panel__copy">
-                  <h2 className="surface-panel__title">Inventory Exit</h2>
-                  <p className="surface-panel__subtitle">
-                    Choose how MM 2.0 cleans up existing exposure.
-                  </p>
-                </div>
-              </div>
-              <div className="surface-panel__body grid gap-4">
-                <div>
-                  <label className="field-label">Inventory Exit Mode</label>
-                  <div className="flex flex-wrap gap-2">
-                    {[
-                      ["normal", "Auto"],
-                      ["aggressive", "Aggressive"],
-                      ["no_exit", "Feeling Lucky"],
-                    ].map(([value, label]) => (
-                      <button
-                        key={value}
-                        type="button"
-                        disabled={!canEdit}
-                        onClick={() =>
-                          patchMMSport({
-                            inventory_exit_mode:
-                              value as BotConfig["strategy_settings"]["mm_sport"]["inventory_exit_mode"],
-                          })
-                        }
-                        className={`mode-choice ${
-                          mmSport.inventory_exit_mode === value ? "mode-choice--active" : ""
-                        }`.trim()}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  {mmSport.inventory_exit_mode === "no_exit" ? (
-                    <div className="inline-alert inline-alert--warning">
-                      Feeling Lucky is high risk because cleanup exits are disabled.
-                    </div>
-                  ) : null}
-                </div>
-                {renderNumberField("Max Loss (Cents)", mmSport.inventory_exit_max_loss_cents, (value) =>
-                  patchMMSport({ inventory_exit_max_loss_cents: value })
-                )}
-              </div>
-            </div>
-
-            <MMSportFiltersPanel
-              mmSport={mmSport}
-              canEdit={canEdit}
-              patchMMSport={patchMMSport}
-            />
-          </div>
+          <MMSportFiltersPanel
+            mmSport={mmSport}
+            canEdit={canEdit}
+            patchMMSport={patchMMSport}
+          />
         </div>
       );
     }

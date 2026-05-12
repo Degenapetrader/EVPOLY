@@ -105,6 +105,11 @@ function normalizeNonNegativeInteger(value: number | undefined, fallback: number
   return Math.floor(value);
 }
 
+function normalizeUtcMinute(value: number | undefined, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return fallback;
+  return Math.min(1439, Math.floor(value));
+}
+
 function normalizeMMSportRouteCaps(
   route: string,
   sportCap: number | undefined,
@@ -245,6 +250,10 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     pause_after_fill_sec: 600,
     inventory_exit_start_hours: 8,
     nonsport_end_exit_start_hours: 48,
+    nonsport_entry_schedule_enabled: false,
+    nonsport_entry_schedule_days_utc: "mon,tue,wed,thu,fri",
+    nonsport_entry_schedule_start_minute_utc: 780,
+    nonsport_entry_schedule_end_minute_utc: 240,
     inventory_exit_max_loss_cents: 10,
     inventory_exit_mode: "normal",
     max_share_ratio: 0.05,
@@ -260,7 +269,7 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     quote_expiry_max_sec: 185,
     quote_cooldown_min_sec: 10,
     quote_cooldown_max_sec: 60,
-    fifo_max_share_ratio: 0.11,
+    fifo_max_share_ratio: 0.2,
     active_sport_market_cap: 100,
     active_nonsport_market_cap: 0,
   },
@@ -514,6 +523,17 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
           savedMmSport?.nonsport_min_top_depth_usd ?? sportMinTopDepthUsd,
         quote_cooldown_min_sec: mmSportCooldown.quote_cooldown_min_sec,
         quote_cooldown_max_sec: mmSportCooldown.quote_cooldown_max_sec,
+        nonsport_entry_schedule_days_utc:
+          savedMmSport?.nonsport_entry_schedule_days_utc ??
+          DEFAULT_CONFIG.strategy_settings.mm_sport.nonsport_entry_schedule_days_utc,
+        nonsport_entry_schedule_start_minute_utc: normalizeUtcMinute(
+          savedMmSport?.nonsport_entry_schedule_start_minute_utc,
+          DEFAULT_CONFIG.strategy_settings.mm_sport.nonsport_entry_schedule_start_minute_utc
+        ),
+        nonsport_entry_schedule_end_minute_utc: normalizeUtcMinute(
+          savedMmSport?.nonsport_entry_schedule_end_minute_utc,
+          DEFAULT_CONFIG.strategy_settings.mm_sport.nonsport_entry_schedule_end_minute_utc
+        ),
         active_sport_market_cap: mmSportCaps.active_sport_market_cap,
         active_nonsport_market_cap: mmSportCaps.active_nonsport_market_cap,
       },

@@ -680,6 +680,10 @@ input[type="number"]::-webkit-inner-spin-button {
     grid-template-columns: repeat(auto-fit, minmax(9.5rem, max-content));
   }
 
+  .mm-quote-grid--exit {
+    grid-template-columns: minmax(18rem, max-content) repeat(auto-fit, minmax(10.5rem, max-content));
+  }
+
   .mm-quote-grid--guard {
     grid-template-columns: repeat(auto-fit, minmax(9.5rem, max-content));
     gap: 0.75rem;
@@ -718,6 +722,80 @@ input[type="number"]::-webkit-inner-spin-button {
   .mm-quote-divider {
     height: 1px;
     background: var(--border);
+  }
+
+  .mm-active-hours {
+    display: grid;
+    gap: 0.9rem;
+    border: 1px solid rgba(114, 145, 183, 0.14);
+    border-radius: 0.85rem;
+    background: rgba(8, 13, 21, 0.38);
+    padding: 0.95rem;
+  }
+
+  .mm-active-hours--disabled .mm-active-hours__days,
+  .mm-active-hours--disabled .mm-quote-field {
+    opacity: 0.46;
+  }
+
+  .mm-active-hours__header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.85rem;
+    align-items: center;
+  }
+
+  .mm-active-hours__header h4 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.92rem;
+    font-weight: 650;
+  }
+
+  .mm-active-hours__header span {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+  }
+
+  .mm-active-hours__grid {
+    display: grid;
+    grid-template-columns: minmax(18rem, 1fr) repeat(2, 11.5rem);
+    gap: 0.85rem;
+    align-items: end;
+  }
+
+  .mm-day-chip-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.38rem;
+  }
+
+  .mm-day-chip {
+    min-width: 3.4rem;
+    border: 1px solid var(--border);
+    border-radius: 0.6rem;
+    background: rgba(8, 13, 21, 0.82);
+    color: var(--text-secondary);
+    padding: 0.55rem 0.7rem;
+    font-size: 0.83rem;
+    font-weight: 650;
+    transition: border-color 160ms ease, background 160ms ease, color 160ms ease, opacity 160ms ease;
+  }
+
+  .mm-day-chip--active {
+    border-color: rgba(99, 181, 255, 0.3);
+    background: rgba(99, 181, 255, 0.14);
+    color: rgb(120, 197, 255);
+  }
+
+  .mm-day-chip:disabled {
+    cursor: not-allowed;
+  }
+
+  .mm-exit-warning {
+    align-self: end;
+    margin: 0;
   }
 
   .mm-quote-guard-groups {
@@ -760,6 +838,7 @@ input[type="number"]::-webkit-inner-spin-button {
     .mm-quote-grid,
     .mm-quote-grid--profile,
     .mm-quote-grid--scope,
+    .mm-quote-grid--exit,
     .mm-quote-grid--guard,
     .mm-quote-grid--shared {
       grid-template-columns: 1fr;
@@ -770,6 +849,10 @@ input[type="number"]::-webkit-inner-spin-button {
     .mm-quote-field--segment {
       width: 100%;
       min-width: 0;
+    }
+
+    .mm-active-hours__grid {
+      grid-template-columns: 1fr;
     }
   }
 

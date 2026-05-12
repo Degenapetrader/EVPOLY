@@ -320,6 +320,10 @@ struct DesktopMmSportSettings {
     pause_after_fill_sec: f64,
     inventory_exit_start_hours: f64,
     nonsport_end_exit_start_hours: f64,
+    nonsport_entry_schedule_enabled: bool,
+    nonsport_entry_schedule_days_utc: String,
+    nonsport_entry_schedule_start_minute_utc: f64,
+    nonsport_entry_schedule_end_minute_utc: f64,
     inventory_exit_max_loss_cents: f64,
     inventory_exit_mode: String,
     max_share_ratio: f64,
@@ -383,6 +387,10 @@ fn normalize_nonnegative_integer_f64(value: f64, default: f64) -> f64 {
     } else {
         default
     }
+}
+
+fn normalize_utc_minute_f64(value: f64, default: f64) -> f64 {
+    normalize_nonnegative_integer_f64(value, default).min(1439.0)
 }
 
 fn normalize_cooldown_pair_f64(min_value: f64, max_value: f64) -> (f64, f64) {
@@ -1019,6 +1027,22 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC",
                     172800.0,
                 ) / 3600.0,
+                nonsport_entry_schedule_enabled: config_io::env_template_default_bool(
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE",
+                    false,
+                ),
+                nonsport_entry_schedule_days_utc: config_io::env_template_default_string(
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC",
+                )
+                .unwrap_or_else(|| "mon,tue,wed,thu,fri".to_string()),
+                nonsport_entry_schedule_start_minute_utc: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC",
+                    780.0,
+                ),
+                nonsport_entry_schedule_end_minute_utc: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC",
+                    240.0,
+                ),
                 inventory_exit_max_loss_cents: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS",
                     10.0,
@@ -1080,7 +1104,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 quote_cooldown_max_sec,
                 fifo_max_share_ratio: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO",
-                    0.11,
+                    0.20,
                 ),
                 active_sport_market_cap,
                 active_nonsport_market_cap,
@@ -2196,6 +2220,46 @@ fn desktop_config_to_profile_payload(
         ),
     );
     strategy.insert(
+        "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE".to_string(),
+        bool_to_json(
+            config
+                .strategy_settings
+                .mm_sport
+                .nonsport_entry_schedule_enabled,
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_sport
+                .nonsport_entry_schedule_days_utc
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC".to_string(),
+        number_to_json(normalize_utc_minute_f64(
+            config
+                .strategy_settings
+                .mm_sport
+                .nonsport_entry_schedule_start_minute_utc,
+            780.0,
+        )),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC".to_string(),
+        number_to_json(normalize_utc_minute_f64(
+            config
+                .strategy_settings
+                .mm_sport
+                .nonsport_entry_schedule_end_minute_utc,
+            240.0,
+        )),
+    );
+    strategy.insert(
         "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS".to_string(),
         number_to_json(
             config
@@ -2767,6 +2831,10 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "pause_after_fill_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 600.0)),
                 "inventory_exit_start_hours": f64_from_object(&strategy, "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28800.0)) / 3600.0,
                 "nonsport_end_exit_start_hours": f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC", 172800.0)) / 3600.0,
+                "nonsport_entry_schedule_enabled": bool_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE", config_io::env_template_default_bool("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE", false)),
+                "nonsport_entry_schedule_days_utc": string_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC", config_io::env_template_default_string("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC").as_deref().unwrap_or("mon,tue,wed,thu,fri")),
+                "nonsport_entry_schedule_start_minute_utc": normalize_utc_minute_f64(f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC", 780.0)), 780.0),
+                "nonsport_entry_schedule_end_minute_utc": normalize_utc_minute_f64(f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC", 240.0)), 240.0),
                 "inventory_exit_max_loss_cents": f64_from_object(&strategy, "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS", config_io::env_template_default_f64("EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS", 10.0)),
                 "inventory_exit_mode": normalize_mm_sport_exit_mode(
                     string_from_object(&strategy, "EVPOLY_MM_SPORT_EXIT_MODE", "normal").as_str()
@@ -2784,7 +2852,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "quote_expiry_max_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 185.0)),
                 "quote_cooldown_min_sec": mm_sport_quote_cooldown_min_sec,
                 "quote_cooldown_max_sec": mm_sport_quote_cooldown_max_sec,
-                "fifo_max_share_ratio": f64_from_object(&strategy, "EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", config_io::env_template_default_f64("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", 0.11)),
+                "fifo_max_share_ratio": f64_from_object(&strategy, "EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", config_io::env_template_default_f64("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", 0.20)),
                 "active_sport_market_cap": mm_sport_active_sport_market_cap,
                 "active_nonsport_market_cap": mm_sport_active_nonsport_market_cap
             }
@@ -6381,6 +6449,22 @@ mod tests {
         config.strategy_settings.mm_sport.fifo_max_share_ratio = 0.5;
         config.strategy_settings.mm_sport.max_quote_shares = 250.0;
         config.strategy_settings.mm_sport.nonsport_max_quote_shares = 125.0;
+        config
+            .strategy_settings
+            .mm_sport
+            .nonsport_entry_schedule_enabled = true;
+        config
+            .strategy_settings
+            .mm_sport
+            .nonsport_entry_schedule_days_utc = "mon,wed,sun".to_string();
+        config
+            .strategy_settings
+            .mm_sport
+            .nonsport_entry_schedule_start_minute_utc = 780.0;
+        config
+            .strategy_settings
+            .mm_sport
+            .nonsport_entry_schedule_end_minute_utc = 240.0;
         config.strategy_settings.mm_sport.active_sport_market_cap = 77.0;
         config.strategy_settings.mm_sport.active_nonsport_market_cap = 33.0;
         config.strategy_settings.mm_sport.quote_cooldown_min_sec = 12.0;
@@ -6399,6 +6483,22 @@ mod tests {
         assert_eq!(
             strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES"),
             Some(&serde_json::json!(125.0))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC"),
+            Some(&serde_json::json!("mon,wed,sun"))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC"),
+            Some(&serde_json::json!(780.0))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC"),
+            Some(&serde_json::json!(240.0))
         );
         let profile = Profile {
             id: "p2".to_string(),
@@ -6441,6 +6541,22 @@ mod tests {
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_max_quote_shares"],
             serde_json::json!(125.0)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["nonsport_entry_schedule_enabled"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["nonsport_entry_schedule_days_utc"],
+            serde_json::json!("mon,wed,sun")
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["nonsport_entry_schedule_start_minute_utc"],
+            serde_json::json!(780.0)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["nonsport_entry_schedule_end_minute_utc"],
+            serde_json::json!(240.0)
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["active_sport_market_cap"],

@@ -44,6 +44,8 @@ describe("desktop config MM 2.0 sizing profiles", () => {
           active_nonsport_market_cap: -1,
           quote_cooldown_min_sec: 61.8,
           quote_cooldown_max_sec: 10,
+          nonsport_entry_schedule_start_minute_utc: 2000,
+          nonsport_entry_schedule_end_minute_utc: -1,
         },
       },
     } as Partial<BotConfig>);
@@ -52,6 +54,8 @@ describe("desktop config MM 2.0 sizing profiles", () => {
     expect(merged.strategy_settings.mm_sport.active_nonsport_market_cap).toBe(50);
     expect(merged.strategy_settings.mm_sport.quote_cooldown_min_sec).toBe(61);
     expect(merged.strategy_settings.mm_sport.quote_cooldown_max_sec).toBe(61);
+    expect(merged.strategy_settings.mm_sport.nonsport_entry_schedule_start_minute_utc).toBe(1439);
+    expect(merged.strategy_settings.mm_sport.nonsport_entry_schedule_end_minute_utc).toBe(240);
   });
 
   it("normalizes MM 2.0 entry price mode", () => {

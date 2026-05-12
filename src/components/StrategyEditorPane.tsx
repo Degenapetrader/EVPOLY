@@ -1648,9 +1648,6 @@ export function StrategyEditorPane({
         const multipleCap = isNonSport
           ? mmSport.nonsport_multiple_collateral_cap_mult
           : mmSport.multiple_collateral_cap_mult;
-        const depthCap = isNonSport
-          ? mmSport.nonsport_depth_ratio_collateral_cap_mult
-          : mmSport.depth_ratio_collateral_cap_mult;
         const maxQuoteShares = isNonSport ? mmSport.nonsport_max_quote_shares : mmSport.max_quote_shares;
         const maxShareRatio = isNonSport ? mmSport.nonsport_max_share_ratio : mmSport.max_share_ratio;
         const minTopDepthUsd = isNonSport ? mmSport.nonsport_min_top_depth_usd : mmSport.min_top_depth_usd;
@@ -1738,17 +1735,6 @@ export function StrategyEditorPane({
                   patchProfile(
                     isNonSport ? { nonsport_min_top_depth_usd: value } : { min_top_depth_usd: value }
                   )
-              )}
-              {renderNumberField(
-                "Depth pUSD Cap",
-                depthCap,
-                (value) =>
-                  patchProfile(
-                    isNonSport
-                      ? { nonsport_depth_ratio_collateral_cap_mult: value }
-                      : { depth_ratio_collateral_cap_mult: value }
-                  ),
-                { max: 1, step: 0.01 }
               )}
             </div>
             {isNonSport ? (

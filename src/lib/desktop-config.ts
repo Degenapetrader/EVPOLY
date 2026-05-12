@@ -234,8 +234,8 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     entry_price_mode: "passive",
     multiple_collateral_cap_mult: 0.45,
     nonsport_multiple_collateral_cap_mult: 0.45,
-    depth_ratio_collateral_cap_mult: 0.9,
-    nonsport_depth_ratio_collateral_cap_mult: 0.9,
+    depth_ratio_collateral_cap_mult: 0.45,
+    nonsport_depth_ratio_collateral_cap_mult: 0.45,
     min_reward_rate_per_day: 5,
     match_only: true,
     allowed_sport_league_codes: "",
@@ -379,7 +379,6 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
     savedMmSport?.multiple_collateral_cap_mult ??
     DEFAULT_CONFIG.strategy_settings.mm_sport.multiple_collateral_cap_mult;
   const sportDepthRatioCollateralCap =
-    savedMmSport?.depth_ratio_collateral_cap_mult ??
     DEFAULT_CONFIG.strategy_settings.mm_sport.depth_ratio_collateral_cap_mult;
   const sportMaxShareRatio =
     savedMmSport?.max_share_ratio ?? DEFAULT_CONFIG.strategy_settings.mm_sport.max_share_ratio;
@@ -508,8 +507,7 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
         nonsport_multiple_collateral_cap_mult:
           savedMmSport?.nonsport_multiple_collateral_cap_mult ?? sportMultipleCollateralCap,
         depth_ratio_collateral_cap_mult: sportDepthRatioCollateralCap,
-        nonsport_depth_ratio_collateral_cap_mult:
-          savedMmSport?.nonsport_depth_ratio_collateral_cap_mult ?? sportDepthRatioCollateralCap,
+        nonsport_depth_ratio_collateral_cap_mult: sportDepthRatioCollateralCap,
         inventory_exit_mode: normalizeMMSportInventoryExitMode(
           savedMmSport?.inventory_exit_mode
         ),

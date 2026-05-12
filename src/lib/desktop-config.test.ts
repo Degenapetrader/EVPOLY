@@ -128,7 +128,6 @@ describe("desktop config MM 2.0 sizing profiles", () => {
         mm_sport: {
           quote_size_mode: "multiple",
           multiple_collateral_cap_mult: 0.3,
-          depth_ratio_collateral_cap_mult: 0.8,
           max_share_ratio: 0.12,
           min_top_depth_usd: 1500,
         },
@@ -138,7 +137,7 @@ describe("desktop config MM 2.0 sizing profiles", () => {
     expect(merged.mm_tuning.nonsport_quote_size_multiplier).toBe(2);
     expect(merged.strategy_settings.mm_sport.nonsport_quote_size_mode).toBe("multiple");
     expect(merged.strategy_settings.mm_sport.nonsport_multiple_collateral_cap_mult).toBe(0.3);
-    expect(merged.strategy_settings.mm_sport.nonsport_depth_ratio_collateral_cap_mult).toBe(0.8);
+    expect(merged.strategy_settings.mm_sport.nonsport_depth_ratio_collateral_cap_mult).toBe(0.45);
     expect(merged.strategy_settings.mm_sport.nonsport_max_share_ratio).toBe(0.12);
     expect(merged.strategy_settings.mm_sport.nonsport_min_top_depth_usd).toBe(1500);
   });
@@ -156,7 +155,6 @@ describe("desktop config MM 2.0 sizing profiles", () => {
           quote_size_mode: "multiple",
           nonsport_quote_size_mode: "depth_ratio",
           nonsport_multiple_collateral_cap_mult: 0.25,
-          nonsport_depth_ratio_collateral_cap_mult: 0.55,
           nonsport_max_share_ratio: 0.05,
           nonsport_min_top_depth_usd: 900,
         },
@@ -166,7 +164,7 @@ describe("desktop config MM 2.0 sizing profiles", () => {
     expect(merged.mm_tuning.nonsport_quote_size_multiplier).toBe(0.7);
     expect(merged.strategy_settings.mm_sport.nonsport_quote_size_mode).toBe("depth_ratio");
     expect(merged.strategy_settings.mm_sport.nonsport_multiple_collateral_cap_mult).toBe(0.25);
-    expect(merged.strategy_settings.mm_sport.nonsport_depth_ratio_collateral_cap_mult).toBe(0.55);
+    expect(merged.strategy_settings.mm_sport.nonsport_depth_ratio_collateral_cap_mult).toBe(0.45);
     expect(merged.strategy_settings.mm_sport.nonsport_max_share_ratio).toBe(0.05);
     expect(merged.strategy_settings.mm_sport.nonsport_min_top_depth_usd).toBe(900);
   });

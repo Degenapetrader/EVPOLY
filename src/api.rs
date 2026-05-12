@@ -1,3 +1,4 @@
+use crate::event_log::log_event;
 use crate::models::*;
 use crate::polymarket_ws::{SharedPolymarketWsState, WsOrderStatusSnapshot, WsTradeSnapshot};
 use anyhow::{Context, Result};
@@ -86,6 +87,62 @@ const USDC_BALANCE_ALLOWANCE_RL_BACKOFF_MS: i64 = 30_000;
 const TICK_METADATA_RL_BACKOFF_BASE_MS: i64 = 1_000;
 const TICK_METADATA_RL_BACKOFF_MAX_MS: i64 = 30_000;
 const ACTIVE_MARKETS_MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+pub struct RestOrderBookSnapshot {
+    pub token_id: String,
+    pub orderbook: OrderBook,
+    pub source_ts_ms: Option<i64>,
+    pub fetched_at_ms: i64,
+    pub market: Option<String>,
+    pub hash: Option<String>,
+    pub tick_size: Option<Decimal>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RestOrderBookResponse {
+    #[serde(default)]
+    asset_id: Option<String>,
+    #[serde(default)]
+    market: Option<String>,
+    #[serde(default)]
+    timestamp: Option<Value>,
+    #[serde(default)]
+    hash: Option<String>,
+    #[serde(default)]
+    tick_size: Option<Decimal>,
+    #[serde(default, rename = "tickSize")]
+    tick_size_camel: Option<Decimal>,
+    #[serde(default)]
+    bids: Vec<OrderBookEntry>,
+    #[serde(default)]
+    asks: Vec<OrderBookEntry>,
+}
+
+fn parse_rest_orderbook_timestamp_ms(value: Option<&Value>) -> Option<i64> {
+    let raw = match value? {
+        Value::Number(number) => number.as_i64().or_else(|| {
+            number
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .map(|v| v.round() as i64)
+        })?,
+        Value::String(text) => text.trim().parse::<f64>().ok()?.round() as i64,
+        _ => return None,
+    };
+    if raw <= 0 {
+        return None;
+    }
+    if raw >= 1_000_000_000_000_000 {
+        Some(raw / 1_000)
+    } else if raw >= 10_000_000_000 {
+        Some(raw)
+    } else if raw >= 1_000_000_000 {
+        Some(raw.saturating_mul(1_000))
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Deserialize, Default)]
 struct ActiveMarketsEventRow {
@@ -290,6 +347,30 @@ struct PlaceOrderHandleTiming {
     local_order_post_attempts: u32,
     order_attribution_mode: String,
     builder_code_configured: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlaceOrderMetadataPolicy {
+    require_cached_order_metadata: bool,
+    allow_hot_metadata_prewarm: bool,
+}
+
+impl PlaceOrderMetadataPolicy {
+    fn cached_only() -> Self {
+        Self {
+            require_cached_order_metadata: true,
+            allow_hot_metadata_prewarm: false,
+        }
+    }
+}
+
+impl Default for PlaceOrderMetadataPolicy {
+    fn default() -> Self {
+        Self {
+            require_cached_order_metadata: false,
+            allow_hot_metadata_prewarm: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -3337,6 +3418,17 @@ impl PolymarketApi {
             }
         }
 
+        self.get_orderbook_rest(token_id).await
+    }
+
+    pub async fn get_orderbook_rest(&self, token_id: &str) -> Result<OrderBook> {
+        Ok(self.get_orderbook_rest_snapshot(token_id).await?.orderbook)
+    }
+
+    pub async fn get_orderbook_rest_snapshot(
+        &self,
+        token_id: &str,
+    ) -> Result<RestOrderBookSnapshot> {
         let url = format!("{}/book", self.clob_url);
         let params = [("token_id", token_id)];
 
@@ -3354,24 +3446,183 @@ impl PolymarketApi {
             .await
             .context("Failed to read orderbook response body")?;
 
-        if let Ok(v) = serde_json::from_str::<Value>(&body) {
-            if let Some(err_msg) = v.get("error").and_then(Value::as_str) {
-                let err_lc = err_msg.to_ascii_lowercase();
-                if err_lc.contains("no orderbook exists") {
-                    anyhow::bail!("no_orderbook: {}", err_msg);
-                }
-                anyhow::bail!("orderbook_api_error: {}", err_msg);
-            }
-        }
-
         if !status.is_success() {
+            if let Ok(v) = serde_json::from_str::<Value>(&body) {
+                if let Some(err_msg) = v.get("error").and_then(Value::as_str) {
+                    let err_lc = err_msg.to_ascii_lowercase();
+                    if err_lc.contains("no orderbook exists") {
+                        anyhow::bail!("no_orderbook: {}", err_msg);
+                    }
+                    anyhow::bail!("orderbook_api_error: {}", err_msg);
+                }
+            }
             anyhow::bail!("Failed to fetch orderbook (status {}): {}", status, body);
         }
 
-        let orderbook: OrderBook = serde_json::from_str(&body)
-            .with_context(|| format!("Failed to parse orderbook: {}", body))?;
+        let book: RestOrderBookResponse = match serde_json::from_str(&body) {
+            Ok(book) => book,
+            Err(parse_err) => {
+                if let Ok(v) = serde_json::from_str::<Value>(&body) {
+                    if let Some(err_msg) = v.get("error").and_then(Value::as_str) {
+                        let err_lc = err_msg.to_ascii_lowercase();
+                        if err_lc.contains("no orderbook exists") {
+                            anyhow::bail!("no_orderbook: {}", err_msg);
+                        }
+                        anyhow::bail!("orderbook_api_error: {}", err_msg);
+                    }
+                }
+                return Err(parse_err)
+                    .with_context(|| format!("Failed to parse orderbook: {}", body));
+            }
+        };
+        let response_token_id = book.asset_id.as_deref().map(str::trim).unwrap_or_default();
+        if !response_token_id.is_empty() && response_token_id != token_id.trim() {
+            anyhow::bail!(
+                "orderbook_asset_mismatch: requested_token_id={} response_token_id={}",
+                token_id,
+                response_token_id
+            );
+        }
+        let source_ts_ms = parse_rest_orderbook_timestamp_ms(book.timestamp.as_ref());
+        let tick_size = book.tick_size.or(book.tick_size_camel);
 
-        Ok(orderbook)
+        Ok(RestOrderBookSnapshot {
+            token_id: if response_token_id.is_empty() {
+                token_id.trim().to_string()
+            } else {
+                response_token_id.to_string()
+            },
+            orderbook: OrderBook {
+                bids: book.bids,
+                asks: book.asks,
+            },
+            source_ts_ms,
+            fetched_at_ms: Utc::now().timestamp_millis(),
+            market: book.market,
+            hash: book.hash,
+            tick_size,
+        })
+    }
+
+    pub async fn get_orderbooks_batch_rest(
+        &self,
+        token_ids: &[String],
+    ) -> Result<Vec<RestOrderBookSnapshot>> {
+        let mut unique = Vec::with_capacity(token_ids.len());
+        let mut seen = HashSet::new();
+        for token_id in token_ids {
+            let token_id = token_id.trim();
+            if !token_id.is_empty() && seen.insert(token_id.to_string()) {
+                unique.push(token_id.to_string());
+            }
+        }
+        if unique.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let url = format!("{}/books", self.clob_url);
+        let body = unique
+            .iter()
+            .map(|token_id| serde_json::json!({ "token_id": token_id }))
+            .collect::<Vec<_>>();
+
+        let response = self
+            .client
+            .post(url)
+            .json(&body)
+            .send()
+            .await
+            .context("Failed to fetch orderbooks batch")?;
+
+        let status = response.status();
+        let body_text = response
+            .text()
+            .await
+            .context("Failed to read orderbooks batch response body")?;
+
+        if !status.is_success() {
+            if let Ok(v) = serde_json::from_str::<Value>(&body_text) {
+                if let Some(err_msg) = v.get("error").and_then(Value::as_str) {
+                    let err_lc = err_msg.to_ascii_lowercase();
+                    if err_lc.contains("no orderbook exists") {
+                        anyhow::bail!("no_orderbook: {}", err_msg);
+                    }
+                    anyhow::bail!("orderbooks_api_error: {}", err_msg);
+                }
+            }
+            anyhow::bail!(
+                "Failed to fetch orderbooks batch (status {}): {}",
+                status,
+                body_text
+            );
+        }
+
+        let books: Vec<RestOrderBookResponse> = match serde_json::from_str(&body_text) {
+            Ok(books) => books,
+            Err(parse_err) => {
+                if let Ok(v) = serde_json::from_str::<Value>(&body_text) {
+                    if let Some(err_msg) = v.get("error").and_then(Value::as_str) {
+                        let err_lc = err_msg.to_ascii_lowercase();
+                        if err_lc.contains("no orderbook exists") {
+                            anyhow::bail!("no_orderbook: {}", err_msg);
+                        }
+                        anyhow::bail!("orderbooks_api_error: {}", err_msg);
+                    }
+                }
+                return Err(parse_err)
+                    .with_context(|| format!("Failed to parse orderbooks batch: {}", body_text));
+            }
+        };
+        let mut out = Vec::with_capacity(books.len());
+        let requested = unique.iter().cloned().collect::<HashSet<_>>();
+        for (idx, book) in books.into_iter().enumerate() {
+            let token_id = book
+                .asset_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or_default();
+            if token_id.is_empty() {
+                log_event(
+                    "rest_orderbooks_batch_asset_missing",
+                    serde_json::json!({
+                        "requested_token_id": unique.get(idx),
+                        "response_index": idx,
+                        "requested_tokens": unique.len()
+                    }),
+                );
+                continue;
+            }
+            if !requested.contains(token_id.as_str()) {
+                log_event(
+                    "rest_orderbooks_batch_asset_mismatch",
+                    serde_json::json!({
+                        "response_token_id": token_id,
+                        "requested_token_id": unique.get(idx),
+                        "response_index": idx,
+                        "requested_tokens": unique.len()
+                    }),
+                );
+                continue;
+            }
+            let source_ts_ms = parse_rest_orderbook_timestamp_ms(book.timestamp.as_ref());
+            let tick_size = book.tick_size.or(book.tick_size_camel);
+            out.push(RestOrderBookSnapshot {
+                token_id,
+                orderbook: OrderBook {
+                    bids: book.bids,
+                    asks: book.asks,
+                },
+                source_ts_ms,
+                fetched_at_ms: Utc::now().timestamp_millis(),
+                market: book.market,
+                hash: book.hash,
+                tick_size,
+            });
+        }
+
+        Ok(out)
     }
 
     /// Get market details by condition ID
@@ -3934,6 +4185,29 @@ impl PolymarketApi {
         &self,
         order: &OrderRequest,
     ) -> Result<(OrderResponse, PlaceOrderTiming)> {
+        self.place_order_with_timing_with_metadata_policy(
+            order,
+            PlaceOrderMetadataPolicy::default(),
+        )
+        .await
+    }
+
+    pub async fn place_order_with_timing_cached_metadata_only(
+        &self,
+        order: &OrderRequest,
+    ) -> Result<(OrderResponse, PlaceOrderTiming)> {
+        self.place_order_with_timing_with_metadata_policy(
+            order,
+            PlaceOrderMetadataPolicy::cached_only(),
+        )
+        .await
+    }
+
+    async fn place_order_with_timing_with_metadata_policy(
+        &self,
+        order: &OrderRequest,
+        metadata_policy: PlaceOrderMetadataPolicy,
+    ) -> Result<(OrderResponse, PlaceOrderTiming)> {
         let (effective_order_type, retry_policy, attempts) =
             Self::retry_policy_for_order_type(order.order_type.as_str());
         let base_delay_ms = Self::order_retry_base_delay_ms();
@@ -3949,7 +4223,10 @@ impl PolymarketApi {
             let get_client_started = Instant::now();
             let handle = self.get_or_create_clob_client().await?;
             timing.get_client_ms += get_client_started.elapsed().as_millis() as i64;
-            match self.place_order_with_handle(&handle, order).await {
+            match self
+                .place_order_with_handle(&handle, order, metadata_policy)
+                .await
+            {
                 Ok((resp, handle_timing)) => {
                     timing.attempts_used = attempt;
                     timing.retry_count = attempt.saturating_sub(1);
@@ -4212,6 +4489,19 @@ impl PolymarketApi {
         self.prewarm_order_metadata(&handle.client, token_id).await
     }
 
+    pub async fn has_prewarmed_token_metadata(&self, token_id: &str) -> bool {
+        match Self::parse_u256_id(token_id, "token_id") {
+            Ok(parsed) => {
+                let key = parsed.to_string();
+                self.prewarmed_order_metadata
+                    .lock()
+                    .await
+                    .contains(key.as_str())
+            }
+            Err(_) => false,
+        }
+    }
+
     pub async fn get_clob_fee_model(&self, condition_id: &str) -> Result<ClobFeeModel> {
         let condition_id = condition_id.trim();
         if condition_id.is_empty() {
@@ -4388,8 +4678,11 @@ impl PolymarketApi {
         &self,
         handle: &ClobClientHandle,
         order: &OrderRequest,
+        metadata_policy: PlaceOrderMetadataPolicy,
     ) -> Result<(OrderResponse, PlaceOrderHandleTiming)> {
-        let mut prepared = self.build_and_sign_order_with_handle(handle, order).await?;
+        let mut prepared = self
+            .build_and_sign_order_with_handle(handle, order, metadata_policy)
+            .await?;
         let post_started = Instant::now();
         let mut post_stats = LocalOrderPostStats::default();
         let rate_limit_retry_attempts = Self::local_order_post_rate_limit_retry_attempts();
@@ -4423,7 +4716,7 @@ impl PolymarketApi {
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                         prepared = self
-                            .build_and_sign_order_with_handle(handle, order)
+                            .build_and_sign_order_with_handle(handle, order, metadata_policy)
                             .await
                             .context(
                                 "Failed to rebuild order for local order post rate-limit retry",
@@ -4544,7 +4837,13 @@ impl PolymarketApi {
         )> = Vec::with_capacity(orders.len());
         let mut signed_orders: Vec<ClobSignedOrder> = Vec::with_capacity(orders.len());
         for order in orders {
-            let prepared = self.build_and_sign_order_with_handle(handle, order).await?;
+            let prepared = self
+                .build_and_sign_order_with_handle(
+                    handle,
+                    order,
+                    PlaceOrderMetadataPolicy::default(),
+                )
+                .await?;
             prepared_orders_meta.push((
                 prepared.timing,
                 prepared.effective_order_type,
@@ -4790,6 +5089,7 @@ impl PolymarketApi {
         &self,
         handle: &ClobClientHandle,
         order: &OrderRequest,
+        metadata_policy: PlaceOrderMetadataPolicy,
     ) -> Result<PreparedSignedOrder> {
         let side = match order.side.as_str() {
             "BUY" => Side::Buy,
@@ -4906,33 +5206,51 @@ impl PolymarketApi {
         let token_id = Self::parse_u256_id(order.token_id.as_str(), "order.token_id")?;
         let token_key = token_id.to_string();
         let prewarm_started = Instant::now();
-        let prewarm_cache_hit = match self.prewarm_order_metadata(&handle.client, token_id).await {
-            Ok(hit) => hit,
-            Err(e) => {
-                let err_text = e.to_string();
-                let normalized = err_text.to_ascii_lowercase();
-                let prewarm_blocked = normalized.contains("tick metadata backoff active")
-                    || normalized.contains("tick metadata prewarm rate-limited");
-                if prewarm_blocked {
-                    anyhow::bail!(
-                        "order metadata prewarm blocked token={} side={} price={} size={} err={}",
+        let prewarm_cache_hit = if metadata_policy.require_cached_order_metadata {
+            if !self
+                .has_prewarmed_token_metadata(order.token_id.as_str())
+                .await
+            {
+                anyhow::bail!(
+                    "order metadata cache required but missing token={} side={} price={} size={}",
+                    order.token_id,
+                    order.side,
+                    order.price,
+                    order.size
+                );
+            }
+            true
+        } else if metadata_policy.allow_hot_metadata_prewarm {
+            match self.prewarm_order_metadata(&handle.client, token_id).await {
+                Ok(hit) => hit,
+                Err(e) => {
+                    let err_text = e.to_string();
+                    let normalized = err_text.to_ascii_lowercase();
+                    let prewarm_blocked = normalized.contains("tick metadata backoff active")
+                        || normalized.contains("tick metadata prewarm rate-limited");
+                    if prewarm_blocked {
+                        anyhow::bail!(
+                            "order metadata prewarm blocked token={} side={} price={} size={} err={}",
+                            order.token_id,
+                            order.side,
+                            order.price,
+                            order.size,
+                            err_text
+                        );
+                    }
+                    warn!(
+                        "Order metadata prewarm failed token={} side={} price={} size={} err={}. Continuing with on-demand metadata fetch.",
                         order.token_id,
                         order.side,
                         order.price,
                         order.size,
                         err_text
                     );
+                    false
                 }
-                warn!(
-                    "Order metadata prewarm failed token={} side={} price={} size={} err={}. Continuing with on-demand metadata fetch.",
-                    order.token_id,
-                    order.side,
-                    order.price,
-                    order.size,
-                    err_text
-                );
-                false
             }
+        } else {
+            false
         };
         let prewarm_ms = prewarm_started.elapsed().as_millis() as i64;
         let mut build_order_ms = 0_i64;
@@ -5041,6 +5359,14 @@ impl PolymarketApi {
                             first_anyhow
                         );
                     }
+                    if metadata_policy.require_cached_order_metadata
+                        && !metadata_policy.allow_hot_metadata_prewarm
+                    {
+                        anyhow::bail!(
+                            "Failed to build FAK/FOK order with cached metadata only: {}",
+                            first_err
+                        );
+                    }
                     self.invalidate_prewarmed_order_metadata(token_id).await;
                     let retry_builder = handle
                         .client
@@ -5122,6 +5448,14 @@ impl PolymarketApi {
                             order.token_id,
                             remaining_ms.max(0),
                             first_anyhow
+                        );
+                    }
+                    if metadata_policy.require_cached_order_metadata
+                        && !metadata_policy.allow_hot_metadata_prewarm
+                    {
+                        anyhow::bail!(
+                            "Failed to build order with cached metadata only: {}",
+                            first_err
                         );
                     }
                     self.invalidate_prewarmed_order_metadata(token_id).await;

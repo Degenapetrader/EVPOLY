@@ -1,4 +1,5 @@
 use crate::api::PolymarketApi;
+use crate::endgame_quote_cache::{EndgameQuoteCache, EndgameQuoteSource};
 use crate::event_log::log_event;
 use crate::models::{OrderBook, OrderBookEntry, TokenPrice};
 
@@ -209,6 +210,7 @@ struct PolymarketWsInner {
     trades: tokio::sync::RwLock<HashMap<String, WsTradeSnapshot>>,
     market_trades: tokio::sync::RwLock<HashMap<String, VecDeque<WsTradeSnapshot>>>,
     order_statuses: tokio::sync::RwLock<HashMap<String, WsOrderStatusSnapshot>>,
+    endgame_quote_cache: StdMutex<Option<EndgameQuoteCache>>,
     subscription_scope_targets: StdMutex<HashMap<String, WsSubscriptionScopeTargets>>,
     subscription_scope_revision: AtomicI64,
     subscription_scope_notify: tokio::sync::Notify,
@@ -314,6 +316,7 @@ pub fn new_shared_polymarket_ws_state() -> SharedPolymarketWsState {
             trades: tokio::sync::RwLock::new(HashMap::new()),
             market_trades: tokio::sync::RwLock::new(HashMap::new()),
             order_statuses: tokio::sync::RwLock::new(HashMap::new()),
+            endgame_quote_cache: StdMutex::new(None),
             subscription_scope_targets: StdMutex::new(HashMap::new()),
             subscription_scope_revision: AtomicI64::new(0),
             subscription_scope_notify: tokio::sync::Notify::new(),
@@ -328,6 +331,20 @@ pub fn new_shared_polymarket_ws_state() -> SharedPolymarketWsState {
 }
 
 impl SharedPolymarketWsState {
+    pub fn attach_endgame_quote_cache(&self, cache: EndgameQuoteCache) {
+        if let Ok(mut guard) = self.inner.endgame_quote_cache.lock() {
+            *guard = Some(cache);
+        }
+    }
+
+    pub fn endgame_quote_cache(&self) -> Option<EndgameQuoteCache> {
+        self.inner
+            .endgame_quote_cache
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
     pub fn set_subscription_scope_targets(
         &self,
         scope_id: &str,
@@ -708,11 +725,20 @@ impl SharedPolymarketWsState {
             orderbook,
             updated_ms: update.timestamp,
         };
+        let endgame_orderbook = snapshot.orderbook.clone();
         self.inner
             .orderbooks
             .write()
             .await
-            .insert(token_id, snapshot);
+            .insert(token_id.clone(), snapshot);
+        if let Some(cache) = self.endgame_quote_cache() {
+            let _ = cache.upsert_from_orderbook(
+                token_id.as_str(),
+                &endgame_orderbook,
+                update.timestamp,
+                EndgameQuoteSource::WsBook,
+            );
+        }
         self.inner.market_update_notify.notify_waiters();
     }
 

@@ -7,6 +7,8 @@ pub mod builder_attribution;
 pub mod coinbase_ws;
 pub mod config;
 pub mod detector;
+pub mod endgame_quote_cache;
+pub mod endgame_registry;
 pub mod endgame_sweep;
 pub mod entry_idempotency;
 pub mod evcurve;

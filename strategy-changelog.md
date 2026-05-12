@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-05-12
+- `endgame_sweep_v1`: ported the SaaS Endgame V1 local fast path by adding the background Endgame market registry, compact Polymarket quote cache, REST `/books` quote prewarm worker, local V1 checkpoint policy, and typed cached-metadata fast submit intent (`src/endgame_registry.rs`, `src/endgame_quote_cache.rs`, `src/main.rs`, `src/api.rs`, `src/polymarket_ws.rs`, `src/trader.rs`, `.env.example`, `.env.full.example`, `docs/endgame_sweep_v1.md`).
+  - Applies only to Endgame V1. Due-tick decisions now use prewarmed market context and fresh cached quotes instead of cold market/orderbook lookups, fast submit requires prewarmed token metadata by default, and the Endgame near-base skip default is now `1.5` bps via `EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS`.
 - `evsnipe_v1`: aligned the local runtime with the SaaS EVSnipe fast path by adding an indexed hit-trigger watchlist, optional Binance price-cache broadcast, materialized EVSnipe FAK submit intent, no-fill outcome release without cooldown, confirm-hit protection against later pre-hit legs, and selected-token metadata prewarm controls (`src/evsnipe.rs`, `src/main.rs`, `src/trader.rs`, `src/entry_idempotency.rs`, `.env.example`, `.env.full.example`, `docs/evsnipe_v1.md`).
   - Applies only to EVSnipe hit-market entries. Default per-hit size is now `5` pUSD, default EVSnipe strategy cap is now `10000` pUSD, and remote-first EVSnipe discovery remains unchanged.
 - `mm_sport_v1` / MM 2.0 multiple sizing: fixed the multiple-mode pUSD collateral cap at `0.45` and removed the Sport/Non-S multiple pUSD cap env overrides (`EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT`, `EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT`) from runtime templates (`src/mm/mod.rs`, `.env.example`, `.env.full.example`).
@@ -256,7 +258,7 @@ Older entries may reference env keys that were removed in later commits.
 - Includes delayed TP worker for `15m/1h/4h` fills.
 
 ### `endgame_sweep_v1`
-- Late-window sweep strategy near close with an alpha-owned checkpoint and freshness signal.
+- Late-window sweep strategy near close with local V1 checkpoints, prewarmed market context, and cached quote/metadata fast submit.
 - Uses proxy-vs-base direction + guard stack + FAK/limit routing as applicable.
 - Holds to settlement (`no sell ladder`).
 

@@ -322,14 +322,14 @@ export const DEFAULT_CONFIG: BotConfig = {
     endgame: 50,
     evcurve: 10,
     session_band: 10,
-    evsnipe_per_hit: 10,
+    evsnipe_per_hit: 5,
   },
   caps: {
     premarket: 100000,
     endgame: 100000,
     evcurve: 100000,
     session_band: 100000,
-    evsnipe: 100000,
+    evsnipe: 10000,
   },
   mm_tuning: {
     rewards_min_share_multiple: 1.0,

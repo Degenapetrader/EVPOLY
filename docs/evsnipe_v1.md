@@ -8,22 +8,16 @@
 - Strategy toggle default: `EVPOLY_STRATEGY_EVSNIPE_ENABLE=true`
 
 ## Discovery Model
-EVSnipe discovery is remote-first with local fallback.
-
-Remote config:
-- `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL`
-- `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN` (blank uses `EVPOLY_ALPHA_KEY`)
+EVSnipe discovery is local-only. The desktop runtime scans Gamma locally, applies the EVSnipe market filters, then keeps a compact trigger watchlist in memory.
 
 Runtime behavior:
-- Remote EVSnipe discovery sends the official builder code and the proxy wallet header for auto-generated alpha keys.
-- Remote timeout is hardcoded to `2000ms` (no env timeout knob).
-- Remote host failover is supported (`alpha.evplus.ai` -> `alpha2.evplus.ai`) for transport/timeout/429/5xx classes.
-- If remote is missing/unavailable/empty, runtime falls back to local Gamma discovery.
+- Gamma discovery uses progressively smaller page sizes when a response is too large.
+- Discovery does not call remote alpha endpoints.
 
-Local and remote discovery are aligned to the same EVSnipe filtering model (Poly-builder parity), including strike-window filtering.
+Local discovery uses the same EVSnipe filtering model (Poly-builder parity), including strike-window filtering.
 
 ## End-to-End Flow
-1. Periodic discovery refresh tries remote first, then local fallback when needed.
+1. Periodic discovery refresh scans local Gamma pages.
 2. Refresh anchor spot and apply strike-window filter.
 3. Binance trade stream handles hit triggers through the low-latency trigger index.
 4. On trigger, map rule -> side/token and build a materialized EVSnipe intent.
@@ -51,5 +45,3 @@ Local and remote discovery are aligned to the same EVSnipe filtering model (Poly
 - `EVPOLY_EVSNIPE_TICK_DROP_IF_FULL`
 - `EVPOLY_EVSNIPE_SELECTED_TOKEN_PREWARM_MAX_TOKENS_PER_REFRESH`
 - `EVPOLY_EVSNIPE_SELECTED_TOKEN_PREWARM_COOLDOWN_MS`
-- `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL`
-- `EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN`

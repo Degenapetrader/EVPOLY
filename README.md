@@ -101,7 +101,7 @@ bash scripts/verify_env_coverage.sh --env-file .env
 - Leave `POLY_BUILDER_CODE` blank unless you are intentionally testing an advanced override.
 - Builder fee rates are not configured locally. Set maker/taker builder fees in the Polymarket Builder Profile; the CLOB validates the builder code and applies the active server-side rates at match time.
 - Relayer submit fallback uses `EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN` only for non-order proxy wallet flows such as redeem, merge, approvals, and Auto-Redeem approval toggles.
-- Shared timeframe discovery and EVSnipe discovery use the configured remote discovery endpoints first, with local fallback where supported.
+- Shared timeframe discovery uses the configured remote discovery endpoint first, with local fallback where supported. EVSnipe discovery is local-only.
 
 ## Remote Alpha/Discovery Fallbacks
 Remote endpoints still default to `https://alpha.evplus.ai/...` and retry to `https://alpha2.evplus.ai/...` on transport/timeout/429/5xx failure classes.
@@ -111,7 +111,6 @@ Timeout policy currently hardcoded in runtime:
 - Endgame alpha: `1000ms`
 - EVcurve alpha: `1000ms`
 - S-Band alpha: `1000ms`
-- EVSnipe remote discovery: `2000ms`
 - Shared timeframe discovery: `2000ms`
 
 ## Alpha Access

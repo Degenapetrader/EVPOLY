@@ -5986,15 +5986,8 @@ impl Trader {
             side: "BUY".to_string(),
             size: format!("{:.2}", units),
             price: format!("{:.*}", Self::tick_decimal_places(tick), submit_price),
-            order_type: "LIMIT".to_string(),
-            expiration_ts: Some(self.limit_order_expiration_ts_with_ttl(
-                opportunity.period_timestamp,
-                source_timeframe.as_str(),
-                entry_mode,
-                strategy_id,
-                submit_price,
-                Some(60),
-            )),
+            order_type: "GTC".to_string(),
+            expiration_ts: None,
             post_only: if post_only_enabled { Some(true) } else { None },
         };
 

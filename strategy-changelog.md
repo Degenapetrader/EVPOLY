@@ -9,6 +9,16 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-05-13
+- `endgame_sweep_v1`: Endgame fast BUY submit now places resting LIMIT orders without a GTD expiration, so the late-tick fast path no longer creates 60-second expirations that CLOB can reject near market close (`src/trader.rs`, `src/main.rs`).
+  - Applies only to Endgame V1 fast submit. Post-only maker protection and cached-metadata submit behavior remain unchanged.
+- `endgame_sweep_v1`: Endgame REST `/books` prewarm now rotates active tokens through bounded chunks instead of requesting the full active scope every poll, and default batch timing is relaxed to `EVPOLY_ENDGAME_REST_BATCH_POLL_MS=100`, `EVPOLY_ENDGAME_REST_BATCH_TIMEOUT_MS=500`, `EVPOLY_ENDGAME_REST_BATCH_MAX_TOKENS=24` (`src/main.rs`, `.env.example`, `.env.full.example`).
+  - Applies only to the background Endgame quote prewarm path; websocket quote updates and submit logic remain unchanged.
+- `evsnipe_v1`: EVSnipe market discovery is now local-only and no longer calls remote EVSnipe alpha discovery; local Gamma paging retries each page with smaller limits when the response exceeds the active-market payload guard (`src/evsnipe.rs`, `README.md`, `docs/evsnipe_v1.md`, `.env.example`, `.env.full.example`).
+  - Applies only to EVSnipe discovery/watchlist refresh. Binance trigger handling and fast FAK submit behavior remain unchanged.
+- Runtime UI/admin: dashboard summary and strategy-state endpoints now serve a short-lived cached snapshot to avoid repeated multi-second SQLite aggregate scans on every UI poll (`src/bot_admin.rs`).
+  - Affects admin/UI reporting only. Trading logic, strategy decisions, and order placement are unchanged.
+
 ### 2026-05-12
 - `endgame_sweep_v1`: ported the SaaS Endgame V1 local fast path by adding the background Endgame market registry, compact Polymarket quote cache, REST `/books` quote prewarm worker, local V1 checkpoint policy, and typed cached-metadata fast submit intent (`src/endgame_registry.rs`, `src/endgame_quote_cache.rs`, `src/main.rs`, `src/api.rs`, `src/polymarket_ws.rs`, `src/trader.rs`, `.env.example`, `.env.full.example`, `docs/endgame_sweep_v1.md`).
   - Applies only to Endgame V1. Due-tick decisions now use prewarmed market context and fresh cached quotes instead of cold market/orderbook lookups, fast submit requires prewarmed token metadata by default, and the Endgame near-base skip default is now `1.5` bps via `EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS`.

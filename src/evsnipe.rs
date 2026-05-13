@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -574,291 +574,7 @@ impl EvsnipeFastRuntimeConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-struct EvsnipeRemoteDiscoveryConfig {
-    url: String,
-    token: Option<String>,
-    timeout_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct EvsnipeRemoteDiscoveryRequest {
-    symbols: Vec<String>,
-    discovery_limit: u32,
-    max_days_to_expiry: u64,
-    builder_code: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum EvsnipeRemoteDiscoveryResponse {
-    Wrapped { specs: Vec<EvsnipeMarketSpec> },
-    Flat(Vec<EvsnipeMarketSpec>),
-}
-
-const REMOTE_ALPHA_PRIMARY_HOST: &str = "alpha.evplus.ai";
-const REMOTE_ALPHA_FALLBACK_HOST: &str = "alpha2.evplus.ai";
-const REMOTE_EVSNIPE_DISCOVERY_URL_DEFAULT: &str = "https://alpha.evplus.ai/v1/discovery/evsnipe";
 const EVSNIPE_DISCOVERY_TAG_SLUG: &str = "crypto";
-
-fn env_nonempty(key: &str) -> Option<String> {
-    std::env::var(key).ok().and_then(|value| {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
-}
-
-fn truncate_for_log(value: &str, max_chars: usize) -> String {
-    let mut iter = value.chars();
-    let truncated: String = iter.by_ref().take(max_chars).collect();
-    if iter.next().is_some() {
-        format!("{}...", truncated)
-    } else {
-        truncated
-    }
-}
-
-fn remote_alpha_failover_url(url: &str) -> Option<String> {
-    let mut parsed = reqwest::Url::parse(url).ok()?;
-    if !parsed
-        .host_str()
-        .map(|host| host.eq_ignore_ascii_case(REMOTE_ALPHA_PRIMARY_HOST))
-        .unwrap_or(false)
-    {
-        return None;
-    }
-    parsed.set_host(Some(REMOTE_ALPHA_FALLBACK_HOST)).ok()?;
-    Some(parsed.to_string())
-}
-
-fn remote_alpha_should_failover_status(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::REQUEST_TIMEOUT
-        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error()
-}
-
-fn should_failover_remote_alpha_error(err: &anyhow::Error) -> bool {
-    err.chain().any(|cause| {
-        if let Some(req_err) = cause.downcast_ref::<reqwest::Error>() {
-            return req_err.is_timeout() || req_err.is_connect() || req_err.is_request();
-        }
-        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
-            return matches!(
-                io_err.kind(),
-                std::io::ErrorKind::TimedOut
-                    | std::io::ErrorKind::ConnectionRefused
-                    | std::io::ErrorKind::ConnectionAborted
-                    | std::io::ErrorKind::ConnectionReset
-                    | std::io::ErrorKind::NotConnected
-                    | std::io::ErrorKind::BrokenPipe
-            );
-        }
-        false
-    })
-}
-
-async fn send_remote_json_post_once<T: Serialize + ?Sized>(
-    client: &reqwest::Client,
-    url: &str,
-    timeout_ms: u64,
-    token: Option<&str>,
-    payload: &T,
-) -> Result<(reqwest::StatusCode, String)> {
-    let mut request = client
-        .post(url)
-        .timeout(Duration::from_millis(timeout_ms))
-        .json(payload);
-    if let Some(token) = token {
-        request = request.bearer_auth(token);
-    }
-    if let Some(wallet) = env_nonempty("POLY_PROXY_WALLET_ADDRESS") {
-        request = request.header("x-wallet-address", wallet);
-    }
-    let response = request
-        .send()
-        .await
-        .with_context(|| format!("failed to send remote request to {}", url))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .with_context(|| format!("failed to read remote response body from {}", url))?;
-    Ok((status, body))
-}
-
-async fn send_remote_json_post_with_alpha_failover<T: Serialize + ?Sized>(
-    client: &reqwest::Client,
-    url: &str,
-    timeout_ms: u64,
-    token: Option<&str>,
-    payload: &T,
-    route_label: &str,
-) -> Result<(reqwest::StatusCode, String)> {
-    let fallback_url = remote_alpha_failover_url(url);
-    let primary_outcome = send_remote_json_post_once(client, url, timeout_ms, token, payload).await;
-    match primary_outcome {
-        Ok((status, body)) => {
-            if remote_alpha_should_failover_status(status) {
-                if let Some(fallback) = fallback_url.as_deref() {
-                    warn!(
-                        "Remote {} primary returned status={} url={} -> retrying fallback={}",
-                        route_label,
-                        status.as_u16(),
-                        url,
-                        fallback
-                    );
-                    return send_remote_json_post_once(
-                        client, fallback, timeout_ms, token, payload,
-                    )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "remote {} fallback request failed after primary status={}",
-                            route_label,
-                            status.as_u16()
-                        )
-                    });
-                }
-            }
-            Ok((status, body))
-        }
-        Err(primary_err) => {
-            if let Some(fallback) = fallback_url.as_deref() {
-                if should_failover_remote_alpha_error(&primary_err) {
-                    warn!(
-                        "Remote {} primary transport failed url={} -> retrying fallback={} err={}",
-                        route_label, url, fallback, primary_err
-                    );
-                    return send_remote_json_post_once(
-                        client, fallback, timeout_ms, token, payload,
-                    )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "remote {} fallback request failed after primary transport error: {}",
-                            route_label, primary_err
-                        )
-                    });
-                }
-            }
-            Err(primary_err)
-        }
-    }
-}
-
-fn evsnipe_remote_discovery_config() -> Option<&'static EvsnipeRemoteDiscoveryConfig> {
-    static CONFIG: OnceLock<Option<EvsnipeRemoteDiscoveryConfig>> = OnceLock::new();
-    CONFIG
-        .get_or_init(|| {
-            let url = env_nonempty("EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL")
-                .unwrap_or_else(|| REMOTE_EVSNIPE_DISCOVERY_URL_DEFAULT.to_string());
-            Some(EvsnipeRemoteDiscoveryConfig {
-                url,
-                token: env_nonempty("EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN")
-                    .or_else(|| env_nonempty("EVPOLY_ALPHA_KEY")),
-                timeout_ms: 2_000_u64,
-            })
-        })
-        .as_ref()
-}
-
-fn normalize_discovered_specs(
-    specs: Vec<EvsnipeMarketSpec>,
-    cfg: &EvsnipeConfig,
-    now_sec: i64,
-    max_end_ts: i64,
-) -> Vec<EvsnipeMarketSpec> {
-    let allowed: HashSet<String> = cfg.symbols.iter().map(|s| normalize_symbol(s)).collect();
-    let mut out = Vec::new();
-    let mut dedupe = HashSet::new();
-    for mut spec in specs {
-        spec.symbol = normalize_symbol(spec.symbol.as_str());
-        if !spec.is_hit_rule() {
-            continue;
-        }
-        if let Some(end_ts) = spec.end_ts {
-            if end_ts <= now_sec || end_ts > max_end_ts {
-                continue;
-            }
-        } else {
-            continue;
-        }
-        if !allowed.is_empty() && !allowed.contains(spec.symbol.as_str()) {
-            continue;
-        }
-        if spec.condition_id.trim().is_empty()
-            || spec.slug.trim().is_empty()
-            || spec.yes_token_id.trim().is_empty()
-        {
-            continue;
-        }
-        if dedupe.insert(spec.condition_id.clone()) {
-            out.push(spec);
-        }
-    }
-    out.sort_by(|a, b| {
-        a.symbol
-            .cmp(&b.symbol)
-            .then_with(|| a.strike_price.total_cmp(&b.strike_price))
-    });
-    out
-}
-
-async fn refresh_hit_market_specs_remote(
-    cfg: &EvsnipeConfig,
-    now_sec: i64,
-    max_end_ts: i64,
-) -> Result<Option<Vec<EvsnipeMarketSpec>>> {
-    let Some(remote_cfg) = evsnipe_remote_discovery_config() else {
-        return Ok(None);
-    };
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    let client = CLIENT.get_or_init(reqwest::Client::new);
-    let payload = EvsnipeRemoteDiscoveryRequest {
-        symbols: cfg.symbols.clone(),
-        discovery_limit: cfg.discovery_limit,
-        max_days_to_expiry: cfg.max_days_to_expiry,
-        builder_code: crate::builder_attribution::configured_builder_code(),
-    };
-    let (status, body) = send_remote_json_post_with_alpha_failover(
-        client,
-        remote_cfg.url.as_str(),
-        remote_cfg.timeout_ms,
-        remote_cfg.token.as_deref(),
-        &payload,
-        "evsnipe_discovery",
-    )
-    .await
-    .context("failed to call remote EVSnipe discovery service")?;
-    if status == reqwest::StatusCode::NO_CONTENT || status == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    if !status.is_success() {
-        anyhow::bail!(
-            "remote EVSnipe discovery rejected request (status={} body={})",
-            status.as_u16(),
-            truncate_for_log(body.as_str(), 300)
-        );
-    }
-    let parsed: EvsnipeRemoteDiscoveryResponse =
-        serde_json::from_str(body.as_str()).with_context(|| {
-            format!(
-                "failed to parse remote EVSnipe discovery response: {}",
-                truncate_for_log(body.as_str(), 300)
-            )
-        })?;
-    let raw_specs = match parsed {
-        EvsnipeRemoteDiscoveryResponse::Wrapped { specs } => specs,
-        EvsnipeRemoteDiscoveryResponse::Flat(specs) => specs,
-    };
-    Ok(Some(normalize_discovered_specs(
-        raw_specs, cfg, now_sec, max_end_ts,
-    )))
-}
 
 #[derive(Debug, Clone)]
 pub struct BinanceTradeTick {
@@ -1014,52 +730,7 @@ pub async fn refresh_hit_market_specs(
             .unwrap_or(30)
             .saturating_mul(86_400),
     );
-    match refresh_hit_market_specs_remote(cfg, now_sec, max_end_ts).await {
-        Ok(Some(specs)) if !specs.is_empty() => {
-            log_event(
-                "evsnipe_remote_discovery_hit",
-                json!({
-                    "symbols": cfg.symbols,
-                    "spec_count": specs.len()
-                }),
-            );
-            Ok(specs)
-        }
-        Ok(Some(_)) => {
-            warn!("EVSnipe remote discovery returned empty spec list; falling back to local discovery");
-            log_event(
-                "evsnipe_discovery_remote_empty_fallback_local",
-                json!({
-                    "symbols": cfg.symbols,
-                }),
-            );
-            refresh_hit_market_specs_local(api, cfg, now_sec, max_end_ts).await
-        }
-        Ok(None) => {
-            warn!("EVSnipe remote discovery unavailable; falling back to local discovery");
-            log_event(
-                "evsnipe_discovery_remote_unavailable_fallback_local",
-                json!({
-                    "symbols": cfg.symbols,
-                }),
-            );
-            refresh_hit_market_specs_local(api, cfg, now_sec, max_end_ts).await
-        }
-        Err(remote_err) => {
-            warn!(
-                "EVSnipe remote discovery failed (fallback to local): {}",
-                remote_err
-            );
-            log_event(
-                "evsnipe_discovery_remote_failed_fallback_local",
-                json!({
-                    "symbols": cfg.symbols,
-                    "error": remote_err.to_string()
-                }),
-            );
-            refresh_hit_market_specs_local(api, cfg, now_sec, max_end_ts).await
-        }
-    }
+    refresh_hit_market_specs_local(api, cfg, now_sec, max_end_ts).await
 }
 
 pub async fn refresh_hit_market_specs_local_only(
@@ -1265,41 +936,39 @@ async fn refresh_hit_market_specs_local(
     let mut offset = 0_u32;
 
     while offset < max_event_offset {
-        let (page_markets, used_limit) = match api
-            .get_all_active_markets_page_tagged(
-                page_limit,
-                offset,
-                Some(EVSNIPE_DISCOVERY_TAG_SLUG),
-            )
-            .await
-        {
-            Ok(rows) => (rows, page_limit),
-            Err(first_err) => {
-                if page == 0 {
-                    match api
-                        .get_all_active_markets_page_tagged(
-                            200,
-                            offset,
-                            Some(EVSNIPE_DISCOVERY_TAG_SLUG),
-                        )
-                        .await
-                    {
-                        Ok(rows) => (rows, 200_u32),
-                        Err(second_err) => {
-                            return Err(second_err).context(format!(
-                                "evsnipe get_all_active_markets_page failed (offset={}, limit=200 fallback after primary error: {})",
-                                offset, first_err
-                            ));
-                        }
-                    }
-                } else {
-                    warn!(
-                        "EVSnipe local paged market discovery truncated at page={} offset={} due to error: {}",
-                        page, offset, first_err
-                    );
+        let mut page_result = None;
+        let mut last_error = None;
+        for candidate_limit in [page_limit, 200_u32, 100_u32, 50_u32] {
+            match api
+                .get_all_active_markets_page_tagged(
+                    candidate_limit,
+                    offset,
+                    Some(EVSNIPE_DISCOVERY_TAG_SLUG),
+                )
+                .await
+            {
+                Ok(rows) => {
+                    page_result = Some((rows, candidate_limit));
                     break;
                 }
+                Err(err) => {
+                    last_error = Some(format!(
+                        "limit={} offset={} error={}",
+                        candidate_limit, offset, err
+                    ));
+                }
             }
+        }
+        let Some((page_markets, used_limit)) = page_result else {
+            let error = last_error.unwrap_or_else(|| "unknown error".to_string());
+            if page == 0 {
+                anyhow::bail!("evsnipe get_all_active_markets_page failed: {}", error);
+            }
+            warn!(
+                "EVSnipe local paged market discovery truncated at page={} offset={} after all page-size fallbacks failed: {}",
+                page, offset, error
+            );
+            break;
         };
 
         let page_len = page_markets.len();
@@ -2287,18 +1956,6 @@ mod tests {
                 assert!(cfg.nonblocking_enqueue_enabled);
             },
         );
-    }
-
-    #[test]
-    fn evsnipe_remote_discovery_payload_includes_builder_code() {
-        let payload = EvsnipeRemoteDiscoveryRequest {
-            symbols: vec!["BTC".to_string()],
-            discovery_limit: 500,
-            max_days_to_expiry: 30,
-            builder_code: "0xabc".to_string(),
-        };
-        let serialized = serde_json::to_value(&payload).unwrap();
-        assert_eq!(serialized["builder_code"], "0xabc");
     }
 
     #[test]

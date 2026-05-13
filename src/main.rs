@@ -983,9 +983,6 @@ fn remote_url_default_named(name: &str) -> Option<&'static str> {
         "EVPOLY_REMOTE_MARKET_DISCOVERY_URL" => {
             Some("https://alpha.evplus.ai/v1/discovery/timeframe")
         }
-        "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL" => {
-            Some("https://alpha.evplus.ai/v1/discovery/evsnipe")
-        }
         _ => None,
     }
 }
@@ -1100,7 +1097,6 @@ fn set_remote_alpha_fallback_envs(alpha_key: &str) {
         "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
         "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
         "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
-        "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
         "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN",
     ] {
         if env_nonempty_named(key).is_none() {
@@ -9727,7 +9723,7 @@ async fn main() -> Result<()> {
                             limit_buy_options: if using_share_size {
                                 LimitBuyExecutionOptions {
                                     force_resting_limit: true,
-                                    expiration_ttl_seconds: Some(60),
+                                    expiration_ttl_seconds: None,
                                 }
                             } else {
                                 LimitBuyExecutionOptions::default()
@@ -25647,9 +25643,10 @@ fn spawn_endgame_quote_prewarm_worker(
     if !env_bool_named("EVPOLY_ENDGAME_REST_BATCH_POLL_ENABLE", true) {
         return;
     }
-    let poll_ms = env_i64_clamped("EVPOLY_ENDGAME_REST_BATCH_POLL_MS", 50, 25, 10_000);
-    let timeout_ms = env_i64_clamped("EVPOLY_ENDGAME_REST_BATCH_TIMEOUT_MS", 100, 10, 5_000);
+    let poll_ms = env_i64_clamped("EVPOLY_ENDGAME_REST_BATCH_POLL_MS", 100, 25, 10_000);
+    let timeout_ms = env_i64_clamped("EVPOLY_ENDGAME_REST_BATCH_TIMEOUT_MS", 500, 10, 5_000);
     let max_age_ms = env_i64_clamped("EVPOLY_ENDGAME_REST_BATCH_MAX_AGE_MS", 500, 25, 10_000);
+    let chunk_size = env_i64_clamped("EVPOLY_ENDGAME_REST_BATCH_MAX_TOKENS", 24, 1, 100) as usize;
     let failure_retry_ms = env_i64_clamped(
         "EVPOLY_ENDGAME_REST_BATCH_FAILURE_RETRY_MS",
         1_000,
@@ -25669,19 +25666,32 @@ fn spawn_endgame_quote_prewarm_worker(
         let mut last_reject_summary_log_ms = 0_i64;
         let mut last_failure_log_ms = 0_i64;
         let mut retry_after_ms = 0_i64;
+        let mut cursor = 0usize;
         loop {
             interval.tick().await;
             let now_ms = chrono::Utc::now().timestamp_millis();
             if retry_after_ms > now_ms {
                 continue;
             }
-            let token_ids = registry.active_token_ids();
+            let mut token_ids = registry.active_token_ids();
             if token_ids.is_empty() {
                 continue;
             }
+            token_ids.sort();
+            token_ids.dedup();
+            if cursor >= token_ids.len() {
+                cursor = 0;
+            }
+            let active_token_count = token_ids.len();
+            let request_token_count = active_token_count.min(chunk_size.max(1));
+            let mut request_token_ids = Vec::with_capacity(request_token_count);
+            for step in 0..request_token_count {
+                request_token_ids.push(token_ids[(cursor + step) % active_token_count].clone());
+            }
+            cursor = (cursor + request_token_count) % active_token_count;
             match timeout(
                 Duration::from_millis(timeout_ms as u64),
-                api.get_orderbooks_batch_rest(token_ids.as_slice()),
+                api.get_orderbooks_batch_rest(request_token_ids.as_slice()),
             )
             .await
             {
@@ -25722,7 +25732,8 @@ fn spawn_endgame_quote_prewarm_worker(
                             "endgame_rest_batch_quote_reject_summary",
                             json!({
                                 "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                "requested_token_count": token_ids.len(),
+                                "active_token_count": active_token_count,
+                                "requested_token_count": request_token_ids.len(),
                                 "accepted_count": accepted_count,
                                 "missing_source_ts_count": missing_source_ts_count,
                                 "stale_source_ts_count": stale_source_ts_count,
@@ -25743,7 +25754,8 @@ fn spawn_endgame_quote_prewarm_worker(
                             "endgame_rest_batch_prewarm_failed",
                             json!({
                                 "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                "token_count": token_ids.len(),
+                                "active_token_count": active_token_count,
+                                "token_count": request_token_ids.len(),
                                 "cooldown_ms": failure_retry_ms,
                                 "retry_after_ms": retry_after_ms,
                                 "error": error.to_string()
@@ -25760,7 +25772,8 @@ fn spawn_endgame_quote_prewarm_worker(
                             "endgame_rest_batch_prewarm_failed",
                             json!({
                                 "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                "token_count": token_ids.len(),
+                                "active_token_count": active_token_count,
+                                "token_count": request_token_ids.len(),
                                 "cooldown_ms": failure_retry_ms,
                                 "retry_after_ms": retry_after_ms,
                                 "error": "timeout"
@@ -28308,10 +28321,6 @@ mod tests {
             (
                 "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
                 "https://alpha.evplus.ai/v1/alpha/sessionband",
-            ),
-            (
-                "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL",
-                "https://alpha.evplus.ai/v1/discovery/evsnipe",
             ),
             (
                 "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL",

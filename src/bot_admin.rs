@@ -20,7 +20,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Clone)]
 pub struct BotAdminContext {
@@ -49,6 +49,45 @@ impl BotAdminContext {
             coinbase_state,
             simulation_mode,
         }
+    }
+}
+
+struct UiAdminCacheEntry<T> {
+    refreshed_at: Instant,
+    value: T,
+}
+
+fn ui_admin_cache_ttl() -> Duration {
+    Duration::from_secs(5)
+}
+
+fn cached_ui_dashboard_summary() -> &'static Mutex<Option<UiAdminCacheEntry<UiDashboardSummary>>> {
+    static CACHE: OnceLock<Mutex<Option<UiAdminCacheEntry<UiDashboardSummary>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn cached_ui_strategy_states() -> &'static Mutex<Option<UiAdminCacheEntry<Vec<UiStrategyState>>>> {
+    static CACHE: OnceLock<Mutex<Option<UiAdminCacheEntry<Vec<UiStrategyState>>>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn read_ui_cache<T: Clone>(cache: &'static Mutex<Option<UiAdminCacheEntry<T>>>) -> Option<T> {
+    let guard = cache.lock().ok()?;
+    let entry = guard.as_ref()?;
+    if entry.refreshed_at.elapsed() <= ui_admin_cache_ttl() {
+        Some(entry.value.clone())
+    } else {
+        None
+    }
+}
+
+fn write_ui_cache<T>(cache: &'static Mutex<Option<UiAdminCacheEntry<T>>>, value: T) {
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(UiAdminCacheEntry {
+            refreshed_at: Instant::now(),
+            value,
+        });
     }
 }
 
@@ -1957,6 +1996,15 @@ async fn fetch_free_balance(ctx: &BotAdminContext) -> Option<f64> {
 }
 
 async fn build_ui_dashboard_summary(ctx: &BotAdminContext) -> UiDashboardSummary {
+    if let Some(summary) = read_ui_cache(cached_ui_dashboard_summary()) {
+        return summary;
+    }
+    let summary = build_ui_dashboard_summary_uncached(ctx).await;
+    write_ui_cache(cached_ui_dashboard_summary(), summary.clone());
+    summary
+}
+
+async fn build_ui_dashboard_summary_uncached(ctx: &BotAdminContext) -> UiDashboardSummary {
     let health = health_indicators(ctx).await;
     let enabled_strategy_slugs = strategy_catalog()
         .into_iter()
@@ -2083,6 +2131,15 @@ async fn build_ui_dashboard_summary(ctx: &BotAdminContext) -> UiDashboardSummary
 }
 
 async fn build_ui_strategy_states(ctx: &BotAdminContext) -> Vec<UiStrategyState> {
+    if let Some(strategies) = read_ui_cache(cached_ui_strategy_states()) {
+        return strategies;
+    }
+    let strategies = build_ui_strategy_states_uncached(ctx).await;
+    write_ui_cache(cached_ui_strategy_states(), strategies.clone());
+    strategies
+}
+
+async fn build_ui_strategy_states_uncached(ctx: &BotAdminContext) -> Vec<UiStrategyState> {
     let health = health_indicators(ctx).await;
     let Some(db) = ctx.trader.tracking_db() else {
         return strategy_catalog()
@@ -2415,7 +2472,6 @@ async fn collect_doctor_issues(
                 | "EVPOLY_REMOTE_ENDGAME_ALPHA_URL"
                 | "EVPOLY_REMOTE_EVCURVE_ALPHA_URL"
                 | "EVPOLY_REMOTE_MARKET_DISCOVERY_URL"
-                | "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL"
         )
     };
     let endgame_alpha_required = env_bool("EVPOLY_ENDGAME_ALPHA_REQUIRED", true);

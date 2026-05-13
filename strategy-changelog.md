@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-05-13
+- `evsnipe_v1`: widened the fixed strike-window filter from `10%` to `20%` of anchor spot and removed the `EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT` env override from runtime templates (`src/evsnipe.rs`, `.env.full.example`, `docs/evsnipe_v1.md`).
+  - Applies only to EVSnipe discovery/watchlist filtering. Discovery remains local-only and trigger/submit behavior is unchanged.
 - `endgame_sweep_v1`: Endgame fast BUY submit now places resting LIMIT orders without a GTD expiration, so the late-tick fast path no longer creates 60-second expirations that CLOB can reject near market close (`src/trader.rs`, `src/main.rs`).
   - Applies only to Endgame V1 fast submit. Post-only maker protection and cached-metadata submit behavior remain unchanged.
 - `endgame_sweep_v1`: Endgame REST `/books` prewarm now rotates active tokens through bounded chunks instead of requesting the full active scope every poll, and default batch timing is relaxed to `EVPOLY_ENDGAME_REST_BATCH_POLL_MS=100`, `EVPOLY_ENDGAME_REST_BATCH_TIMEOUT_MS=500`, `EVPOLY_ENDGAME_REST_BATCH_MAX_TOKENS=24` (`src/main.rs`, `.env.example`, `.env.full.example`).
@@ -778,7 +780,7 @@ Older entries may reference env keys that were removed in later commits.
   - local discovery now uses Gamma crypto-tag paging (`tag_slug=crypto`) with event-offset stepping (`offset += page_limit`), matching Poly-builder event-pagination semantics and avoiding market-window skips caused by flattened-market offset stepping.
   - fallback/local page-0 retry remains, but now retries the same crypto-tag path at smaller page size (`200`) for rate-limit resilience.
   - alpha service EVSnipe cache prewarm now calls the local-only EVSnipe discovery path directly, so `/v1/discovery/evsnipe` serves the same discovery set as Poly-builder logic instead of depending on upstream remote EVSnipe discovery config.
-  - alpha service EVSnipe cache now also applies strike-distance anchor filtering before publishing specs (same `abs(strike-anchor)/anchor <= EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT` behavior used by bot runtime), reducing remote discovery payload size and aligning remote served set with bot tradable watchlist.
+  - alpha service EVSnipe cache now also applies strike-distance anchor filtering before publishing specs (same fixed strike-window behavior used by bot runtime), reducing remote discovery payload size and aligning remote served set with bot tradable watchlist.
   - affects EVSnipe hit/close market discovery coverage across configured symbols (`BTC,ETH,SOL,XRP`) and expiry-window filtering.
 
 - `mm_rewards_v1` remote alpha defaults were normalized to public HTTPS domains (no localhost fallback profile for remote MM endpoints) (`src/main.rs`, `.env`):
@@ -1507,7 +1509,7 @@ Older entries may reference env keys that were removed in later commits.
   - `evsnipe_v1` market expiry parsing now accepts Gamma `endDate` timestamps and date-only `endDateIso` payloads, restoring discovery of active weekly/monthly crypto hit markets.
   - `evsnipe_v1` discovery now scopes Gamma `/events` paging to `tag_slug=crypto`, which brings the current weekly/monthly crypto hit markets into the scan window without raising the global event scan limit.
   - `evsnipe_v1` watchlist discovery is now narrowed by symbol anchor distance:
-    - keep only strikes within `EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT` (default `10%`) of the current anchor spot,
+    - keep only strikes within the fixed EVSnipe strike window of the current anchor spot,
     - refresh the anchor every `EVPOLY_EVSNIPE_ANCHOR_REFRESH_SEC` (default `4h`),
     - or earlier when spot drifts by `EVPOLY_EVSNIPE_ANCHOR_DRIFT_REFRESH_PCT` (default `3%`).
   - Polymarket market WS sharding now tracks market connectivity per shard instead of flipping one shared global flag from each shard loop.

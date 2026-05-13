@@ -13,6 +13,7 @@ EVSnipe discovery is local-only. The desktop runtime scans Gamma locally, applie
 Runtime behavior:
 - Gamma discovery uses progressively smaller page sizes when a response is too large.
 - Discovery does not call remote alpha endpoints.
+- Strike-window filtering is fixed at `20%` from the anchor spot.
 
 Local discovery uses the same EVSnipe filtering model (Poly-builder parity), including strike-window filtering.
 
@@ -36,7 +37,6 @@ Local discovery uses the same EVSnipe filtering model (Poly-builder parity), inc
 - `EVPOLY_ENTRY_WORKER_COUNT_EVSNIPE` (code default `4`)
 - `EVPOLY_EVSNIPE_DISCOVERY_REFRESH_SEC`
 - `EVPOLY_EVSNIPE_MAX_DAYS_TO_EXPIRY`
-- `EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT`
 - `EVPOLY_EVSNIPE_SIZE_USD`
 - `EVPOLY_EVSNIPE_STRATEGY_CAP_USD`
 - `EVPOLY_EVSNIPE_PRICE_CACHE_ENABLE`

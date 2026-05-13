@@ -446,7 +446,7 @@ impl EvsnipeConfig {
             max_days_to_expiry: env_u64("EVPOLY_EVSNIPE_MAX_DAYS_TO_EXPIRY", 30)
                 .max(1)
                 .min(365),
-            strike_window_pct: env_f64("EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT", 0.10).clamp(0.0, 1.0),
+            strike_window_pct: 0.20,
             anchor_refresh_sec: env_u64("EVPOLY_EVSNIPE_ANCHOR_REFRESH_SEC", 14_400).max(60),
             anchor_drift_refresh_pct: env_f64("EVPOLY_EVSNIPE_ANCHOR_DRIFT_REFRESH_PCT", 0.03)
                 .clamp(0.0, 1.0),
@@ -1922,6 +1922,17 @@ mod tests {
             let cfg = EvsnipeConfig::from_env();
             assert!((cfg.size_usd - 5.0).abs() < 1e-9);
         });
+    }
+
+    #[test]
+    fn evsnipe_strike_window_is_fixed() {
+        with_evsnipe_env(
+            &[("EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT", Some("0.05"))],
+            || {
+                let cfg = EvsnipeConfig::from_env();
+                assert!((cfg.strike_window_pct - 0.20).abs() < 1e-9);
+            },
+        );
     }
 
     #[test]

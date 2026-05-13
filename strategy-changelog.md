@@ -10,6 +10,9 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-05-13
+- `mm_sport_v1` / MM 2.0 depth and FIFO defaults: aligned local defaults with the SaaS runtime by lowering the remote low-depth floor to `$500`, using a hardcoded `0.5x` reward-min baseline for pair feasibility, making FIFO wait at least `10s` after first seeing an order before front-ratio cancellation, and removing BUY capacity-error pair cancel/backoff from the fresh-entry path (`src/main.rs`, `src/mm/mod.rs`, `.env.example`, `.env.full.example`).
+  - Default Sport fresh entries now use `best_bid` while Non-S fresh entries stay passive, quote sizing defaults to `0.20` depth ratio with `1000` Sport / `200` Non-S max quote shares, FIFO defaults to `0.50`, minimum top bid defaults to `0.05`, and inventory exit / after-fill pause default to `3600s`.
+- `sessionband_v1`: hard-disabled SessionBand in the OSS desktop build and removed the `EVPOLY_STRATEGY_SESSIONBAND_ENABLE` template override; the desktop UI hides S-Band and emitted profile payloads force it off (`src/sessionband.rs`, `src/main.rs`, `.env.example`, `.env.full.example`).
 - `evsnipe_v1`: widened the fixed strike-window filter from `10%` to `20%` of anchor spot and removed the `EVPOLY_EVSNIPE_STRIKE_WINDOW_PCT` env override from runtime templates (`src/evsnipe.rs`, `.env.full.example`, `docs/evsnipe_v1.md`).
   - Applies only to EVSnipe discovery/watchlist filtering. Discovery remains local-only and trigger/submit behavior is unchanged.
 - `endgame_sweep_v1`: Endgame fast BUY submit now places resting LIMIT orders without a GTD expiration, so the late-tick fast path no longer creates 60-second expirations that CLOB can reject near market close (`src/trader.rs`, `src/main.rs`).

@@ -36,7 +36,7 @@ pub enum MmSportEntryPriceMode {
 impl MmSportEntryPriceMode {
     fn from_env(raw: Option<String>) -> Self {
         match raw
-            .unwrap_or_else(|| "passive".to_string())
+            .unwrap_or_else(|| "best_bid".to_string())
             .trim()
             .to_ascii_lowercase()
             .as_str()
@@ -147,7 +147,6 @@ pub struct MmSportConfig {
     pub exit_mode: MmSportExitMode,
     pub quote_size_mult: f64,
     pub nonsport_quote_size_mult: f64,
-    pub pair_baseline_quote_size_mult: f64,
     pub multiple_collateral_cap_mult: f64,
     pub nonsport_multiple_collateral_cap_mult: f64,
     pub depth_ratio_collateral_cap_mult: f64,
@@ -229,14 +228,14 @@ impl MmSportConfig {
         let quote_size_mult = env_f64("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2).clamp(0.1, 20.0);
         let multiple_collateral_cap_mult = 0.45;
         let depth_ratio_collateral_cap_mult = 0.45;
-        let max_share_ratio = env_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.05).clamp(0.01, 0.99);
+        let max_share_ratio = env_f64("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", 0.20).clamp(0.01, 0.99);
         let nonsport_max_share_ratio =
             env_f64("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", max_share_ratio).clamp(0.01, 0.99);
-        let max_quote_shares = env_f64("EVPOLY_MM_SPORT_MAX_QUOTE_SHARES", 0.0).max(0.0);
+        let max_quote_shares = env_f64("EVPOLY_MM_SPORT_MAX_QUOTE_SHARES", 1_000.0).max(0.0);
         let nonsport_max_quote_shares =
-            env_f64("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES", 0.0).max(0.0);
+            env_f64("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES", 200.0).max(0.0);
         let fifo_max_share_ratio =
-            env_f64("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", 0.2).clamp(0.01, 0.99);
+            env_f64("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", 0.5).clamp(0.01, 0.99);
         let nonsport_entry_schedule_start_minute_utc = env_u64(
             "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC",
             13 * 60,
@@ -292,11 +291,6 @@ impl MmSportConfig {
                 quote_size_mult,
             )
             .clamp(0.1, 20.0),
-            pair_baseline_quote_size_mult: env_f64(
-                "EVPOLY_MM_SPORT_PAIR_BASELINE_QUOTE_SIZE_MULT",
-                1.2,
-            )
-            .clamp(0.1, 20.0),
             multiple_collateral_cap_mult,
             nonsport_multiple_collateral_cap_mult: multiple_collateral_cap_mult,
             depth_ratio_collateral_cap_mult,
@@ -342,19 +336,19 @@ impl MmSportConfig {
             ),
             nonsport_entry_schedule_start_minute_utc,
             nonsport_entry_schedule_end_minute_utc,
-            min_entry_top_bid_price: env_f64("EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", 0.10)
+            min_entry_top_bid_price: env_f64("EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", 0.05)
                 .clamp(0.0, 0.99),
             allow_sponsored_rewards: env_bool("EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS", true),
             sponsored_reward_min_share: env_f64("EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE", 0.50)
                 .clamp(0.0, 1.0),
-            inventory_exit_start_sec: env_u64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28_800)
+            inventory_exit_start_sec: env_u64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 3_600)
                 .clamp(300, 172_800),
             inventory_exit_max_loss_cents: env_f64(
                 "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS",
                 10.0,
             )
             .clamp(0.0, 99.0),
-            pause_after_fill_sec: env_u64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 600)
+            pause_after_fill_sec: env_u64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 3_600)
                 .clamp(60, 86_400),
             no_exit_side_pause_sec: env_u64("EVPOLY_MM_SPORT_NO_EXIT_SIDE_PAUSE_SEC", 3_600)
                 .clamp(60, 86_400),
@@ -686,7 +680,7 @@ mod tests {
     fn parse_mm_sport_entry_price_mode_from_env_value() {
         assert_eq!(
             MmSportEntryPriceMode::from_env(None),
-            MmSportEntryPriceMode::Passive
+            MmSportEntryPriceMode::BestBid
         );
         assert_eq!(
             MmSportEntryPriceMode::from_env(Some("passive".to_string())),
@@ -707,21 +701,33 @@ mod tests {
     }
 
     #[test]
-    fn mm_sport_config_defaults_to_normal_exit_mode_and_one_hour_side_pause() {
+    fn mm_sport_config_defaults_to_current_runtime_controls() {
         with_mm_env(
             &[
                 ("EVPOLY_MM_SPORT_ENTRY_PRICE_MODE", None),
+                ("EVPOLY_MM_SPORT_MAX_SHARE_RATIO", None),
+                ("EVPOLY_MM_SPORT_NONSPORT_MAX_SHARE_RATIO", None),
                 ("EVPOLY_MM_SPORT_MAX_QUOTE_SHARES", None),
                 ("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES", None),
+                ("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", None),
+                ("EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", None),
+                ("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", None),
+                ("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", None),
                 ("EVPOLY_MM_SPORT_EXIT_MODE", None),
                 ("EVPOLY_MM_SPORT_NO_EXIT_SIDE_PAUSE_SEC", None),
                 ("EVPOLY_MM_SPORT_MATCH_ONLY", None),
             ],
             || {
                 let cfg = MmSportConfig::from_env();
-                assert_eq!(cfg.entry_price_mode, MmSportEntryPriceMode::Passive);
-                assert_eq!(cfg.max_quote_shares, 0.0);
-                assert_eq!(cfg.nonsport_max_quote_shares, 0.0);
+                assert_eq!(cfg.entry_price_mode, MmSportEntryPriceMode::BestBid);
+                assert!((cfg.max_share_ratio - 0.20).abs() < 1e-9);
+                assert!((cfg.nonsport_max_share_ratio - 0.20).abs() < 1e-9);
+                assert_eq!(cfg.max_quote_shares, 1_000.0);
+                assert_eq!(cfg.nonsport_max_quote_shares, 200.0);
+                assert!((cfg.fifo_max_share_ratio - 0.50).abs() < 1e-9);
+                assert!((cfg.min_entry_top_bid_price - 0.05).abs() < 1e-9);
+                assert_eq!(cfg.inventory_exit_start_sec, 3_600);
+                assert_eq!(cfg.pause_after_fill_sec, 3_600);
                 assert_eq!(cfg.exit_mode, MmSportExitMode::Normal);
                 assert_eq!(cfg.no_exit_side_pause_sec, 3_600);
                 assert!(cfg.match_only);

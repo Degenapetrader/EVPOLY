@@ -61,7 +61,7 @@ impl SessionBandExecutionConfig {
             .or_else(|| Some(legacy_tau_allowlist(tau1_enabled, tau2_enabled)));
 
         Self {
-            enable: env_bool("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true),
+            enable: false,
             poll_interval_ms: env_u64("EVPOLY_SESSIONBAND_POLL_MS", 250).max(100),
             symbols,
             timeframes,
@@ -400,6 +400,17 @@ mod tests {
                 assert!((cfg.size_usd_for_symbol("XRP") - 50.0).abs() < 1e-9);
                 assert!((cfg.scope_cap_usd("ETH", Timeframe::M5) - 80.0).abs() < 1e-9);
                 assert!((cfg.scope_cap_usd("ETH", Timeframe::H4) - 80.0).abs() < 1e-9);
+            },
+        );
+    }
+
+    #[test]
+    fn enable_is_hardcoded_off() {
+        with_sessionband_env(
+            &[("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", Some("true"))],
+            || {
+                let cfg = SessionBandExecutionConfig::from_env();
+                assert!(!cfg.enable);
             },
         );
     }

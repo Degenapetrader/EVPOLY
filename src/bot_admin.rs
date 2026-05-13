@@ -475,14 +475,14 @@ fn setting_specs() -> Vec<BotSettingSpec> {
             group: "strategy",
             strategy: Some("sessionband"),
             value_type: BotSettingType::Bool,
-            default_raw: "true",
+            default_raw: "false",
             min: None,
             max: None,
             enum_values: &[],
-            mutable: true,
+            mutable: false,
             restart_required: true,
             config_fallback_key: None,
-            description: "Enable SessionBand strategy.",
+            description: "SessionBand is disabled in OSS desktop builds.",
         },
         BotSettingSpec {
             key: "EVPOLY_STRATEGY_EVSNIPE_ENABLE",
@@ -2532,10 +2532,10 @@ async fn collect_doctor_issues(
     check_remote_alpha_issue(
         STRATEGY_ID_SESSIONBAND_V1,
         "EVPOLY_STRATEGY_SESSIONBAND_ENABLE",
-        true,
+        false,
         "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
         "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
-        true,
+        false,
     );
     check_remote_alpha_issue(
         STRATEGY_ID_ENDGAME_SWEEP_V1,

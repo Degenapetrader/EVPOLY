@@ -376,6 +376,7 @@ struct MmSportFifoGuard {
     same_price_ahead_worst: f64,
     better_price_ahead: f64,
     last_book_ms: i64,
+    first_seen_ms: i64,
 }
 
 fn mm_sport_update_fifo_guard(
@@ -1317,12 +1318,12 @@ fn warn_remote_alpha_config_startup(endgame_alpha_required: bool) {
     check_strategy(
         STRATEGY_ID_SESSIONBAND_V1,
         "EVPOLY_STRATEGY_SESSIONBAND_ENABLE",
-        true,
+        false,
         &[
             "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
             "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
         ],
-        true,
+        false,
     );
     check_strategy(
         STRATEGY_ID_ENDGAME_SWEEP_V1,
@@ -1593,6 +1594,19 @@ fn mm_sport_reward_min_shares_cap_blocks_market(
     shares_cap: f64,
 ) -> bool {
     shares_cap > 0.0 && reward_min_size_shares.is_finite() && reward_min_size_shares > shares_cap
+}
+
+fn mm_sport_reward_floor_shares_with_cap(
+    reward_min_size_shares: f64,
+    multiplier: f64,
+    shares_cap: f64,
+) -> f64 {
+    let floor_shares = (reward_min_size_shares * multiplier).max(1.0);
+    if shares_cap > 0.0 {
+        floor_shares.min(shares_cap)
+    } else {
+        floor_shares
+    }
 }
 
 fn mm_sport_add_filter_code(codes: &mut Vec<&'static str>, code: &'static str) {
@@ -2218,6 +2232,17 @@ fn mm_sport_entry_bid_price(best_bid: f64, tick_size: f64, mode: mm::MmSportEntr
     }
 }
 
+fn mm_sport_entry_price_mode_for_market(
+    is_sports_market: bool,
+    sport_mode: mm::MmSportEntryPriceMode,
+) -> mm::MmSportEntryPriceMode {
+    if is_sports_market {
+        sport_mode
+    } else {
+        mm::MmSportEntryPriceMode::Passive
+    }
+}
+
 fn mm_sport_entry_bid_price_with_extra_ticks(
     best_bid: f64,
     tick_size: f64,
@@ -2276,8 +2301,10 @@ fn mm_sport_size_shares_from_pending(row: &PendingOrderRecord) -> Option<f64> {
     (shares.is_finite() && shares > 0.0).then_some(shares)
 }
 
-const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 1_000.0;
+const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 500.0;
 const MM_SPORT_DEPTH_SKIP_ALPHA_MAX_MARKETS_PER_REQUEST: usize = 200;
+const MM_SPORT_PAIR_BASELINE_REWARD_MULT: f64 = 0.5;
+const MM_SPORT_FIFO_MIN_CANCEL_AGE_MS: i64 = 10_000;
 const MM_SPORT_LOW_DEPTH_QUOTE_SIZE_MULT: f64 = 1.2;
 const MM_SPORT_FORCE_EXIT_WINDOW_MS: i64 = 30 * 60 * 1_000;
 const MM_SPORT_EXIT_FALLBACK_REFRESH_MS: i64 = 60_000;
@@ -2297,6 +2324,19 @@ const MM_SPORT_NO_EXIT_SIDE_PAUSE_STATE_KEY: &str = "mm_sport_no_exit_side_pause
 const MM_SPORT_RUNTIME_STATE_UPDATED_BY: &str = "mm_sport";
 const MM_SPORT_NO_EXIT_HOLD_LOG_COOLDOWN_MS: i64 = 300_000;
 const MM_SPORT_NONSPORT_END_ENTRY_HALT_LOG_COOLDOWN_MS: i64 = 60_000;
+
+fn mm_sport_pair_baseline_required_ext_top_shares(baseline_shares: f64, ratio: f64) -> f64 {
+    let ratio = ratio.clamp(0.01, 0.99);
+    (baseline_shares.max(1.0) * (1.0 - ratio) / ratio).max(0.0)
+}
+
+fn mm_sport_fifo_order_age_ms(now_ms: i64, first_seen_ms: i64) -> i64 {
+    now_ms.saturating_sub(first_seen_ms).max(0)
+}
+
+fn mm_sport_fifo_can_cancel_for_age(now_ms: i64, first_seen_ms: i64) -> bool {
+    mm_sport_fifo_order_age_ms(now_ms, first_seen_ms) >= MM_SPORT_FIFO_MIN_CANCEL_AGE_MS
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct MmSportNoExitSidePauseState {
@@ -5855,7 +5895,7 @@ async fn main() -> Result<()> {
     let premarket_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_PREMARKET_ENABLE", true);
     let endgame_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_ENDGAME_ENABLE", true);
     let evcurve_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_EVCURVE_ENABLE", true);
-    let sessionband_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true);
+    let sessionband_strategy_enabled = false;
     let evsnipe_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true);
     let mm_sport_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false);
     let core_strategy_enabled = premarket_strategy_enabled
@@ -6315,7 +6355,7 @@ async fn main() -> Result<()> {
                 "premarket_enabled": env_bool_named("EVPOLY_STRATEGY_PREMARKET_ENABLE", true),
                 "endgame_enabled": env_bool_named("EVPOLY_STRATEGY_ENDGAME_ENABLE", true),
                 "evcurve_enabled": env_bool_named("EVPOLY_STRATEGY_EVCURVE_ENABLE", true),
-                "sessionband_enabled": env_bool_named("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", true),
+                "sessionband_enabled": false,
                 "evsnipe_enabled": env_bool_named("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),
                 "mm_sport_enabled": env_bool_named("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false)
             }),
@@ -15529,7 +15569,7 @@ async fn main() -> Result<()> {
             });
         }
     } else {
-        eprintln!("📶 SessionBand strategy disabled (set EVPOLY_STRATEGY_SESSIONBAND_ENABLE=true)");
+        eprintln!("📶 SessionBand strategy disabled in this OSS desktop build");
     }
 
     let evsnipe_cfg = Arc::new(evsnipe::EvsnipeConfig::from_env());
@@ -16456,7 +16496,7 @@ async fn main() -> Result<()> {
             );
         } else {
             eprintln!(
-                "🏀 MM Sport enabled (poll_ms={}, event_driven={}, event_fallback_poll_ms={}, ws_stale_ms={}, fifo_ws_gap_cancel_ms={}, discovery_refresh_sec={}, rewards_page_budget={}, min_reward_rate_per_day={:.2}, quote_size_mode={}, exit_mode={}, quote_size_mult={:.3}, pair_baseline_quote_size_mult={:.3}, max_share_ratio={:.3}, min_top_depth_usd={:.2}, pause_after_fill_sec={}, no_exit_side_pause_sec={}, bust_window_ms={}, bust_shares_1s={:.2}, bust_pause_sec=[{},{}], ratio_breach_cancel_cooldown_ms={}, ratio_pause_sec={}, post_only={}, quote_expiry_sec=[{},{}], require_reward_eligible={}, pregame_only={}, match_only={}, max_markets={})",
+                "🏀 MM Sport enabled (poll_ms={}, event_driven={}, event_fallback_poll_ms={}, ws_stale_ms={}, fifo_ws_gap_cancel_ms={}, discovery_refresh_sec={}, rewards_page_budget={}, min_reward_rate_per_day={:.2}, quote_size_mode={}, exit_mode={}, quote_size_mult={:.3}, pair_baseline_reward_mult={:.3}, max_share_ratio={:.3}, min_top_depth_usd={:.2}, pause_after_fill_sec={}, no_exit_side_pause_sec={}, bust_window_ms={}, bust_shares_1s={:.2}, bust_pause_sec=[{},{}], ratio_breach_cancel_cooldown_ms={}, ratio_pause_sec={}, post_only={}, quote_expiry_sec=[{},{}], require_reward_eligible={}, pregame_only={}, match_only={}, max_markets={})",
                 mm_sport_cfg.poll_ms,
                 mm_sport_cfg.event_driven_enable,
                 mm_sport_cfg.event_fallback_poll_ms,
@@ -16468,7 +16508,7 @@ async fn main() -> Result<()> {
                 mm_sport_cfg.quote_size_mode.as_str(),
                 mm_sport_cfg.exit_mode.as_str(),
                 mm_sport_cfg.quote_size_mult,
-                mm_sport_cfg.pair_baseline_quote_size_mult,
+                MM_SPORT_PAIR_BASELINE_REWARD_MULT,
                 mm_sport_cfg.max_share_ratio,
                 mm_sport_cfg.min_top_depth_usd,
                 mm_sport_cfg.pause_after_fill_sec,
@@ -16488,7 +16528,7 @@ async fn main() -> Result<()> {
                 mm_sport_cfg.max_markets
             );
             eprintln!(
-                "MM Sport entry controls (entry_price_mode={}, max_quote_shares={:.2}, nonsport_max_quote_shares={:.2})",
+                "MM Sport entry controls (sport_entry_price_mode={}, nonsport_entry_price_mode=passive, max_quote_shares={:.2}, nonsport_max_quote_shares={:.2})",
                 mm_sport_cfg.entry_price_mode.as_str(),
                 mm_sport_cfg.max_quote_shares,
                 mm_sport_cfg.nonsport_max_quote_shares
@@ -18108,13 +18148,12 @@ async fn main() -> Result<()> {
                             .copied()
                             .filter(|value| value.is_finite() && *value > 0.0)
                             .unwrap_or(0.01);
+                        let condition_is_sports_market = market_by_condition
+                            .get(condition_id)
+                            .map(|market| market.is_sports_market)
+                            .unwrap_or(true);
                         let ratio_limit = mm_sport_cfg_for_loop
-                            .sizing_for_market(
-                                market_by_condition
-                                    .get(condition_id)
-                                    .map(|market| market.is_sports_market)
-                                    .unwrap_or(true),
-                            )
+                            .sizing_for_market(condition_is_sports_market)
                             .max_share_ratio
                             .clamp(0.01, 0.99);
                         let mut pair_min_top_depth_usd = f64::INFINITY;
@@ -18205,7 +18244,10 @@ async fn main() -> Result<()> {
                             let submit_bid_price = mm_sport_entry_bid_price(
                                 best_bid,
                                 tick_size,
-                                mm_sport_cfg_for_loop.entry_price_mode,
+                                mm_sport_entry_price_mode_for_market(
+                                    condition_is_sports_market,
+                                    mm_sport_cfg_for_loop.entry_price_mode,
+                                ),
                             );
                             let (
                                 own_visible_bid_shares,
@@ -18501,6 +18543,7 @@ async fn main() -> Result<()> {
                         let mut fifo_report_cancel_resolved = 0usize;
                         let mut fifo_report_cancel_unresolved = 0usize;
                         let mut fifo_report_cancel_blocked_cooldown = 0usize;
+                        let mut fifo_report_cancel_blocked_min_age = 0usize;
                         let mut fifo_report_max_front_ratio: Option<f64> = None;
                         let mut fifo_report_min_ahead_worst: Option<f64> = None;
                         let mut fifo_report_max_ws_age_ms = 0_i64;
@@ -18677,6 +18720,7 @@ async fn main() -> Result<()> {
                                             same_price_ahead_worst: same_external,
                                             better_price_ahead: better_external,
                                             last_book_ms: snapshot.updated_ms,
+                                            first_seen_ms: now_ms,
                                         });
                                     mm_sport_update_fifo_guard(
                                         guard,
@@ -18702,6 +18746,12 @@ async fn main() -> Result<()> {
                                         + guard.better_price_ahead.max(0.0);
                                     let front_ratio =
                                         mm_sport_target_share_ratio(front_shares, ahead_worst);
+                                    let order_age_ms =
+                                        mm_sport_fifo_order_age_ms(now_ms, guard.first_seen_ms);
+                                    let fifo_min_cancel_age_met = mm_sport_fifo_can_cancel_for_age(
+                                        now_ms,
+                                        guard.first_seen_ms,
+                                    );
                                     if let Some(ratio) = front_ratio {
                                         fifo_report_max_front_ratio = Some(
                                             fifo_report_max_front_ratio
@@ -18732,6 +18782,8 @@ async fn main() -> Result<()> {
                                         "front_ratio": front_ratio,
                                         "max_share_ratio": ratio_limit,
                                         "quote_max_share_ratio": quote_ratio_limit,
+                                        "order_age_ms": order_age_ms,
+                                        "fifo_min_cancel_age_ms": MM_SPORT_FIFO_MIN_CANCEL_AGE_MS,
                                         "ws_age_ms": ws_age_ms
                                     }));
                                     let front_ratio_breached = front_ratio
@@ -18740,6 +18792,12 @@ async fn main() -> Result<()> {
                                     if front_ratio_breached {
                                         fifo_report_front_ratio_orders =
                                             fifo_report_front_ratio_orders.saturating_add(1);
+                                        if !fifo_min_cancel_age_met {
+                                            fifo_report_cancel_blocked_min_age =
+                                                fifo_report_cancel_blocked_min_age
+                                                    .saturating_add(1);
+                                            continue;
+                                        }
                                         if cancel_order_ids.insert(order_id.to_string()) {
                                             cancel_rows.push(row.clone());
                                         }
@@ -18759,6 +18817,8 @@ async fn main() -> Result<()> {
                                             "front_ratio": front_ratio,
                                             "max_share_ratio": ratio_limit,
                                             "quote_max_share_ratio": quote_ratio_limit,
+                                            "order_age_ms": order_age_ms,
+                                            "fifo_min_cancel_age_ms": MM_SPORT_FIFO_MIN_CANCEL_AGE_MS,
                                             "ws_age_ms": ws_age_ms,
                                             "fifo_ws_gap_cancel_ms": fifo_ws_gap_cancel_ms
                                         }));
@@ -18922,6 +18982,8 @@ async fn main() -> Result<()> {
                                 "cancel_resolved_orders": fifo_report_cancel_resolved,
                                 "cancel_unresolved_orders": fifo_report_cancel_unresolved,
                                 "cancel_blocked_cooldown_orders": fifo_report_cancel_blocked_cooldown,
+                                "cancel_blocked_min_age_orders": fifo_report_cancel_blocked_min_age,
+                                "fifo_min_cancel_age_ms": MM_SPORT_FIFO_MIN_CANCEL_AGE_MS,
                                 "riskiest_orders": fifo_report_riskiest_orders
                             });
                             last_fifo_guard_report = report_payload.clone();
@@ -19717,7 +19779,10 @@ async fn main() -> Result<()> {
                             let submit_bid_price = mm_sport_entry_bid_price(
                                 best_bid,
                                 market.minimum_tick_size,
-                                mm_sport_cfg_for_loop.entry_price_mode,
+                                mm_sport_entry_price_mode_for_market(
+                                    market.is_sports_market,
+                                    mm_sport_cfg_for_loop.entry_price_mode,
+                                ),
                             );
                             let (_own_bid_shares, ext_top_bid_shares, ext_top_bid_usd) =
                                 mm_sport_external_bid_depth_at_or_above(
@@ -20052,12 +20117,18 @@ async fn main() -> Result<()> {
                             let up_submit_bid_price = mm_sport_entry_bid_price(
                                 up_best_bid,
                                 market.minimum_tick_size,
-                                mm_sport_cfg_for_loop.entry_price_mode,
+                                mm_sport_entry_price_mode_for_market(
+                                    market.is_sports_market,
+                                    mm_sport_cfg_for_loop.entry_price_mode,
+                                ),
                             );
                             let down_submit_bid_price = mm_sport_entry_bid_price(
                                 down_best_bid,
                                 market.minimum_tick_size,
-                                mm_sport_cfg_for_loop.entry_price_mode,
+                                mm_sport_entry_price_mode_for_market(
+                                    market.is_sports_market,
+                                    mm_sport_cfg_for_loop.entry_price_mode,
+                                ),
                             );
                             let (_up_own_bid_shares, up_ext_top_bid_shares, up_ext_top_bid_usd) =
                                 mm_sport_external_bid_depth_at_or_above(
@@ -20119,12 +20190,17 @@ async fn main() -> Result<()> {
                             // can support the configured baseline reward size under max_share_ratio.
                             // If either side cannot support baseline size at ratio cap, cancel
                             // both sides and stay out until depth recovers.
-                            let baseline_shares = (market.reward_min_size_shares
-                                * mm_sport_cfg_for_loop.pair_baseline_quote_size_mult)
-                                .max(1.0);
+                            let baseline_shares = mm_sport_reward_floor_shares_with_cap(
+                                market.reward_min_size_shares,
+                                MM_SPORT_PAIR_BASELINE_REWARD_MULT,
+                                mm_sport_cfg_for_loop.reward_min_shares_cap,
+                            );
                             let ratio = market_sizing.max_share_ratio.clamp(0.01, 0.99);
                             let required_ext_top_shares =
-                                (baseline_shares * (1.0 - ratio) / ratio).max(0.0);
+                                mm_sport_pair_baseline_required_ext_top_shares(
+                                    baseline_shares,
+                                    ratio,
+                                );
                             let pair_ratio_feasible = up_ext_top_bid_shares + 1e-9
                                 >= required_ext_top_shares
                                 && down_ext_top_bid_shares + 1e-9 >= required_ext_top_shares;
@@ -20150,8 +20226,9 @@ async fn main() -> Result<()> {
                                         json!({
                                             "strategy_id": STRATEGY_ID_MM_SPORT_V1,
                                             "condition_id": market.condition_id,
+                                            "reward_min_size_shares": market.reward_min_size_shares,
                                             "baseline_shares": baseline_shares,
-                                            "baseline_quote_size_mult": mm_sport_cfg_for_loop.pair_baseline_quote_size_mult,
+                                            "pair_baseline_reward_mult": MM_SPORT_PAIR_BASELINE_REWARD_MULT,
                                             "max_share_ratio": ratio,
                                             "required_ext_top_shares": required_ext_top_shares,
                                             "up_ext_top_bid_shares": up_ext_top_bid_shares,
@@ -21311,7 +21388,10 @@ async fn main() -> Result<()> {
                             let submit_bid_price = mm_sport_entry_bid_price_with_extra_ticks(
                                 best_bid,
                                 market.minimum_tick_size,
-                                mm_sport_cfg_for_loop.entry_price_mode,
+                                mm_sport_entry_price_mode_for_market(
+                                    market.is_sports_market,
+                                    mm_sport_cfg_for_loop.entry_price_mode,
+                                ),
                                 holder_risk.extra_entry_ticks,
                             );
                             if holder_risk.extra_entry_ticks > 0 {
@@ -21857,38 +21937,15 @@ async fn main() -> Result<()> {
                                             || lower.contains("allowance")
                                             || lower.contains("insufficient");
                                         if insufficient_balance {
-                                            let backoff_ms = 30_000_i64;
-                                            let defer_until =
-                                                now_ms_local.saturating_add(backoff_ms);
-                                            last_action_ms_by_token_side
-                                                .insert(buy_key.clone(), defer_until);
                                             log_event(
-                                                "mm_sport_buy_backoff_balance_allowance",
+                                                "mm_sport_buy_balance_allowance_reject_no_capacity_backoff",
                                                 json!({
                                                     "strategy_id": STRATEGY_ID_MM_SPORT_V1,
                                                     "condition_id": market.condition_id,
                                                     "token_id": token_id,
-                                                    "defer_until_ms": defer_until,
-                                                    "backoff_ms": backoff_ms
+                                                    "reason": "exchange_active_order_accounting_ignored"
                                                 }),
                                             );
-                                            if !market_rows.is_empty() {
-                                                let _ = mm_sport_cancel_pending_rows(
-                                                    &api_for_mm_sport,
-                                                    &tracking_db_for_mm_sport,
-                                                    market_rows.as_slice(),
-                                                )
-                                                .await;
-                                            }
-                                            log_event(
-                                                "mm_sport_pair_canceled_on_buy_capacity_error",
-                                                json!({
-                                                    "strategy_id": STRATEGY_ID_MM_SPORT_V1,
-                                                    "condition_id": market.condition_id,
-                                                    "token_id": token_id
-                                                }),
-                                            );
-                                            abort_market_after_pair_cancel = true;
                                         }
                                         log_event(
                                             "mm_sport_place_buy_failed",
@@ -29553,6 +29610,18 @@ mod tests {
     }
 
     #[test]
+    fn mm_sport_entry_price_mode_for_market_forces_nonsports_passive() {
+        assert_eq!(
+            mm_sport_entry_price_mode_for_market(true, mm::MmSportEntryPriceMode::BestBid),
+            mm::MmSportEntryPriceMode::BestBid
+        );
+        assert_eq!(
+            mm_sport_entry_price_mode_for_market(false, mm::MmSportEntryPriceMode::BestBid),
+            mm::MmSportEntryPriceMode::Passive
+        );
+    }
+
+    #[test]
     fn mm_sport_entry_bid_price_extra_ticks_preserves_risk_widening() {
         assert!(
             (mm_sport_entry_bid_price_with_extra_ticks(
@@ -29713,6 +29782,7 @@ mod tests {
             same_price_ahead_worst: 15.0,
             better_price_ahead: 2.0,
             last_book_ms: 100,
+            first_seen_ms: 90,
         };
 
         mm_sport_update_fifo_guard(
@@ -29760,6 +29830,7 @@ mod tests {
             same_price_ahead_worst: 7.0,
             better_price_ahead: 2.0,
             last_book_ms: 100,
+            first_seen_ms: 90,
         };
 
         mm_sport_update_fifo_guard(
@@ -29961,6 +30032,24 @@ mod tests {
         assert!(!mm_sport_reward_min_shares_cap_blocks_market(0.0, 100.0));
         assert!(!mm_sport_reward_min_shares_cap_blocks_market(100.0, 100.0));
         assert!(mm_sport_reward_min_shares_cap_blocks_market(1000.0, 100.0));
+    }
+
+    #[test]
+    fn mm_sport_pair_depth_floor_and_baseline_defaults_match_runtime_policy() {
+        assert!((MM_SPORT_LOW_DEPTH_FLOOR_USD - 500.0).abs() < 1e-9);
+        assert!((MM_SPORT_PAIR_BASELINE_REWARD_MULT - 0.5).abs() < 1e-9);
+        let baseline =
+            mm_sport_reward_floor_shares_with_cap(1_000.0, MM_SPORT_PAIR_BASELINE_REWARD_MULT, 0.0);
+        assert!((baseline - 500.0).abs() < 1e-9);
+        let required = mm_sport_pair_baseline_required_ext_top_shares(baseline, 0.20);
+        assert!((required - 2_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mm_sport_fifo_requires_min_order_age_before_cancel() {
+        assert!(!mm_sport_fifo_can_cancel_for_age(10_999, 1_000));
+        assert!(mm_sport_fifo_can_cancel_for_age(11_000, 1_000));
+        assert_eq!(mm_sport_fifo_order_age_ms(500, 1_000), 0);
     }
 
     #[test]

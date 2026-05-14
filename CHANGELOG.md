@@ -1,5 +1,9 @@
 # EVPoly Desktop Changelog
 
+## UI-v2.3.6 - 2026-05-14
+- Bumped desktop app/updater version to 2.3.6.
+- Repinned the bundled runtime sidecar to runtime `v2.3.6` (`822b03f`) with EVSnipe Hit Price discovery.
+
 ## UI-v2.3.4 - 2026-05-14
 - Added the Home builder fee disclosure banner.
 - Bumped desktop app/updater version to 2.3.4.

@@ -316,10 +316,6 @@ struct DesktopMmSportSettings {
     quote_size_mode: String,
     nonsport_quote_size_mode: String,
     entry_price_mode: String,
-    multiple_collateral_cap_mult: f64,
-    nonsport_multiple_collateral_cap_mult: f64,
-    depth_ratio_collateral_cap_mult: f64,
-    nonsport_depth_ratio_collateral_cap_mult: f64,
     min_reward_rate_per_day: f64,
     match_only: bool,
     allowed_sport_league_codes: String,
@@ -334,6 +330,10 @@ struct DesktopMmSportSettings {
     pause_after_fill_sec: f64,
     inventory_exit_start_hours: f64,
     nonsport_end_exit_start_hours: f64,
+    nonsport_entry_schedule_enabled: bool,
+    nonsport_entry_schedule_days_utc: String,
+    nonsport_entry_schedule_start_minute_utc: f64,
+    nonsport_entry_schedule_end_minute_utc: f64,
     inventory_exit_max_loss_cents: f64,
     inventory_exit_mode: String,
     max_share_ratio: f64,
@@ -397,6 +397,10 @@ fn normalize_nonnegative_integer_f64(value: f64, default: f64) -> f64 {
     } else {
         default
     }
+}
+
+fn normalize_utc_minute_f64(value: f64, default: f64) -> f64 {
+    normalize_nonnegative_integer_f64(value, default).min(1439.0)
 }
 
 fn normalize_cooldown_pair_f64(min_value: f64, max_value: f64) -> (f64, f64) {
@@ -955,28 +959,6 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                         .unwrap_or("passive"),
                 )
                 .to_string(),
-                multiple_collateral_cap_mult: config_io::env_template_default_f64(
-                    "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT",
-                    0.45,
-                ),
-                nonsport_multiple_collateral_cap_mult: config_io::env_template_default_f64(
-                    "EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT",
-                    config_io::env_template_default_f64(
-                        "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT",
-                        0.45,
-                    ),
-                ),
-                depth_ratio_collateral_cap_mult: config_io::env_template_default_f64(
-                    "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
-                    0.90,
-                ),
-                nonsport_depth_ratio_collateral_cap_mult: config_io::env_template_default_f64(
-                    "EVPOLY_MM_SPORT_NONSPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
-                    config_io::env_template_default_f64(
-                        "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
-                        0.90,
-                    ),
-                ),
                 min_reward_rate_per_day: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY",
                     5.0,
@@ -1033,6 +1015,22 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC",
                     172800.0,
                 ) / 3600.0,
+                nonsport_entry_schedule_enabled: config_io::env_template_default_bool(
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE",
+                    false,
+                ),
+                nonsport_entry_schedule_days_utc: config_io::env_template_default_string(
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC",
+                )
+                .unwrap_or_else(|| "mon,tue,wed,thu,fri".to_string()),
+                nonsport_entry_schedule_start_minute_utc: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC",
+                    780.0,
+                ),
+                nonsport_entry_schedule_end_minute_utc: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC",
+                    240.0,
+                ),
                 inventory_exit_max_loss_cents: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS",
                     10.0,
@@ -1094,7 +1092,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 quote_cooldown_max_sec,
                 fifo_max_share_ratio: config_io::env_template_default_f64(
                     "EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO",
-                    0.11,
+                    0.20,
                 ),
                 active_sport_market_cap,
                 active_nonsport_market_cap,
@@ -2044,42 +2042,6 @@ fn desktop_config_to_profile_payload(
         ),
     );
     strategy.insert(
-        "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT".to_string(),
-        number_to_json(
-            config
-                .strategy_settings
-                .mm_sport
-                .multiple_collateral_cap_mult,
-        ),
-    );
-    strategy.insert(
-        "EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT".to_string(),
-        number_to_json(
-            config
-                .strategy_settings
-                .mm_sport
-                .nonsport_multiple_collateral_cap_mult,
-        ),
-    );
-    strategy.insert(
-        "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT".to_string(),
-        number_to_json(
-            config
-                .strategy_settings
-                .mm_sport
-                .depth_ratio_collateral_cap_mult,
-        ),
-    );
-    strategy.insert(
-        "EVPOLY_MM_SPORT_NONSPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT".to_string(),
-        number_to_json(
-            config
-                .strategy_settings
-                .mm_sport
-                .nonsport_depth_ratio_collateral_cap_mult,
-        ),
-    );
-    strategy.insert(
         "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY".to_string(),
         number_to_json(config.strategy_settings.mm_sport.min_reward_rate_per_day),
     );
@@ -2190,6 +2152,46 @@ fn desktop_config_to_profile_payload(
                 .nonsport_end_exit_start_hours
                 * 3600.0,
         ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE".to_string(),
+        bool_to_json(
+            config
+                .strategy_settings
+                .mm_sport
+                .nonsport_entry_schedule_enabled,
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_sport
+                .nonsport_entry_schedule_days_utc
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC".to_string(),
+        number_to_json(normalize_utc_minute_f64(
+            config
+                .strategy_settings
+                .mm_sport
+                .nonsport_entry_schedule_start_minute_utc,
+            780.0,
+        )),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC".to_string(),
+        number_to_json(normalize_utc_minute_f64(
+            config
+                .strategy_settings
+                .mm_sport
+                .nonsport_entry_schedule_end_minute_utc,
+            240.0,
+        )),
     );
     strategy.insert(
         "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS".to_string(),
@@ -2532,19 +2534,8 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT",
         config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_SIZE_MULT", 1.2),
     );
-    let mm_sport_multiple_collateral_cap_mult = f64_from_object(
-        &strategy,
-        "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT",
-        config_io::env_template_default_f64("EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT", 0.45),
-    );
-    let mm_sport_depth_ratio_collateral_cap_mult = f64_from_object(
-        &strategy,
-        "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
-        config_io::env_template_default_f64(
-            "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT",
-            0.90,
-        ),
-    );
+    let mm_sport_multiple_collateral_cap_mult = 0.45;
+    let mm_sport_depth_ratio_collateral_cap_mult = 0.45;
     let mm_sport_max_share_ratio = f64_from_object(
         &strategy,
         "EVPOLY_MM_SPORT_MAX_SHARE_RATIO",
@@ -2745,9 +2736,9 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                     string_from_object(&strategy, "EVPOLY_MM_SPORT_ENTRY_PRICE_MODE", "passive").as_str()
                 ),
                 "multiple_collateral_cap_mult": mm_sport_multiple_collateral_cap_mult,
-                "nonsport_multiple_collateral_cap_mult": f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_MULTIPLE_COLLATERAL_CAP_MULT", mm_sport_multiple_collateral_cap_mult),
+                "nonsport_multiple_collateral_cap_mult": mm_sport_multiple_collateral_cap_mult,
                 "depth_ratio_collateral_cap_mult": mm_sport_depth_ratio_collateral_cap_mult,
-                "nonsport_depth_ratio_collateral_cap_mult": f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT", mm_sport_depth_ratio_collateral_cap_mult),
+                "nonsport_depth_ratio_collateral_cap_mult": mm_sport_depth_ratio_collateral_cap_mult,
                 "min_reward_rate_per_day": f64_from_object(&strategy, "EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", config_io::env_template_default_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 5.0)),
                 "match_only": bool_from_object(&strategy, "EVPOLY_MM_SPORT_MATCH_ONLY", config_io::env_template_default_bool("EVPOLY_MM_SPORT_MATCH_ONLY", true)),
                 "allowed_sport_league_codes": string_from_object(&strategy, "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES", ""),
@@ -2762,6 +2753,10 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "pause_after_fill_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 600.0)),
                 "inventory_exit_start_hours": f64_from_object(&strategy, "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 28800.0)) / 3600.0,
                 "nonsport_end_exit_start_hours": f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC", 172800.0)) / 3600.0,
+                "nonsport_entry_schedule_enabled": bool_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE", config_io::env_template_default_bool("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE", false)),
+                "nonsport_entry_schedule_days_utc": string_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC", config_io::env_template_default_string("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC").as_deref().unwrap_or("mon,tue,wed,thu,fri")),
+                "nonsport_entry_schedule_start_minute_utc": normalize_utc_minute_f64(f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC", 780.0)), 780.0),
+                "nonsport_entry_schedule_end_minute_utc": normalize_utc_minute_f64(f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC", 240.0)), 240.0),
                 "inventory_exit_max_loss_cents": f64_from_object(&strategy, "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS", config_io::env_template_default_f64("EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS", 10.0)),
                 "inventory_exit_mode": normalize_mm_sport_exit_mode(
                     string_from_object(&strategy, "EVPOLY_MM_SPORT_EXIT_MODE", "normal").as_str()
@@ -2779,7 +2774,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "quote_expiry_max_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 185.0)),
                 "quote_cooldown_min_sec": mm_sport_quote_cooldown_min_sec,
                 "quote_cooldown_max_sec": mm_sport_quote_cooldown_max_sec,
-                "fifo_max_share_ratio": f64_from_object(&strategy, "EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", config_io::env_template_default_f64("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", 0.11)),
+                "fifo_max_share_ratio": f64_from_object(&strategy, "EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", config_io::env_template_default_f64("EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO", 0.20)),
                 "active_sport_market_cap": mm_sport_active_sport_market_cap,
                 "active_nonsport_market_cap": mm_sport_active_nonsport_market_cap
             }
@@ -6606,6 +6601,22 @@ mod tests {
         config.strategy_settings.mm_sport.fifo_max_share_ratio = 0.5;
         config.strategy_settings.mm_sport.max_quote_shares = 250.0;
         config.strategy_settings.mm_sport.nonsport_max_quote_shares = 125.0;
+        config
+            .strategy_settings
+            .mm_sport
+            .nonsport_entry_schedule_enabled = true;
+        config
+            .strategy_settings
+            .mm_sport
+            .nonsport_entry_schedule_days_utc = "mon,wed,sun".to_string();
+        config
+            .strategy_settings
+            .mm_sport
+            .nonsport_entry_schedule_start_minute_utc = 780.0;
+        config
+            .strategy_settings
+            .mm_sport
+            .nonsport_entry_schedule_end_minute_utc = 240.0;
         config.strategy_settings.mm_sport.active_sport_market_cap = 77.0;
         config.strategy_settings.mm_sport.active_nonsport_market_cap = 33.0;
         config.strategy_settings.mm_sport.quote_cooldown_min_sec = 12.0;
@@ -6624,6 +6635,22 @@ mod tests {
         assert_eq!(
             strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES"),
             Some(&serde_json::json!(125.0))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC"),
+            Some(&serde_json::json!("mon,wed,sun"))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC"),
+            Some(&serde_json::json!(780.0))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC"),
+            Some(&serde_json::json!(240.0))
         );
         let profile = Profile {
             id: "p2".to_string(),
@@ -6668,6 +6695,22 @@ mod tests {
             serde_json::json!(125.0)
         );
         assert_eq!(
+            value["strategy_settings"]["mm_sport"]["nonsport_entry_schedule_enabled"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["nonsport_entry_schedule_days_utc"],
+            serde_json::json!("mon,wed,sun")
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["nonsport_entry_schedule_start_minute_utc"],
+            serde_json::json!(780.0)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["nonsport_entry_schedule_end_minute_utc"],
+            serde_json::json!(240.0)
+        );
+        assert_eq!(
             value["strategy_settings"]["mm_sport"]["active_sport_market_cap"],
             serde_json::json!(77.0)
         );
@@ -6696,14 +6739,6 @@ mod tests {
         config.mm_tuning.nonsport_quote_size_multiplier = 0.7;
         config.strategy_settings.mm_sport.quote_size_mode = "multiple".to_string();
         config.strategy_settings.mm_sport.nonsport_quote_size_mode = "depth_ratio".to_string();
-        config
-            .strategy_settings
-            .mm_sport
-            .nonsport_multiple_collateral_cap_mult = 0.25;
-        config
-            .strategy_settings
-            .mm_sport
-            .nonsport_depth_ratio_collateral_cap_mult = 0.55;
         config.strategy_settings.mm_sport.nonsport_max_share_ratio = 0.05;
         config.strategy_settings.mm_sport.nonsport_min_top_depth_usd = 900.0;
 
@@ -6736,11 +6771,11 @@ mod tests {
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_multiple_collateral_cap_mult"],
-            serde_json::json!(0.25)
+            serde_json::json!(0.45)
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_depth_ratio_collateral_cap_mult"],
-            serde_json::json!(0.55)
+            serde_json::json!(0.45)
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_max_share_ratio"],
@@ -6757,8 +6792,6 @@ mod tests {
         let mut strategy = serde_json::json!({
             "EVPOLY_MM_SPORT_QUOTE_SIZE_MODE": "multiple",
             "EVPOLY_MM_SPORT_QUOTE_SIZE_MULT": 2.0,
-            "EVPOLY_MM_SPORT_MULTIPLE_COLLATERAL_CAP_MULT": 0.30,
-            "EVPOLY_MM_SPORT_DEPTH_RATIO_COLLATERAL_CAP_MULT": 0.80,
             "EVPOLY_MM_SPORT_MAX_SHARE_RATIO": 0.12,
             "EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD": 1500.0
         });
@@ -6791,7 +6824,7 @@ mod tests {
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_multiple_collateral_cap_mult"],
-            serde_json::json!(0.30)
+            serde_json::json!(0.45)
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_depth_ratio_collateral_cap_mult"],

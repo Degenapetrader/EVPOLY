@@ -433,6 +433,10 @@ export interface MMSportSettings {
   pause_after_fill_sec: number;
   inventory_exit_start_hours: number;
   nonsport_end_exit_start_hours: number;
+  nonsport_entry_schedule_enabled: boolean;
+  nonsport_entry_schedule_days_utc: string;
+  nonsport_entry_schedule_start_minute_utc: number;
+  nonsport_entry_schedule_end_minute_utc: number;
   inventory_exit_max_loss_cents: number;
   inventory_exit_mode: MMSportInventoryExitMode;
   max_share_ratio: number;

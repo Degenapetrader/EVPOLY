@@ -998,6 +998,13 @@ export function Home() {
       }
       banner={
         <div className="space-y-3">
+          {!selectedStrategyMeta ? (
+            <div className="rounded-[8px] border border-[#24496e] bg-[#102136] px-5 py-4 text-[18px] text-[var(--text-primary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+              <strong className="font-semibold">Builder fees apply to all trades:</strong>{" "}
+              <span className="text-[#9fc7ff]">0.1%</span>{" "}
+              <span className="text-[var(--text-secondary)]">on both taker and maker fills.</span>
+            </div>
+          ) : null}
           <UpdateBanner
             version={updateDownloading ? "Downloading..." : updateVersion}
             onUpdate={handleUpdate}

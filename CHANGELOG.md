@@ -1,5 +1,8 @@
 # EVPoly Changelog
 
+## v2.3.6 - 2026-05-14
+- Changed EVSnipe local market discovery to use the dedicated Polymarket Hit Price tag so daily, weekly, and monthly 7-symbol hit-price ladders are found without broad crypto paging.
+
 ## v2.3.4 - 2026-05-14
 - Added the builder fee disclosure to runtime docs and env templates.
 - Includes MM Sport live-guard market pruning from `strategy-changelog.md` so stale live sports markets can recover without restarting the bot.

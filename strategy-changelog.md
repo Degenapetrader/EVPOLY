@@ -10,6 +10,8 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-05-14
+- `evsnipe_v1`: local Hit Price discovery now queries Gamma's dedicated `hit-price` event tag instead of the broad `crypto` tag, so daily/weekly/monthly "What price will <asset> hit" ladders are found without paging through thousands of unrelated crypto markets (`src/evsnipe.rs`).
+  - Applies only to EVSnipe local discovery candidate sourcing. The 30-day expiry filter, fixed 20% strike-window filter, Binance trigger handling, and submit behavior are unchanged.
 - `mm_sport_v1` / MM 2.0 live-guard recovery: live/in-game sports markets with no inventory or open SELL exposure are now pruned from MM Sport discovery/cache and hot-state maps, held out of rediscovery for a short TTL, and trigger a debounced near-term discovery refresh so stale live markets and ratio-paused conditions can recover without restarting the bot (`src/main.rs`).
   - Applies only to MM 2.0 Sport/Dual sports markets. Conditions with inventory or open SELL exposure are not pruned, so existing SELL cleanup remains in scope.
 - `mm_sport_v1` / MM 2.0 inventory reconcile: zero-applied wallet inventory reconcile rows are no longer returned to the runtime, reducing repeated no-op reconcile noise when a duplicate or already-consumed reconcile cannot change DB inventory (`src/tracking_db.rs`).

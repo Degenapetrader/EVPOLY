@@ -574,7 +574,7 @@ impl EvsnipeFastRuntimeConfig {
     }
 }
 
-const EVSNIPE_DISCOVERY_TAG_SLUG: &str = "crypto";
+const EVSNIPE_DISCOVERY_TAG_SLUG: &str = "hit-price";
 
 #[derive(Debug, Clone)]
 pub struct BinanceTradeTick {
@@ -1933,6 +1933,11 @@ mod tests {
                 assert!((cfg.strike_window_pct - 0.20).abs() < 1e-9);
             },
         );
+    }
+
+    #[test]
+    fn evsnipe_local_discovery_uses_hit_price_page_tag() {
+        assert_eq!(EVSNIPE_DISCOVERY_TAG_SLUG, "hit-price");
     }
 
     #[test]

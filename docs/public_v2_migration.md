@@ -18,7 +18,8 @@ The legacy generic rewards-MM strategy is retired from the public runtime. Histo
 - CLOB V2 order posting is local through the Rust SDK.
 - Main2 is CLOB V2 only. Do not point the public runtime back at CLOB V1.
 - The official EVPOLY builder code is built in; normal users should leave `POLY_BUILDER_CODE` blank.
-- Builder fee rates are managed by Polymarket, not by EVPOLY env settings. Set maker/taker rates in the Polymarket Builder Profile; the CLOB applies the active server-side rates when attributed orders match.
+- Builder fees apply to all trades: 0.1% on both taker and maker fills.
+- Builder fee rates are managed by Polymarket, not by EVPOLY env settings. The CLOB applies the active server-side rates when attributed orders match.
 - EVPOLY does not set `feeRateBps` or local builder maker/taker bps on orders. It only attaches the builder code.
 - `EVPOLY_ALPHA_KEY` is self-serve. With `EVPOLY_ALPHA_AUTO_ONBOARD=true`, runtime auto-registers it on first start when the proxy wallet is present.
 - Per-endpoint alpha tokens are optional; blank values fall back to `EVPOLY_ALPHA_KEY`.
@@ -38,5 +39,5 @@ The legacy generic rewards-MM strategy is retired from the public runtime. Histo
 2. Fill `POLY_PRIVATE_KEY`, `POLY_SIGNATURE_TYPE`, and `POLY_PROXY_WALLET_ADDRESS` when using proxy/safe mode.
 3. Set strategy base sizes explicitly.
 4. Leave `EVPOLY_ALPHA_KEY` blank unless you already have one.
-5. Confirm active builder fee rates on Polymarket before public release; profile changes may be delayed by Polymarket policy.
+5. Confirm the builder fee disclosure is visible before public release; profile changes may be delayed by Polymarket policy.
 6. Start with `./ev start dry`, then move to `./ev start live` after local checks pass.

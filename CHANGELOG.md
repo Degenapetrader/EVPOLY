@@ -1,5 +1,9 @@
 # EVPoly Changelog
 
+## v2.3.4 - 2026-05-14
+- Added the builder fee disclosure to runtime docs and env templates.
+- Includes MM Sport live-guard market pruning from `strategy-changelog.md` so stale live sports markets can recover without restarting the bot.
+
 ## v2.3.0 - 2026-05-11
 - Added MM 2.0 max quote share caps for Sport and Non-S routes.
 - Added MM 2.0 entry price mode so BUY entries can use passive one-tick-behind pricing or current best-bid pricing.

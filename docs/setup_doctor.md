@@ -41,6 +41,7 @@ Doctor result meanings:
 
 Important:
 - order posting is local through the CLOB V2 SDK with built-in official builder attribution
+- builder fees apply to all trades: 0.1% on both taker and maker fills
 - builder fee rates are server-side Polymarket Builder Profile settings; Setup Doctor does not create or validate local maker/taker fee bps
 - per-strategy remote tokens are optional because blank values fall back to `EVPOLY_ALPHA_KEY`
 - relayer credentials are reported, not generated

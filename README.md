@@ -98,8 +98,9 @@ bash scripts/verify_env_coverage.sh --env-file .env
 
 ## Signer and Discovery Defaults
 - Order posting uses local CLOB V2 SDK signing with the official EVPOLY builder code built in.
+- Builder fees apply to all trades: 0.1% on both taker and maker fills.
 - Leave `POLY_BUILDER_CODE` blank unless you are intentionally testing an advanced override.
-- Builder fee rates are not configured locally. Set maker/taker builder fees in the Polymarket Builder Profile; the CLOB validates the builder code and applies the active server-side rates at match time.
+- Builder fee rates are not configured locally. The CLOB validates the builder code and applies the active server-side rates at match time.
 - Relayer submit fallback uses `EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN` only for non-order proxy wallet flows such as redeem, merge, approvals, and Auto-Redeem approval toggles.
 - Shared timeframe discovery uses the configured remote discovery endpoint first, with local fallback where supported. EVSnipe discovery is local-only.
 

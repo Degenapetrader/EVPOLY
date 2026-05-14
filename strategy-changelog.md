@@ -9,6 +9,11 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-05-14
+- `mm_sport_v1` / MM 2.0 live-guard recovery: live/in-game sports markets with no inventory or open SELL exposure are now pruned from MM Sport discovery/cache and hot-state maps, held out of rediscovery for a short TTL, and trigger a debounced near-term discovery refresh so stale live markets and ratio-paused conditions can recover without restarting the bot (`src/main.rs`).
+  - Applies only to MM 2.0 Sport/Dual sports markets. Conditions with inventory or open SELL exposure are not pruned, so existing SELL cleanup remains in scope.
+- `mm_sport_v1` / MM 2.0 inventory reconcile: zero-applied wallet inventory reconcile rows are no longer returned to the runtime, reducing repeated no-op reconcile noise when a duplicate or already-consumed reconcile cannot change DB inventory (`src/tracking_db.rs`).
+
 ### 2026-05-13
 - `mm_sport_v1` / MM 2.0 depth and FIFO defaults: aligned local defaults with the SaaS runtime by lowering the remote low-depth floor to `$500`, using a hardcoded `0.5x` reward-min baseline for pair feasibility, making FIFO wait at least `10s` after first seeing an order before front-ratio cancellation, and removing BUY capacity-error pair cancel/backoff from the fresh-entry path (`src/main.rs`, `src/mm/mod.rs`, `.env.example`, `.env.full.example`).
   - Default Sport fresh entries now use `best_bid` while Non-S fresh entries stay passive, quote sizing defaults to `0.20` depth ratio with `1000` Sport / `200` Non-S max quote shares, FIFO defaults to `0.50`, minimum top bid defaults to `0.05`, and inventory exit / after-fill pause default to `3600s`.

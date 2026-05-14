@@ -2312,6 +2312,9 @@ const MM_SPORT_EXIT_FALLBACK_IMMEDIATE_RETRY_MS: i64 = 15_000;
 const MM_SPORT_EXIT_FALLBACK_IMMEDIATE_RATE_LIMIT_RETRY_MS: i64 = 60_000;
 const MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MIN_MS: i64 = 5_000;
 const MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MAX_MS: i64 = 5 * 60 * 1_000;
+const MM_SPORT_LIVE_GUARD_PRUNE_TTL_MS: i64 = 6 * 60 * 60 * 1_000;
+const MM_SPORT_LIVE_GUARD_PRUNE_DISCOVERY_DELAY_MS: i64 = 5_000;
+const MM_SPORT_LIVE_GUARD_PRUNE_DISCOVERY_DEBOUNCE_MS: i64 = 5 * 60 * 1_000;
 const MM_SPORT_RATIO_RESUME_MULTIPLIER: f64 = 0.9;
 const MM_SPORT_RATIO_RESUME_CONSECUTIVE_CHECKS: u8 = 2;
 const MM_SPORT_LEGACY_QUEUE_GUARD_ENABLE: bool = false;
@@ -2522,6 +2525,102 @@ fn mm_sport_should_log_cancel_unresolved_warn(order_id: &str) -> bool {
     }
     state.insert(order_id.to_string(), now_ms);
     true
+}
+
+fn mm_sport_condition_key_matches(key: &str, condition_id: &str) -> bool {
+    let condition_id = condition_id.trim();
+    !condition_id.is_empty() && key.trim().eq_ignore_ascii_case(condition_id)
+}
+
+fn mm_sport_token_side_key_matches_condition(key: &str, condition_id: &str) -> bool {
+    let condition_id = condition_id.trim();
+    !condition_id.is_empty()
+        && key
+            .split(':')
+            .next()
+            .map(|value| value.trim().eq_ignore_ascii_case(condition_id))
+            .unwrap_or(false)
+}
+
+fn mm_sport_remove_condition_from_markets(
+    markets: &mut Vec<MmSportMarket>,
+    condition_id: &str,
+) -> usize {
+    let before = markets.len();
+    markets.retain(|market| !mm_sport_condition_key_matches(&market.condition_id, condition_id));
+    before.saturating_sub(markets.len())
+}
+
+fn mm_sport_remove_condition_map<T>(
+    map: &mut std::collections::HashMap<String, T>,
+    condition_id: &str,
+) -> usize {
+    let before = map.len();
+    map.retain(|key, _| !mm_sport_condition_key_matches(key, condition_id));
+    before.saturating_sub(map.len())
+}
+
+fn mm_sport_remove_condition_set(
+    set: &mut std::collections::HashSet<String>,
+    condition_id: &str,
+) -> usize {
+    let before = set.len();
+    set.retain(|key| !mm_sport_condition_key_matches(key, condition_id));
+    before.saturating_sub(set.len())
+}
+
+fn mm_sport_remove_token_side_map<T>(
+    map: &mut std::collections::HashMap<String, T>,
+    condition_id: &str,
+) -> usize {
+    let before = map.len();
+    map.retain(|key, _| !mm_sport_token_side_key_matches_condition(key, condition_id));
+    before.saturating_sub(map.len())
+}
+
+fn mm_sport_filter_recently_pruned_markets(
+    markets: Vec<MmSportMarket>,
+    pruned_until_by_condition: &mut std::collections::HashMap<String, i64>,
+    now_ms: i64,
+) -> (Vec<MmSportMarket>, usize) {
+    pruned_until_by_condition.retain(|_, until_ms| *until_ms > now_ms);
+    let before = markets.len();
+    let filtered = markets
+        .into_iter()
+        .filter(|market| {
+            let condition_key = market.condition_id.trim().to_ascii_lowercase();
+            condition_key.is_empty()
+                || !pruned_until_by_condition.contains_key(condition_key.as_str())
+        })
+        .collect::<Vec<_>>();
+    let removed = before.saturating_sub(filtered.len());
+    (filtered, removed)
+}
+
+fn mm_sport_schedule_discovery_after_live_guard_prune(
+    now_ms: i64,
+    last_forced_discovery_ms: &mut i64,
+    last_discovery_ms: &mut i64,
+    next_discovery_attempt_ms: &mut i64,
+) -> bool {
+    if *last_forced_discovery_ms > 0
+        && now_ms.saturating_sub(*last_forced_discovery_ms)
+            < MM_SPORT_LIVE_GUARD_PRUNE_DISCOVERY_DEBOUNCE_MS
+    {
+        return false;
+    }
+    *last_forced_discovery_ms = now_ms;
+    *last_discovery_ms = 0;
+    *next_discovery_attempt_ms =
+        now_ms.saturating_add(MM_SPORT_LIVE_GUARD_PRUNE_DISCOVERY_DELAY_MS);
+    true
+}
+
+fn mm_sport_live_guard_should_prune_market(
+    condition_has_inventory: bool,
+    condition_has_sell_exposure: bool,
+) -> bool {
+    !condition_has_inventory && !condition_has_sell_exposure
 }
 
 fn mm_sport_build_active_markets(
@@ -16560,6 +16659,7 @@ async fn main() -> Result<()> {
                 let mut last_good_discovered_markets: Vec<MmSportMarket> = Vec::new();
                 let mut last_discovery_ms = 0_i64;
                 let mut next_discovery_attempt_ms = 0_i64;
+                let mut last_live_guard_prune_forced_discovery_ms = 0_i64;
                 let mut discovery_backoff_ms = MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MIN_MS;
                 let mut last_market_event_ms = polymarket_ws_for_mm_sport.last_market_msg_ms();
                 let mut last_user_event_ms = polymarket_ws_for_mm_sport.last_user_msg_ms();
@@ -16663,6 +16763,10 @@ async fn main() -> Result<()> {
                 let polymarket_sports_live_state_shared =
                     sports_live_guard::new_shared_sports_live_state();
                 let mut last_polymarket_live_guard_log_ms_by_condition: std::collections::HashMap<
+                    String,
+                    i64,
+                > = std::collections::HashMap::new();
+                let mut live_guard_pruned_conditions_until_ms: std::collections::HashMap<
                     String,
                     i64,
                 > = std::collections::HashMap::new();
@@ -17012,6 +17116,12 @@ async fn main() -> Result<()> {
                         {
                             Ok((markets, discovery_report)) => {
                                 last_discovery_ms = now_ms;
+                                let (markets, live_guard_pruned_market_count) =
+                                    mm_sport_filter_recently_pruned_markets(
+                                        markets,
+                                        &mut live_guard_pruned_conditions_until_ms,
+                                        now_ms,
+                                    );
                                 let selected_market_count = markets.len();
                                 let mut using_cached_markets = false;
                                 let next_discovered_markets = if selected_market_count > 0 {
@@ -17170,6 +17280,7 @@ async fn main() -> Result<()> {
                                         "sponsored_reward_blocked_conditions": discovery_report.sponsored_reward_condition_ids.len(),
                                         "skipped_not_reward_eligible": discovery_report.skipped_not_reward_eligible,
                                         "skipped_reward_min_shares_cap": discovery_report.skipped_reward_min_shares_cap,
+                                        "skipped_recent_live_guard_pruned": live_guard_pruned_market_count,
                                         "skipped_blocked_sport_league": discovery_report.skipped_blocked_sport_league,
                                         "skipped_blocked_competition_level": discovery_report.skipped_blocked_competition_level,
                                         "skipped_not_allowed_sport_league": discovery_report.skipped_not_allowed_sport_league,
@@ -17382,6 +17493,7 @@ async fn main() -> Result<()> {
                     entry_pause_until_by_condition.retain(|_, until| *until > now_ms);
                     bust_pause_until_by_condition.retain(|_, until| *until > now_ms);
                     ratio_pause_until_by_condition.retain(|_, until| *until > now_ms);
+                    live_guard_pruned_conditions_until_ms.retain(|_, until| *until > now_ms);
                     let expired_no_exit_side_pauses = no_exit_side_pause_by_token
                         .iter()
                         .filter(|(_, state)| state.pause_until_ms <= now_ms)
@@ -19248,6 +19360,9 @@ async fn main() -> Result<()> {
                             .get(&market.condition_id)
                             .cloned()
                             .unwrap_or_default();
+                        let condition_has_sell_exposure = market_rows
+                            .iter()
+                            .any(|row| row.side.eq_ignore_ascii_case("SELL"));
                         if market_rows.is_empty() {
                             quote_expiry_by_condition.remove(condition_key_lc.as_str());
                         }
@@ -19485,6 +19600,162 @@ async fn main() -> Result<()> {
                                             "buy_cancel_count": buy_rows.len()
                                         }),
                                     );
+                                }
+                                if mm_sport_live_guard_should_prune_market(
+                                    condition_has_inventory,
+                                    condition_has_sell_exposure,
+                                ) {
+                                    let condition_id = market.condition_id.clone();
+                                    let condition_key_lc = condition_id.trim().to_ascii_lowercase();
+                                    let discovered_removed = mm_sport_remove_condition_from_markets(
+                                        &mut discovered_markets,
+                                        condition_id.as_str(),
+                                    );
+                                    let last_good_removed = mm_sport_remove_condition_from_markets(
+                                        &mut last_good_discovered_markets,
+                                        condition_id.as_str(),
+                                    );
+                                    let fallback_removed = mm_sport_remove_condition_map(
+                                        &mut fallback_exit_markets_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut fallback_exit_retry_after_ms_by_condition,
+                                        condition_id.as_str(),
+                                    );
+                                    let pause_state_removed = mm_sport_remove_condition_map(
+                                        &mut entry_pause_until_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut bust_pause_until_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut ratio_pause_until_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut ratio_recovery_streak_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut last_ratio_cancel_ms_by_condition,
+                                        condition_id.as_str(),
+                                    );
+                                    let ratio_state_removed = mm_sport_remove_condition_set(
+                                        &mut ratio_blocked_conditions,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_set(
+                                        &mut alpha_depth_skip_conditions,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_set(
+                                        &mut depth_skip_active_conditions,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_set(
+                                        &mut ratio_infeasible_active_conditions,
+                                        condition_id.as_str(),
+                                    );
+                                    let quote_state_removed = mm_sport_remove_condition_map(
+                                        &mut quote_expiry_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_token_side_map(
+                                        &mut last_action_ms_by_token_side,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_token_side_map(
+                                        &mut quote_cooldown_until_by_token_side,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_token_side_map(
+                                        &mut last_quote_cooldown_skip_log_ms_by_token_side,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_token_side_map(
+                                        &mut quote_hold_until_by_token_side,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_token_side_map(
+                                        &mut last_quote_hold_skip_log_ms_by_token_side,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_token_side_map(
+                                        &mut last_quote_expiration_log_by_token_side,
+                                        condition_id.as_str(),
+                                    );
+                                    let no_exit_state_before = no_exit_side_pause_by_token.len();
+                                    no_exit_side_pause_by_token.retain(|_, state| {
+                                        !mm_sport_condition_key_matches(
+                                            state.condition_id.as_str(),
+                                            condition_id.as_str(),
+                                        )
+                                    });
+                                    let no_exit_state_removed = no_exit_state_before
+                                        .saturating_sub(no_exit_side_pause_by_token.len());
+                                    if no_exit_state_removed > 0 {
+                                        mm_sport_persist_no_exit_side_pauses(
+                                            &tracking_db_for_mm_sport,
+                                            &no_exit_side_pause_by_token,
+                                        );
+                                    }
+                                    let log_state_removed = mm_sport_remove_condition_map(
+                                        &mut last_polymarket_live_guard_log_ms_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut last_min_entry_top_bid_skip_log_ms_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut last_inventory_exit_mode_log_ms_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut last_watchdog_pause_reason_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut holder_snapshot_cache_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut holder_snapshot_retry_after_ms_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut last_holder_risk_log_ms_by_condition,
+                                        condition_id.as_str(),
+                                    ) + mm_sport_remove_condition_map(
+                                        &mut last_holder_risk_persist_ms_by_condition,
+                                        condition_id.as_str(),
+                                    );
+                                    if !condition_key_lc.is_empty() {
+                                        live_guard_pruned_conditions_until_ms.insert(
+                                            condition_key_lc,
+                                            now_ms.saturating_add(MM_SPORT_LIVE_GUARD_PRUNE_TTL_MS),
+                                        );
+                                    }
+                                    let market_removed =
+                                        discovered_removed.saturating_add(last_good_removed);
+                                    let forced_discovery =
+                                        if market_removed.saturating_add(fallback_removed) > 0 {
+                                            mm_sport_schedule_discovery_after_live_guard_prune(
+                                                now_ms,
+                                                &mut last_live_guard_prune_forced_discovery_ms,
+                                                &mut last_discovery_ms,
+                                                &mut next_discovery_attempt_ms,
+                                            )
+                                        } else {
+                                            false
+                                        };
+                                    log_event(
+                                        "mm_sport_live_guard_market_pruned",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                            "condition_id": condition_id,
+                                            "market_slug": market.market_slug,
+                                            "reason": decision.reason,
+                                            "discovered_removed": discovered_removed,
+                                            "last_good_removed": last_good_removed,
+                                            "fallback_removed": fallback_removed,
+                                            "pause_state_removed": pause_state_removed,
+                                            "ratio_state_removed": ratio_state_removed,
+                                            "quote_state_removed": quote_state_removed,
+                                            "no_exit_state_removed": no_exit_state_removed,
+                                            "log_state_removed": log_state_removed,
+                                            "condition_has_inventory": condition_has_inventory,
+                                            "condition_has_sell_exposure": condition_has_sell_exposure,
+                                            "inventory_exit_mode": inventory_exit_mode,
+                                            "forced_discovery": forced_discovery,
+                                            "next_discovery_attempt_ms": next_discovery_attempt_ms,
+                                            "prune_ttl_ms": MM_SPORT_LIVE_GUARD_PRUNE_TTL_MS
+                                        }),
+                                    );
+                                    continue;
                                 }
                                 if !inventory_exit_mode {
                                     continue;
@@ -29128,6 +29399,102 @@ mod tests {
             side: "BUY".to_string(),
             status: "OPEN".to_string(),
         }
+    }
+
+    #[test]
+    fn mm_sport_live_guard_prune_helpers_clear_market_and_hot_state() {
+        let now_ms = 2_000_000_000_000_i64;
+        let mut discovered_markets = vec![
+            mm_sport_test_market("cond-live", 900.0, now_ms + 86_400_000),
+            mm_sport_test_market("cond-fresh", 800.0, now_ms + 86_400_000),
+        ];
+        let mut ratio_pause =
+            std::collections::HashMap::from([("COND-LIVE".to_string(), now_ms + 60_000)]);
+        let mut ratio_blocked = std::collections::HashSet::from(["cond-live".to_string()]);
+        let mut quote_holds =
+            std::collections::HashMap::from([("cond-live:token:BUY".to_string(), now_ms + 60_000)]);
+
+        assert_eq!(
+            mm_sport_remove_condition_from_markets(&mut discovered_markets, "cond-live"),
+            1
+        );
+        assert_eq!(
+            discovered_markets
+                .iter()
+                .map(|market| market.condition_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cond-fresh"]
+        );
+        assert_eq!(
+            mm_sport_remove_condition_map(&mut ratio_pause, "cond-live"),
+            1
+        );
+        assert_eq!(
+            mm_sport_remove_condition_set(&mut ratio_blocked, "COND-LIVE"),
+            1
+        );
+        assert_eq!(
+            mm_sport_remove_token_side_map(&mut quote_holds, "cond-live"),
+            1
+        );
+        assert!(ratio_pause.is_empty());
+        assert!(ratio_blocked.is_empty());
+        assert!(quote_holds.is_empty());
+    }
+
+    #[test]
+    fn mm_sport_live_guard_pruned_conditions_filter_discovery_until_ttl() {
+        let now_ms = 2_000_000_000_000_i64;
+        let mut pruned_until = std::collections::HashMap::from([(
+            "cond-live".to_string(),
+            now_ms + MM_SPORT_LIVE_GUARD_PRUNE_TTL_MS,
+        )]);
+        let markets = vec![
+            mm_sport_test_market("cond-live", 900.0, now_ms + 86_400_000),
+            mm_sport_test_market("cond-fresh", 800.0, now_ms + 86_400_000),
+        ];
+
+        let (filtered, removed) =
+            mm_sport_filter_recently_pruned_markets(markets, &mut pruned_until, now_ms);
+
+        assert_eq!(removed, 1);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].condition_id, "cond-fresh");
+    }
+
+    #[test]
+    fn mm_sport_live_guard_prune_forced_discovery_is_debounced() {
+        let now_ms = 2_000_000_000_000_i64;
+        let mut last_forced = 0_i64;
+        let mut last_discovery = now_ms - 1_000;
+        let mut next_attempt = now_ms + 3_600_000;
+
+        assert!(mm_sport_schedule_discovery_after_live_guard_prune(
+            now_ms,
+            &mut last_forced,
+            &mut last_discovery,
+            &mut next_attempt
+        ));
+        assert_eq!(last_discovery, 0);
+        assert_eq!(
+            next_attempt,
+            now_ms + MM_SPORT_LIVE_GUARD_PRUNE_DISCOVERY_DELAY_MS
+        );
+
+        assert!(!mm_sport_schedule_discovery_after_live_guard_prune(
+            now_ms + 1_000,
+            &mut last_forced,
+            &mut last_discovery,
+            &mut next_attempt
+        ));
+    }
+
+    #[test]
+    fn mm_sport_live_guard_prunes_only_without_inventory_or_sell_exposure() {
+        assert!(mm_sport_live_guard_should_prune_market(false, false));
+        assert!(!mm_sport_live_guard_should_prune_market(true, false));
+        assert!(!mm_sport_live_guard_should_prune_market(false, true));
+        assert!(!mm_sport_live_guard_should_prune_market(true, true));
     }
 
     #[test]

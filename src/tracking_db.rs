@@ -7157,6 +7157,9 @@ WHERE rn=1
                     "mm_inventory_reconcile",
                     Some(reason_json.as_str()),
                 )?;
+                if result.applied_units <= 1e-9 {
+                    continue;
+                }
                 out.push(MmInventoryReconcileRow {
                     consume_key: result.consume_key,
                     action: "consume".to_string(),
@@ -7261,6 +7264,9 @@ WHERE rn=1
                     }
                     Err(e) => return Err(e),
                 };
+                if applied_add_shares <= 1e-9 {
+                    continue;
+                }
                 out.push(MmInventoryReconcileRow {
                     consume_key: event_key,
                     action: "add".to_string(),

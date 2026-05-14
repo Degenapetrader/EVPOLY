@@ -1,5 +1,10 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.3.4 - 2026-05-14
+- Added the Home builder fee disclosure banner.
+- Bumped Linux app/updater version to 2.3.4.
+- Repinned the bundled runtime sidecar to runtime `v2.3.4` (`0eb6f36`).
+
 ## Linux-v2.3.3 - 2026-05-13
 - Bumped Linux app/updater version to 2.3.3.
 - Repinned the bundled runtime sidecar to runtime `v2.3.3` (`99f7164`).

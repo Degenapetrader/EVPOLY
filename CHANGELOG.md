@@ -1,5 +1,11 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.3.5 - 2026-05-14
+- Added the MM 2.0 Non-S Active Hours controls to the Linux Strategy Settings UI.
+- Aligned Linux MM 2.0 defaults with the desktop app, including Best Bid entry, quote-share caps, FIFO, and hidden pUSD cap controls.
+- Hid SessionBand in the Linux strategy list and kept it disabled by default.
+- Bumped Linux app/updater version to 2.3.5.
+
 ## Linux-v2.3.4 - 2026-05-14
 - Added the Home builder fee disclosure banner.
 - Bumped Linux app/updater version to 2.3.4.

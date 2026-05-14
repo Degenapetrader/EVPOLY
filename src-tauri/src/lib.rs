@@ -733,14 +733,14 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 "EVPOLY_SESSIONBAND_BASE_SIZE_USD",
                 10.0,
             ),
-            evsnipe_per_hit: config_io::env_template_default_f64("EVPOLY_EVSNIPE_SIZE_USD", 10.0),
+            evsnipe_per_hit: config_io::env_template_default_f64("EVPOLY_EVSNIPE_SIZE_USD", 5.0),
         },
         caps: DesktopCaps {
             premarket: 100000.0,
             endgame: 100000.0,
             evcurve: 100000.0,
             session_band: 100000.0,
-            evsnipe: 100000.0,
+            evsnipe: 10000.0,
         },
         mm_tuning: DesktopMmTuning {
             rewards_min_share_multiple: 1.0,
@@ -2634,14 +2634,14 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
             ),
             "evcurve": f64_from_object(&sizing, "EVPOLY_EVCURVE_BASE_SIZE_USD", 10.0),
             "session_band": f64_from_object(&sizing, "EVPOLY_SESSIONBAND_BASE_SIZE_USD", 10.0),
-            "evsnipe_per_hit": f64_from_object(&sizing, "EVPOLY_EVSNIPE_SIZE_USD", 10.0)
+            "evsnipe_per_hit": f64_from_object(&sizing, "EVPOLY_EVSNIPE_SIZE_USD", 5.0)
         },
         "caps": {
             "premarket": f64_from_object(&sizing, "EVPOLY_ARB_STRAT_PREMARKET_MAX_USD", 100000.0),
             "endgame": f64_from_object(&sizing, "EVPOLY_ARB_STRAT_ENDGAME_MAX_USD", 100000.0),
             "evcurve": f64_from_object(&sizing, "EVPOLY_ARB_STRAT_EVCURVE_MAX_USD", 100000.0),
             "session_band": f64_from_object(&sizing, "EVPOLY_ARB_STRAT_SESSIONBAND_MAX_USD", 100000.0),
-            "evsnipe": f64_from_object(&sizing, "EVPOLY_ARB_STRAT_EVSNIPE_MAX_USD", 100000.0)
+            "evsnipe": f64_from_object(&sizing, "EVPOLY_ARB_STRAT_EVSNIPE_MAX_USD", 10000.0)
         },
         "mm_tuning": {
             "rewards_min_share_multiple": 1.0,

@@ -59,7 +59,7 @@ describe("desktop config MM 2.0 sizing profiles", () => {
   });
 
   it("normalizes MM 2.0 entry price mode", () => {
-    expect(mergeConfig(null).strategy_settings.mm_sport.entry_price_mode).toBe("passive");
+    expect(mergeConfig(null).strategy_settings.mm_sport.entry_price_mode).toBe("best_bid");
     expect(
       mergeConfig({
         strategy_settings: { mm_sport: { entry_price_mode: "best-bid" } },
@@ -69,13 +69,13 @@ describe("desktop config MM 2.0 sizing profiles", () => {
       mergeConfig({
         strategy_settings: { mm_sport: { entry_price_mode: "market" } },
       } as unknown as Partial<BotConfig>).strategy_settings.mm_sport.entry_price_mode
-    ).toBe("passive");
+    ).toBe("best_bid");
   });
 
   it("defaults and falls back MM 2.0 max quote share caps", () => {
     expect(mergeConfig(null).strategy_settings.mm_sport).toMatchObject({
-      max_quote_shares: 0,
-      nonsport_max_quote_shares: 0,
+      max_quote_shares: 1000,
+      nonsport_max_quote_shares: 200,
     });
 
     const merged = mergeConfig({

@@ -140,9 +140,9 @@ function strategyKeyFromRoute(strategySlug?: string): StrategyKey | null {
 }
 
 const WEEKEND_POLICY_TOOLTIP_PAUSE =
-  "Stops new weekend entries for Premarket, Endgame, EVCurve, and S-Band.";
+  "Stops new weekend entries for Premarket, Endgame, and EVCurve.";
 const WEEKEND_POLICY_TOOLTIP_OFF =
-  "Premarket, Endgame, EVCurve, and S-Band keep trading on weekends.";
+  "Premarket, Endgame, and EVCurve keep trading on weekends.";
 
 function resumeOfferCopy(offer: PendingLinuxResumeOffer): string {
   if (offer.reason === "linux_update") {

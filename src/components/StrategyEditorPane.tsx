@@ -1693,17 +1693,6 @@ export function StrategyEditorPane({
                     isNonSport ? { nonsport_min_top_depth_usd: value } : { min_top_depth_usd: value }
                   )
               )}
-              {renderNumberField(
-                "Depth pUSD Cap",
-                depthCap,
-                (value) =>
-                  patchProfile(
-                    isNonSport
-                      ? { nonsport_depth_ratio_collateral_cap_mult: value }
-                      : { depth_ratio_collateral_cap_mult: value }
-                  ),
-                { max: 1, step: 0.01 }
-              )}
             </div>
             {isNonSport ? (
               <>

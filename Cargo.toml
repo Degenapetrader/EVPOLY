@@ -111,3 +111,6 @@ futures-util = "0.3"
 rusqlite = { version = "0.31", features = ["bundled"] }
 rustls = { version = "0.23", features = ["ring"] }
 axum = { version = "0.8", features = ["json"] }
+
+[patch.crates-io]
+polymarket_client_sdk_v2 = { path = "vendor-polymarket-client-sdk/polymarket_client_sdk_v2" }

@@ -1,0 +1,312 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+## [0.4.4](https://github.com/Polymarket/rs-clob-client/compare/v0.4.3...v0.4.4) - 2026-03-17
+
+### Fixed
+
+- *(ws)* handle broadcast::Lagged as recoverable instead of fatal ([#279](https://github.com/Polymarket/rs-clob-client/pull/279))
+- *(data::types)* zero len string at end date ([#276](https://github.com/Polymarket/rs-clob-client/pull/276))
+
+### Other
+
+- *(cargo)* bump serde_with from 3.17.0 to 3.18.0 ([#288](https://github.com/Polymarket/rs-clob-client/pull/288))
+- *(cargo)* bump bon from 3.9.0 to 3.9.1 ([#287](https://github.com/Polymarket/rs-clob-client/pull/287))
+- *(cargo)* bump tracing-subscriber from 0.3.22 to 0.3.23 ([#286](https://github.com/Polymarket/rs-clob-client/pull/286))
+- fix some minor issues in the comments ([#275](https://github.com/Polymarket/rs-clob-client/pull/275))
+- *(cargo)* bump uuid from 1.21.0 to 1.22.0 ([#283](https://github.com/Polymarket/rs-clob-client/pull/283))
+- *(cargo)* bump tokio from 1.49.0 to 1.50.0 ([#282](https://github.com/Polymarket/rs-clob-client/pull/282))
+- *(cargo)* bump serde_with from 3.16.1 to 3.17.0 ([#274](https://github.com/Polymarket/rs-clob-client/pull/274))
+- *(gha)* bump MarcoIeni/release-plz-action from 0.5.127 to 0.5.128 ([#281](https://github.com/Polymarket/rs-clob-client/pull/281))
+
+## [0.4.3](https://github.com/Polymarket/rs-clob-client/compare/v0.4.2...v0.4.3) - 2026-02-25
+
+### Added
+
+- *(Bridge)* add withdraw and quote endpoints ([#243](https://github.com/Polymarket/rs-clob-client/pull/243))
+
+### Fixed
+
+- Use idiomatic Rust for unpacking/validating enum ([#258](https://github.com/Polymarket/rs-clob-client/pull/258))
+- *(ws)* fix implicitly captured `self` lifetime for subscription RPIT ([#254](https://github.com/Polymarket/rs-clob-client/pull/254))
+
+### Other
+
+- *(clob)* fix price-history endpoint and clarify token ID wording ([#268](https://github.com/Polymarket/rs-clob-client/pull/268))
+- *(cargo)* bump strum_macros from 0.27.2 to 0.28.0 ([#265](https://github.com/Polymarket/rs-clob-client/pull/265))
+- *(cargo)* bump anyhow from 1.0.101 to 1.0.102 ([#264](https://github.com/Polymarket/rs-clob-client/pull/264))
+- *(cargo)* bump chrono from 0.4.43 to 0.4.44 ([#263](https://github.com/Polymarket/rs-clob-client/pull/263))
+- enable correct feature settings for rust-analyzer ([#259](https://github.com/Polymarket/rs-clob-client/pull/259))
+- Fix feature list of approvals examples ([#256](https://github.com/Polymarket/rs-clob-client/pull/256))
+- *(cargo)* bump uuid from 1.20.0 to 1.21.0 ([#250](https://github.com/Polymarket/rs-clob-client/pull/250))
+- *(cargo)* bump bon from 3.8.2 to 3.9.0 ([#249](https://github.com/Polymarket/rs-clob-client/pull/249))
+- *(cargo)* bump bitflags from 2.10.0 to 2.11.0 ([#248](https://github.com/Polymarket/rs-clob-client/pull/248))
+- *(cargo)* bump futures from 0.3.31 to 0.3.32 ([#246](https://github.com/Polymarket/rs-clob-client/pull/246))
+- Update authenticated.rs ([#241](https://github.com/Polymarket/rs-clob-client/pull/241))
+- *(gha)* bump MarcoIeni/release-plz-action from 0.5.124 to 0.5.127 ([#245](https://github.com/Polymarket/rs-clob-client/pull/245))
+- *(gha)* bump dtolnay/rust-toolchain from f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561 to efa25f7f19611383d5b0ccf2d1c8914531636bf9 ([#244](https://github.com/Polymarket/rs-clob-client/pull/244))
+- *(cargo)* bump rand from 0.9.2 to 0.10.0 ([#232](https://github.com/Polymarket/rs-clob-client/pull/232))
+- *(cargo)* bump httpmock from 0.8.2 to 0.8.3 ([#237](https://github.com/Polymarket/rs-clob-client/pull/237))
+- *(cargo)* bump reqwest from 0.13.1 to 0.13.2 ([#236](https://github.com/Polymarket/rs-clob-client/pull/236))
+- *(cargo)* bump aws-sdk-kms from 1.98.0 to 1.99.0 ([#235](https://github.com/Polymarket/rs-clob-client/pull/235))
+- *(cargo)* bump criterion from 0.8.1 to 0.8.2 ([#234](https://github.com/Polymarket/rs-clob-client/pull/234))
+- *(cargo)* bump alloy from 1.5.2 to 1.6.3 ([#233](https://github.com/Polymarket/rs-clob-client/pull/233))
+- *(cargo)* bump aws-config from 1.8.12 to 1.8.13 ([#231](https://github.com/Polymarket/rs-clob-client/pull/231))
+- *(cargo)* bump anyhow from 1.0.100 to 1.0.101 ([#230](https://github.com/Polymarket/rs-clob-client/pull/230))
+
+## [0.4.2](https://github.com/Polymarket/rs-clob-client/compare/v0.4.1...v0.4.2) - 2026-01-31
+
+### Added
+
+- *(clob)* add status to ws OrderMessage ([#219](https://github.com/Polymarket/rs-clob-client/pull/219))
+- add Serialize for MarketResponse and SimplifiedMarketResponse ([#217](https://github.com/Polymarket/rs-clob-client/pull/217))
+- expose API credentials ([#213](https://github.com/Polymarket/rs-clob-client/pull/213))
+- add dedicated types for trades function ([#203](https://github.com/Polymarket/rs-clob-client/pull/203))
+- *(rtds)* add unsubscribe support with reference counting ([#192](https://github.com/Polymarket/rs-clob-client/pull/192))
+- *(Bridge)* add status endpoint ([#198](https://github.com/Polymarket/rs-clob-client/pull/198))
+- *(ws)* add TickSizeChange typed stream + unsubscribe ([#195](https://github.com/Polymarket/rs-clob-client/pull/195))
+
+### Fixed
+
+- *(clob)* serialize PriceHistoryRequest market as decimal token_id ([#224](https://github.com/Polymarket/rs-clob-client/pull/224))
+- MarketResolved event ([#212](https://github.com/Polymarket/rs-clob-client/pull/212))
+- *(ws)* tolerant batch parsing and forward-compatible message types ([#200](https://github.com/Polymarket/rs-clob-client/pull/200))
+- *(clob)* propagate non-HTTP errors in create_or_derive_api_key ([#193](https://github.com/Polymarket/rs-clob-client/pull/193))
+- *(ws)* add alias for matchtime field deserialization ([#196](https://github.com/Polymarket/rs-clob-client/pull/196))
+
+### Other
+
+- *(cargo)* bump alloy from 1.4.3 to 1.5.2 ([#222](https://github.com/Polymarket/rs-clob-client/pull/222))
+- *(cargo)* bump uuid from 1.19.0 to 1.20.0 ([#221](https://github.com/Polymarket/rs-clob-client/pull/221))
+- *(gha)* bump MarcoIeni/release-plz-action from 0.5.121 to 0.5.124 ([#220](https://github.com/Polymarket/rs-clob-client/pull/220))
+- *(cargo)* bump rust_decimal_macros from 1.39.0 to 1.40.0 ([#208](https://github.com/Polymarket/rs-clob-client/pull/208))
+- *(cargo)* bump rust_decimal from 1.39.0 to 1.40.0 ([#206](https://github.com/Polymarket/rs-clob-client/pull/206))
+- *(cargo)* bump chrono from 0.4.42 to 0.4.43 ([#209](https://github.com/Polymarket/rs-clob-client/pull/209))
+- *(cargo)* bump aws-sdk-kms from 1.97.0 to 1.98.0 ([#207](https://github.com/Polymarket/rs-clob-client/pull/207))
+- *(cargo)* bump alloy from 1.4.0 to 1.4.3 ([#205](https://github.com/Polymarket/rs-clob-client/pull/205))
+- *(gha)* bump MarcoIeni/release-plz-action from 0.5.120 to 0.5.121 ([#204](https://github.com/Polymarket/rs-clob-client/pull/204))
+- *(ws)* use `rustls` instead of `native-tls` ([#194](https://github.com/Polymarket/rs-clob-client/pull/194))
+
+## [0.4.1](https://github.com/Polymarket/rs-clob-client/compare/v0.4.0...v0.4.1) - 2026-01-14
+
+### Added
+
+- *(clob)* add last_trade_price field to OrderBookSummaryResponse ([#174](https://github.com/Polymarket/rs-clob-client/pull/174))
+
+### Fixed
+
+- *(ws)* prevent TOCTOU race in subscription unsubscribe ([#190](https://github.com/Polymarket/rs-clob-client/pull/190))
+- *(rtds)* prevent race condition in subscription check ([#191](https://github.com/Polymarket/rs-clob-client/pull/191))
+- *(ws)* preserve custom_feature_enabled flag on reconnect ([#186](https://github.com/Polymarket/rs-clob-client/pull/186))
+- *(clob)* usage of ampersand before and without question mark ([#189](https://github.com/Polymarket/rs-clob-client/pull/189))
+- *(data)* make Activity.condition_id optional ([#173](https://github.com/Polymarket/rs-clob-client/pull/173))
+
+### Other
+
+- *(ws)* eliminate double JSON parsing in parse_if_interested ([#182](https://github.com/Polymarket/rs-clob-client/pull/182))
+- *(clob/ws)* use channel map for laziness instead of once_cell ([#183](https://github.com/Polymarket/rs-clob-client/pull/183))
+- *(cargo)* add release profile optimizations ([#180](https://github.com/Polymarket/rs-clob-client/pull/180))
+- *(clob)* optimize SignedOrder serialization ([#181](https://github.com/Polymarket/rs-clob-client/pull/181))
+- *(cargo)* bump alloy from 1.3.0 to 1.4.0 ([#178](https://github.com/Polymarket/rs-clob-client/pull/178))
+- *(cargo)* bump bon from 3.8.1 to 3.8.2 ([#177](https://github.com/Polymarket/rs-clob-client/pull/177))
+- *(cargo)* bump serde_json from 1.0.148 to 1.0.149 ([#179](https://github.com/Polymarket/rs-clob-client/pull/179))
+- *(cargo)* bump url from 2.5.7 to 2.5.8 ([#176](https://github.com/Polymarket/rs-clob-client/pull/176))
+- *(examples)* update WebSocket examples to use tracing ([#170](https://github.com/Polymarket/rs-clob-client/pull/170))
+- *(examples)* update RFQ examples to use tracing ([#169](https://github.com/Polymarket/rs-clob-client/pull/169))
+- *(examples)* update CLOB examples to use tracing ([#168](https://github.com/Polymarket/rs-clob-client/pull/168))
+
+## [0.4.0](https://github.com/Polymarket/rs-clob-client/compare/v0.3.3...v0.4.0) - 2026-01-12
+
+### Added
+
+- *(clob)* add cache setter methods to prewarm market data ([#153](https://github.com/Polymarket/rs-clob-client/pull/153))
+- *(bridge)* improve bridge type safety ([#151](https://github.com/Polymarket/rs-clob-client/pull/151))
+- *(gamma)* convert neg_risk_market_id and neg_risk_request_id to B256 ([#143](https://github.com/Polymarket/rs-clob-client/pull/143))
+- *(gamma)* convert question_id fields to B256 type ([#142](https://github.com/Polymarket/rs-clob-client/pull/142))
+- *(clob)* clob typed b256 address ([#139](https://github.com/Polymarket/rs-clob-client/pull/139))
+- *(clob)* add clob feature flag for optional CLOB compilation ([#135](https://github.com/Polymarket/rs-clob-client/pull/135))
+- *(tracing)* add serde_path_to_error for detailed deserialization on errors ([#140](https://github.com/Polymarket/rs-clob-client/pull/140))
+- *(data)* use typed Address and B256 for hex string fields, update data example ([#132](https://github.com/Polymarket/rs-clob-client/pull/132))
+- *(gamma)* use typed Address and B256 for hex string fields ([#126](https://github.com/Polymarket/rs-clob-client/pull/126))
+- *(ctf)* add CTF client/operations ([#82](https://github.com/Polymarket/rs-clob-client/pull/82))
+- add Unknown(String) variant to all enums for forward compatibility ([#124](https://github.com/Polymarket/rs-clob-client/pull/124))
+- add subscribe_last_trade_price websocket method ([#121](https://github.com/Polymarket/rs-clob-client/pull/121))
+- support post-only orders ([#115](https://github.com/Polymarket/rs-clob-client/pull/115))
+- *(heartbeats)* [**breaking**] add heartbeats ([#113](https://github.com/Polymarket/rs-clob-client/pull/113))
+
+### Fixed
+
+- *(rfq)* url path fixes ([#162](https://github.com/Polymarket/rs-clob-client/pull/162))
+- *(gamma)* use repeated query params for array fields ([#148](https://github.com/Polymarket/rs-clob-client/pull/148))
+- *(rtds)* serialize Chainlink filters as JSON string ([#136](https://github.com/Polymarket/rs-clob-client/pull/136)) ([#137](https://github.com/Polymarket/rs-clob-client/pull/137))
+- add missing makerRebatesFeeShareBps field to Market struct ([#130](https://github.com/Polymarket/rs-clob-client/pull/130))
+- add MakerRebate enum option to ActivityType ([#127](https://github.com/Polymarket/rs-clob-client/pull/127))
+- suppress unused variable warnings in tracing cfg blocks ([#125](https://github.com/Polymarket/rs-clob-client/pull/125))
+- add Yield enum option to ActivityType ([#122](https://github.com/Polymarket/rs-clob-client/pull/122))
+
+### Other
+
+- *(rtds)* [**breaking**] well-type RTDS structs ([#167](https://github.com/Polymarket/rs-clob-client/pull/167))
+- *(gamma)* [**breaking**] well-type structs ([#166](https://github.com/Polymarket/rs-clob-client/pull/166))
+- *(clob/rfq)* well-type structs ([#163](https://github.com/Polymarket/rs-clob-client/pull/163))
+- *(data)* well-type data types ([#159](https://github.com/Polymarket/rs-clob-client/pull/159))
+- *(gamma,rtds)* add Builder to non_exhaustive structs ([#160](https://github.com/Polymarket/rs-clob-client/pull/160))
+- *(ctf)* add Builder to non_exhaustive response structs ([#161](https://github.com/Polymarket/rs-clob-client/pull/161))
+- *(ws)* [**breaking**] well-type ws structs ([#156](https://github.com/Polymarket/rs-clob-client/pull/156))
+- add benchmarks for CLOB and WebSocket types/operations ([#155](https://github.com/Polymarket/rs-clob-client/pull/155))
+- *(clob)* [**breaking**] well-type requests/responses with U256 ([#150](https://github.com/Polymarket/rs-clob-client/pull/150))
+- update rustdocs ([#134](https://github.com/Polymarket/rs-clob-client/pull/134))
+- *(ws)* extract WsError to shared ws module ([#131](https://github.com/Polymarket/rs-clob-client/pull/131))
+- update license ([#128](https://github.com/Polymarket/rs-clob-client/pull/128))
+- update builder method doc comment ([#129](https://github.com/Polymarket/rs-clob-client/pull/129))
+
+## [0.3.3](https://github.com/Polymarket/rs-clob-client/compare/v0.3.2...v0.3.3) - 2026-01-06
+
+### Added
+
+- *(auth)* auto derive funder address ([#99](https://github.com/Polymarket/rs-clob-client/pull/99))
+- *(rfq)* add standalone RFQ API client ([#76](https://github.com/Polymarket/rs-clob-client/pull/76))
+- *(types)* re-export commonly used external types for API ergonomics ([#102](https://github.com/Polymarket/rs-clob-client/pull/102))
+
+### Fixed
+
+- add missing cumulativeMarkets field to Event struct ([#108](https://github.com/Polymarket/rs-clob-client/pull/108))
+
+### Other
+
+- *(cargo)* bump reqwest from 0.12.28 to 0.13.1 ([#103](https://github.com/Polymarket/rs-clob-client/pull/103))
+- *(ws)* common connection for clob ws and rtds ([#97](https://github.com/Polymarket/rs-clob-client/pull/97))
+- *(cargo)* bump tokio from 1.48.0 to 1.49.0 ([#104](https://github.com/Polymarket/rs-clob-client/pull/104))
+- *(examples)* improve approvals example with tracing ([#101](https://github.com/Polymarket/rs-clob-client/pull/101))
+- *(examples)* improve bridge example with tracing ([#100](https://github.com/Polymarket/rs-clob-client/pull/100))
+- *(examples)* improve rtds example with tracing and dynamic IDs ([#94](https://github.com/Polymarket/rs-clob-client/pull/94))
+- *(examples)* improve gamma example with tracing and dynamic IDs ([#93](https://github.com/Polymarket/rs-clob-client/pull/93))
+
+## [0.3.2](https://github.com/Polymarket/rs-clob-client/compare/v0.3.1...v0.3.2) - 2026-01-04
+
+### Added
+
+- add unknown field warnings for API responses ([#47](https://github.com/Polymarket/rs-clob-client/pull/47))
+- *(ws)* add custom feature message types and subscription support ([#79](https://github.com/Polymarket/rs-clob-client/pull/79))
+
+### Fixed
+
+- *(ws)* defer WebSocket connection until first subscription ([#90](https://github.com/Polymarket/rs-clob-client/pull/90))
+- *(types)* improve type handling and API compatibility ([#92](https://github.com/Polymarket/rs-clob-client/pull/92))
+- add serde aliases for API response field variants ([#88](https://github.com/Polymarket/rs-clob-client/pull/88))
+- *(data)* add missing fields to Position and Holder types ([#85](https://github.com/Polymarket/rs-clob-client/pull/85))
+- *(gamma)* add missing fields to response types ([#87](https://github.com/Polymarket/rs-clob-client/pull/87))
+- *(deser_warn)* show full JSON values in unknown field warnings ([#86](https://github.com/Polymarket/rs-clob-client/pull/86))
+- handle order_type field in OpenOrderResponse ([#81](https://github.com/Polymarket/rs-clob-client/pull/81))
+
+### Other
+
+- update README with new features and examples ([#80](https://github.com/Polymarket/rs-clob-client/pull/80))
+
+## [0.3.1](https://github.com/Polymarket/rs-clob-client/compare/v0.3.0...v0.3.1) - 2025-12-31
+
+### Added
+
+- *(ws)* add unsubscribe support with reference counting ([#70](https://github.com/Polymarket/rs-clob-client/pull/70))
+- *(auth)* add secret and passphrase accessors to Credentials ([#78](https://github.com/Polymarket/rs-clob-client/pull/78))
+- add RTDS (Real-Time Data Socket) client ([#56](https://github.com/Polymarket/rs-clob-client/pull/56))
+
+### Fixed
+
+- *(clob)* align API implementation with OpenAPI spec ([#72](https://github.com/Polymarket/rs-clob-client/pull/72))
+
+### Other
+
+- *(auth)* migrate from sec to secrecy crate ([#75](https://github.com/Polymarket/rs-clob-client/pull/75))
+- use re-exported types ([#74](https://github.com/Polymarket/rs-clob-client/pull/74))
+
+## [0.3.0](https://github.com/Polymarket/rs-clob-client/compare/v0.2.1...v0.3.0) - 2025-12-31
+
+### Added
+
+- *(auth)* add key() getter to Credentials ([#69](https://github.com/Polymarket/rs-clob-client/pull/69))
+- add geographic restrictions check ([#63](https://github.com/Polymarket/rs-clob-client/pull/63))
+- add bridge API client ([#55](https://github.com/Polymarket/rs-clob-client/pull/55))
+
+### Fixed
+
+- *(gamma)* use repeated query params for clob_token_ids ([#65](https://github.com/Polymarket/rs-clob-client/pull/65))
+- correct data example required-features name ([#68](https://github.com/Polymarket/rs-clob-client/pull/68))
+- *(clob)* allow market orders to supply price ([#67](https://github.com/Polymarket/rs-clob-client/pull/67))
+- add CTF Exchange approval to approvals example ([#45](https://github.com/Polymarket/rs-clob-client/pull/45))
+
+### Other
+
+- [**breaking**] ws types ([#52](https://github.com/Polymarket/rs-clob-client/pull/52))
+- consolidate request and query params ([#64](https://github.com/Polymarket/rs-clob-client/pull/64))
+- [**breaking**] rescope data types and rename feature ([#62](https://github.com/Polymarket/rs-clob-client/pull/62))
+- [**breaking**] rescope gamma types ([#61](https://github.com/Polymarket/rs-clob-client/pull/61))
+- [**breaking**] scope clob types into request/response ([#60](https://github.com/Polymarket/rs-clob-client/pull/60))
+- [**breaking**] WS cleanup ([#58](https://github.com/Polymarket/rs-clob-client/pull/58))
+- [**breaking**] minor cleanup ([#57](https://github.com/Polymarket/rs-clob-client/pull/57))
+
+## [0.2.1](https://github.com/Polymarket/rs-clob-client/compare/v0.2.0...v0.2.1) - 2025-12-29
+
+### Added
+
+- complete gamma client ([#40](https://github.com/Polymarket/rs-clob-client/pull/40))
+- add data-api client ([#39](https://github.com/Polymarket/rs-clob-client/pull/39))
+
+### Fixed
+
+- use TryFrom for TickSize to avoid panic on unknown values ([#43](https://github.com/Polymarket/rs-clob-client/pull/43))
+
+### Other
+
+- *(cargo)* bump tracing from 0.1.41 to 0.1.44 ([#49](https://github.com/Polymarket/rs-clob-client/pull/49))
+- *(cargo)* bump serde_json from 1.0.146 to 1.0.148 ([#51](https://github.com/Polymarket/rs-clob-client/pull/51))
+- *(cargo)* bump alloy from 1.1.3 to 1.2.1 ([#50](https://github.com/Polymarket/rs-clob-client/pull/50))
+- *(cargo)* bump reqwest from 0.12.27 to 0.12.28 ([#48](https://github.com/Polymarket/rs-clob-client/pull/48))
+
+## [0.2.0](https://github.com/Polymarket/rs-clob-client/compare/v0.1.2...v0.2.0) - 2025-12-27
+
+### Added
+
+- WebSocket client for real-time market and user data ([#26](https://github.com/Polymarket/rs-clob-client/pull/26))
+
+### Other
+
+- [**breaking**] change from `derive_builder` to `bon` ([#41](https://github.com/Polymarket/rs-clob-client/pull/41))
+
+## [0.1.2](https://github.com/Polymarket/rs-clob-client/compare/v0.1.1...v0.1.2) - 2025-12-23
+
+### Added
+
+- add optional tracing instrumentation ([#38](https://github.com/Polymarket/rs-clob-client/pull/38))
+- add gamma client ([#31](https://github.com/Polymarket/rs-clob-client/pull/31))
+- support share-denominated market orders ([#29](https://github.com/Polymarket/rs-clob-client/pull/29))
+
+### Fixed
+
+- mask salt for limit orders ([#30](https://github.com/Polymarket/rs-clob-client/pull/30))
+- mask salt to 53 bits ([#27](https://github.com/Polymarket/rs-clob-client/pull/27))
+
+### Other
+
+- rescope clients with gamma feature ([#37](https://github.com/Polymarket/rs-clob-client/pull/37))
+- Replacing `status: String` to enum ([#36](https://github.com/Polymarket/rs-clob-client/pull/36))
+- *(cargo)* bump serde_json from 1.0.145 to 1.0.146 ([#34](https://github.com/Polymarket/rs-clob-client/pull/34))
+- *(cargo)* bump reqwest from 0.12.26 to 0.12.27 ([#33](https://github.com/Polymarket/rs-clob-client/pull/33))
+- *(gha)* bump dtolnay/rust-toolchain from 0b1efabc08b657293548b77fb76cc02d26091c7e to f7ccc83f9ed1e5b9c81d8a67d7ad1a747e22a561 ([#32](https://github.com/Polymarket/rs-clob-client/pull/32))
+
+## [0.1.1](https://github.com/Polymarket/rs-clob-client/compare/v0.1.0...v0.1.1) - 2025-12-17
+
+### Fixed
+
+- remove signer from Authenticated ([#22](https://github.com/Polymarket/rs-clob-client/pull/22))
+
+### Other
+
+- enable release-plz ([#23](https://github.com/Polymarket/rs-clob-client/pull/23))
+- add crates.io badge ([#20](https://github.com/Polymarket/rs-clob-client/pull/20))

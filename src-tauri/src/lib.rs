@@ -6825,7 +6825,7 @@ mod tests {
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_depth_ratio_collateral_cap_mult"],
-            serde_json::json!(0.80)
+            serde_json::json!(0.45)
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_max_share_ratio"],

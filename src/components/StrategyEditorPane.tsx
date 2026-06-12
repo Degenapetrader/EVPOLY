@@ -1831,9 +1831,6 @@ export function StrategyEditorPane({
                   })
               )}
             </div>
-            {renderNumberField("Sport Market Cap", mmSport.active_sport_market_cap, (value) =>
-              patchMMSport({ active_sport_market_cap: Math.floor(value) })
-            )}
             {renderNumberField("Non-S Market Cap", mmSport.active_nonsport_market_cap, (value) =>
               patchMMSport({ active_nonsport_market_cap: Math.floor(value) })
             )}

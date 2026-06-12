@@ -1993,15 +1993,11 @@ fn desktop_config_to_profile_payload(
     let mm_sport_discovery_route = normalize_mm_sport_discovery_route(
         config.strategy_settings.mm_sport.discovery_route.as_str(),
     );
-    let (default_active_sport_market_cap, default_active_nonsport_market_cap) =
+    let (_, default_active_nonsport_market_cap) =
         mm_sport_route_default_caps(mm_sport_discovery_route);
     let (quote_cooldown_min_sec, quote_cooldown_max_sec) = normalize_cooldown_pair_f64(
         config.strategy_settings.mm_sport.quote_cooldown_min_sec,
         config.strategy_settings.mm_sport.quote_cooldown_max_sec,
-    );
-    let active_sport_market_cap = normalize_nonnegative_integer_f64(
-        config.strategy_settings.mm_sport.active_sport_market_cap,
-        default_active_sport_market_cap,
     );
     let active_nonsport_market_cap = normalize_nonnegative_integer_f64(
         config.strategy_settings.mm_sport.active_nonsport_market_cap,
@@ -2271,10 +2267,6 @@ fn desktop_config_to_profile_payload(
     strategy.insert(
         "EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO".to_string(),
         number_to_json(config.strategy_settings.mm_sport.fifo_max_share_ratio),
-    );
-    strategy.insert(
-        "EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP".to_string(),
-        number_to_json(active_sport_market_cap),
     );
     strategy.insert(
         "EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP".to_string(),
@@ -6289,7 +6281,7 @@ mod tests {
     }
 
     #[test]
-    fn mm_sport_desktop_caps_are_route_aware_and_integer_normalized() {
+    fn mm_sport_desktop_caps_hide_sport_cap_and_normalize_nonsport_cap() {
         let mut config = default_desktop_config(
             "0x1111111111111111111111111111111111111111".to_string(),
             "0x2222222222222222222222222222222222222222".to_string(),
@@ -6313,7 +6305,7 @@ mod tests {
         let strategy = strategy.as_object().expect("strategy object");
         assert_eq!(
             strategy.get("EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP"),
-            Some(&serde_json::json!(77.0))
+            None
         );
         assert_eq!(
             strategy.get("EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP"),
@@ -6484,7 +6476,7 @@ mod tests {
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["active_sport_market_cap"],
-            serde_json::json!(77.0)
+            serde_json::json!(100.0)
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["active_nonsport_market_cap"],

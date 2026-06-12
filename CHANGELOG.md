@@ -1,5 +1,10 @@
 # EVPoly Changelog
 
+## v2.4.0 - 2026-06-12
+- Added the local vendor Polymarket SDK websocket lifecycle fix.
+- Updated MM Sport runtime defaults for higher sports market throughput, restored quote expiry override defaults to 65/185 seconds, and removed the stale desktop sport market cap surface.
+- Upgraded the direct `reqwest` dependency to remove the expired `rustls-pemfile` audit exception.
+
 ## v2.3.6 - 2026-05-14
 - Changed EVSnipe local market discovery to use the dedicated Polymarket Hit Price tag so daily, weekly, and monthly 7-symbol hit-price ladders are found without broad crypto paging.
 

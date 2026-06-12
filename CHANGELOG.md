@@ -1,5 +1,9 @@
 # EVPoly Desktop Changelog
 
+## UI-v2.4.1 - 2026-06-12
+- Bumped desktop app/updater version to 2.4.1.
+- Repinned the bundled runtime sidecar to runtime `v2.4.1` (`46a5afa`) with MM Sport rewards discovery, stable cache, and live-guard delta repair fixes.
+
 ## UI-v2.3.6 - 2026-05-14
 - Bumped desktop app/updater version to 2.3.6.
 - Repinned the bundled runtime sidecar to runtime `v2.3.6` (`822b03f`) with EVSnipe Hit Price discovery.

@@ -1,5 +1,10 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.4.0 - 2026-06-12
+- Bumped Linux app/updater version to 2.4.0.
+- Repinned the bundled runtime sidecar to runtime `v2.4.0` (`defe47b`).
+- Includes the MM Sport throughput/default tuning and desktop sport market cap cleanup from the v2.4.0 runtime.
+
 ## Linux-v2.3.6 - 2026-05-14
 - Bumped Linux app/updater version to 2.3.6.
 - Repinned the bundled runtime sidecar to runtime `v2.3.6` (`822b03f`) with EVSnipe Hit Price discovery.

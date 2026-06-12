@@ -10,6 +10,7 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-06-12
+- `mm_sport_v1`: forced the Polymarket website rewards API discovery request to HTTP/1.1 with an explicit JSON `Accept` header so the desktop runtime can use the broad rewards feed before falling back to CLOB current rewards (`src/api.rs`).
 - `mm_sport_v1`: added a rewards-discovery fallback so fresh Sport discovery no longer fails closed when the Polymarket website rewards API returns a transient/non-success response. The runtime now falls back to CLOB current rewards rows, then Gamma reward rows, before applying the existing Sport route, pregame, reward, alpha-depth, and risk gates (`src/main.rs`).
 - `mm_sport_v1`: hardcoded the desktop MM Sport throughput/runtime tuning values and removed their env-template surface: sport active-market cap `600`, fresh scan markets per tick `200`, order submit concurrency `4`, and ratio-pause cooldown `180s` (`src/mm/mod.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
   - Existing `EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP`, `EVPOLY_MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK`, `EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY`, and `EVPOLY_MM_SPORT_RATIO_PAUSE_SEC` env values are ignored by runtime.

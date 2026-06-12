@@ -2931,7 +2931,9 @@ impl PolymarketApi {
                 .send_readonly_get_with_proxy_fallback(|client| {
                     let mut request = client
                         .get(url)
+                        .version(reqwest::Version::HTTP_11)
                         .header("User-Agent", "Mozilla/5.0 EVPoly")
+                        .header(reqwest::header::ACCEPT, "application/json")
                         .query(&[
                             ("orderBy", "rate_per_day"),
                             ("position", "DESC"),

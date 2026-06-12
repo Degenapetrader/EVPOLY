@@ -1,7 +1,5 @@
 pub mod sports_live_guard;
 
-const MM_SPORT_QUOTE_EXPIRY_MIN_SEC_HARDCODED: u64 = 65;
-const MM_SPORT_QUOTE_EXPIRY_MAX_SEC_HARDCODED: u64 = 180;
 const MM_SPORT_RATIO_PAUSE_SEC_HARDCODED: u64 = 180;
 const MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK_HARDCODED: usize = 200;
 const MM_SPORT_ORDER_SUBMIT_CONCURRENCY_HARDCODED: usize = 4;
@@ -224,8 +222,10 @@ impl MmSportConfig {
         let bust_pause_min_sec = env_u64("EVPOLY_MM_SPORT_BUST_PAUSE_MIN_SEC", 60).clamp(1, 3_600);
         let bust_pause_max_sec =
             env_u64("EVPOLY_MM_SPORT_BUST_PAUSE_MAX_SEC", 300).clamp(bust_pause_min_sec, 7_200);
-        let quote_expiry_min_sec = MM_SPORT_QUOTE_EXPIRY_MIN_SEC_HARDCODED;
-        let quote_expiry_max_sec = MM_SPORT_QUOTE_EXPIRY_MAX_SEC_HARDCODED;
+        let quote_expiry_min_sec =
+            env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", 65).clamp(61, 3_600);
+        let quote_expiry_max_sec =
+            env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 185).clamp(quote_expiry_min_sec, 7_200);
         let quote_size_mode =
             MmSportQuoteSizeMode::from_env(std::env::var("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE").ok());
         let entry_price_mode =
@@ -760,7 +760,7 @@ mod tests {
                 let cfg = MmSportConfig::from_env();
                 assert_eq!(cfg.pause_after_fill_sec, 600);
                 assert_eq!(cfg.quote_expiry_min_sec, 65);
-                assert_eq!(cfg.quote_expiry_max_sec, 180);
+                assert_eq!(cfg.quote_expiry_max_sec, 185);
                 assert!((cfg.inventory_exit_max_loss_cents - 12.5).abs() < 1e-9);
             },
         );
@@ -840,8 +840,8 @@ mod tests {
                 ("EVPOLY_MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK", Some("24")),
                 ("EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY", Some("1")),
                 ("EVPOLY_MM_SPORT_RATIO_PAUSE_SEC", Some("900")),
-                ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", Some("300")),
-                ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", Some("600")),
+                ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", Some("90")),
+                ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", Some("180")),
                 ("EVPOLY_MM_SPORT_VERBOSE_BUDGET_EVENTS", Some("true")),
             ],
             || {
@@ -861,7 +861,7 @@ mod tests {
                 assert_eq!(cfg.fresh_scan_markets_per_tick, 200);
                 assert_eq!(cfg.order_submit_concurrency, 4);
                 assert_eq!(cfg.ratio_pause_sec, 180);
-                assert_eq!(cfg.quote_expiry_min_sec, 65);
+                assert_eq!(cfg.quote_expiry_min_sec, 90);
                 assert_eq!(cfg.quote_expiry_max_sec, 180);
                 assert!(cfg.verbose_budget_events);
                 assert!((cfg.fifo_ratio_floor() - 0.01).abs() < 1e-9);

@@ -10,8 +10,9 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-06-12
-- `mm_sport_v1`: hardcoded the desktop MM Sport throughput/runtime tuning values and removed their env-template surface: sport active-market cap `600`, fresh scan markets per tick `200`, quote expiry window `65-180s`, order submit concurrency `4`, and ratio-pause cooldown `180s` (`src/mm/mod.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
-  - Existing `EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP`, `EVPOLY_MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK`, `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC`, `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC`, `EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY`, and `EVPOLY_MM_SPORT_RATIO_PAUSE_SEC` env values are ignored by runtime.
+- `mm_sport_v1`: hardcoded the desktop MM Sport throughput/runtime tuning values and removed their env-template surface: sport active-market cap `600`, fresh scan markets per tick `200`, order submit concurrency `4`, and ratio-pause cooldown `180s` (`src/mm/mod.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+  - Existing `EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP`, `EVPOLY_MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK`, `EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY`, and `EVPOLY_MM_SPORT_RATIO_PAUSE_SEC` env values are ignored by runtime.
+- `mm_sport_v1`: restored quote-expiry env/UI override behavior with defaults `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC=65` and `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC=185`.
 - `endgame_sweep_v1`: fixed Endgame execution-size mode to `shares` in runtime while keeping the desktop profile-compatible env key defaulted to `shares` in templates (`src/config.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/endgame_sweep_v1.md`).
 - `mm_sport_v1`: lowered the remote alpha low-depth skip floor from `$500` to `$200` via `MM_SPORT_LOW_DEPTH_FLOOR_USD` (`src/main.rs`).
   - Applies to MM Sport remote depth-skip requests for Sport/Dual sports markets; markets still must pass local pair ratio, reward baseline, and max-share gates before quote placement.

@@ -1,5 +1,10 @@
 # EVPoly Changelog
 
+## v2.4.1 - 2026-06-12
+- Fixed MM Sport rewards discovery so skipped Polymarket reward cursor pages do not shrink the discovered market universe.
+- Added stable last-good market cache handling for degraded MM Sport discovery responses.
+- Changed MM Sport live-guard prune recovery to use debounced delta discovery repairs instead of repeated full discovery sweeps.
+
 ## v2.4.0 - 2026-06-12
 - Added the local vendor Polymarket SDK websocket lifecycle fix.
 - Updated MM Sport runtime defaults for higher sports market throughput, restored quote expiry override defaults to 65/185 seconds, and removed the stale desktop sport market cap surface.

@@ -2676,7 +2676,6 @@ fn mm_sport_next_discovery_attempt_after_success(
 fn mm_sport_schedule_discovery_after_live_guard_prune(
     now_ms: i64,
     last_forced_discovery_ms: &mut i64,
-    last_full_discovery_ms: &mut i64,
     last_delta_discovery_ms: &mut i64,
     next_discovery_attempt_ms: &mut i64,
 ) -> bool {
@@ -2687,7 +2686,6 @@ fn mm_sport_schedule_discovery_after_live_guard_prune(
         return false;
     }
     *last_forced_discovery_ms = now_ms;
-    *last_full_discovery_ms = 0;
     *last_delta_discovery_ms = 0;
     *next_discovery_attempt_ms =
         now_ms.saturating_add(MM_SPORT_LIVE_GUARD_PRUNE_DISCOVERY_DELAY_MS);
@@ -20009,9 +20007,8 @@ async fn main() -> Result<()> {
                                     let forced_discovery =
                                         if market_removed.saturating_add(fallback_removed) > 0 {
                                             mm_sport_schedule_discovery_after_live_guard_prune(
-                                                now_ms,
+                                                chrono::Utc::now().timestamp_millis(),
                                                 &mut last_live_guard_prune_forced_discovery_ms,
-                                                &mut last_full_discovery_ms,
                                                 &mut last_delta_discovery_ms,
                                                 &mut next_discovery_attempt_ms,
                                             )
@@ -29749,21 +29746,20 @@ mod tests {
     }
 
     #[test]
-    fn mm_sport_live_guard_prune_forced_discovery_is_debounced() {
+    fn mm_sport_live_guard_prune_forced_discovery_is_delta_debounced() {
         let now_ms = 2_000_000_000_000_i64;
         let mut last_forced = 0_i64;
-        let mut last_full_discovery = now_ms - 1_000;
+        let last_full_discovery = now_ms - 1_000;
         let mut last_delta_discovery = now_ms - 1_000;
         let mut next_attempt = now_ms + 3_600_000;
 
         assert!(mm_sport_schedule_discovery_after_live_guard_prune(
             now_ms,
             &mut last_forced,
-            &mut last_full_discovery,
             &mut last_delta_discovery,
             &mut next_attempt
         ));
-        assert_eq!(last_full_discovery, 0);
+        assert_eq!(last_full_discovery, now_ms - 1_000);
         assert_eq!(last_delta_discovery, 0);
         assert_eq!(
             next_attempt,
@@ -29773,7 +29769,6 @@ mod tests {
         assert!(!mm_sport_schedule_discovery_after_live_guard_prune(
             now_ms + 1_000,
             &mut last_forced,
-            &mut last_full_discovery,
             &mut last_delta_discovery,
             &mut next_attempt
         ));

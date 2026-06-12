@@ -9,6 +9,10 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-06-12
+- `mm_sport_v1`: lowered the remote alpha low-depth skip floor from `$500` to `$200` via `MM_SPORT_LOW_DEPTH_FLOOR_USD` (`src/main.rs`).
+  - Applies to MM Sport remote depth-skip requests for Sport/Dual sports markets; markets still must pass local pair ratio, reward baseline, and max-share gates before quote placement.
+
 ### 2026-05-14
 - `evsnipe_v1`: local Hit Price discovery now queries Gamma's dedicated `hit-price` event tag instead of the broad `crypto` tag, so daily/weekly/monthly "What price will <asset> hit" ladders are found without paging through thousands of unrelated crypto markets (`src/evsnipe.rs`).
   - Applies only to EVSnipe local discovery candidate sourcing. The 30-day expiry filter, fixed 20% strike-window filter, Binance trigger handling, and submit behavior are unchanged.

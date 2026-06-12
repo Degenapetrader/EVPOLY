@@ -2301,7 +2301,7 @@ fn mm_sport_size_shares_from_pending(row: &PendingOrderRecord) -> Option<f64> {
     (shares.is_finite() && shares > 0.0).then_some(shares)
 }
 
-const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 500.0;
+const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 200.0;
 const MM_SPORT_DEPTH_SKIP_ALPHA_MAX_MARKETS_PER_REQUEST: usize = 200;
 const MM_SPORT_PAIR_BASELINE_REWARD_MULT: f64 = 0.5;
 const MM_SPORT_FIFO_MIN_CANCEL_AGE_MS: i64 = 10_000;
@@ -30403,7 +30403,7 @@ mod tests {
 
     #[test]
     fn mm_sport_pair_depth_floor_and_baseline_defaults_match_runtime_policy() {
-        assert!((MM_SPORT_LOW_DEPTH_FLOOR_USD - 500.0).abs() < 1e-9);
+        assert!((MM_SPORT_LOW_DEPTH_FLOOR_USD - 200.0).abs() < 1e-9);
         assert!((MM_SPORT_PAIR_BASELINE_REWARD_MULT - 0.5).abs() < 1e-9);
         let baseline =
             mm_sport_reward_floor_shares_with_cap(1_000.0, MM_SPORT_PAIR_BASELINE_REWARD_MULT, 0.0);

@@ -2911,6 +2911,22 @@ impl PolymarketApi {
         Ok(all_rows)
     }
 
+    /// Polymarket rewards cursors are base64-encoded decimal offsets.
+    fn advance_rewards_api_cursor(cursor: &str) -> Option<String> {
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(cursor.trim())
+            .ok()?;
+        let offset = std::str::from_utf8(decoded.as_slice())
+            .ok()?
+            .trim()
+            .parse::<u64>()
+            .ok()?;
+        Some(
+            base64::engine::general_purpose::STANDARD
+                .encode(offset.saturating_add(100).to_string().as_bytes()),
+        )
+    }
+
     /// Load reward-ranked markets directly from Polymarket rewards API.
     pub async fn get_rewards_markets_api(
         &self,
@@ -2963,14 +2979,50 @@ impl PolymarketApi {
                 .await
                 .context("Failed to read rewards markets API body")?;
             if !status.is_success() {
+                if !all_rows.is_empty() {
+                    if let Some(next) = next_cursor
+                        .as_deref()
+                        .and_then(Self::advance_rewards_api_cursor)
+                    {
+                        if seen_cursors.insert(next.clone()) {
+                            warn!(
+                                "Rewards API page at cursor {:?} returned {}; skipping to inferred cursor {}",
+                                next_cursor, status, next
+                            );
+                            next_cursor = Some(next);
+                            continue;
+                        }
+                    }
+                    warn!(
+                        "Rewards API page at cursor {:?} returned {}; using {} partial rows",
+                        next_cursor,
+                        status,
+                        all_rows.len()
+                    );
+                    break;
+                }
                 anyhow::bail!(
                     "Failed to fetch rewards markets API (status {}): {}",
                     status,
                     body
                 );
             }
-            let parsed: RewardsMarketsApiResponse = serde_json::from_str(&body)
-                .with_context(|| format!("Failed to parse rewards API body: {}", body))?;
+            let parsed: RewardsMarketsApiResponse = match serde_json::from_str(&body) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    if !all_rows.is_empty() {
+                        warn!(
+                            "Failed to parse rewards API page at cursor {:?}: {}; using {} partial rows",
+                            next_cursor,
+                            err,
+                            all_rows.len()
+                        );
+                        break;
+                    }
+                    return Err(err)
+                        .with_context(|| format!("Failed to parse rewards API body: {}", body));
+                }
+            };
             if parsed.data.is_empty() {
                 break;
             }

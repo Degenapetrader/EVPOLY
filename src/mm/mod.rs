@@ -4,6 +4,10 @@ const MM_SPORT_RATIO_PAUSE_SEC_HARDCODED: u64 = 180;
 const MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK_HARDCODED: usize = 200;
 const MM_SPORT_ORDER_SUBMIT_CONCURRENCY_HARDCODED: usize = 4;
 const MM_SPORT_ACTIVE_SPORT_MARKET_CAP_HARDCODED: usize = 600;
+const MM_SPORT_DISCOVERY_FULL_REFRESH_SEC_HARDCODED: u64 = 3_600;
+const MM_SPORT_DISCOVERY_DELTA_REFRESH_SEC_HARDCODED: u64 = 600;
+const MM_SPORT_DISCOVERY_DELTA_PAGE_BUDGET_HARDCODED: u32 = 8;
+const MM_SPORT_DISCOVERY_DETAIL_CAP_HARDCODED: usize = 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MmSportQuoteSizeMode {
@@ -143,6 +147,9 @@ pub struct MmSportConfig {
     pub ws_stale_ms: i64,
     pub fifo_ws_gap_cancel_ms: i64,
     pub discovery_refresh_sec: u64,
+    pub discovery_delta_refresh_sec: u64,
+    pub discovery_delta_page_budget: u32,
+    pub discovery_detail_cap: usize,
     pub rewards_page_budget: u32,
     pub min_reward_rate_per_day: f64,
     pub discovery_route: MmSportDiscoveryRoute,
@@ -277,7 +284,10 @@ impl MmSportConfig {
             ws_stale_ms: env_u64("EVPOLY_MM_SPORT_WS_STALE_MS", 2_500).clamp(250, 30_000) as i64,
             fifo_ws_gap_cancel_ms: env_u64("EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS", 5_000)
                 .clamp(500, 60_000) as i64,
-            discovery_refresh_sec: 300,
+            discovery_refresh_sec: MM_SPORT_DISCOVERY_FULL_REFRESH_SEC_HARDCODED,
+            discovery_delta_refresh_sec: MM_SPORT_DISCOVERY_DELTA_REFRESH_SEC_HARDCODED,
+            discovery_delta_page_budget: MM_SPORT_DISCOVERY_DELTA_PAGE_BUDGET_HARDCODED,
+            discovery_detail_cap: MM_SPORT_DISCOVERY_DETAIL_CAP_HARDCODED,
             rewards_page_budget: env_u32("EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET", 8).clamp(1, 200),
             min_reward_rate_per_day: env_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 5.0)
                 .max(0.0),
@@ -848,6 +858,10 @@ mod tests {
                 let cfg = MmSportConfig::from_env();
                 assert_eq!(cfg.active_sport_market_cap, 600);
                 assert_eq!(cfg.active_nonsport_market_cap, 33);
+                assert_eq!(cfg.discovery_refresh_sec, 3_600);
+                assert_eq!(cfg.discovery_delta_refresh_sec, 600);
+                assert_eq!(cfg.discovery_delta_page_budget, 8);
+                assert_eq!(cfg.discovery_detail_cap, 1_000);
                 assert_eq!(cfg.max_quote_shares, 1000.0);
                 assert_eq!(cfg.nonsport_max_quote_shares, 250.0);
                 assert_eq!(cfg.sizing_for_market(true).max_quote_shares, 1000.0);

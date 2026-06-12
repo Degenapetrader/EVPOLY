@@ -320,7 +320,16 @@ struct MmSportDiscoveredCandidate {
 
 #[derive(Debug, Clone, Default)]
 struct MmSportDiscoveryReport {
+    discovery_mode: String,
+    rewards_source: String,
+    rewards_fallback_used: bool,
+    rewards_page_budget: u32,
+    rewards_api_skipped_pages: u32,
+    rewards_api_partial_due_to_error: bool,
+    rewards_api_attempts_exhausted: bool,
     rewards_rows: usize,
+    detail_candidate_rows: usize,
+    skipped_detail_cap: usize,
     skipped_low_reward_rate: usize,
     skipped_inactive_or_closed: usize,
     skipped_sports: usize,
@@ -2597,10 +2606,78 @@ fn mm_sport_filter_recently_pruned_markets(
     (filtered, removed)
 }
 
+fn mm_sport_merge_market_cache(
+    existing_markets: &[MmSportMarket],
+    updated_markets: Vec<MmSportMarket>,
+    max_markets: usize,
+    pruned_condition_ids: &std::collections::HashSet<String>,
+) -> Vec<MmSportMarket> {
+    let mut markets_by_condition: std::collections::HashMap<String, MmSportMarket> =
+        std::collections::HashMap::new();
+    for market in existing_markets {
+        let condition_key = market.condition_id.trim().to_ascii_lowercase();
+        if condition_key.is_empty() || pruned_condition_ids.contains(condition_key.as_str()) {
+            continue;
+        }
+        markets_by_condition.insert(condition_key, market.clone());
+    }
+    for market in updated_markets {
+        let condition_key = market.condition_id.trim().to_ascii_lowercase();
+        if condition_key.is_empty() || pruned_condition_ids.contains(condition_key.as_str()) {
+            continue;
+        }
+        markets_by_condition.insert(condition_key, market);
+    }
+    let mut merged = markets_by_condition.into_values().collect::<Vec<_>>();
+    merged.sort_by(|a, b| {
+        b.reward_rate_per_day
+            .total_cmp(&a.reward_rate_per_day)
+            .then_with(|| a.market_slug.cmp(&b.market_slug))
+    });
+    if max_markets > 0 && merged.len() > max_markets {
+        merged.truncate(max_markets);
+    }
+    merged
+}
+
+fn mm_sport_discovery_result_looks_degraded(
+    report: &MmSportDiscoveryReport,
+    selected_market_count: usize,
+    cached_market_count: usize,
+) -> bool {
+    if selected_market_count == 0 || cached_market_count == 0 {
+        return false;
+    }
+    selected_market_count < cached_market_count
+        && (report.rewards_fallback_used
+            || report.rewards_api_skipped_pages > 0
+            || report.rewards_api_partial_due_to_error
+            || report.rewards_api_attempts_exhausted
+            || report.clob_detail_error > 0
+            || report.clob_detail_rate_limited > 0
+            || report.gamma_fallback_error > 0
+            || report.sponsored_reward_filter_failed)
+}
+
+fn mm_sport_next_discovery_attempt_after_success(
+    now_ms: i64,
+    last_full_discovery_ms: i64,
+    full_refresh_interval_ms: i64,
+    delta_refresh_interval_ms: i64,
+) -> i64 {
+    let next_delta_ms = now_ms.saturating_add(delta_refresh_interval_ms);
+    if last_full_discovery_ms <= 0 {
+        return next_delta_ms;
+    }
+    let next_full_ms = last_full_discovery_ms.saturating_add(full_refresh_interval_ms);
+    next_delta_ms.min(next_full_ms)
+}
+
 fn mm_sport_schedule_discovery_after_live_guard_prune(
     now_ms: i64,
     last_forced_discovery_ms: &mut i64,
-    last_discovery_ms: &mut i64,
+    last_full_discovery_ms: &mut i64,
+    last_delta_discovery_ms: &mut i64,
     next_discovery_attempt_ms: &mut i64,
 ) -> bool {
     if *last_forced_discovery_ms > 0
@@ -2610,7 +2687,8 @@ fn mm_sport_schedule_discovery_after_live_guard_prune(
         return false;
     }
     *last_forced_discovery_ms = now_ms;
-    *last_discovery_ms = 0;
+    *last_full_discovery_ms = 0;
+    *last_delta_discovery_ms = 0;
     *next_discovery_attempt_ms =
         now_ms.saturating_add(MM_SPORT_LIVE_GUARD_PRUNE_DISCOVERY_DELAY_MS);
     true
@@ -4014,9 +4092,17 @@ async fn mm_sport_place_order(
 async fn mm_sport_discover_markets(
     api: &PolymarketApi,
     cfg: &mm::MmSportConfig,
+    discovery_mode: &str,
+    rewards_page_budget: u32,
+    discovery_detail_cap: usize,
 ) -> Result<(Vec<MmSportMarket>, MmSportDiscoveryReport)> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let mut report = MmSportDiscoveryReport::default();
+    let rewards_page_budget = rewards_page_budget.clamp(1, 200);
+    let discovery_detail_cap = discovery_detail_cap.max(1);
+    report.discovery_mode = discovery_mode.to_string();
+    report.rewards_source = "polymarket_api".to_string();
+    report.rewards_page_budget = rewards_page_budget;
     let sponsored_reward_rows_by_condition: std::collections::HashMap<String, RewardsMarketEntry> =
         if cfg.allow_sponsored_rewards {
             std::collections::HashMap::new()
@@ -4050,11 +4136,17 @@ async fn mm_sport_discover_markets(
     report.sponsored_reward_condition_ids =
         sponsored_reward_rows_by_condition.keys().cloned().collect();
     let rewards_rows = match api
-        .get_rewards_markets_api(cfg.rewards_page_budget, None, None, true)
+        .get_rewards_markets_api_with_report(rewards_page_budget, None, None, true)
         .await
     {
-        Ok(rows) => rows,
+        Ok((rows, fetch_report)) => {
+            report.rewards_api_skipped_pages = fetch_report.skipped_page_count;
+            report.rewards_api_partial_due_to_error = fetch_report.partial_due_to_error;
+            report.rewards_api_attempts_exhausted = fetch_report.attempts_exhausted;
+            rows
+        }
         Err(primary_err) => {
+            report.rewards_fallback_used = true;
             log_event(
                 "mm_sport_rewards_api_fallback",
                 json!({
@@ -4104,8 +4196,9 @@ async fn mm_sport_discover_markets(
             });
             if rows.is_empty() {
                 rows = api
-                    .get_rewards_markets_gamma(500, cfg.rewards_page_budget)
+                    .get_rewards_markets_gamma(500, rewards_page_budget)
                     .await?;
+                report.rewards_source = "gamma_rewards".to_string();
                 log_event(
                     "mm_sport_rewards_api_fallback",
                     json!({
@@ -4115,6 +4208,7 @@ async fn mm_sport_discover_markets(
                     }),
                 );
             } else {
+                report.rewards_source = "clob_current_rewards".to_string();
                 log_event(
                     "mm_sport_rewards_api_fallback",
                     json!({
@@ -4128,9 +4222,13 @@ async fn mm_sport_discover_markets(
         }
     };
     report.rewards_rows = rewards_rows.len();
+    report.detail_candidate_rows = rewards_rows.len().min(discovery_detail_cap);
+    report.skipped_detail_cap = rewards_rows
+        .len()
+        .saturating_sub(report.detail_candidate_rows);
     let mut markets_by_condition: std::collections::HashMap<String, MmSportDiscoveredCandidate> =
         std::collections::HashMap::new();
-    for row in rewards_rows {
+    for row in rewards_rows.into_iter().take(discovery_detail_cap) {
         let reward_rate = row.reward_rate_hint();
         if !mm_sport_fresh_entry_reward_rate_allowed(reward_rate, cfg.min_reward_rate_per_day) {
             report.skipped_low_reward_rate = report.skipped_low_reward_rate.saturating_add(1);
@@ -16669,13 +16767,16 @@ async fn main() -> Result<()> {
             );
         } else {
             eprintln!(
-                "🏀 MM Sport enabled (poll_ms={}, event_driven={}, event_fallback_poll_ms={}, ws_stale_ms={}, fifo_ws_gap_cancel_ms={}, discovery_refresh_sec={}, rewards_page_budget={}, min_reward_rate_per_day={:.2}, quote_size_mode={}, exit_mode={}, quote_size_mult={:.3}, pair_baseline_reward_mult={:.3}, max_share_ratio={:.3}, min_top_depth_usd={:.2}, pause_after_fill_sec={}, no_exit_side_pause_sec={}, bust_window_ms={}, bust_shares_1s={:.2}, bust_pause_sec=[{},{}], ratio_breach_cancel_cooldown_ms={}, ratio_pause_sec={}, post_only={}, quote_expiry_sec=[{},{}], require_reward_eligible={}, pregame_only={}, match_only={}, max_markets={})",
+                "🏀 MM Sport enabled (poll_ms={}, event_driven={}, event_fallback_poll_ms={}, ws_stale_ms={}, fifo_ws_gap_cancel_ms={}, discovery_refresh_sec={}, discovery_delta_refresh_sec={}, discovery_delta_page_budget={}, discovery_detail_cap={}, rewards_page_budget={}, min_reward_rate_per_day={:.2}, quote_size_mode={}, exit_mode={}, quote_size_mult={:.3}, pair_baseline_reward_mult={:.3}, max_share_ratio={:.3}, min_top_depth_usd={:.2}, pause_after_fill_sec={}, no_exit_side_pause_sec={}, bust_window_ms={}, bust_shares_1s={:.2}, bust_pause_sec=[{},{}], ratio_breach_cancel_cooldown_ms={}, ratio_pause_sec={}, post_only={}, quote_expiry_sec=[{},{}], require_reward_eligible={}, pregame_only={}, match_only={}, max_markets={})",
                 mm_sport_cfg.poll_ms,
                 mm_sport_cfg.event_driven_enable,
                 mm_sport_cfg.event_fallback_poll_ms,
                 mm_sport_cfg.ws_stale_ms,
                 mm_sport_cfg.fifo_ws_gap_cancel_ms,
                 mm_sport_cfg.discovery_refresh_sec,
+                mm_sport_cfg.discovery_delta_refresh_sec,
+                mm_sport_cfg.discovery_delta_page_budget,
+                mm_sport_cfg.discovery_detail_cap,
                 mm_sport_cfg.rewards_page_budget,
                 mm_sport_cfg.min_reward_rate_per_day,
                 mm_sport_cfg.quote_size_mode.as_str(),
@@ -16731,7 +16832,8 @@ async fn main() -> Result<()> {
             tokio::spawn(async move {
                 let mut discovered_markets: Vec<MmSportMarket> = Vec::new();
                 let mut last_good_discovered_markets: Vec<MmSportMarket> = Vec::new();
-                let mut last_discovery_ms = 0_i64;
+                let mut last_full_discovery_ms = 0_i64;
+                let mut last_delta_discovery_ms = 0_i64;
                 let mut next_discovery_attempt_ms = 0_i64;
                 let mut last_live_guard_prune_forced_discovery_ms = 0_i64;
                 let mut discovery_backoff_ms = MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MIN_MS;
@@ -17171,25 +17273,51 @@ async fn main() -> Result<()> {
                             }
                         }
                     }
-                    let refresh_interval_ms = i64::try_from(
+                    let full_refresh_interval_ms = i64::try_from(
                         mm_sport_cfg_for_loop
                             .discovery_refresh_sec
                             .saturating_mul(1_000),
                     )
                     .ok()
                     .unwrap_or(3_600_000);
+                    let delta_refresh_interval_ms = i64::try_from(
+                        mm_sport_cfg_for_loop
+                            .discovery_delta_refresh_sec
+                            .saturating_mul(1_000),
+                    )
+                    .ok()
+                    .unwrap_or(600_000);
+                    let should_full_discovery = discovered_markets.is_empty()
+                        || last_full_discovery_ms <= 0
+                        || now_ms.saturating_sub(last_full_discovery_ms)
+                            >= full_refresh_interval_ms;
+                    let should_delta_discovery = !should_full_discovery
+                        && (last_delta_discovery_ms <= 0
+                            || now_ms.saturating_sub(last_delta_discovery_ms)
+                                >= delta_refresh_interval_ms);
                     let should_refresh_discovery = now_ms >= next_discovery_attempt_ms
-                        && (discovered_markets.is_empty()
-                            || now_ms.saturating_sub(last_discovery_ms) >= refresh_interval_ms);
+                        && (should_full_discovery || should_delta_discovery);
                     if should_refresh_discovery {
+                        let discovery_mode = if should_full_discovery {
+                            "full"
+                        } else {
+                            "delta"
+                        };
+                        let rewards_page_budget = if should_full_discovery {
+                            mm_sport_cfg_for_loop.rewards_page_budget
+                        } else {
+                            mm_sport_cfg_for_loop.discovery_delta_page_budget
+                        };
                         match mm_sport_discover_markets(
                             &api_for_mm_sport,
                             mm_sport_cfg_for_loop.as_ref(),
+                            discovery_mode,
+                            rewards_page_budget,
+                            mm_sport_cfg_for_loop.discovery_detail_cap,
                         )
                         .await
                         {
                             Ok((markets, discovery_report)) => {
-                                last_discovery_ms = now_ms;
                                 let (markets, live_guard_pruned_market_count) =
                                     mm_sport_filter_recently_pruned_markets(
                                         markets,
@@ -17198,12 +17326,59 @@ async fn main() -> Result<()> {
                                     );
                                 let selected_market_count = markets.len();
                                 let mut using_cached_markets = false;
+                                let mut degraded_discovery = false;
                                 let next_discovered_markets = if selected_market_count > 0 {
-                                    last_good_discovered_markets = markets.clone();
-                                    discovery_backoff_ms = MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MIN_MS;
-                                    next_discovery_attempt_ms =
-                                        now_ms.saturating_add(refresh_interval_ms);
-                                    markets
+                                    degraded_discovery = mm_sport_discovery_result_looks_degraded(
+                                        &discovery_report,
+                                        selected_market_count,
+                                        last_good_discovered_markets.len(),
+                                    );
+                                    if degraded_discovery
+                                        && !last_good_discovered_markets.is_empty()
+                                    {
+                                        using_cached_markets = true;
+                                        discovery_backoff_ms =
+                                            (discovery_backoff_ms.saturating_mul(2)).clamp(
+                                                MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MIN_MS,
+                                                MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MAX_MS,
+                                            );
+                                        next_discovery_attempt_ms =
+                                            now_ms.saturating_add(discovery_backoff_ms);
+                                        last_good_discovered_markets.clone()
+                                    } else {
+                                        let merged_markets = if should_delta_discovery
+                                            && !last_good_discovered_markets.is_empty()
+                                        {
+                                            let pruned_condition_ids =
+                                                live_guard_pruned_conditions_until_ms
+                                                    .keys()
+                                                    .cloned()
+                                                    .collect::<std::collections::HashSet<_>>();
+                                            mm_sport_merge_market_cache(
+                                                last_good_discovered_markets.as_slice(),
+                                                markets,
+                                                mm_sport_cfg_for_loop.max_markets,
+                                                &pruned_condition_ids,
+                                            )
+                                        } else {
+                                            markets
+                                        };
+                                        if should_full_discovery {
+                                            last_full_discovery_ms = now_ms;
+                                        }
+                                        last_delta_discovery_ms = now_ms;
+                                        last_good_discovered_markets = merged_markets.clone();
+                                        discovery_backoff_ms =
+                                            MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MIN_MS;
+                                        next_discovery_attempt_ms =
+                                            mm_sport_next_discovery_attempt_after_success(
+                                                now_ms,
+                                                last_full_discovery_ms,
+                                                full_refresh_interval_ms,
+                                                delta_refresh_interval_ms,
+                                            );
+                                        merged_markets
+                                    }
                                 } else {
                                     let fallback_markets =
                                         if discovery_report.sponsored_reward_filter_failed {
@@ -17215,7 +17390,8 @@ async fn main() -> Result<()> {
                                             Vec::new()
                                         };
                                     let had_detail_failure = discovery_report.clob_detail_error > 0
-                                        || discovery_report.gamma_fallback_error > 0;
+                                        || discovery_report.gamma_fallback_error > 0
+                                        || discovery_report.rewards_fallback_used;
                                     let had_rate_limit =
                                         discovery_report.clob_detail_rate_limited > 0;
                                     let had_sponsored_filter_failure =
@@ -17232,10 +17408,19 @@ async fn main() -> Result<()> {
                                         next_discovery_attempt_ms =
                                             now_ms.saturating_add(discovery_backoff_ms);
                                     } else {
+                                        if should_full_discovery {
+                                            last_full_discovery_ms = now_ms;
+                                        }
+                                        last_delta_discovery_ms = now_ms;
                                         discovery_backoff_ms =
                                             MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MIN_MS;
                                         next_discovery_attempt_ms =
-                                            now_ms.saturating_add(refresh_interval_ms);
+                                            mm_sport_next_discovery_attempt_after_success(
+                                                now_ms,
+                                                last_full_discovery_ms,
+                                                full_refresh_interval_ms,
+                                                delta_refresh_interval_ms,
+                                            );
                                     }
                                     fallback_markets
                                 };
@@ -17267,7 +17452,9 @@ async fn main() -> Result<()> {
                                                     "request_market_count": alpha_request_market_count,
                                                     "skipped_market_count": skipped_count,
                                                     "depth_floor_usd": MM_SPORT_LOW_DEPTH_FLOOR_USD,
+                                                    "discovery_mode": discovery_mode,
                                                     "using_cached_markets": using_cached_markets,
+                                                    "degraded_discovery": degraded_discovery,
                                                     "next_discovery_attempt_ms": next_discovery_attempt_ms
                                                 }),
                                             );
@@ -17285,7 +17472,9 @@ async fn main() -> Result<()> {
                                                     "request_market_count": alpha_request_market_count,
                                                     "skipped_market_count": alpha_depth_skip_conditions.len(),
                                                     "depth_floor_usd": MM_SPORT_LOW_DEPTH_FLOOR_USD,
+                                                    "discovery_mode": discovery_mode,
                                                     "using_cached_markets": using_cached_markets,
+                                                    "degraded_discovery": degraded_discovery,
                                                     "fail_closed": true,
                                                     "error": err.to_string(),
                                                     "next_discovery_attempt_ms": next_discovery_attempt_ms
@@ -17337,7 +17526,7 @@ async fn main() -> Result<()> {
                                         "scope_token_count": wait_scope_token_ids.len(),
                                         "scope_market_count": wait_scope_condition_ids.len(),
                                         "min_reward_rate_per_day": mm_sport_cfg_for_loop.min_reward_rate_per_day,
-                                        "refresh_interval_ms": refresh_interval_ms,
+                                        "refresh_interval_ms": if should_full_discovery { full_refresh_interval_ms } else { delta_refresh_interval_ms },
                                         "next_discovery_attempt_ms": next_discovery_attempt_ms,
                                         "discovery_backoff_ms": discovery_backoff_ms,
                                         "rewards_rows": discovery_report.rewards_rows,
@@ -17369,6 +17558,26 @@ async fn main() -> Result<()> {
                                         "selected_nonsports": discovery_report.selected_nonsports,
                                         "deduped_conditions": discovery_report.deduped_conditions,
                                         "selected_via_gamma_fallback": discovery_report.selected_via_gamma_fallback
+                                    }),
+                                );
+                                log_event(
+                                    "mm_sport_discovery_refresh_metadata",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                        "discovery_mode": discovery_report.discovery_mode.as_str(),
+                                        "rewards_source": discovery_report.rewards_source.as_str(),
+                                        "rewards_fallback_used": discovery_report.rewards_fallback_used,
+                                        "rewards_page_budget": discovery_report.rewards_page_budget,
+                                        "rewards_api_skipped_pages": discovery_report.rewards_api_skipped_pages,
+                                        "rewards_api_partial_due_to_error": discovery_report.rewards_api_partial_due_to_error,
+                                        "rewards_api_attempts_exhausted": discovery_report.rewards_api_attempts_exhausted,
+                                        "detail_candidate_rows": discovery_report.detail_candidate_rows,
+                                        "discovery_detail_cap": mm_sport_cfg_for_loop.discovery_detail_cap,
+                                        "skipped_detail_cap": discovery_report.skipped_detail_cap,
+                                        "degraded_discovery": degraded_discovery,
+                                        "full_refresh_interval_ms": full_refresh_interval_ms,
+                                        "delta_refresh_interval_ms": delta_refresh_interval_ms,
+                                        "next_discovery_attempt_ms": next_discovery_attempt_ms
                                     }),
                                 );
                                 if discovery_report.clob_detail_rate_limited > 0 {
@@ -17403,6 +17612,8 @@ async fn main() -> Result<()> {
                                     "mm_sport_discovery_error",
                                     json!({
                                         "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                        "discovery_mode": discovery_mode,
+                                        "rewards_page_budget": rewards_page_budget,
                                         "error": e.to_string(),
                                         "rate_limited": rate_limited,
                                         "next_discovery_attempt_ms": next_discovery_attempt_ms,
@@ -19800,7 +20011,8 @@ async fn main() -> Result<()> {
                                             mm_sport_schedule_discovery_after_live_guard_prune(
                                                 now_ms,
                                                 &mut last_live_guard_prune_forced_discovery_ms,
-                                                &mut last_discovery_ms,
+                                                &mut last_full_discovery_ms,
+                                                &mut last_delta_discovery_ms,
                                                 &mut next_discovery_attempt_ms,
                                             )
                                         } else {
@@ -29540,16 +29752,19 @@ mod tests {
     fn mm_sport_live_guard_prune_forced_discovery_is_debounced() {
         let now_ms = 2_000_000_000_000_i64;
         let mut last_forced = 0_i64;
-        let mut last_discovery = now_ms - 1_000;
+        let mut last_full_discovery = now_ms - 1_000;
+        let mut last_delta_discovery = now_ms - 1_000;
         let mut next_attempt = now_ms + 3_600_000;
 
         assert!(mm_sport_schedule_discovery_after_live_guard_prune(
             now_ms,
             &mut last_forced,
-            &mut last_discovery,
+            &mut last_full_discovery,
+            &mut last_delta_discovery,
             &mut next_attempt
         ));
-        assert_eq!(last_discovery, 0);
+        assert_eq!(last_full_discovery, 0);
+        assert_eq!(last_delta_discovery, 0);
         assert_eq!(
             next_attempt,
             now_ms + MM_SPORT_LIVE_GUARD_PRUNE_DISCOVERY_DELAY_MS
@@ -29558,9 +29773,103 @@ mod tests {
         assert!(!mm_sport_schedule_discovery_after_live_guard_prune(
             now_ms + 1_000,
             &mut last_forced,
-            &mut last_discovery,
+            &mut last_full_discovery,
+            &mut last_delta_discovery,
             &mut next_attempt
         ));
+    }
+
+    #[test]
+    fn mm_sport_delta_merge_keeps_cached_markets_and_updates_better_rewards() {
+        let now_ms = 2_000_000_000_000_i64;
+        let existing = vec![
+            mm_sport_test_market("cond-a", 100.0, now_ms + 86_400_000),
+            mm_sport_test_market("cond-b", 300.0, now_ms + 86_400_000),
+        ];
+        let updates = vec![
+            mm_sport_test_market("cond-a", 200.0, now_ms + 86_400_000),
+            mm_sport_test_market("cond-c", 150.0, now_ms + 86_400_000),
+        ];
+        let pruned = std::collections::HashSet::from(["cond-b".to_string()]);
+
+        let merged = mm_sport_merge_market_cache(existing.as_slice(), updates, 2, &pruned);
+
+        assert_eq!(
+            merged
+                .iter()
+                .map(|market| (market.condition_id.as_str(), market.reward_rate_per_day))
+                .collect::<Vec<_>>(),
+            vec![("cond-a", 200.0), ("cond-c", 150.0)]
+        );
+    }
+
+    #[test]
+    fn mm_sport_delta_merge_prefers_current_snapshot_when_reward_falls() {
+        let now_ms = 2_000_000_000_000_i64;
+        let existing = vec![
+            mm_sport_test_market("cond-a", 300.0, now_ms + 86_400_000),
+            mm_sport_test_market("cond-b", 200.0, now_ms + 86_400_000),
+        ];
+        let updates = vec![mm_sport_test_market("cond-a", 100.0, now_ms + 43_200_000)];
+        let pruned = std::collections::HashSet::new();
+
+        let merged = mm_sport_merge_market_cache(existing.as_slice(), updates, 0, &pruned);
+        let updated = merged
+            .iter()
+            .find(|market| market.condition_id == "cond-a")
+            .unwrap();
+
+        assert_eq!(updated.reward_rate_per_day, 100.0);
+        assert_eq!(updated.game_start_ts_ms, now_ms + 43_200_000);
+        assert!(merged.iter().any(|market| market.condition_id == "cond-b"));
+    }
+
+    #[test]
+    fn mm_sport_degraded_discovery_requires_smaller_result_and_fetch_issue() {
+        let mut report = MmSportDiscoveryReport {
+            rewards_fallback_used: true,
+            ..Default::default()
+        };
+
+        assert!(mm_sport_discovery_result_looks_degraded(&report, 100, 200));
+        assert!(mm_sport_discovery_result_looks_degraded(&report, 160, 200));
+        assert!(!mm_sport_discovery_result_looks_degraded(&report, 200, 200));
+
+        report.rewards_fallback_used = false;
+        assert!(!mm_sport_discovery_result_looks_degraded(&report, 100, 200));
+
+        report.clob_detail_error = 1;
+        assert!(mm_sport_discovery_result_looks_degraded(&report, 100, 200));
+
+        report.clob_detail_error = 0;
+        report.rewards_api_partial_due_to_error = true;
+        assert!(mm_sport_discovery_result_looks_degraded(&report, 199, 200));
+    }
+
+    #[test]
+    fn mm_sport_next_discovery_attempt_preserves_due_full_refresh() {
+        let now_ms = 2_000_000_000_000_i64;
+        let full_interval_ms = 3_600_000_i64;
+        let delta_interval_ms = 600_000_i64;
+
+        assert_eq!(
+            mm_sport_next_discovery_attempt_after_success(
+                now_ms,
+                now_ms.saturating_sub(3_540_000),
+                full_interval_ms,
+                delta_interval_ms
+            ),
+            now_ms + 60_000
+        );
+        assert_eq!(
+            mm_sport_next_discovery_attempt_after_success(
+                now_ms,
+                now_ms,
+                full_interval_ms,
+                delta_interval_ms
+            ),
+            now_ms + delta_interval_ms
+        );
     }
 
     #[test]

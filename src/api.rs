@@ -462,6 +462,16 @@ struct RewardsMarketsApiResponse {
     next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RewardsMarketsApiFetchReport {
+    pub requested_pages: u32,
+    pub attempted_pages: u32,
+    pub successful_pages: u32,
+    pub skipped_page_count: u32,
+    pub partial_due_to_error: bool,
+    pub attempts_exhausted: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AutoRedeemApprovalStatus {
     pub account: String,
@@ -2935,13 +2945,38 @@ impl PolymarketApi {
         tag_slug: Option<&str>,
         sponsored: bool,
     ) -> Result<Vec<RewardsMarketEntry>> {
+        let (rows, _) = self
+            .get_rewards_markets_api_with_report(max_pages, query, tag_slug, sponsored)
+            .await?;
+        Ok(rows)
+    }
+
+    /// Load reward-ranked markets directly from Polymarket rewards API with pagination metadata.
+    pub async fn get_rewards_markets_api_with_report(
+        &self,
+        max_pages: u32,
+        query: Option<&str>,
+        tag_slug: Option<&str>,
+        sponsored: bool,
+    ) -> Result<(Vec<RewardsMarketEntry>, RewardsMarketsApiFetchReport)> {
         let url = "https://polymarket.com/api/rewards/markets";
         let effective_pages = max_pages.clamp(1, 200);
+        let mut fetch_report = RewardsMarketsApiFetchReport {
+            requested_pages: effective_pages,
+            ..Default::default()
+        };
         let mut all_rows = Vec::new();
         let mut next_cursor: Option<String> = None;
         let mut seen_cursors: HashSet<String> = HashSet::new();
+        let mut successful_pages = 0_u32;
+        let mut attempts = 0_u32;
+        let max_attempts = effective_pages
+            .saturating_mul(4)
+            .clamp(effective_pages, 800);
 
-        for _ in 0..effective_pages {
+        while successful_pages < effective_pages && attempts < max_attempts {
+            attempts = attempts.saturating_add(1);
+            fetch_report.attempted_pages = attempts;
             let sponsored_value = if sponsored { "true" } else { "false" };
             let response = self
                 .send_readonly_get_with_proxy_fallback(|client| {
@@ -2985,6 +3020,8 @@ impl PolymarketApi {
                         .and_then(Self::advance_rewards_api_cursor)
                     {
                         if seen_cursors.insert(next.clone()) {
+                            fetch_report.skipped_page_count =
+                                fetch_report.skipped_page_count.saturating_add(1);
                             warn!(
                                 "Rewards API page at cursor {:?} returned {}; skipping to inferred cursor {}",
                                 next_cursor, status, next
@@ -2999,6 +3036,7 @@ impl PolymarketApi {
                         status,
                         all_rows.len()
                     );
+                    fetch_report.partial_due_to_error = true;
                     break;
                 }
                 anyhow::bail!(
@@ -3011,12 +3049,28 @@ impl PolymarketApi {
                 Ok(parsed) => parsed,
                 Err(err) => {
                     if !all_rows.is_empty() {
+                        if let Some(next) = next_cursor
+                            .as_deref()
+                            .and_then(Self::advance_rewards_api_cursor)
+                        {
+                            if seen_cursors.insert(next.clone()) {
+                                fetch_report.skipped_page_count =
+                                    fetch_report.skipped_page_count.saturating_add(1);
+                                warn!(
+                                    "Failed to parse rewards API page at cursor {:?}: {}; skipping to inferred cursor {}",
+                                    next_cursor, err, next
+                                );
+                                next_cursor = Some(next);
+                                continue;
+                            }
+                        }
                         warn!(
                             "Failed to parse rewards API page at cursor {:?}: {}; using {} partial rows",
                             next_cursor,
                             err,
                             all_rows.len()
                         );
+                        fetch_report.partial_due_to_error = true;
                         break;
                     }
                     return Err(err)
@@ -3027,6 +3081,8 @@ impl PolymarketApi {
                 break;
             }
             all_rows.extend(parsed.data);
+            successful_pages = successful_pages.saturating_add(1);
+            fetch_report.successful_pages = successful_pages;
 
             let next = parsed
                 .next_cursor
@@ -3043,8 +3099,13 @@ impl PolymarketApi {
             next_cursor = Some(cursor);
         }
 
+        if successful_pages < effective_pages && attempts >= max_attempts && next_cursor.is_some() {
+            fetch_report.attempts_exhausted = true;
+            fetch_report.partial_due_to_error = true;
+        }
+
         if all_rows.is_empty() {
-            return Ok(all_rows);
+            return Ok((all_rows, fetch_report));
         }
 
         let mut deduped = Vec::new();
@@ -3061,7 +3122,7 @@ impl PolymarketApi {
             deduped.push(row);
         }
 
-        Ok(deduped)
+        Ok((deduped, fetch_report))
     }
 
     /// Load current reward configs from the CLOB rewards API.

@@ -4049,9 +4049,84 @@ async fn mm_sport_discover_markets(
         };
     report.sponsored_reward_condition_ids =
         sponsored_reward_rows_by_condition.keys().cloned().collect();
-    let rewards_rows = api
+    let rewards_rows = match api
         .get_rewards_markets_api(cfg.rewards_page_budget, None, None, true)
-        .await?;
+        .await
+    {
+        Ok(rows) => rows,
+        Err(primary_err) => {
+            log_event(
+                "mm_sport_rewards_api_fallback",
+                json!({
+                    "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                    "primary_error": primary_err.to_string(),
+                    "fallback": "clob_current_rewards"
+                }),
+            );
+            let mut rows_by_condition: std::collections::HashMap<String, RewardsMarketEntry> =
+                std::collections::HashMap::new();
+            for sponsored in [false, true] {
+                match api.get_current_rewards_markets_api(sponsored).await {
+                    Ok(rows) => {
+                        for row in rows {
+                            let key = row.condition_id.trim().to_ascii_lowercase();
+                            if key.is_empty() {
+                                continue;
+                            }
+                            let replace = rows_by_condition
+                                .get(key.as_str())
+                                .map(|existing| {
+                                    row.total_daily_rate_hint() > existing.total_daily_rate_hint()
+                                })
+                                .unwrap_or(true);
+                            if replace {
+                                rows_by_condition.insert(key, row);
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        log_event(
+                            "mm_sport_rewards_api_fallback_error",
+                            json!({
+                                "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                "fallback": "clob_current_rewards",
+                                "sponsored": sponsored,
+                                "error": err.to_string()
+                            }),
+                        );
+                    }
+                }
+            }
+            let mut rows = rows_by_condition.into_values().collect::<Vec<_>>();
+            rows.sort_by(|a, b| {
+                b.total_daily_rate_hint()
+                    .total_cmp(&a.total_daily_rate_hint())
+            });
+            if rows.is_empty() {
+                rows = api
+                    .get_rewards_markets_gamma(500, cfg.rewards_page_budget)
+                    .await?;
+                log_event(
+                    "mm_sport_rewards_api_fallback",
+                    json!({
+                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                        "fallback": "gamma_rewards",
+                        "rows": rows.len()
+                    }),
+                );
+            } else {
+                log_event(
+                    "mm_sport_rewards_api_fallback",
+                    json!({
+                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                        "fallback": "clob_current_rewards",
+                        "rows": rows.len()
+                    }),
+                );
+            }
+            rows
+        }
+    };
     report.rewards_rows = rewards_rows.len();
     let mut markets_by_condition: std::collections::HashMap<String, MmSportDiscoveredCandidate> =
         std::collections::HashMap::new();

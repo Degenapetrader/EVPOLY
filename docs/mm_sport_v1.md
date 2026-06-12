@@ -107,30 +107,26 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
 - `EVPOLY_MM_SPORT_MAX_SHARE_RATIO`
 - `EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO`
 - `EVPOLY_MM_SPORT_FIFO_WS_GAP_CANCEL_MS`
-- `EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP`
 - `EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP`
 - `EVPOLY_MM_SPORT_MAX_MARKETS`
 - `EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC`
 - `EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS`
-- `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC`
-- `EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC`
 - `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC`
 - `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC`
 - `EVPOLY_MM_SPORT_QUOTE_HOLD_MIN_SEC`
 - `EVPOLY_MM_SPORT_QUOTE_HOLD_MAX_SEC`
 - `EVPOLY_MM_SPORT_EVENT_MIN_SCAN_MS`
 - `EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT`
-- `EVPOLY_MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK`
-- `EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY`
 - `EVPOLY_MM_SPORT_VERBOSE_BUDGET_EVENTS`
 
 ## Notes
 
 - The legacy generic rewards-MM strategy is not part of the public V2 runtime.
 - Existing inventory and open orders can still be canceled or unwound even when a market no longer qualifies for fresh entry.
-- Fresh-entry scope is capped by route: Dual defaults to 50 sports plus 50 non-sports candidates, while single-route Sport or Non-S runs default to 100 candidates for the selected route. Markets with inventory/open orders remain in scope for exit and cancel work.
+- Fresh-entry sport scope is fixed at 600 candidates. Non-sports scope remains route/default or `EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP`. Markets with inventory/open orders remain in scope for exit and cancel work.
 - FIFO cancellation uses `EVPOLY_MM_SPORT_FIFO_MAX_SHARE_RATIO`, clamped to at least 110% of the larger Sport/Non-S fresh-entry max share ratio. FIFO cancels and natural quote expiry start a randomized fresh-BUY cooldown from `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MIN_SEC` to `EVPOLY_MM_SPORT_QUOTE_COOLDOWN_MAX_SEC`.
-- Event-driven MM 2.0 scans are coalesced by `EVPOLY_MM_SPORT_EVENT_MIN_SCAN_MS`; hot markets with inventory/open orders stay scanned every pass, while fresh candidates are rotated by `EVPOLY_MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK` and order submits are capped by `EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY`.
+- Event-driven MM 2.0 scans are coalesced by `EVPOLY_MM_SPORT_EVENT_MIN_SCAN_MS`; hot markets with inventory/open orders stay scanned every pass, while fresh candidates are rotated through a fixed 200 markets per tick and order submits are capped at fixed concurrency 4.
+- Fresh BUY quote expirations are fixed to the 65-180 second window. Ratio pause cooldown is fixed to 180 seconds.
 - Successful BUY quotes are held briefly by `EVPOLY_MM_SPORT_QUOTE_HOLD_MIN_SEC` / `EVPOLY_MM_SPORT_QUOTE_HOLD_MAX_SEC` so small depth-ratio size drift does not churn quotes. Per-market collateral-budget scaling events are quiet by default; set `EVPOLY_MM_SPORT_VERBOSE_BUDGET_EVENTS=true` only for short debugging windows.
 - Prime Line Coverage is platform-only and is not part of MM 2.0 in main2.
 - Review sizing and inventory risk before combining MM 2.0 with heavy directional profiles.

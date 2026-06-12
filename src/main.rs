@@ -8698,7 +8698,6 @@ async fn main() -> Result<()> {
         .unwrap_or(0)
         .clamp(0, 5_000);
     let endgame_cfg = Arc::new(EndgameExecutionConfig::from_env());
-    let endgame_base_size_usd = size_policy::endgame_base_size_usd_from_env();
     let endgame_symbols = symbol_ownership::filter_symbols_for_strategy(
         STRATEGY_ID_ENDGAME_SWEEP_V1,
         endgame_cfg.enabled_symbols().as_slice(),
@@ -8713,7 +8712,7 @@ async fn main() -> Result<()> {
             .collect::<Vec<_>>()
             .join(",");
         eprintln!(
-            "🎯 Endgame strategy enabled (scheduler=sleep_until, safety_poll={}ms, tick_jitter={}ms, legacy_poll={}ms, symbols=[{}], tfs=[{}], tick_offsets_ms={:?}, allow_cross_spread={}, base_size_usd={:.2}, tick_split=20/40/40, period_cap_usd={:.2}, near_base_skip={}, near_base_bps={:.3})",
+            "🎯 Endgame strategy enabled (scheduler=sleep_until, safety_poll={}ms, tick_jitter={}ms, legacy_poll={}ms, symbols=[{}], tfs=[{}], tick_offsets_ms={:?}, allow_cross_spread={}, size_mode=shares, base_size_shares={:.2}, tick_split=20/40/40, period_cap_usd={:.2}, near_base_skip={}, near_base_bps={:.3})",
             endgame_cfg.safety_poll_ms,
             endgame_cfg.tick_random_jitter_ms,
             endgame_cfg.poll_interval_ms,
@@ -8721,7 +8720,7 @@ async fn main() -> Result<()> {
             timeframes,
             endgame_cfg.tick_offsets_sec,
             endgame_cfg.allow_cross_spread,
-            endgame_base_size_usd,
+            endgame_cfg.base_size_shares,
             endgame_cfg.period_cap_usd(),
             near_base_skip_endgame,
             endgame_near_base_skip_bps

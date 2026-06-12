@@ -1,5 +1,12 @@
 pub mod sports_live_guard;
 
+const MM_SPORT_QUOTE_EXPIRY_MIN_SEC_HARDCODED: u64 = 65;
+const MM_SPORT_QUOTE_EXPIRY_MAX_SEC_HARDCODED: u64 = 180;
+const MM_SPORT_RATIO_PAUSE_SEC_HARDCODED: u64 = 180;
+const MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK_HARDCODED: usize = 200;
+const MM_SPORT_ORDER_SUBMIT_CONCURRENCY_HARDCODED: usize = 4;
+const MM_SPORT_ACTIVE_SPORT_MARKET_CAP_HARDCODED: usize = 600;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MmSportQuoteSizeMode {
     Multiple,
@@ -217,10 +224,8 @@ impl MmSportConfig {
         let bust_pause_min_sec = env_u64("EVPOLY_MM_SPORT_BUST_PAUSE_MIN_SEC", 60).clamp(1, 3_600);
         let bust_pause_max_sec =
             env_u64("EVPOLY_MM_SPORT_BUST_PAUSE_MAX_SEC", 300).clamp(bust_pause_min_sec, 7_200);
-        let quote_expiry_min_sec =
-            env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", 65).clamp(61, 3_600);
-        let quote_expiry_max_sec =
-            env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 185).clamp(quote_expiry_min_sec, 7_200);
+        let quote_expiry_min_sec = MM_SPORT_QUOTE_EXPIRY_MIN_SEC_HARDCODED;
+        let quote_expiry_max_sec = MM_SPORT_QUOTE_EXPIRY_MAX_SEC_HARDCODED;
         let quote_size_mode =
             MmSportQuoteSizeMode::from_env(std::env::var("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE").ok());
         let entry_price_mode =
@@ -255,10 +260,10 @@ impl MmSportConfig {
             env_u64("EVPOLY_MM_SPORT_QUOTE_HOLD_MAX_SEC", 45).clamp(quote_hold_min_sec, 7_200);
         let discovery_route =
             MmSportDiscoveryRoute::from_env(std::env::var("EVPOLY_MM_SPORT_DISCOVERY_ROUTE").ok());
-        let (default_active_sport_cap, default_active_nonsport_cap) = match discovery_route {
-            MmSportDiscoveryRoute::Sports => (100, 0),
-            MmSportDiscoveryRoute::NonSports => (0, 100),
-            MmSportDiscoveryRoute::Dual => (50, 50),
+        let default_active_nonsport_cap = match discovery_route {
+            MmSportDiscoveryRoute::Sports => 0,
+            MmSportDiscoveryRoute::NonSports => 100,
+            MmSportDiscoveryRoute::Dual => 50,
         };
         let min_top_depth_usd = env_f64("EVPOLY_MM_SPORT_MIN_TOP_DEPTH_USD", 1_100.0).max(0.0);
         Self {
@@ -362,7 +367,7 @@ impl MmSportConfig {
                 200,
             )
             .clamp(50, 60_000) as i64,
-            ratio_pause_sec: env_u64("EVPOLY_MM_SPORT_RATIO_PAUSE_SEC", 900).clamp(60, 86_400),
+            ratio_pause_sec: MM_SPORT_RATIO_PAUSE_SEC_HARDCODED,
             reprice_min_interval_ms: env_u64("EVPOLY_MM_SPORT_REPRICE_MIN_INTERVAL_MS", 600)
                 .clamp(50, 60_000) as i64,
             quote_expiry_min_sec,
@@ -373,13 +378,8 @@ impl MmSportConfig {
             quote_hold_max_sec,
             size_requote_delta_pct: env_f64("EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT", 0.20)
                 .clamp(0.0, 1.0),
-            fresh_scan_markets_per_tick: env_usize(
-                "EVPOLY_MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK",
-                30,
-            )
-            .min(1_000),
-            order_submit_concurrency: env_usize("EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY", 3)
-                .clamp(1, 16),
+            fresh_scan_markets_per_tick: MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK_HARDCODED,
+            order_submit_concurrency: MM_SPORT_ORDER_SUBMIT_CONCURRENCY_HARDCODED,
             verbose_budget_events: env_bool("EVPOLY_MM_SPORT_VERBOSE_BUDGET_EVENTS", false),
             allowance_refresh_sec: env_u64("EVPOLY_MM_SPORT_ALLOWANCE_REFRESH_SEC", 60)
                 .clamp(15, 3_600),
@@ -388,11 +388,7 @@ impl MmSportConfig {
             match_only: env_bool("EVPOLY_MM_SPORT_MATCH_ONLY", true),
             post_only: env_bool("EVPOLY_MM_SPORT_POST_ONLY", true),
             max_markets: env_usize("EVPOLY_MM_SPORT_MAX_MARKETS", 0),
-            active_sport_market_cap: env_usize(
-                "EVPOLY_MM_SPORT_ACTIVE_SPORT_MARKET_CAP",
-                default_active_sport_cap,
-            )
-            .min(1_000),
+            active_sport_market_cap: MM_SPORT_ACTIVE_SPORT_MARKET_CAP_HARDCODED,
             active_nonsport_market_cap: env_usize(
                 "EVPOLY_MM_SPORT_ACTIVE_NONSPORT_MARKET_CAP",
                 default_active_nonsport_cap,
@@ -755,8 +751,6 @@ mod tests {
         with_mm_env(
             &[
                 ("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", Some("600.0")),
-                ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", Some("90.0")),
-                ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", Some("180.0")),
                 (
                     "EVPOLY_MM_SPORT_INVENTORY_EXIT_MAX_LOSS_CENTS",
                     Some("12.5"),
@@ -765,7 +759,7 @@ mod tests {
             || {
                 let cfg = MmSportConfig::from_env();
                 assert_eq!(cfg.pause_after_fill_sec, 600);
-                assert_eq!(cfg.quote_expiry_min_sec, 90);
+                assert_eq!(cfg.quote_expiry_min_sec, 65);
                 assert_eq!(cfg.quote_expiry_max_sec, 180);
                 assert!((cfg.inventory_exit_max_loss_cents - 12.5).abs() < 1e-9);
             },
@@ -826,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn mm_sport_config_reads_active_caps_and_clamps_fifo_ratio() {
+    fn mm_sport_config_uses_hardcoded_runtime_caps_and_clamps_fifo_ratio() {
         with_mm_env(
             &[
                 ("EVPOLY_MM_SPORT_DISCOVERY_ROUTE", Some("dual")),
@@ -844,12 +838,15 @@ mod tests {
                 ("EVPOLY_MM_SPORT_EVENT_MIN_SCAN_MS", Some("1500")),
                 ("EVPOLY_MM_SPORT_SIZE_REQUOTE_DELTA_PCT", Some("0.2")),
                 ("EVPOLY_MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK", Some("24")),
-                ("EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY", Some("4")),
+                ("EVPOLY_MM_SPORT_ORDER_SUBMIT_CONCURRENCY", Some("1")),
+                ("EVPOLY_MM_SPORT_RATIO_PAUSE_SEC", Some("900")),
+                ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", Some("300")),
+                ("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", Some("600")),
                 ("EVPOLY_MM_SPORT_VERBOSE_BUDGET_EVENTS", Some("true")),
             ],
             || {
                 let cfg = MmSportConfig::from_env();
-                assert_eq!(cfg.active_sport_market_cap, 44);
+                assert_eq!(cfg.active_sport_market_cap, 600);
                 assert_eq!(cfg.active_nonsport_market_cap, 33);
                 assert_eq!(cfg.max_quote_shares, 1000.0);
                 assert_eq!(cfg.nonsport_max_quote_shares, 250.0);
@@ -861,8 +858,11 @@ mod tests {
                 assert_eq!(cfg.quote_hold_max_sec, 50);
                 assert_eq!(cfg.event_min_scan_ms, 1_500);
                 assert!((cfg.size_requote_delta_pct - 0.20).abs() < 1e-9);
-                assert_eq!(cfg.fresh_scan_markets_per_tick, 24);
+                assert_eq!(cfg.fresh_scan_markets_per_tick, 200);
                 assert_eq!(cfg.order_submit_concurrency, 4);
+                assert_eq!(cfg.ratio_pause_sec, 180);
+                assert_eq!(cfg.quote_expiry_min_sec, 65);
+                assert_eq!(cfg.quote_expiry_max_sec, 180);
                 assert!(cfg.verbose_budget_events);
                 assert!((cfg.fifo_ratio_floor() - 0.01).abs() < 1e-9);
                 assert!((cfg.effective_fifo_max_share_ratio() - 0.09).abs() < 1e-9);

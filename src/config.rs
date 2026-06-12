@@ -364,9 +364,7 @@ impl EndgameExecutionConfig {
             ])
             .unwrap_or(0.10)
             .clamp(0.0, 1.0),
-            execution_size_mode: StrategyExecutionSizeMode::from_env(
-                env_nonempty(&["EVPOLY_ENDGAME_EXECUTION_SIZE_MODE".to_string()]).as_deref(),
-            ),
+            execution_size_mode: StrategyExecutionSizeMode::Shares,
             base_size_shares: env_f64_any(&["EVPOLY_ENDGAME_BASE_SIZE_SHARES".to_string()])
                 .unwrap_or(50.0)
                 .max(0.0),
@@ -938,5 +936,50 @@ impl Config {
                 _ => None,
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_env<F: FnOnce()>(updates: &[(&str, Option<&str>)], f: F) {
+        let _guard = env_lock().lock().expect("config env lock poisoned");
+        let mut previous: Vec<(&str, Option<String>)> = Vec::with_capacity(updates.len());
+        for (name, value) in updates {
+            previous.push((*name, env::var(name).ok()));
+            unsafe {
+                match value {
+                    Some(v) => env::set_var(name, v),
+                    None => env::remove_var(name),
+                }
+            }
+        }
+        f();
+        for (name, value) in previous {
+            unsafe {
+                match value {
+                    Some(v) => env::set_var(name, v),
+                    None => env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn endgame_execution_size_mode_is_hardcoded_to_shares() {
+        with_env(
+            &[("EVPOLY_ENDGAME_EXECUTION_SIZE_MODE", Some("usd"))],
+            || {
+                let cfg = EndgameExecutionConfig::from_env();
+                assert_eq!(cfg.execution_size_mode(), StrategyExecutionSizeMode::Shares);
+            },
+        );
     }
 }

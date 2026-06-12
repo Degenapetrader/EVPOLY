@@ -37,7 +37,7 @@ Fast submit uses a typed Endgame intent and requires prewarmed order metadata by
 13. Enforce submit-time proxy freshness and cached-metadata fast submit checks.
 
 ## Sizing Policy
-Base key: `EVPOLY_ENDGAME_BASE_SIZE_USD` (blank defaults to `50`).
+Endgame execution is fixed to share sizing. Base share key: `EVPOLY_ENDGAME_BASE_SIZE_SHARES` (blank defaults to `50`). `EVPOLY_ENDGAME_EXECUTION_SIZE_MODE` is retained for desktop profile compatibility but does not change runtime mode.
 
 Multipliers:
 - Symbol: `BTC=1.0`, `ETH=0.8`, `SOL/XRP/DOGE/BNB/HYPE=0.5`

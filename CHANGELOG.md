@@ -1,5 +1,9 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.4.2 - 2026-06-13
+- Bumped Linux app/updater version to 2.4.2.
+- Repinned the bundled runtime sidecar to runtime `v2.4.2` (`9f26297`) with the MM Sport retired depth-skip Alpha gate hard-disabled.
+
 ## Linux-v2.4.1 - 2026-06-12
 - Bumped Linux app/updater version to 2.4.1.
 - Repinned the bundled runtime sidecar to runtime `v2.4.1` (`46a5afa`) with MM Sport rewards discovery, stable cache, and live-guard delta repair fixes.

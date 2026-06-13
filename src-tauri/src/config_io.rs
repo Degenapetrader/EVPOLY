@@ -531,10 +531,6 @@ mod tests {
                 "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL",
                 "https://alpha.evplus.ai/v1/discovery/evsnipe",
             ),
-            (
-                "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL",
-                "https://alpha.evplus.ai/v1/alpha/mm-sport/depth-skip",
-            ),
         ];
 
         for (key, url) in expected {

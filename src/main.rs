@@ -987,9 +987,6 @@ fn remote_url_default_named(name: &str) -> Option<&'static str> {
         "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL" => {
             Some("https://alpha.evplus.ai/v1/alpha/sessionband")
         }
-        "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL" => {
-            Some("https://alpha.evplus.ai/v1/alpha/mm-sport/depth-skip")
-        }
         "EVPOLY_REMOTE_MARKET_DISCOVERY_URL" => {
             Some("https://alpha.evplus.ai/v1/discovery/timeframe")
         }
@@ -1107,7 +1104,6 @@ fn set_remote_alpha_fallback_envs(alpha_key: &str) {
         "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
         "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
         "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
-        "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN",
     ] {
         if env_nonempty_named(key).is_none() {
             unsafe {
@@ -1343,16 +1339,6 @@ fn warn_remote_alpha_config_startup(endgame_alpha_required: bool) {
             "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
         ],
         endgame_alpha_required,
-    );
-    check_strategy(
-        STRATEGY_ID_MM_SPORT_V1,
-        "EVPOLY_STRATEGY_MM_SPORT_ENABLE",
-        false,
-        &[
-            "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL",
-            "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN",
-        ],
-        true,
     );
 }
 
@@ -2311,7 +2297,6 @@ fn mm_sport_size_shares_from_pending(row: &PendingOrderRecord) -> Option<f64> {
 }
 
 const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 200.0;
-const MM_SPORT_DEPTH_SKIP_ALPHA_MAX_MARKETS_PER_REQUEST: usize = 200;
 const MM_SPORT_PAIR_BASELINE_REWARD_MULT: f64 = 0.5;
 const MM_SPORT_FIFO_MIN_CANCEL_AGE_MS: i64 = 10_000;
 const MM_SPORT_LOW_DEPTH_QUOTE_SIZE_MULT: f64 = 1.2;
@@ -17424,62 +17409,22 @@ async fn main() -> Result<()> {
                                 };
                                 let alpha_request_market_count = next_discovered_markets.len();
                                 if alpha_request_market_count > 0 {
-                                    let alpha_result = if let Some(cfg) =
-                                        remote_mm_sport_depth_skip_alpha_config()
-                                    {
-                                        fetch_remote_mm_sport_depth_skips(
-                                            cfg,
-                                            next_discovered_markets.as_slice(),
-                                            now_ms,
-                                        )
-                                        .await
-                                    } else {
-                                        Err(anyhow::anyhow!(
-                                            "remote mm-sport depth-skip alpha not configured"
-                                        ))
-                                    };
-                                    match alpha_result {
-                                        Ok(skipped_conditions) => {
-                                            let skipped_count = skipped_conditions.len();
-                                            alpha_depth_skip_conditions = skipped_conditions;
-                                            log_event(
-                                                "mm_sport_alpha_depth_skip_refresh",
-                                                json!({
-                                                    "strategy_id": STRATEGY_ID_MM_SPORT_V1,
-                                                    "ok": true,
-                                                    "request_market_count": alpha_request_market_count,
-                                                    "skipped_market_count": skipped_count,
-                                                    "depth_floor_usd": MM_SPORT_LOW_DEPTH_FLOOR_USD,
-                                                    "discovery_mode": discovery_mode,
-                                                    "using_cached_markets": using_cached_markets,
-                                                    "degraded_discovery": degraded_discovery,
-                                                    "next_discovery_attempt_ms": next_discovery_attempt_ms
-                                                }),
-                                            );
-                                        }
-                                        Err(err) => {
-                                            alpha_depth_skip_conditions =
-                                                mm_sport_market_condition_set(
-                                                    next_discovered_markets.as_slice(),
-                                                );
-                                            log_event(
-                                                "mm_sport_alpha_depth_skip_refresh",
-                                                json!({
-                                                    "strategy_id": STRATEGY_ID_MM_SPORT_V1,
-                                                    "ok": false,
-                                                    "request_market_count": alpha_request_market_count,
-                                                    "skipped_market_count": alpha_depth_skip_conditions.len(),
-                                                    "depth_floor_usd": MM_SPORT_LOW_DEPTH_FLOOR_USD,
-                                                    "discovery_mode": discovery_mode,
-                                                    "using_cached_markets": using_cached_markets,
-                                                    "degraded_discovery": degraded_discovery,
-                                                    "fail_closed": true,
-                                                    "error": err.to_string(),
-                                                    "next_discovery_attempt_ms": next_discovery_attempt_ms
-                                                }),
-                                            );
-                                        }
-                                    }
+                                    alpha_depth_skip_conditions.clear();
+                                    log_event(
+                                        "mm_sport_alpha_depth_skip_refresh",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                            "enabled": mm_sport_depth_skip_alpha_enabled(),
+                                            "ok": true,
+                                            "request_market_count": alpha_request_market_count,
+                                            "skipped_market_count": 0,
+                                            "depth_floor_usd": MM_SPORT_LOW_DEPTH_FLOOR_USD,
+                                            "discovery_mode": discovery_mode,
+                                            "using_cached_markets": using_cached_markets,
+                                            "degraded_discovery": degraded_discovery,
+                                            "next_discovery_attempt_ms": next_discovery_attempt_ms
+                                        }),
+                                    );
                                 } else {
                                     alpha_depth_skip_conditions.clear();
                                 }
@@ -25704,46 +25649,6 @@ struct RemotePremarketAlphaConfig {
     timeout_ms: u64,
 }
 
-#[derive(Debug, Clone)]
-struct RemoteMmSportDepthSkipAlphaConfig {
-    url: String,
-    token: Option<String>,
-    timeout_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct RemoteMmSportDepthSkipMarketPayload {
-    condition_id: String,
-    market_slug: String,
-    up_token_id: String,
-    down_token_id: String,
-    minimum_tick_size: f64,
-    reward_rate_per_day: f64,
-    reward_min_size_shares: f64,
-    game_start_ts_ms: i64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct RemoteMmSportDepthSkipRequest {
-    strategy_id: String,
-    request_ts_ms: i64,
-    depth_floor_usd: f64,
-    builder_code: String,
-    clob_version: String,
-    markets: Vec<RemoteMmSportDepthSkipMarketPayload>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RemoteMmSportDepthSkipResponse {
-    ok: bool,
-    #[serde(default)]
-    kind: String,
-    #[serde(default)]
-    depth_floor_usd: Option<f64>,
-    #[serde(default)]
-    skipped_condition_ids: Vec<String>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 struct RemoteEvcurveAlphaRequest {
     symbol: String,
@@ -26397,23 +26302,8 @@ fn spawn_endgame_quote_prewarm_worker(
     });
 }
 
-fn remote_mm_sport_depth_skip_alpha_config() -> Option<&'static RemoteMmSportDepthSkipAlphaConfig> {
-    static CONFIG: OnceLock<Option<RemoteMmSportDepthSkipAlphaConfig>> = OnceLock::new();
-    CONFIG
-        .get_or_init(|| {
-            let url = env_nonempty_or_default_named("EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL")?;
-            let timeout_ms = std::env::var("EVPOLY_REMOTE_MM_SPORT_ALPHA_TIMEOUT_MS")
-                .ok()
-                .and_then(|v| v.trim().parse::<u64>().ok())
-                .unwrap_or(8_000)
-                .clamp(500, 30_000);
-            Some(RemoteMmSportDepthSkipAlphaConfig {
-                url,
-                token: alpha_bearer_token_named("EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN"),
-                timeout_ms,
-            })
-        })
-        .as_ref()
+fn mm_sport_depth_skip_alpha_enabled() -> bool {
+    false
 }
 
 fn is_valid_wallet_address(value: &str) -> bool {
@@ -27346,102 +27236,6 @@ async fn evaluate_premarket_ladder_remote(
         }),
     );
     Ok(outcome)
-}
-
-fn mm_sport_depth_skip_market_payload(
-    market: &MmSportMarket,
-) -> RemoteMmSportDepthSkipMarketPayload {
-    RemoteMmSportDepthSkipMarketPayload {
-        condition_id: market.condition_id.clone(),
-        market_slug: market.market_slug.clone(),
-        up_token_id: market.up_token_id.clone(),
-        down_token_id: market.down_token_id.clone(),
-        minimum_tick_size: market.minimum_tick_size,
-        reward_rate_per_day: market.reward_rate_per_day,
-        reward_min_size_shares: market.reward_min_size_shares,
-        game_start_ts_ms: market.game_start_ts_ms,
-    }
-}
-
-fn mm_sport_market_condition_set(markets: &[MmSportMarket]) -> std::collections::HashSet<String> {
-    markets
-        .iter()
-        .map(|market| market.condition_id.trim().to_ascii_lowercase())
-        .filter(|condition_id| !condition_id.is_empty())
-        .collect()
-}
-
-async fn fetch_remote_mm_sport_depth_skips(
-    cfg: &RemoteMmSportDepthSkipAlphaConfig,
-    markets: &[MmSportMarket],
-    request_ts_ms: i64,
-) -> Result<std::collections::HashSet<String>> {
-    if markets.is_empty() {
-        return Ok(std::collections::HashSet::new());
-    }
-    let mut skipped_condition_ids = std::collections::HashSet::new();
-    for market_chunk in markets.chunks(MM_SPORT_DEPTH_SKIP_ALPHA_MAX_MARKETS_PER_REQUEST) {
-        let payload = RemoteMmSportDepthSkipRequest {
-            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
-            request_ts_ms,
-            depth_floor_usd: MM_SPORT_LOW_DEPTH_FLOOR_USD,
-            builder_code: official_builder_code_for_alpha(),
-            clob_version: "v2".to_string(),
-            markets: market_chunk
-                .iter()
-                .map(mm_sport_depth_skip_market_payload)
-                .collect::<Vec<_>>(),
-        };
-        let (status, body) = send_remote_json_post_with_alpha_failover(
-            cfg.url.as_str(),
-            cfg.timeout_ms,
-            cfg.token.as_deref(),
-            None,
-            &payload,
-            "mm_sport_depth_skip_alpha",
-        )
-        .await
-        .context("failed to call remote mm-sport depth-skip alpha service")?;
-        if !status.is_success() {
-            anyhow::bail!(
-                "remote mm-sport depth-skip alpha rejected request (status={} body={})",
-                status.as_u16(),
-                truncate_for_log(body.as_str(), 300)
-            );
-        }
-        let parsed: RemoteMmSportDepthSkipResponse = serde_json::from_str(body.as_str())
-            .with_context(|| {
-                format!(
-                    "failed to parse remote mm-sport depth-skip alpha response: {}",
-                    truncate_for_log(body.as_str(), 300)
-                )
-            })?;
-        if !parsed.ok {
-            anyhow::bail!("remote mm-sport depth-skip alpha returned ok=false");
-        }
-        if !parsed.kind.is_empty() && parsed.kind != "depth_skip" {
-            anyhow::bail!(
-                "remote mm-sport depth-skip alpha returned unexpected kind={}",
-                parsed.kind
-            );
-        }
-        if let Some(remote_floor) = parsed.depth_floor_usd {
-            if !remote_floor.is_finite() || remote_floor < 0.0 {
-                anyhow::bail!(
-                    "remote mm-sport depth-skip alpha returned invalid depth_floor_usd={}",
-                    remote_floor
-                );
-            }
-        }
-        skipped_condition_ids.extend(
-            parsed
-                .skipped_condition_ids
-                .into_iter()
-                .map(|condition_id| condition_id.trim().to_ascii_lowercase())
-                .filter(|condition_id| !condition_id.is_empty()),
-        );
-    }
-    Ok(skipped_condition_ids)
 }
 
 fn build_allowed_market_slugs_for_timeframe(
@@ -28933,15 +28727,35 @@ mod tests {
                 "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
                 "https://alpha.evplus.ai/v1/alpha/sessionband",
             ),
-            (
-                "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL",
-                "https://alpha.evplus.ai/v1/alpha/mm-sport/depth-skip",
-            ),
         ];
 
         for (key, url) in expected {
             assert_eq!(remote_url_default_named(key), Some(url), "{key}");
         }
+        assert_eq!(
+            remote_url_default_named("EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL"),
+            None
+        );
+    }
+
+    #[test]
+    fn mm_sport_depth_skip_alpha_is_hard_disabled() {
+        with_admin_env(
+            &[
+                ("EVPOLY_MM_SPORT_DEPTH_SKIP_ALPHA_ENABLE", Some("true")),
+                (
+                    "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL",
+                    Some("https://alpha.example/depth-skip"),
+                ),
+                (
+                    "EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN",
+                    Some("token"),
+                ),
+            ],
+            || {
+                assert!(!mm_sport_depth_skip_alpha_enabled());
+            },
+        );
     }
 
     #[test]
@@ -30819,20 +30633,6 @@ mod tests {
             mm::MmSportDiscoveryRoute::Dual,
             false
         ));
-    }
-
-    #[test]
-    fn mm_sport_depth_skip_remote_request_marks_main2_v2_clob() {
-        let payload = RemoteMmSportDepthSkipRequest {
-            strategy_id: STRATEGY_ID_MM_SPORT_V1.to_string(),
-            request_ts_ms: 1,
-            depth_floor_usd: MM_SPORT_LOW_DEPTH_FLOOR_USD,
-            builder_code: "builder".to_string(),
-            clob_version: "v2".to_string(),
-            markets: Vec::new(),
-        };
-        let value = serde_json::to_value(payload).expect("serialize payload");
-        assert_eq!(value["clob_version"], "v2");
     }
 
     #[test]

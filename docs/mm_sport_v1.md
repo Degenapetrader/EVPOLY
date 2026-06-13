@@ -7,19 +7,11 @@
 - Strategy toggle default: `EVPOLY_STRATEGY_MM_SPORT_ENABLE=false`
 - Hard-disable gate: `EVPOLY_MM_SPORT_HARD_DISABLE=false`
 - Local runtime owns discovery route selection, local filters, quote placement, cancel/reprice, inventory handling, pUSD collateral caps, and local safety gates.
-- EVPlus Alpha signal is required before new quotes are allowed.
+- The remote depth-skip alpha gate is retired and hard-disabled.
 
 ## Alpha Dependency
 
-During each MM 2.0 discovery cycle, local runtime sends candidate markets to:
-
-`EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL`
-
-Blank `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN` falls back to `EVPOLY_ALPHA_KEY`.
-
-The alpha signal is a required market-risk gate. If alpha is unavailable, invalid, or rejects the request, MM 2.0 fails closed for the discovered markets and does not place new BUY quotes.
-
-Main2 marks this request with `clob_version="v2"`, so the alpha service uses the CLOB V2 path. The alpha server still separately supports legacy SDK v1 clients during migration.
+MM 2.0 does not send candidate markets to the remote depth-skip alpha endpoint. Fresh BUY eligibility relies on local reward, order-book, ratio, FIFO, live-game, and inventory controls.
 
 ## Discovery Routes
 
@@ -99,9 +91,6 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
 - `EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC`
 - `EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS`
 - `EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE`
-- `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL`
-- `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_TOKEN`
-- `EVPOLY_REMOTE_MM_SPORT_ALPHA_TIMEOUT_MS`
 - `EVPOLY_MM_SPORT_POST_ONLY`
 - `EVPOLY_MM_SPORT_ORDER_SUBMIT_TIMEOUT_MS`
 - `EVPOLY_MM_SPORT_MAX_SHARE_RATIO`

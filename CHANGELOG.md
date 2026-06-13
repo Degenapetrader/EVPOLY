@@ -1,5 +1,9 @@
 # EVPoly Changelog
 
+## v2.4.2 - 2026-06-13
+- Hard-disabled the retired MM Sport remote depth-skip Alpha gate so saved/generated env values cannot shrink the quote universe.
+- Removed the retired MM Sport depth-skip Alpha env surface from runtime examples and docs.
+
 ## v2.4.1 - 2026-06-12
 - Fixed MM Sport rewards discovery so skipped Polymarket reward cursor pages do not shrink the discovered market universe.
 - Added stable last-good market cache handling for degraded MM Sport discovery responses.

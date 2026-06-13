@@ -9,6 +9,10 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-06-13
+- `mm_sport_v1`: retired and hard-disabled the remote MM Sport depth-skip alpha gate. The runtime now always clears the alpha depth-skip set and logs `enabled=false` / `skipped_market_count=0`; saved or generated `EVPOLY_MM_SPORT_DEPTH_SKIP_ALPHA_ENABLE` and `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_*` values cannot re-enable the gate (`src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+  - Applies only to MM Sport fresh BUY eligibility after discovery. Local reward, book-depth, share-ratio, FIFO, live-game, and inventory-exit controls remain active.
+
 ### 2026-06-12
 - `mm_sport_v1`: changed live-guard prune recovery to schedule a debounced delta discovery repair with a fresh timestamp instead of clearing the full-refresh timestamp and forcing repeated full discovery sweeps. This keeps in-play market pruning responsive without causing repeated degraded/fallback full discovery cycles and CLOB detail rate-limit churn (`src/main.rs`).
 - `mm_sport_v1`: ported the SaaS-style discovery cache flow for desktop MM Sport. Full rewards discovery now runs on the hourly cadence, 10-minute delta discovery uses the 8-page budget and merges current snapshots into the last-good cache, degraded or partial nonzero discovery results keep the cached market universe instead of replacing it, due full refreshes are not delayed by delta scans, and rewards cursor skips no longer consume successful page budget (`src/main.rs`, `src/mm/mod.rs`, `src/api.rs`).

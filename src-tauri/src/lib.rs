@@ -4729,12 +4729,15 @@ async fn save_config(
     data_dir: State<'_, AppDataDir>,
     profile_id: String,
     mut config: DesktopConfig,
+    generate_credentials: Option<bool>,
 ) -> Result<(), String> {
     let mut profile = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
         pm.get_profile(&profile_id).ok_or("profile not found")?
     };
-    ensure_generated_credentials(&mut config).await?;
+    if generate_credentials.unwrap_or(true) {
+        ensure_generated_credentials(&mut config).await?;
+    }
     save_profile_and_build_runtime(&profiles, &auth, &data_dir.0, &mut profile, &config)?;
     Ok(())
 }

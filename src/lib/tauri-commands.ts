@@ -651,12 +651,15 @@ export const botApiRequest = <T = unknown>(
 // Config
 export const saveConfig = (
   profileId: string,
-  config: BotConfig
+  config: BotConfig,
+  options: { generateCredentials?: boolean } = {}
 ): Promise<void> =>
   invoke("save_config", {
     profileId,
     profile_id: profileId,
     config,
+    generateCredentials: options.generateCredentials,
+    generate_credentials: options.generateCredentials,
   });
 
 export const getSavedConfig = (

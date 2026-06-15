@@ -224,6 +224,20 @@ describe("tauri command payload contracts", () => {
       profileId: "profile-1",
       profile_id: "profile-1",
       config: SAMPLE_CONFIG,
+      generateCredentials: undefined,
+      generate_credentials: undefined,
+    });
+  });
+
+  it("can skip generated credentials while saving a wallet profile", async () => {
+    await saveConfig("profile-1", SAMPLE_CONFIG, { generateCredentials: false });
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("save_config", {
+      profileId: "profile-1",
+      profile_id: "profile-1",
+      config: SAMPLE_CONFIG,
+      generateCredentials: false,
+      generate_credentials: false,
     });
   });
 

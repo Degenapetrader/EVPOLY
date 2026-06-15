@@ -430,6 +430,7 @@ export function Config() {
     signatureType,
     proxyWallet,
     depositWallet,
+    generateCredentials = true,
   }: {
     profileName: string;
     privateKey: string;
@@ -437,6 +438,7 @@ export function Config() {
     signatureType: number;
     proxyWallet: string;
     depositWallet: string;
+    generateCredentials?: boolean;
   }) => {
     let createdProfileId: string | null = null;
     let activatedProfile = false;
@@ -461,7 +463,7 @@ export function Config() {
         order_signer_primary_token_internal: "",
       };
 
-      await saveConfig(created.id, nextConfig);
+      await saveConfig(created.id, nextConfig, { generateCredentials });
       const persisted = mergeConfig(await getSavedConfig(created.id));
       await setActiveProfile(created.id);
       activatedProfile = true;
@@ -575,12 +577,13 @@ export function Config() {
         signatureType: 3,
         proxyWallet: "",
         depositWallet: result.depositWalletAddress,
+        generateCredentials: false,
       });
       setMagicEmail("");
       const statusText = result.provisioningStatus
         ? ` Provisioning status: ${toStatusLabel(result.provisioningStatus)}.`
         : "";
-      const message = `New Deposit Wallet profile created and selected.${statusText}`;
+      const message = `New Deposit Wallet profile created and selected. Deposit wallet: ${result.depositWalletAddress}.${statusText}`;
       setWalletProfileMessage(message);
       setSaveMessage(message);
     } catch (err) {

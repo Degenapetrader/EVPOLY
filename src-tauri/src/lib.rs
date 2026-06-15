@@ -5763,6 +5763,18 @@ async fn desktop_magic_start(
     .await
 }
 
+fn desktop_magic_finish_payload(
+    desktop_onboard_session_id: &str,
+    did_token: &str,
+    rsa_public_key: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "desktop_onboard_session_id": desktop_onboard_session_id.trim(),
+        "did_token": did_token.trim(),
+        "rsa_public_key": rsa_public_key.trim(),
+    })
+}
+
 #[tauri::command]
 async fn desktop_magic_finish(
     desktop_onboard_session_id: String,
@@ -5780,12 +5792,7 @@ async fn desktop_magic_finish(
     }
     post_desktop_magic_bridge(
         "finish",
-        serde_json::json!({
-            "desktop_onboard_session_id": desktop_onboard_session_id.trim(),
-            "did_token": did_token.trim(),
-            "rsa_public_key": rsa_public_key.trim(),
-            "rsa_algorithm": "RSA-OAEP",
-        }),
+        desktop_magic_finish_payload(&desktop_onboard_session_id, &did_token, &rsa_public_key),
     )
     .await
 }
@@ -6081,8 +6088,9 @@ pub fn run() {
 mod tests {
     use super::{
         active_profile_bot_state, default_desktop_config, desktop_config_to_profile_payload,
-        merge_config_object, merge_desktop_secrets, polymarket_funders_from_private_key,
-        profile_to_desktop_config, remove_legacy_premarket_ladder_keys,
+        desktop_magic_finish_payload, merge_config_object, merge_desktop_secrets,
+        polymarket_funders_from_private_key, profile_to_desktop_config,
+        remove_legacy_premarket_ladder_keys,
         simulation_mode_from_profile, PREMARKET_LADDER_MODE_ENV_KEY_5M,
         PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
         PREMARKET_LADDER_MODE_ENV_KEY_SHARED, WEEKEND_POLICY_ENV_KEY,
@@ -6110,6 +6118,20 @@ mod tests {
             created_at: "now".to_string(),
             last_used: "now".to_string(),
         }
+    }
+
+    #[test]
+    fn desktop_magic_finish_payload_matches_bridge_schema() {
+        let payload = desktop_magic_finish_payload(" session ", " token ", " public-key ");
+        let object = payload.as_object().expect("payload object");
+
+        assert_eq!(
+            payload["desktop_onboard_session_id"],
+            serde_json::json!("session")
+        );
+        assert_eq!(payload["did_token"], serde_json::json!("token"));
+        assert_eq!(payload["rsa_public_key"], serde_json::json!("public-key"));
+        assert!(!object.contains_key("rsa_algorithm"));
     }
 
     #[test]

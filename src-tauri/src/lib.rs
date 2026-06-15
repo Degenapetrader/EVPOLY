@@ -4544,12 +4544,15 @@ async fn save_config(
     data_dir: State<'_, AppDataDir>,
     profile_id: String,
     mut config: DesktopConfig,
+    generate_credentials: Option<bool>,
 ) -> Result<(), String> {
     let mut profile = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
         pm.get_profile(&profile_id).ok_or("profile not found")?
     };
-    ensure_generated_credentials(&mut config).await?;
+    if generate_credentials.unwrap_or(true) {
+        ensure_generated_credentials(&mut config).await?;
+    }
     save_profile_and_build_runtime(&profiles, &auth, &data_dir.0, &mut profile, &config)?;
     Ok(())
 }
@@ -6090,10 +6093,10 @@ mod tests {
         active_profile_bot_state, default_desktop_config, desktop_config_to_profile_payload,
         desktop_magic_finish_payload, merge_config_object, merge_desktop_secrets,
         polymarket_funders_from_private_key, profile_to_desktop_config,
-        remove_legacy_premarket_ladder_keys,
-        simulation_mode_from_profile, PREMARKET_LADDER_MODE_ENV_KEY_5M,
-        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
-        PREMARKET_LADDER_MODE_ENV_KEY_SHARED, WEEKEND_POLICY_ENV_KEY,
+        remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
+        PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
+        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
+        WEEKEND_POLICY_ENV_KEY,
     };
     use crate::{auth::AppAuth, config_io, profile_manager::Profile};
     use std::collections::HashMap;

@@ -9,6 +9,9 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-06-15
+- `evsnipe_v1`: disabled pre-hit entries during the final 4 hours before the effective market cutoff while leaving confirm-hit entries active. This applies to both the indexed fast trigger path and fallback watchlist path (`src/evsnipe.rs`, `src/main.rs`).
+
 ### 2026-06-13
 - `mm_sport_v1`: retired and hard-disabled the remote MM Sport depth-skip alpha gate. The runtime now always clears the alpha depth-skip set and logs `enabled=false` / `skipped_market_count=0`; saved or generated `EVPOLY_MM_SPORT_DEPTH_SKIP_ALPHA_ENABLE` and `EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_*` values cannot re-enable the gate (`src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
   - Applies only to MM Sport fresh BUY eligibility after discovery. Local reward, book-depth, share-ratio, FIFO, live-game, and inventory-exit controls remain active.

@@ -1,5 +1,8 @@
 # EVPoly Changelog
 
+## v2.4.3 - 2026-06-15
+- Disabled EVSnipe pre-hit entries during the final 4 hours before market cutoff while keeping confirm-hit entries active.
+
 ## v2.4.2 - 2026-06-13
 - Hard-disabled the retired MM Sport remote depth-skip Alpha gate so saved/generated env values cannot shrink the quote universe.
 - Removed the retired MM Sport depth-skip Alpha env surface from runtime examples and docs.

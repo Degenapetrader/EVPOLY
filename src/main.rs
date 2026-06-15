@@ -16378,14 +16378,17 @@ async fn main() -> Result<()> {
                     if !spec.is_hit_rule() {
                         continue;
                     }
-                    if let Some(end_ts) = spec.end_ts {
-                        if end_ts > 0 && now_ms.saturating_div(1_000) >= end_ts {
+                    let now_sec = now_ms.saturating_div(1_000);
+                    let effective_end_ts = spec.effective_end_ts();
+                    if let Some(end_ts) = effective_end_ts {
+                        if end_ts > 0 && now_sec >= end_ts {
                             continue;
                         }
                     }
 
                     let pre_leg_triggered = evsnipe_cfg_for_trade.pre_leg_ratio > 0.0
                         && evsnipe_cfg_for_trade.pre_trigger_bps > 0.0
+                        && evsnipe::evsnipe_pre_hit_allowed(effective_end_ts, now_sec)
                         && spec.entered_pre_hit_window(
                             prev_price,
                             tick.price,
@@ -16411,8 +16414,8 @@ async fn main() -> Result<()> {
                             evsnipe_record_condition_expiry(
                                 &mut state,
                                 spec.condition_id.as_str(),
-                                spec.end_ts,
-                                now_ms.saturating_div(1_000),
+                                effective_end_ts,
+                                now_sec,
                                 evsnipe_cfg_for_trade.max_days_to_expiry,
                             );
                             if evsnipe_hit_leg_blocked(&state, spec.condition_id.as_str(), hit_leg)

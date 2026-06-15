@@ -43,6 +43,18 @@ pub struct EvsnipeMarketSpec {
     pub end_ts: Option<i64>,
 }
 
+pub const EVSNIPE_PRE_HIT_DISABLE_BEFORE_CUTOFF_SEC: i64 = 4 * 60 * 60;
+
+pub fn evsnipe_pre_hit_allowed(end_ts: Option<i64>, now_sec: i64) -> bool {
+    let Some(end_ts) = end_ts else {
+        return false;
+    };
+    if end_ts <= 0 {
+        return false;
+    }
+    end_ts.saturating_sub(now_sec) > EVSNIPE_PRE_HIT_DISABLE_BEFORE_CUTOFF_SEC
+}
+
 impl EvsnipeMarketSpec {
     pub fn reference_price(&self) -> f64 {
         match (self.rule, self.strike_price_upper) {
@@ -386,12 +398,14 @@ impl EvsnipeSymbolSpecIndex {
             let Some(spec) = self.specs.get(idx) else {
                 continue;
             };
-            if let Some(end_ts) = spec.effective_end_ts() {
+            let effective_end_ts = spec.effective_end_ts();
+            if let Some(end_ts) = effective_end_ts {
                 if end_ts > 0 && now_sec >= end_ts {
                     continue;
                 }
             }
             let pre_triggered = pre_trigger_bps > 0.0
+                && evsnipe_pre_hit_allowed(effective_end_ts, now_sec)
                 && spec.entered_pre_hit_window(prev_price, price, pre_trigger_bps);
             let confirm_triggered = spec.crossed_on_trade(prev_price, price);
             if !pre_triggered && !confirm_triggered {
@@ -2125,6 +2139,23 @@ mod tests {
 
         assert_eq!(close_spec.effective_end_ts(), Some(1_776_441_661));
         assert_eq!(hit_spec.effective_end_ts(), Some(1_776_441_660));
+    }
+
+    #[test]
+    fn evsnipe_pre_hit_disabled_four_hours_before_cutoff() {
+        let cutoff = 2_000_000_i64;
+        assert!(evsnipe_pre_hit_allowed(
+            Some(cutoff),
+            cutoff - EVSNIPE_PRE_HIT_DISABLE_BEFORE_CUTOFF_SEC - 1
+        ));
+        assert!(!evsnipe_pre_hit_allowed(
+            Some(cutoff),
+            cutoff - EVSNIPE_PRE_HIT_DISABLE_BEFORE_CUTOFF_SEC
+        ));
+        assert!(!evsnipe_pre_hit_allowed(Some(cutoff), cutoff - 1));
+        assert!(!evsnipe_pre_hit_allowed(Some(cutoff), cutoff));
+        assert!(!evsnipe_pre_hit_allowed(None, cutoff - 10_000));
+        assert!(!evsnipe_pre_hit_allowed(Some(0), cutoff - 10_000));
     }
 
     #[test]

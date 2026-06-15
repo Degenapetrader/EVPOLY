@@ -4,6 +4,7 @@
 - Bumped Linux app/updater version to 2.4.3.
 - Repinned the bundled runtime sidecar to runtime `v2.4.3` (`7086e95`) with the EVSNIPE pre-hit cutoff guard.
 - Fixed the Linux Magic finish bridge payload so SaaS no longer rejects it for unexpected request fields.
+- Fixed Linux Magic wallet profile saves so the provisioned signer credentials are not overwritten.
 
 ## Linux-v2.4.2 - 2026-06-13
 - Bumped Linux app/updater version to 2.4.2.

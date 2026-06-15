@@ -19,6 +19,7 @@ import {
   formatUsd,
   mergeConfig,
 } from "../lib/desktop-config";
+import { humanizeMagicProvisioningError } from "../lib/magic-errors";
 import { OFFICIAL_LINKS } from "../lib/official-links";
 import {
   createProfile,
@@ -584,7 +585,9 @@ export function Config() {
       setWalletProfileMessage(message);
       setSaveMessage(message);
     } catch (err) {
-      setWalletProfileMessage(getErrorText(err, "failed to create Magic wallet profile"));
+      setWalletProfileMessage(
+        humanizeMagicProvisioningError(err, "failed to create Magic wallet profile")
+      );
     } finally {
       setMagicLoading(false);
     }

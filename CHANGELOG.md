@@ -1,5 +1,10 @@
 # EVPoly Desktop Changelog
 
+## UI-v2.4.3 - 2026-06-15
+- Bumped desktop app/updater version to 2.4.3.
+- Repinned the bundled runtime sidecar to runtime `v2.4.3` (`7086e95`) with the EVSNIPE pre-hit cutoff guard.
+- Humanized Magic Core bridge provisioning failures during desktop Magic wallet creation.
+
 ## UI-v2.4.2 - 2026-06-13
 - Bumped desktop app/updater version to 2.4.2.
 - Repinned the bundled runtime sidecar to runtime `v2.4.2` (`9f26297`) with the MM Sport retired depth-skip Alpha gate hard-disabled.

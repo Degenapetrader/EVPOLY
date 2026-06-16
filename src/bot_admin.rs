@@ -2796,6 +2796,17 @@ pub async fn try_handle_bot_request(
                 body: payload,
             }
         }
+        ("GET", "/bot/liveness") => BotHttpResponse {
+            status_code: 200,
+            status_text: "OK",
+            body: json!({
+                "ok": true,
+                "section": "liveness",
+                "fetched_at_ms": Utc::now().timestamp_millis(),
+                "version": env!("CARGO_PKG_VERSION"),
+                "simulation_mode": ctx.simulation_mode
+            }),
+        },
         ("GET", "/ui/summary") | ("GET", "/bot/ui/summary") => {
             let payload = build_ui_dashboard_summary(ctx).await;
             BotHttpResponse {

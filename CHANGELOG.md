@@ -1,5 +1,9 @@
 # EVPoly Changelog
 
+## v2.4.5 - 2026-06-16
+- Added a cheap `/bot/liveness` admin endpoint for external supervisors.
+- Changed fatal runtime panics to exit the bot process instead of leaving a half-alive async runtime.
+
 ## v2.4.3 - 2026-06-15
 - Disabled EVSnipe pre-hit entries during the final 4 hours before market cutoff while keeping confirm-hit entries active.
 

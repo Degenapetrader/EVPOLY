@@ -1571,6 +1571,9 @@ fn active_profile_bot_state(
     match running_profile_id {
         Some(running_id) if active_profile_id == Some(running_id) => global_state.to_string(),
         Some(_) => "stopped".to_string(),
+        None if matches!(global_state, "starting" | "running" | "stopping") => {
+            "stopped".to_string()
+        }
         None => global_state.to_string(),
     }
 }

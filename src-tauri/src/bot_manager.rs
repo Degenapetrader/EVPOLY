@@ -15,9 +15,10 @@ use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 #[cfg(not(target_os = "windows"))]
 use sysinfo::System;
+use tauri::async_runtime::Receiver;
 use tauri::AppHandle;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -69,10 +70,16 @@ struct BotInner {
     status: BotStatus,
     child: Option<CommandChild>,
     env_path: Option<PathBuf>,
+    config_path: Option<PathBuf>,
     running_profile_id: Option<String>,
     stop_requested: bool,
     simulation: bool,
     ownership_lock: Option<BotOwnershipGuard>,
+    process_generation: u64,
+    watchdog_generation: u64,
+    watchdog_restart_count: u32,
+    watchdog_restart_window_started_at: Option<Instant>,
+    unexpected_exit_pending_restart: bool,
 }
 
 pub struct BotManager {
@@ -93,10 +100,16 @@ impl BotManager {
                 status: BotStatus::Stopped,
                 child: None,
                 env_path: None,
+                config_path: None,
                 running_profile_id: None,
                 stop_requested: false,
                 simulation: false,
                 ownership_lock: None,
+                process_generation: 0,
+                watchdog_generation: 0,
+                watchdog_restart_count: 0,
+                watchdog_restart_window_started_at: None,
+                unexpected_exit_pending_restart: false,
             })),
             log_buffer: Arc::new(Mutex::new(LogBuffer::new())),
         }
@@ -140,116 +153,49 @@ impl BotManager {
         inner.status = BotStatus::Starting;
         inner.running_profile_id = Some(profile_id);
         inner.stop_requested = false;
+        inner.unexpected_exit_pending_restart = false;
+        inner.watchdog_generation = inner.watchdog_generation.saturating_add(1);
+        inner.watchdog_restart_count = 0;
+        inner.watchdog_restart_window_started_at = None;
+        let watchdog_generation = inner.watchdog_generation;
 
-        let mut args = vec![
-            "--config".to_string(),
-            config_path.to_string_lossy().to_string(),
-        ];
-        if simulation {
-            args.push("--simulation".to_string());
-        } else {
-            args.push("--no-simulation".to_string());
-        }
+        let args = bot_args(&config_path, simulation);
 
         let debug_log_path = self.data_dir.join("evpoly-debug.log.txt");
         append_debug_session_start(&debug_log_path, simulation, &args);
 
-        let env_vars = read_env_file_pairs(&env_path)?;
+        let (rx, child) = match spawn_bot_sidecar(app_handle, &env_path, &self.data_dir, &args) {
+            Ok(spawned) => spawned,
+            Err(err) => {
+                inner.status = BotStatus::Error(format!("spawn: {err}"));
+                return Err(err);
+            }
+        };
 
-        let (mut rx, child) = app_handle
-            .shell()
-            .sidecar("evpoly-bot")
-            .map_err(|e| format!("sidecar init: {e}"))?
-            .args(&args)
-            .envs(env_vars)
-            .current_dir(&self.data_dir)
-            .spawn()
-            .map_err(|e| format!("spawn: {e}"))?;
-
+        inner.process_generation = inner.process_generation.saturating_add(1);
+        let process_generation = inner.process_generation;
         inner.child = Some(child);
         inner.env_path = Some(env_path.clone());
+        inner.config_path = Some(config_path.clone());
         inner.simulation = simulation;
         inner.ownership_lock = Some(ownership_lock);
         drop(inner);
 
-        let log_buf = self.log_buffer.clone();
-        let inner_ref = self.inner.clone();
-        let debug_log = debug_log_path.clone();
-
-        tauri::async_runtime::spawn(async move {
-            while let Some(event) = rx.recv().await {
-                match event {
-                    CommandEvent::Stdout(bytes) => {
-                        if let Ok(text) = String::from_utf8(bytes) {
-                            if let Ok(mut buf) = log_buf.lock() {
-                                for line in text.lines() {
-                                    buf.push(line.to_string());
-                                    append_debug_line(&debug_log, "STDOUT", line);
-                                }
-                            }
-                            if let Ok(mut inner) = inner_ref.lock() {
-                                if inner.status == BotStatus::Starting {
-                                    inner.status = BotStatus::Running;
-                                }
-                            }
-                        }
-                    }
-                    CommandEvent::Stderr(bytes) => {
-                        if let Ok(text) = String::from_utf8(bytes) {
-                            if let Ok(mut buf) = log_buf.lock() {
-                                for line in text.lines() {
-                                    buf.push(line.to_string());
-                                    append_debug_line(&debug_log, "STDERR", line);
-                                }
-                            }
-                            if let Ok(mut inner) = inner_ref.lock() {
-                                if inner.status == BotStatus::Starting {
-                                    inner.status = BotStatus::Running;
-                                }
-                            }
-                        }
-                    }
-                    CommandEvent::Error(err) => {
-                        let line = format!("Bot process event error: {err}");
-                        if let Ok(mut buf) = log_buf.lock() {
-                            buf.push(line.clone());
-                        }
-                        append_debug_line(&debug_log, "SYSTEM", &line);
-                        if let Ok(mut inner) = inner_ref.lock() {
-                            inner.status = BotStatus::Error(line);
-                        }
-                    }
-                    CommandEvent::Terminated(payload) => {
-                        let exit_line = format!(
-                            "Bot process terminated (code={:?}, signal={:?})",
-                            payload.code, payload.signal
-                        );
-                        if let Ok(mut buf) = log_buf.lock() {
-                            buf.push(exit_line.clone());
-                        }
-                        append_debug_line(&debug_log, "SYSTEM", &exit_line);
-                        if let Ok(mut inner) = inner_ref.lock() {
-                            let was_stopping = inner.status == BotStatus::Stopping;
-                            let stop_requested = inner.stop_requested;
-                            if let Some(path) = inner.env_path.take() {
-                                config_io::cleanup_env_file(&path);
-                            }
-                            inner.child = None;
-                            inner.stop_requested = false;
-                            inner.simulation = false;
-                            inner.ownership_lock = None;
-                            if was_stopping || stop_requested || payload.code == Some(0) {
-                                inner.running_profile_id = None;
-                                inner.status = BotStatus::Stopped;
-                            } else {
-                                inner.status = BotStatus::Error(exit_line);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        });
+        spawn_bot_event_reader(
+            rx,
+            self.log_buffer.clone(),
+            self.inner.clone(),
+            debug_log_path.clone(),
+            process_generation,
+        );
+        spawn_bot_watchdog(
+            app_handle.clone(),
+            self.data_dir.clone(),
+            self.inner.clone(),
+            self.log_buffer.clone(),
+            debug_log_path,
+            watchdog_generation,
+        );
 
         self.save_last_state(true, simulation);
         Ok(())
@@ -271,6 +217,7 @@ impl BotManager {
 
         let should_force_cleanup = {
             let mut inner = self.inner.lock().map_err(|e| e.to_string())?;
+            inner.watchdog_generation = inner.watchdog_generation.saturating_add(1);
             inner.stop_requested = true;
             if let Some(child) = inner.child.take() {
                 inner.status = BotStatus::Stopping;
@@ -597,14 +544,533 @@ impl BotManager {
     }
 }
 
+fn bot_args(config_path: &PathBuf, simulation: bool) -> Vec<String> {
+    let mut args = vec![
+        "--config".to_string(),
+        config_path.to_string_lossy().to_string(),
+    ];
+    if simulation {
+        args.push("--simulation".to_string());
+    } else {
+        args.push("--no-simulation".to_string());
+    }
+    args
+}
+
+fn spawn_bot_sidecar(
+    app_handle: &AppHandle,
+    env_path: &PathBuf,
+    data_dir: &PathBuf,
+    args: &[String],
+) -> Result<(Receiver<CommandEvent>, CommandChild), String> {
+    let env_vars = read_env_file_pairs(env_path)?;
+    app_handle
+        .shell()
+        .sidecar("evpoly-bot")
+        .map_err(|e| format!("sidecar init: {e}"))?
+        .args(args)
+        .envs(env_vars)
+        .current_dir(data_dir)
+        .spawn()
+        .map_err(|e| format!("spawn: {e}"))
+}
+
+fn spawn_bot_event_reader(
+    mut rx: Receiver<CommandEvent>,
+    log_buf: Arc<Mutex<LogBuffer>>,
+    inner_ref: Arc<Mutex<BotInner>>,
+    debug_log: PathBuf,
+    process_generation: u64,
+) {
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(bytes) => {
+                    if let Ok(text) = String::from_utf8(bytes) {
+                        if let Ok(mut buf) = log_buf.lock() {
+                            for line in text.lines() {
+                                buf.push(line.to_string());
+                                append_debug_line(&debug_log, "STDOUT", line);
+                            }
+                        }
+                        if let Ok(mut inner) = inner_ref.lock() {
+                            if inner.process_generation == process_generation
+                                && inner.status == BotStatus::Starting
+                            {
+                                inner.status = BotStatus::Running;
+                            }
+                        }
+                    }
+                }
+                CommandEvent::Stderr(bytes) => {
+                    if let Ok(text) = String::from_utf8(bytes) {
+                        if let Ok(mut buf) = log_buf.lock() {
+                            for line in text.lines() {
+                                buf.push(line.to_string());
+                                append_debug_line(&debug_log, "STDERR", line);
+                            }
+                        }
+                        if let Ok(mut inner) = inner_ref.lock() {
+                            if inner.process_generation == process_generation
+                                && inner.status == BotStatus::Starting
+                            {
+                                inner.status = BotStatus::Running;
+                            }
+                        }
+                    }
+                }
+                CommandEvent::Error(err) => {
+                    let line = format!("Bot process event error: {err}");
+                    if let Ok(mut buf) = log_buf.lock() {
+                        buf.push(line.clone());
+                    }
+                    append_debug_line(&debug_log, "SYSTEM", &line);
+                    if let Ok(mut inner) = inner_ref.lock() {
+                        if inner.process_generation == process_generation {
+                            inner.status = BotStatus::Error(line);
+                        }
+                    }
+                }
+                CommandEvent::Terminated(payload) => {
+                    let exit_line = format!(
+                        "Bot process terminated (code={:?}, signal={:?})",
+                        payload.code, payload.signal
+                    );
+                    if let Ok(mut buf) = log_buf.lock() {
+                        buf.push(exit_line.clone());
+                    }
+                    append_debug_line(&debug_log, "SYSTEM", &exit_line);
+                    if let Ok(mut inner) = inner_ref.lock() {
+                        if inner.process_generation != process_generation {
+                            append_debug_line(
+                                &debug_log,
+                                "SYSTEM",
+                                format!(
+                                    "ignored superseded bot termination generation={process_generation}"
+                                )
+                                .as_str(),
+                            );
+                            continue;
+                        }
+
+                        let was_stopping = inner.status == BotStatus::Stopping;
+                        let stop_requested = inner.stop_requested;
+                        inner.child = None;
+                        inner.stop_requested = false;
+                        if was_stopping || stop_requested || payload.code == Some(0) {
+                            finalize_stop(&mut inner);
+                        } else {
+                            inner.unexpected_exit_pending_restart = true;
+                            inner.status = BotStatus::Error(exit_line);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+fn spawn_bot_watchdog(
+    app_handle: AppHandle,
+    data_dir: PathBuf,
+    inner_ref: Arc<Mutex<BotInner>>,
+    log_buf: Arc<Mutex<LogBuffer>>,
+    debug_log: PathBuf,
+    watchdog_generation: u64,
+) {
+    tauri::async_runtime::spawn(async move {
+        let interval_sec = watchdog_interval_sec();
+        let max_failures = watchdog_failure_threshold();
+        let mut consecutive_failures = 0_u32;
+
+        loop {
+            tokio::time::sleep(Duration::from_secs(interval_sec)).await;
+
+            let snapshot = match watchdog_snapshot(&inner_ref, watchdog_generation) {
+                WatchdogSnapshot::Probe {
+                    env_path,
+                    config_path: _,
+                    profile_id: _,
+                    simulation: _,
+                    unexpected_exit,
+                } => {
+                    if unexpected_exit {
+                        append_debug_line(
+                            &debug_log,
+                            "SYSTEM",
+                            "watchdog restart requested after unexpected bot exit",
+                        );
+                        if let Err(err) = watchdog_restart_bot(
+                            &app_handle,
+                            &data_dir,
+                            &inner_ref,
+                            &log_buf,
+                            &debug_log,
+                            watchdog_generation,
+                            "unexpected_exit",
+                        )
+                        .await
+                        {
+                            append_debug_line(
+                                &debug_log,
+                                "SYSTEM",
+                                format!("watchdog restart failed after unexpected exit: {err}")
+                                    .as_str(),
+                            );
+                        }
+                        consecutive_failures = 0;
+                        continue;
+                    }
+                    env_path
+                }
+                WatchdogSnapshot::Wait => continue,
+                WatchdogSnapshot::Stop => return,
+            };
+
+            let ctx = match shutdown_request_context(&snapshot) {
+                Ok(Some(ctx)) => ctx,
+                Ok(None) => {
+                    consecutive_failures = 0;
+                    continue;
+                }
+                Err(err) => {
+                    append_debug_line(
+                        &debug_log,
+                        "SYSTEM",
+                        format!("watchdog skipped health probe: {err}").as_str(),
+                    );
+                    consecutive_failures = 0;
+                    continue;
+                }
+            };
+
+            match probe_bot_health(ctx).await {
+                Ok(()) => {
+                    if consecutive_failures > 0 {
+                        append_debug_line(&debug_log, "SYSTEM", "watchdog health probe recovered");
+                    }
+                    consecutive_failures = 0;
+                }
+                Err(err) => {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    append_debug_line(
+                        &debug_log,
+                        "SYSTEM",
+                        format!(
+                            "watchdog health probe failed ({consecutive_failures}/{max_failures}): {err}"
+                        )
+                        .as_str(),
+                    );
+                    if consecutive_failures >= max_failures {
+                        if let Err(restart_err) = watchdog_restart_bot(
+                            &app_handle,
+                            &data_dir,
+                            &inner_ref,
+                            &log_buf,
+                            &debug_log,
+                            watchdog_generation,
+                            "health_timeout",
+                        )
+                        .await
+                        {
+                            append_debug_line(
+                                &debug_log,
+                                "SYSTEM",
+                                format!("watchdog restart failed: {restart_err}").as_str(),
+                            );
+                        }
+                        consecutive_failures = 0;
+                    }
+                }
+            }
+        }
+    });
+}
+
+enum WatchdogSnapshot {
+    Probe {
+        env_path: PathBuf,
+        config_path: PathBuf,
+        profile_id: String,
+        simulation: bool,
+        unexpected_exit: bool,
+    },
+    Wait,
+    Stop,
+}
+
+fn watchdog_snapshot(
+    inner_ref: &Arc<Mutex<BotInner>>,
+    watchdog_generation: u64,
+) -> WatchdogSnapshot {
+    let inner = match inner_ref.lock() {
+        Ok(inner) => inner,
+        Err(_) => return WatchdogSnapshot::Stop,
+    };
+    if inner.watchdog_generation != watchdog_generation {
+        return WatchdogSnapshot::Stop;
+    }
+    match inner.status {
+        BotStatus::Stopped | BotStatus::Stopping => WatchdogSnapshot::Stop,
+        BotStatus::Starting => WatchdogSnapshot::Wait,
+        BotStatus::Running => {
+            let Some(env_path) = inner.env_path.clone() else {
+                return WatchdogSnapshot::Wait;
+            };
+            let Some(config_path) = inner.config_path.clone() else {
+                return WatchdogSnapshot::Wait;
+            };
+            let Some(profile_id) = inner.running_profile_id.clone() else {
+                return WatchdogSnapshot::Wait;
+            };
+            WatchdogSnapshot::Probe {
+                env_path,
+                config_path,
+                profile_id,
+                simulation: inner.simulation,
+                unexpected_exit: false,
+            }
+        }
+        BotStatus::Error(_) => {
+            if !inner.unexpected_exit_pending_restart {
+                return WatchdogSnapshot::Stop;
+            }
+            let Some(env_path) = inner.env_path.clone() else {
+                return WatchdogSnapshot::Stop;
+            };
+            let Some(config_path) = inner.config_path.clone() else {
+                return WatchdogSnapshot::Stop;
+            };
+            let Some(profile_id) = inner.running_profile_id.clone() else {
+                return WatchdogSnapshot::Stop;
+            };
+            WatchdogSnapshot::Probe {
+                env_path,
+                config_path,
+                profile_id,
+                simulation: inner.simulation,
+                unexpected_exit: true,
+            }
+        }
+    }
+}
+
+async fn probe_bot_health(ctx: BotRequestContext) -> Result<(), String> {
+    send_bot_request(
+        ctx,
+        "GET".to_string(),
+        "/bot/liveness".to_string(),
+        None,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn watchdog_restart_bot(
+    app_handle: &AppHandle,
+    data_dir: &PathBuf,
+    inner_ref: &Arc<Mutex<BotInner>>,
+    log_buf: &Arc<Mutex<LogBuffer>>,
+    debug_log: &PathBuf,
+    watchdog_generation: u64,
+    reason: &str,
+) -> Result<(), String> {
+    let (profile_id, env_path, config_path, simulation, old_child, process_generation) = {
+        let mut inner = inner_ref.lock().map_err(|e| e.to_string())?;
+        if inner.watchdog_generation != watchdog_generation {
+            return Err("watchdog superseded".to_string());
+        }
+        if !reserve_watchdog_restart(&mut inner) {
+            let old_child = inner.child.take();
+            inner.status = BotStatus::Error(
+                "watchdog restart limit reached; bot stopped for manual check".to_string(),
+            );
+            inner.unexpected_exit_pending_restart = false;
+            if let Some(path) = inner.env_path.take() {
+                config_io::cleanup_env_file(&path);
+            }
+            inner.config_path = None;
+            inner.running_profile_id = None;
+            inner.simulation = false;
+            inner.ownership_lock = None;
+            drop(inner);
+            if let Some(child) = old_child {
+                let _ = child.kill();
+            }
+            force_cleanup_by_config(data_dir);
+            return Err("watchdog restart limit reached".to_string());
+        }
+
+        let profile_id = inner
+            .running_profile_id
+            .clone()
+            .ok_or("watchdog restart missing profile id")?;
+        let env_path = inner
+            .env_path
+            .clone()
+            .ok_or("watchdog restart missing env path")?;
+        let config_path = inner
+            .config_path
+            .clone()
+            .ok_or("watchdog restart missing config path")?;
+        let simulation = inner.simulation;
+        let old_child = inner.child.take();
+        inner.process_generation = inner.process_generation.saturating_add(1);
+        let process_generation = inner.process_generation;
+        inner.status = BotStatus::Starting;
+        inner.stop_requested = false;
+        inner.unexpected_exit_pending_restart = false;
+        (
+            profile_id,
+            env_path,
+            config_path,
+            simulation,
+            old_child,
+            process_generation,
+        )
+    };
+
+    append_debug_line(
+        debug_log,
+        "SYSTEM",
+        format!("watchdog restart begin reason={reason}").as_str(),
+    );
+    if let Some(child) = old_child {
+        let _ = child.kill();
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    force_cleanup_by_config(data_dir);
+
+    let args = bot_args(&config_path, simulation);
+    append_debug_session_start(debug_log, simulation, &args);
+    let (rx, child) = match spawn_bot_sidecar(app_handle, &env_path, data_dir, &args) {
+        Ok(spawned) => spawned,
+        Err(err) => {
+            if let Ok(mut inner) = inner_ref.lock() {
+                if inner.watchdog_generation == watchdog_generation
+                    && inner.process_generation == process_generation
+                {
+                    if let Some(path) = inner.env_path.take() {
+                        config_io::cleanup_env_file(&path);
+                    }
+                    inner.child = None;
+                    inner.config_path = None;
+                    inner.running_profile_id = None;
+                    inner.simulation = false;
+                    inner.ownership_lock = None;
+                    inner.status =
+                        BotStatus::Error(format!("watchdog restart spawn failed: {err}"));
+                }
+            }
+            return Err(err);
+        }
+    };
+
+    {
+        let mut inner = inner_ref.lock().map_err(|e| e.to_string())?;
+        if inner.watchdog_generation != watchdog_generation
+            || inner.process_generation != process_generation
+        {
+            let _ = child.kill();
+            return Err("watchdog restart superseded after spawn".to_string());
+        }
+        inner.child = Some(child);
+        inner.env_path = Some(env_path.clone());
+        inner.config_path = Some(config_path.clone());
+        inner.running_profile_id = Some(profile_id.clone());
+        inner.simulation = simulation;
+        inner.status = BotStatus::Starting;
+        inner.stop_requested = false;
+        inner.unexpected_exit_pending_restart = false;
+    }
+
+    spawn_bot_event_reader(
+        rx,
+        log_buf.clone(),
+        inner_ref.clone(),
+        debug_log.clone(),
+        process_generation,
+    );
+    append_debug_line(debug_log, "SYSTEM", "watchdog restart spawned bot process");
+    Ok(())
+}
+
+fn reserve_watchdog_restart(inner: &mut BotInner) -> bool {
+    let now = Instant::now();
+    let window = Duration::from_secs(15 * 60);
+    let reset_window = inner
+        .watchdog_restart_window_started_at
+        .map(|started| now.duration_since(started) > window)
+        .unwrap_or(true);
+    if reset_window {
+        inner.watchdog_restart_window_started_at = Some(now);
+        inner.watchdog_restart_count = 0;
+    }
+    if inner.watchdog_restart_count >= 2 {
+        inner.process_generation = inner.process_generation.saturating_add(1);
+        return false;
+    }
+    inner.watchdog_restart_count = inner.watchdog_restart_count.saturating_add(1);
+    true
+}
+
+fn watchdog_interval_sec() -> u64 {
+    std::env::var("EVPOLY_DESKTOP_BOT_WATCHDOG_INTERVAL_SEC")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(30)
+        .clamp(5, 300)
+}
+
+fn watchdog_failure_threshold() -> u32 {
+    std::env::var("EVPOLY_DESKTOP_BOT_WATCHDOG_FAILURES")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(3)
+        .clamp(1, 10)
+}
+
+fn force_cleanup_by_config(data_dir: &PathBuf) {
+    #[cfg(target_os = "windows")]
+    {
+        let config_marker = data_dir
+            .join("runtime.config.json")
+            .to_string_lossy()
+            .to_string();
+        if windows_stop_processes(&["evpoly-bot.exe", "evpoly-bot-real.exe"], &config_marker) {
+            append_debug_line(
+                &data_dir.join("evpoly-debug.log.txt"),
+                "SYSTEM",
+                "watchdog forced bot process cleanup via process scan",
+            );
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let config_marker = runtime_config_marker(data_dir);
+        if unix_stop_processes(&BOT_PROCESS_NAMES, &config_marker) {
+            append_debug_line(
+                &data_dir.join("evpoly-debug.log.txt"),
+                "SYSTEM",
+                "watchdog forced bot process cleanup via process scan",
+            );
+        }
+    }
+}
+
 fn finalize_stop(inner: &mut BotInner) {
     if let Some(path) = inner.env_path.take() {
         config_io::cleanup_env_file(&path);
     }
     inner.child = None;
+    inner.config_path = None;
     inner.running_profile_id = None;
     inner.simulation = false;
     inner.ownership_lock = None;
+    inner.unexpected_exit_pending_restart = false;
     inner.status = BotStatus::Stopped;
 }
 

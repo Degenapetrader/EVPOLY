@@ -2357,7 +2357,7 @@ dependencies = [
 
 [[package]]
 name = "evpoly-desktop"
-version = "2.4.3"
+version = "2.4.5"
 dependencies = [
  "aes-gcm",
  "alloy-primitives",

@@ -1,5 +1,11 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.4.5 - 2026-06-16
+- Bumped Linux app/updater version to 2.4.5.
+- Repinned the bundled runtime sidecar to runtime `v2.4.5` (`4921f7d`) with fatal-panic exit and the cheap `/bot/liveness` admin endpoint.
+- Added Linux bot watchdog recovery for wedged sidecars, using `/bot/liveness` every 30 seconds with restart-loop protection.
+- Fixed active-profile bot state reporting so unattributed running processes are not shown as the active profile's bot.
+
 ## Linux-v2.4.3 - 2026-06-15
 - Bumped Linux app/updater version to 2.4.3.
 - Repinned the bundled runtime sidecar to runtime `v2.4.3` (`7086e95`) with the EVSNIPE pre-hit cutoff guard.

@@ -807,7 +807,7 @@ async fn probe_bot_health(ctx: BotRequestContext) -> Result<(), String> {
     send_bot_request(
         ctx,
         "GET".to_string(),
-        "/bot/health".to_string(),
+        "/bot/liveness".to_string(),
         None,
         None,
     )
@@ -970,7 +970,7 @@ fn watchdog_interval_sec() -> u64 {
     std::env::var("EVPOLY_DESKTOP_BOT_WATCHDOG_INTERVAL_SEC")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(15)
+        .unwrap_or(30)
         .clamp(5, 300)
 }
 

@@ -1,5 +1,10 @@
 # EVPoly Desktop Changelog
 
+## UI-v2.4.5 - 2026-06-16
+- Bumped desktop app/updater version to 2.4.5.
+- Repinned the bundled runtime sidecar to runtime `v2.4.5` (`4921f7d`) with fatal-panic exit and the cheap `/bot/liveness` admin endpoint.
+- Added desktop bot watchdog recovery for wedged sidecars, using `/bot/liveness` every 30 seconds with restart-loop protection.
+
 ## UI-v2.4.3 - 2026-06-15
 - Bumped desktop app/updater version to 2.4.3.
 - Repinned the bundled runtime sidecar to runtime `v2.4.3` (`7086e95`) with the EVSNIPE pre-hit cutoff guard.

@@ -15,7 +15,7 @@ use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -87,6 +87,53 @@ use polymarket_arbitrage_bot::trader::{
 use polymarket_arbitrage_bot::weekend_policy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+static FATAL_PANIC_EXITING: AtomicBool = AtomicBool::new(false);
+
+fn install_fatal_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        if FATAL_PANIC_EXITING.swap(true, AtomicOrdering::SeqCst) {
+            std::process::abort();
+        }
+
+        let ts = Utc::now().to_rfc3339();
+        let thread = std::thread::current();
+        let thread_name = thread.name().unwrap_or("unnamed");
+        let panic_message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic payload unavailable".to_string());
+        let location = info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+            .unwrap_or_else(|| "unknown".to_string());
+        let line = format!(
+            "fatal runtime panic ts={ts} thread={thread_name} location={location} message={panic_message}"
+        );
+
+        let _ = writeln!(io::stderr(), "{line}");
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("evpoly-fatal-panic.log")
+        {
+            let _ = writeln!(file, "{line}");
+            let _ = file.flush();
+        }
+        log_event(
+            "runtime_fatal_panic",
+            json!({
+                "thread": thread_name,
+                "location": location,
+                "message": panic_message,
+            }),
+        );
+
+        std::process::exit(101);
+    }));
+}
 
 const ENDGAME_V1_NEAR_BASE_SKIP_BPS: f64 = 1.5;
 static ALPHA_REQUEST_ID_NONCE: AtomicU64 = AtomicU64::new(1);
@@ -5991,6 +6038,8 @@ async fn build_equity_report(api: &PolymarketApi, config: &Config) -> Result<Val
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_fatal_panic_hook();
+
     // Open log file in append mode
     let log_file = OpenOptions::new()
         .create(true)

@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "EVPoly",
-  "version": "2.4.5",
+  "version": "2.4.6",
   "identifier": "com.evpoly.desktop",
   "build": {
     "frontendDist": "../dist",

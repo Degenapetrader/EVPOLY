@@ -1,3 +1,4 @@
+use crate::security::write_secret_file;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -52,6 +53,7 @@ pub struct PolymarketConfig {
     pub clob_api_url: String,
     /// Private key for signing orders (optional, but may be required for order placement)
     /// Format: hex string (with or without 0x prefix) or raw private key
+    #[serde(default, skip_serializing)]
     pub private_key: Option<String>,
     /// Proxy wallet address (Polymarket proxy wallet address where your balance is)
     /// If set, the bot will trade using this proxy wallet instead of the EOA (private key account)
@@ -740,12 +742,11 @@ impl Config {
         }
 
         // Apply env overrides to runtime config.
-        // If config.json is missing, this also populates generated config.json with env-backed values.
         config.apply_env_overrides();
 
         if !path_exists {
             let content = serde_json::to_string_pretty(&config)?;
-            std::fs::write(path, content)?;
+            write_secret_file(path, content)?;
         }
 
         Ok(config)
@@ -981,5 +982,32 @@ mod tests {
                 assert_eq!(cfg.execution_size_mode(), StrategyExecutionSizeMode::Shares);
             },
         );
+    }
+
+    #[test]
+    fn polymarket_private_key_deserializes_but_never_serializes() {
+        let cfg = PolymarketConfig {
+            gamma_api_url: "https://gamma.example".to_string(),
+            clob_api_url: "https://clob.example".to_string(),
+            private_key: Some("secret-key".to_string()),
+            proxy_wallet_address: None,
+            deposit_wallet_address: None,
+            funder_wallet_address: None,
+            signature_type: None,
+        };
+
+        let encoded = serde_json::to_string(&cfg).expect("serialize polymarket config");
+        assert!(!encoded.contains("secret-key"));
+        assert!(!encoded.contains("private_key"));
+
+        let decoded: PolymarketConfig = serde_json::from_str(
+            r#"{
+                "gamma_api_url": "https://gamma.example",
+                "clob_api_url": "https://clob.example",
+                "private_key": "secret-key"
+            }"#,
+        )
+        .expect("deserialize legacy private_key config");
+        assert_eq!(decoded.private_key.as_deref(), Some("secret-key"));
     }
 }

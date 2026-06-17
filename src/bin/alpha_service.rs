@@ -26,6 +26,7 @@ use polymarket_arbitrage_bot::plan3_tables::Plan3Tables;
 use polymarket_arbitrage_bot::plan4b_tables::{Plan4bTables, SessionWatchKey, SessionWatchStart};
 use polymarket_arbitrage_bot::plandaily_tables::PlanDailyTables;
 use polymarket_arbitrage_bot::sessionband;
+use polymarket_arbitrage_bot::security::env_truthy;
 use polymarket_arbitrage_bot::strategy::Timeframe;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -2165,6 +2166,15 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
+fn bind_host_allows_unauth_loopback(bind: &str) -> bool {
+    let normalized = bind.trim().trim_start_matches('[').trim_end_matches(']');
+    normalized.eq_ignore_ascii_case("localhost")
+        || normalized
+            .parse::<IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false)
+}
+
 fn is_valid_wallet(value: &str) -> bool {
     if value.len() != 42 || !value.starts_with("0x") {
         return false;
@@ -2629,6 +2639,15 @@ fn load_settings() -> Result<Settings> {
             "ALPHA_SERVICE_TOKEN is required unless ALPHA_ALLOW_UNAUTH=true for non-production use"
         );
     }
+    if token.is_none()
+        && allow_unauth
+        && !env_truthy("ALPHA_ALLOW_PUBLIC_UNAUTH", false)
+        && !bind_host_allows_unauth_loopback(bind.as_str())
+    {
+        anyhow::bail!(
+            "ALPHA_ALLOW_UNAUTH=true is only allowed on loopback unless ALPHA_ALLOW_PUBLIC_UNAUTH=true"
+        );
+    }
     if token.is_none() {
         eprintln!(
             "warning: ALPHA_ALLOW_UNAUTH=true set with empty ALPHA_SERVICE_TOKEN; alpha service is unauthenticated"
@@ -2926,6 +2945,16 @@ mod tests {
     #[test]
     fn endgame_default_offsets_are_t0_t1_t2() {
         assert_eq!(DEFAULT_ENDGAME_BASE_OFFSETS_MS, &[2_000, 1_000, 100]);
+    }
+
+    #[test]
+    fn unauth_bind_guard_allows_only_loopback_hosts() {
+        assert!(bind_host_allows_unauth_loopback("127.0.0.1"));
+        assert!(bind_host_allows_unauth_loopback("localhost"));
+        assert!(bind_host_allows_unauth_loopback("::1"));
+        assert!(bind_host_allows_unauth_loopback("[::1]"));
+        assert!(!bind_host_allows_unauth_loopback("0.0.0.0"));
+        assert!(!bind_host_allows_unauth_loopback("example.com"));
     }
 
     #[test]

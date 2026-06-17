@@ -66,6 +66,7 @@ use polymarket_arbitrage_bot::plandaily_tables::PlanDailyTables;
 use polymarket_arbitrage_bot::polymarket_ws::{
     self, new_shared_polymarket_ws_state, PolymarketWsConfig,
 };
+use polymarket_arbitrage_bot::security::{constant_time_eq, env_truthy, write_secret_file};
 use polymarket_arbitrage_bot::sessionband;
 use polymarket_arbitrage_bot::signal_state::new_shared_signal_state;
 use polymarket_arbitrage_bot::size_policy;
@@ -1058,6 +1059,25 @@ fn env_nonempty_or_default_named(name: &str) -> Option<String> {
         .or_else(|| remote_url_default_named(name).map(str::to_string))
 }
 
+fn secure_remote_url_or_none(name: &str) -> Option<String> {
+    let url = env_nonempty_or_default_named(name)?;
+    let scheme = match reqwest::Url::parse(url.as_str()) {
+        Ok(parsed) => parsed.scheme().to_ascii_lowercase(),
+        Err(err) => {
+            warn!("Ignoring invalid remote URL {}={}: {}", name, url, err);
+            return None;
+        }
+    };
+    if scheme == "https" || env_truthy("EVPOLY_ALLOW_INSECURE_REMOTE_URLS", false) {
+        return Some(url);
+    }
+    warn!(
+        "Ignoring non-HTTPS remote URL {}={}; set EVPOLY_ALLOW_INSECURE_REMOTE_URLS=true only for local development",
+        name, url
+    );
+    None
+}
+
 fn alpha_bearer_token_named(name: &str) -> Option<String> {
     env_nonempty_named(name).or_else(|| env_nonempty_named("EVPOLY_ALPHA_KEY"))
 }
@@ -1131,13 +1151,15 @@ fn persist_generated_alpha_key(alpha_key: &str) {
             output.push('\n');
         }
     }
-    if replaced {
-        let _ = std::fs::write(path, output);
-        return;
+    if !replaced {
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push_str("EVPOLY_ALPHA_KEY=");
+        output.push_str(alpha_key.trim());
+        output.push('\n');
     }
-    if let Ok(mut file) = OpenOptions::new().append(true).open(path) {
-        let _ = writeln!(file, "\nEVPOLY_ALPHA_KEY={}", alpha_key.trim());
-    }
+    let _ = write_secret_file(path, output);
 }
 
 fn set_remote_alpha_fallback_envs(alpha_key: &str) {
@@ -5299,7 +5321,7 @@ async fn handle_admin_api_connection(
             .get("x-evpoly-admin-token")
             .map(|v| v.trim())
             .unwrap_or_default();
-        if provided != expected_token {
+        if !constant_time_eq(provided.as_bytes(), expected_token.as_bytes()) {
             return write_http_json_response(
                 &mut stream,
                 401,
@@ -25869,7 +25891,7 @@ fn remote_market_discovery_config() -> Option<&'static RemoteMarketDiscoveryConf
     static CONFIG: OnceLock<Option<RemoteMarketDiscoveryConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
-            let url = env_nonempty_or_default_named("EVPOLY_REMOTE_MARKET_DISCOVERY_URL")?;
+            let url = secure_remote_url_or_none("EVPOLY_REMOTE_MARKET_DISCOVERY_URL")?;
             let timeout_ms = 2_000_u64;
             Some(RemoteMarketDiscoveryConfig {
                 url,
@@ -25885,7 +25907,7 @@ fn remote_evcurve_alpha_config() -> Option<&'static RemoteEvcurveAlphaConfig> {
     static CONFIG: OnceLock<Option<RemoteEvcurveAlphaConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
-            let url = env_nonempty_or_default_named("EVPOLY_REMOTE_EVCURVE_ALPHA_URL")?;
+            let url = secure_remote_url_or_none("EVPOLY_REMOTE_EVCURVE_ALPHA_URL")?;
             let timeout_ms = 1_000_u64;
             Some(RemoteEvcurveAlphaConfig {
                 url,
@@ -25900,7 +25922,7 @@ fn remote_sessionband_alpha_config() -> Option<&'static RemoteSessionbandAlphaCo
     static CONFIG: OnceLock<Option<RemoteSessionbandAlphaConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
-            let url = env_nonempty_or_default_named("EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL")?;
+            let url = secure_remote_url_or_none("EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL")?;
             let timeout_ms = 1_000_u64;
             Some(RemoteSessionbandAlphaConfig {
                 url,
@@ -25915,7 +25937,7 @@ fn remote_premarket_alpha_config() -> Option<&'static RemotePremarketAlphaConfig
     static CONFIG: OnceLock<Option<RemotePremarketAlphaConfig>> = OnceLock::new();
     CONFIG
         .get_or_init(|| {
-            let url = env_nonempty_or_default_named("EVPOLY_REMOTE_PREMARKET_ALPHA_URL")?;
+            let url = secure_remote_url_or_none("EVPOLY_REMOTE_PREMARKET_ALPHA_URL")?;
             let timeout_ms = 1_000_u64;
             Some(RemotePremarketAlphaConfig {
                 url,
@@ -26579,6 +26601,16 @@ fn remote_evcurve_decision_from_payload(
             payload.hold_side
         )
     })?;
+    validate_finite_field("remote evcurve tau_sec", payload.tau_sec as f64)?;
+    validate_price_field("remote evcurve base_mid", payload.base_mid)?;
+    validate_price_field("remote evcurve current_mid", payload.current_mid)?;
+    validate_finite_field("remote evcurve lead_pct", payload.lead_pct)?;
+    validate_optional_probability_field("remote evcurve p_flip", payload.p_flip)?;
+    validate_optional_probability_field("remote evcurve p_hold", payload.p_hold)?;
+    validate_optional_price_field("remote evcurve max_buy_hold", payload.max_buy_hold)?;
+    validate_optional_price_field("remote evcurve ask_up", payload.ask_up)?;
+    validate_optional_price_field("remote evcurve ask_down", payload.ask_down)?;
+    validate_optional_price_field("remote evcurve chosen_ask", payload.chosen_ask)?;
     Ok(evcurve::EvcurveDecision {
         should_buy: payload.should_buy,
         skip_reason: payload.skip_reason,
@@ -26600,6 +26632,32 @@ fn remote_evcurve_decision_from_payload(
         tau_low_sec: payload.tau_low_sec,
         tau_high_sec: payload.tau_high_sec,
     })
+}
+
+fn validate_finite_field(name: &str, value: f64) -> Result<()> {
+    if !value.is_finite() {
+        anyhow::bail!("{} must be finite", name);
+    }
+    Ok(())
+}
+
+fn validate_price_field(name: &str, value: f64) -> Result<()> {
+    validate_finite_field(name, value)?;
+    if !(0.0..=1.0).contains(&value) {
+        anyhow::bail!("{} must be in [0, 1], got {}", name, value);
+    }
+    Ok(())
+}
+
+fn validate_optional_price_field(name: &str, value: Option<f64>) -> Result<()> {
+    if let Some(value) = value {
+        validate_price_field(name, value)?;
+    }
+    Ok(())
+}
+
+fn validate_optional_probability_field(name: &str, value: Option<f64>) -> Result<()> {
+    validate_optional_price_field(name, value)
 }
 
 fn remote_evcurve_candidate_from_payload(

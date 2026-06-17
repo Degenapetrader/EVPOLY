@@ -24,6 +24,7 @@ use polymarket_arbitrage_bot::models::{Market, MarketDetails, OrderRequest, Toke
 use polymarket_arbitrage_bot::polymarket_ws::{
     self, new_shared_polymarket_ws_state, PolymarketWsConfig, SharedPolymarketWsState,
 };
+use polymarket_arbitrage_bot::security::{constant_time_eq, env_truthy};
 use polymarket_arbitrage_bot::strategy::{Direction, Timeframe};
 use polymarket_arbitrage_bot::trader::{
     EntryExecutionMode, Trader, STRATEGY_ID_MANUAL_CHASE_LIMIT_TAKER_V1,
@@ -46,9 +47,32 @@ const DEFAULT_PORT: u16 = 8791;
 const DEFAULT_MAX_BODY_BYTES: usize = 64 * 1024;
 const DEFAULT_PREMARKET_SIDE_BUDGET_USD: f64 = 200.0;
 
-fn manual_auth_required_for_bind(addr: SocketAddr) -> bool {
-    !addr.ip().is_loopback()
+fn manual_auth_required_for_bind_with_allow(addr: SocketAddr, allow_unauth_local: bool) -> bool {
+    !addr.ip().is_loopback() || !allow_unauth_local
 }
+
+fn manual_auth_required_for_bind(addr: SocketAddr) -> bool {
+    manual_auth_required_for_bind_with_allow(
+        addr,
+        env_truthy("EVPOLY_MANUAL_BOT_ALLOW_UNAUTH_LOCAL", false),
+    )
+}
+
+fn env_nonempty(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn resolve_manual_auth_token(cli_token: Option<&str>) -> Option<String> {
+    cli_token
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .or_else(|| env_nonempty("EVPOLY_MANUAL_BOT_TOKEN"))
+        .or_else(|| env_nonempty("EVPOLY_ADMIN_API_TOKEN"))
+}
+
 const MANUAL_WS_BALANCE_FALLBACK_POLL_MS: i64 = 2_000;
 const MANUAL_TP_SUBMIT_ATTEMPTS: u32 = 3;
 const MANUAL_TP_RETRY_DELAY_MS: u64 = 250;
@@ -1492,7 +1516,7 @@ fn check_auth(headers: &HeaderMap, state: &AppState) -> Result<(), ApiError> {
         .and_then(|v| v.to_str().ok())
         .map(str::trim)
         .unwrap_or_default();
-    if provided != expected {
+    if !constant_time_eq(provided.as_bytes(), expected.as_bytes()) {
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized"));
     }
     Ok(())
@@ -4638,20 +4662,15 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let addr = SocketAddr::from_str(format!("{}:{}", args.bind, args.port).as_str())
         .with_context(|| format!("invalid bind address {}:{}", args.bind, args.port))?;
-    let auth_token = args
-        .token
-        .as_ref()
-        .map(|v| v.trim().to_string())
-        .or_else(|| std::env::var("EVPOLY_MANUAL_BOT_TOKEN").ok())
-        .filter(|v| !v.is_empty());
-    if auth_token.is_none() && manual_auth_required_for_bind(addr) {
-        anyhow::bail!(
-            "EVPOLY_MANUAL_BOT_TOKEN or --token is required when manual_bot bind is not loopback"
-        );
-    }
-
     let config = Config::load(&args.config)
         .with_context(|| format!("failed to load config: {}", args.config.display()))?;
+
+    let auth_token = resolve_manual_auth_token(args.token.as_deref());
+    if auth_token.is_none() && manual_auth_required_for_bind(addr) {
+        anyhow::bail!(
+            "EVPOLY_MANUAL_BOT_TOKEN, EVPOLY_ADMIN_API_TOKEN, or --token is required for manual_bot; set EVPOLY_MANUAL_BOT_ALLOW_UNAUTH_LOCAL=true only for local development"
+        );
+    }
 
     let api = Arc::new(PolymarketApi::new(
         config.polymarket.gamma_api_url.clone(),
@@ -4780,13 +4799,46 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn manual_auth_is_required_for_public_bind() {
         let public = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), DEFAULT_PORT);
         let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), DEFAULT_PORT);
 
-        assert!(manual_auth_required_for_bind(public));
-        assert!(!manual_auth_required_for_bind(loopback));
+        assert!(manual_auth_required_for_bind_with_allow(public, false));
+        assert!(manual_auth_required_for_bind_with_allow(loopback, false));
+        assert!(manual_auth_required_for_bind_with_allow(public, true));
+        assert!(!manual_auth_required_for_bind_with_allow(loopback, true));
+    }
+
+    #[test]
+    fn blank_manual_token_falls_back_to_admin_token() {
+        let _guard = env_lock().lock().expect("manual_bot env lock poisoned");
+        let previous_manual = std::env::var("EVPOLY_MANUAL_BOT_TOKEN").ok();
+        let previous_admin = std::env::var("EVPOLY_ADMIN_API_TOKEN").ok();
+        unsafe {
+            std::env::set_var("EVPOLY_MANUAL_BOT_TOKEN", "");
+            std::env::set_var("EVPOLY_ADMIN_API_TOKEN", "admin-token");
+        }
+
+        assert_eq!(
+            resolve_manual_auth_token(None).as_deref(),
+            Some("admin-token")
+        );
+
+        match previous_manual {
+            Some(value) => unsafe { std::env::set_var("EVPOLY_MANUAL_BOT_TOKEN", value) },
+            None => unsafe { std::env::remove_var("EVPOLY_MANUAL_BOT_TOKEN") },
+        }
+        match previous_admin {
+            Some(value) => unsafe { std::env::set_var("EVPOLY_ADMIN_API_TOKEN", value) },
+            None => unsafe { std::env::remove_var("EVPOLY_ADMIN_API_TOKEN") },
+        }
     }
 }

@@ -2,6 +2,7 @@ use crate::api::PolymarketApi;
 use crate::coinbase_ws::SharedCoinbaseBookState;
 use crate::config::Config;
 use crate::event_log::log_event;
+use crate::security::{harden_secret_file_permissions, write_secret_file};
 use crate::signal_state::SharedSignalState;
 use crate::strategy::{
     STRATEGY_ID_ENDGAME_SWEEP_V1, STRATEGY_ID_EVCURVE_V1, STRATEGY_ID_EVSNIPE_V1,
@@ -16,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1277,14 +1278,8 @@ fn persist_env_value(env_file: &str, key: &str, value: &str) -> Result<()> {
     }
 
     let tmp_path = path.with_extension("tmp");
-    {
-        let mut file = File::create(&tmp_path)
-            .with_context(|| format!("failed to create temp env file {}", tmp_path.display()))?;
-        file.write_all(content.as_bytes())
-            .with_context(|| format!("failed to write temp env file {}", tmp_path.display()))?;
-        file.flush()
-            .with_context(|| format!("failed to flush temp env file {}", tmp_path.display()))?;
-    }
+    write_secret_file(&tmp_path, content.as_bytes())
+        .with_context(|| format!("failed to write temp env file {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, path).with_context(|| {
         format!(
             "failed to replace env file {} with {}",
@@ -1292,6 +1287,8 @@ fn persist_env_value(env_file: &str, key: &str, value: &str) -> Result<()> {
             tmp_path.display()
         )
     })?;
+    harden_secret_file_permissions(path)
+        .with_context(|| format!("failed to harden env file permissions {}", path.display()))?;
 
     Ok(())
 }

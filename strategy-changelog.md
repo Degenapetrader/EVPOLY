@@ -9,6 +9,10 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-06-17
+- `evcurve_v1` and remote alpha integrations: hardened remote decision boundaries by requiring remote alpha and relayer-signer URLs to use HTTPS unless `EVPOLY_ALLOW_INSECURE_REMOTE_URLS=true`, and by rejecting malformed remote EVcurve decision payloads with non-finite or out-of-range price/probability fields (`src/main.rs`, `src/api.rs`, `.env.example`, `.env.full.example`).
+  - Applies only to remote alpha / relayer-signer configuration and remote EVcurve payload acceptance. Local EVcurve decision logic, strategy thresholds, and order sizing are unchanged.
+
 ### 2026-06-15
 - `evsnipe_v1`: disabled pre-hit entries during the final 4 hours before the effective market cutoff while leaving confirm-hit entries active. This applies to both the indexed fast trigger path and fallback watchlist path (`src/evsnipe.rs`, `src/main.rs`).
 

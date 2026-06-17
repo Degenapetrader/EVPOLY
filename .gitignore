@@ -5,7 +5,11 @@ config.json
 history.toml
 .env
 .env.local
+.env.*
+!.env.example
+!.env.full.example
 .envrc
+poly.env
 evpoly/
 history/
 polybot2/

@@ -1,6 +1,7 @@
 use crate::event_log::log_event;
 use crate::models::*;
 use crate::polymarket_ws::{SharedPolymarketWsState, WsOrderStatusSnapshot, WsTradeSnapshot};
+use crate::security::env_truthy;
 use anyhow::{Context, Result};
 use base64;
 use base64::engine::general_purpose::URL_SAFE;
@@ -1179,9 +1180,31 @@ impl PolymarketApi {
         }
     }
 
-    fn relayer_submit_signer_url(&self) -> String {
-        Self::env_nonempty("EVPOLY_RELAYER_SUBMIT_SIGNER_URL")
-            .unwrap_or_else(|| RELAYER_SUBMIT_SIGNER_URL_DEFAULT.to_string())
+    fn relayer_submit_signer_url(&self) -> Result<String> {
+        let configured_url = Self::env_nonempty("EVPOLY_RELAYER_SUBMIT_SIGNER_URL");
+        let url = configured_url
+            .as_deref()
+            .unwrap_or(RELAYER_SUBMIT_SIGNER_URL_DEFAULT);
+        match reqwest::Url::parse(url) {
+            Ok(parsed)
+                if parsed.scheme().eq_ignore_ascii_case("https")
+                    || env_truthy("EVPOLY_ALLOW_INSECURE_REMOTE_URLS", false) =>
+            {
+                Ok(url.to_string())
+            }
+            Ok(_) if configured_url.is_some() => {
+                anyhow::bail!(
+                    "EVPOLY_RELAYER_SUBMIT_SIGNER_URL must use https; set EVPOLY_ALLOW_INSECURE_REMOTE_URLS=true only for local development"
+                )
+            }
+            Err(err) if configured_url.is_some() => {
+                anyhow::bail!("invalid EVPOLY_RELAYER_SUBMIT_SIGNER_URL={}: {}", url, err)
+            }
+            Ok(_) | Err(_) => {
+                warn!("Configured relayer signer default is insecure or invalid; relayer signer fallback is disabled");
+                anyhow::bail!("relayer signer default URL is insecure or invalid")
+            }
+        }
     }
 
     fn v2_builder_code(&self) -> Result<Option<B256>> {
@@ -1269,7 +1292,7 @@ impl PolymarketApi {
         let normalized_method = method.to_ascii_uppercase();
         match path {
             "/submit" => {
-                let submit_signer_url = self.relayer_submit_signer_url();
+                let submit_signer_url = self.relayer_submit_signer_url()?;
                 let submit_token = self.relayer_submit_signer_token()?;
                 self.request_remote_relayer_submit_headers_via(
                     submit_signer_url.as_str(),
@@ -2593,7 +2616,7 @@ impl PolymarketApi {
     async fn build_authenticated_client(&self) -> Result<ClobClientHandle> {
         let private_key = self.private_key.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
-                "Private key is required for authentication. Please set private_key in config.json"
+                "Private key is required for authentication. Set POLY_PRIVATE_KEY in .env or process env"
             )
         })?;
 
@@ -7484,7 +7507,7 @@ impl PolymarketApi {
 
             // Check if we have a private key (required for signing)
             let private_key = self.private_key.as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Private key is required for token approval. Please set private_key in config.json"))?;
+                .ok_or_else(|| anyhow::anyhow!("Private key is required for token approval. Set POLY_PRIVATE_KEY in .env or process env"))?;
 
             // Create signer from private key
             let signer = LocalSigner::from_str(private_key)
@@ -7980,7 +8003,7 @@ impl PolymarketApi {
         // Check if we have a private key (required for signing)
         let private_key = self.private_key.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
-                "Private key is required for order signing. Please set private_key in config.json"
+                "Private key is required for order signing. Set POLY_PRIVATE_KEY in .env or process env"
             )
         })?;
 

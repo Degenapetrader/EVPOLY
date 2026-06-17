@@ -29,6 +29,7 @@ pub mod plan3_tables;
 pub mod plan4b_tables;
 pub mod plandaily_tables;
 pub mod polymarket_ws;
+pub mod security;
 pub mod sessionband;
 pub mod signal_state;
 pub mod simulation;

@@ -33,3 +33,11 @@ mm-watch.md
 UI-v2.md
 flow.md
 UPDATE/
+
+# Node / JS build artifacts
+node_modules/
+dist/
+
+# Internal notes (kept out of the public repo)
+auditv2.md
+dbimproved.md

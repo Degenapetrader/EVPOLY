@@ -2,6 +2,7 @@
 name = "polymarket-arbitrage-bot"
 version = "2.4.5"
 edition = "2021"
+license-file = "LICENSE"
 default-run = "polymarket-arbitrage-bot"
 autobins = false
 

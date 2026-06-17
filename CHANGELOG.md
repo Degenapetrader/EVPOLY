@@ -1,5 +1,11 @@
 # EVPoly Changelog
 
+## v2.4.6 - 2026-06-17
+- Hardened local secret handling so generated config/env files are written owner-only on Unix and existing `config.json` files are hardened on load.
+- Stopped serializing env-loaded private keys back into generated `config.json` while preserving compatibility with existing configs.
+- Made `manual_bot` fail closed by default unless a manual/admin token is configured or loopback unauthenticated mode is explicitly enabled.
+- Enforced HTTPS for configured remote alpha/relayer URLs by default and added remote EVcurve payload bounds validation.
+
 ## v2.4.5 - 2026-06-16
 - Added a cheap `/bot/liveness` admin endpoint for external supervisors.
 - Changed fatal runtime panics to exit the bot process instead of leaving a half-alive async runtime.

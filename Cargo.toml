@@ -67,6 +67,11 @@ path = "src/bin/manual_bot.rs"
 test = false
 
 [[bin]]
+name = "alpha_service"
+path = "src/bin/alpha_service.rs"
+test = false
+
+[[bin]]
 name = "builder_fees"
 path = "src/bin/builder_fees.rs"
 test = false

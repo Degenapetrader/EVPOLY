@@ -5,12 +5,15 @@
 
 ## Start Server
 ```bash
-cargo run --release --bin manual_bot -- --bind 127.0.0.1 --port 8791
+cargo run --release --bin manual_bot -- --bind 127.0.0.1 --port 8791 --token "$EVPOLY_MANUAL_BOT_TOKEN"
 ```
 
-Optional auth token:
+Required auth token:
 - CLI: `--token <TOKEN>`
 - Env: `EVPOLY_MANUAL_BOT_TOKEN=<TOKEN>`
+- Fallback env: `EVPOLY_ADMIN_API_TOKEN=<TOKEN>`
+
+Tokenless loopback access is disabled by default. Set `EVPOLY_MANUAL_BOT_ALLOW_UNAUTH_LOCAL=true` only for disposable local development.
 
 Request headers:
 - `x-evpoly-manual-token: <TOKEN>`

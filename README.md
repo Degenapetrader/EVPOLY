@@ -178,10 +178,10 @@ Setup Doctor:
 ## Manual Endpoint Service
 Standalone HTTP API binary:
 ```bash
-cargo run --release --bin manual_bot -- --bind 127.0.0.1 --port 8791
+cargo run --release --bin manual_bot -- --bind 127.0.0.1 --port 8791 --token "$EVPOLY_MANUAL_BOT_TOKEN"
 ```
 
-Use `--token` (or `EVPOLY_MANUAL_BOT_TOKEN`) to protect endpoints.
+`manual_bot` requires `--token`, `EVPOLY_MANUAL_BOT_TOKEN`, or `EVPOLY_ADMIN_API_TOKEN`. Tokenless loopback access is disabled unless `EVPOLY_MANUAL_BOT_ALLOW_UNAUTH_LOCAL=true` is explicitly set for disposable local development.
 
 Route details and payload examples:
 - [docs/manual_endpoint_guide.md](docs/manual_endpoint_guide.md)

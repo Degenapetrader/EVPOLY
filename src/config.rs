@@ -1,4 +1,4 @@
-use crate::security::write_secret_file;
+use crate::security::{harden_secret_file_permissions, write_secret_file};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -726,6 +726,7 @@ impl Config {
 
         let mut config = if path_exists {
             let content = std::fs::read_to_string(path)?;
+            harden_secret_file_permissions(path)?;
             serde_json::from_str(&content)?
         } else {
             Config::default()

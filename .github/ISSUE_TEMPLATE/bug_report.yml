@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a problem with EVPoly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a report. **Do not include secrets** (private keys, API keys, tokens, wallet seeds) anywhere in this issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Release tag or git commit you are running.
+    validations:
+      required: false
+  - type: dropdown
+    id: strategy
+    attributes:
+      label: Strategy involved
+      options:
+        - Not sure / N/A
+        - premarket_v1
+        - endgame_sweep_v1
+        - evcurve_v1
+        - sessionband_v1
+        - evsnipe_v1
+        - mm_sport_v1
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste relevant output. Redact wallet addresses, keys, and tokens.
+      render: shell
+    validations:
+      required: false

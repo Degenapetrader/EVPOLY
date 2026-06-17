@@ -20,7 +20,7 @@ This repository is source-available, non-commercial.
 - You can use, modify, and share it for non-commercial use.
 - You cannot sell it, offer it as paid SaaS/service, or use it for commercial profit without a separate commercial license.
 
-See [LICENSE](LICENSE).
+Licensed under [PolyForm Noncommercial 1.0.0](LICENSE).
 
 ## Strategy Set
 - `premarket_v1`

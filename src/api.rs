@@ -30,7 +30,7 @@ use alloy::primitives::Address as AlloyAddress;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer as _;
 use alloy::sol_types::{SolCall, SolStruct};
-use chrono::{TimeZone, Utc};
+use chrono::{SecondsFormat, TimeZone, Utc};
 use polymarket_client_sdk_v2::auth::state::Authenticated;
 use polymarket_client_sdk_v2::auth::{Credentials, LocalSigner, Normal};
 use polymarket_client_sdk_v2::clob::types::request::CancelMarketOrderRequest;
@@ -4037,33 +4037,20 @@ impl PolymarketApi {
         period_open_ts: u64,
         period_close_ts: u64,
     ) -> Result<Option<(f64, f64)>> {
-        let granularity = match timeframe.trim().to_ascii_lowercase().as_str() {
-            "5m" => 300,
-            "15m" => 900,
-            "1h" => 3_600,
-            // Coinbase candles don't support 4h directly; compose from 1h.
-            "4h" => 3_600,
-            // Daily EVcurve periods are noon-to-noon ET, so compose from 1h buckets
-            // instead of relying on exchange-native daily alignment.
-            "1d" | "d1" | "24h" | "daily" => 3_600,
-            _ => return Ok(None),
+        let Some(granularity) = Self::coinbase_granularity_for_proxy_resolution(timeframe) else {
+            return Ok(None);
         };
 
-        let start_iso = Utc
-            .timestamp_opt(period_open_ts as i64, 0)
-            .single()
-            .ok_or_else(|| anyhow::anyhow!("invalid coinbase start ts"))?
-            .to_rfc3339();
-        let end_iso = Utc
-            .timestamp_opt(period_close_ts as i64, 0)
-            .single()
-            .ok_or_else(|| anyhow::anyhow!("invalid coinbase end ts"))?
-            .to_rfc3339();
+        let start_iso =
+            Self::coinbase_query_timestamp(period_open_ts).context("invalid coinbase start ts")?;
+        let end_iso =
+            Self::coinbase_query_timestamp(period_close_ts).context("invalid coinbase end ts")?;
         let product = format!("{}-USD", symbol.trim().to_ascii_uppercase());
         let url = format!(
             "https://api.exchange.coinbase.com/products/{}/candles",
             product
         );
+        let cache_bust = Utc::now().timestamp_millis().to_string();
 
         let response = self
             .client
@@ -4072,10 +4059,12 @@ impl PolymarketApi {
                 reqwest::header::USER_AGENT,
                 "EVPOLY/1.0 (+https://www.evplus.ai)",
             )
+            .header(reqwest::header::CACHE_CONTROL, "no-cache")
             .query(&[
                 ("granularity", granularity.to_string()),
                 ("start", start_iso),
                 ("end", end_iso),
+                ("_", cache_bust),
             ])
             .send()
             .await
@@ -4147,12 +4136,39 @@ impl PolymarketApi {
         open_px.zip(close_px)
     }
 
-    fn binance_interval_for_proxy_resolution(timeframe: &str) -> Option<(&'static str, u64)> {
+    fn coinbase_granularity_for_proxy_resolution(timeframe: &str) -> Option<u64> {
         match timeframe.trim().to_ascii_lowercase().as_str() {
-            "5m" => Some(("1s", 1)),
-            "15m" => Some(("1s", 1)),
-            "1h" => Some(("1m", 60)),
-            "4h" => Some(("1m", 60)),
+            "5m" | "15m" | "1h" | "4h" => Some(60),
+            // Daily EVcurve periods are noon-to-noon ET, so compose from 1h buckets
+            // instead of relying on exchange-native daily alignment.
+            "1d" | "d1" | "24h" | "daily" => Some(3_600),
+            _ => None,
+        }
+    }
+
+    fn coinbase_query_timestamp(ts: u64) -> Result<String> {
+        let dt = Utc
+            .timestamp_opt(ts as i64, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("invalid timestamp"))?;
+        Ok(dt.to_rfc3339_opts(SecondsFormat::Secs, true))
+    }
+
+    fn binance_interval_for_proxy_resolution(
+        symbol: &str,
+        timeframe: &str,
+    ) -> Option<(&'static str, u64)> {
+        let timeframe = timeframe.trim().to_ascii_lowercase();
+        if symbol.trim().eq_ignore_ascii_case("HYPE") {
+            return match timeframe.as_str() {
+                "5m" | "15m" | "1h" | "4h" => Some(("1m", 60)),
+                "1d" | "d1" | "24h" | "daily" => Some(("1h", 3_600)),
+                _ => None,
+            };
+        }
+        match timeframe.as_str() {
+            "5m" | "15m" => Some(("1s", 1)),
+            "1h" | "4h" => Some(("1m", 60)),
             "1d" | "d1" | "24h" | "daily" => Some(("1h", 3_600)),
             _ => None,
         }
@@ -4166,12 +4182,17 @@ impl PolymarketApi {
         period_close_ts: u64,
     ) -> Result<Option<(f64, f64)>> {
         let Some((interval, interval_secs)) =
-            Self::binance_interval_for_proxy_resolution(timeframe)
+            Self::binance_interval_for_proxy_resolution(symbol, timeframe)
         else {
             return Ok(None);
         };
-        let pair = format!("{}USDT", symbol.trim().to_ascii_uppercase());
-        let url = "https://api.binance.com/api/v3/klines";
+        let normalized_symbol = symbol.trim().to_ascii_uppercase();
+        let pair = format!("{}USDT", normalized_symbol);
+        let url = if normalized_symbol == "HYPE" {
+            "https://fapi.binance.com/fapi/v1/klines"
+        } else {
+            "https://api.binance.com/api/v3/klines"
+        };
         let start_ms = (period_open_ts as i64).saturating_mul(1_000);
         let end_ms = (period_close_ts as i64).saturating_mul(1_000);
         let period_secs = period_close_ts.saturating_sub(period_open_ts).max(1);
@@ -9343,23 +9364,71 @@ mod tests {
     #[test]
     fn binance_proxy_resolution_uses_short_interval_for_endgame_windows() {
         assert_eq!(
-            PolymarketApi::binance_interval_for_proxy_resolution("5m"),
+            PolymarketApi::binance_interval_for_proxy_resolution("ETH", "5m"),
             Some(("1s", 1))
         );
         assert_eq!(
-            PolymarketApi::binance_interval_for_proxy_resolution("15m"),
+            PolymarketApi::binance_interval_for_proxy_resolution("ETH", "15m"),
             Some(("1s", 1))
         );
         assert_eq!(
-            PolymarketApi::binance_interval_for_proxy_resolution("1h"),
+            PolymarketApi::binance_interval_for_proxy_resolution("ETH", "1h"),
             Some(("1m", 60))
         );
         assert_eq!(
-            PolymarketApi::binance_interval_for_proxy_resolution("4h"),
+            PolymarketApi::binance_interval_for_proxy_resolution("ETH", "4h"),
             Some(("1m", 60))
         );
         assert_eq!(
-            PolymarketApi::binance_interval_for_proxy_resolution("1d"),
+            PolymarketApi::binance_interval_for_proxy_resolution("ETH", "1d"),
+            Some(("1h", 3_600))
+        );
+    }
+
+    #[test]
+    fn coinbase_proxy_resolution_uses_live_minute_buckets_for_endgame_windows() {
+        assert_eq!(
+            PolymarketApi::coinbase_granularity_for_proxy_resolution("5m"),
+            Some(60)
+        );
+        assert_eq!(
+            PolymarketApi::coinbase_granularity_for_proxy_resolution("15m"),
+            Some(60)
+        );
+        assert_eq!(
+            PolymarketApi::coinbase_granularity_for_proxy_resolution("1h"),
+            Some(60)
+        );
+        assert_eq!(
+            PolymarketApi::coinbase_granularity_for_proxy_resolution("4h"),
+            Some(60)
+        );
+        assert_eq!(
+            PolymarketApi::coinbase_granularity_for_proxy_resolution("1d"),
+            Some(3_600)
+        );
+    }
+
+    #[test]
+    fn coinbase_query_timestamp_uses_utc_z_suffix() {
+        assert_eq!(
+            PolymarketApi::coinbase_query_timestamp(1_781_882_400).unwrap(),
+            "2026-06-19T15:20:00Z"
+        );
+    }
+
+    #[test]
+    fn hype_binance_proxy_resolution_uses_futures_supported_minute_buckets() {
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("HYPE", "5m"),
+            Some(("1m", 60))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("HYPE", "15m"),
+            Some(("1m", 60))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("HYPE", "1d"),
             Some(("1h", 3_600))
         );
     }

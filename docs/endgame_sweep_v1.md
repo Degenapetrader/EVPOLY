@@ -24,7 +24,7 @@ The submit path also enforces a final close guard: strategy ticks and trader fas
 
 ## End-to-End Flow
 1. Build symbol proxy feeds (Coinbase primary feeds plus Binance guard/routing feeds).
-2. Require an exact REST period-open base anchor whose candle timestamp equals the market open. `BTC/ETH/SOL/XRP` require exact Coinbase and Binance opens; Binance-routed symbols require an exact Binance open.
+2. Require an exact REST period-open base anchor whose candle timestamp equals the market open. `BTC/ETH/SOL/XRP` require exact Coinbase and Binance opens; Coinbase intraday anchors are composed from live 1-minute candles, and Binance-routed symbols require an exact Binance open. `HYPE` uses Binance futures 1-minute klines for live intraday anchors.
 3. Prewarm the current Polymarket market, constraints, metadata, and quote cache before close.
 4. Use the local V1 checkpoint offsets for due ticks from `t-10s` through the final `t-100ms` slot.
 5. For each due checkpoint, refresh scheduler time after any anchor fetches, then require Coinbase/Binance direction agreement versus exact period opens for `BTC/ETH/SOL/XRP`.
@@ -47,7 +47,8 @@ Multipliers:
 - Checkpoint size weights use fixed runtime defaults: `5/5.2/5.5/6/6.7/7.6/8.8/10.2/11.8/13.2/20` percent across the eleven default checkpoints. The weights sum to one full base-size period allocation, with t-10s smallest and t-100ms largest.
 
 ## Core Guards
-- `BTC/ETH/SOL/XRP` require exact Coinbase and Binance period-open anchors whose candle timestamps equal the market open, and both sources must agree on up/down direction before an Endgame tick can submit.
+- `BTC/ETH/SOL/XRP` require exact Coinbase and Binance period-open anchors whose candle timestamps equal the market open, and both sources must agree on up/down direction before an Endgame tick can submit. Coinbase intraday REST anchors use live 1-minute candles so current-period opens are available during the period.
+- `HYPE` exact REST anchors use Binance futures 1-minute klines for intraday periods because Binance spot does not expose the `HYPEUSDT` kline symbol.
 - Book99-port CEX depth checks whether live external orderbook depth is strong enough for the current distance-to-base bucket and can reduce size on weak depth.
 - Book99-port DVOL fetches Deribit BTC/ETH DVOL, uses ETH-DVOL synthetic multipliers plus RV30 overrides for alt symbols, and converts distance-to-base plus remaining tau into a fair probability.
 - Entry price is no longer fixed at 99c. Each tick uses the current fair probability, fees, edge floor, and live visible Polymarket asks to compute the max acceptable limit price and executable share count. Hidden-depth backfill is not assumed.

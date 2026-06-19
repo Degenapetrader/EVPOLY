@@ -149,6 +149,9 @@ const MM_SPORT_EXTREME_SIZE_REQUOTE_DELTA_PCT: f64 = 0.75;
 const MM_SPORT_ORDER_SUBMIT_THROTTLE_LOG_COOLDOWN_MS: u64 = 30_000;
 const MM_SPORT_MIN_ENTRY_TOP_BID_SKIP_LOG_COOLDOWN_MS: i64 = 30_000;
 const MM_SPORT_INVENTORY_EXIT_MODE_LOG_COOLDOWN_MS: i64 = 30_000;
+const ENDGAME_BASE_ANCHOR_REST_RETRY_MS: i64 = 1_000;
+const ENDGAME_BASE_ANCHOR_REST_TIMEOUT_MS: u64 = 750;
+const ENDGAME_FINAL_SUBMIT_GUARD_MS: i64 = 250;
 
 fn next_alpha_request_id_nonce() -> u64 {
     ALPHA_REQUEST_ID_NONCE.fetch_add(1, AtomicOrdering::Relaxed)
@@ -7905,6 +7908,12 @@ async fn main() -> Result<()> {
                             return;
                         }
                         let late_guard_ms = entry_submit_late_guard_ms();
+                        let effective_late_guard_ms =
+                            if request.intent.strategy_id == STRATEGY_ID_ENDGAME_SWEEP_V1 {
+                                late_guard_ms.max(ENDGAME_FINAL_SUBMIT_GUARD_MS)
+                            } else {
+                                late_guard_ms
+                            };
                         let premarket_late_block = request.intent.strategy_id
                             == STRATEGY_ID_PREMARKET_V1
                             && matches!(request.entry_mode, EntryExecutionMode::Ladder)
@@ -7914,7 +7923,7 @@ async fn main() -> Result<()> {
                                     .saturating_mul(1000);
                         let generic_late_block =
                             if let Some(close_ms) = request_period_close_ms(&request) {
-                                now_submit_ms >= close_ms.saturating_sub(late_guard_ms)
+                                now_submit_ms >= close_ms.saturating_sub(effective_late_guard_ms)
                             } else {
                                 false
                             };
@@ -7935,7 +7944,8 @@ async fn main() -> Result<()> {
                                     "period_timestamp": request.opportunity.period_timestamp,
                                     "token_id": request.opportunity.token_id,
                                     "reason": reason,
-                                    "late_guard_ms": late_guard_ms,
+                                    "late_guard_ms": effective_late_guard_ms,
+                                    "configured_late_guard_ms": late_guard_ms,
                                     "submit_ts_ms": now_submit_ms,
                                     "period_close_ts_ms": close_ms,
                                     "worker_pool": pool_label_for_submit
@@ -9132,6 +9142,10 @@ async fn main() -> Result<()> {
                 (String, Timeframe, i64, EndgameV1ProxyKind),
                 EndgameV1SpotSample,
             > = std::collections::HashMap::new();
+            let mut endgame_base_anchor_retry_after_ms: std::collections::HashMap<
+                (String, Timeframe, i64, EndgameV1ProxyKind),
+                i64,
+            > = std::collections::HashMap::new();
             #[derive(Debug)]
             struct EndgameSubmitOutcomeEvent {
                 logical_key: EntryLogicalKey,
@@ -9269,54 +9283,180 @@ async fn main() -> Result<()> {
                         if now_ts < market_open_ts || now_ts >= market_close_ts {
                             continue;
                         }
-                        if let Some(mid_cb) = coinbase_snapshot
-                            .mid_price
-                            .filter(|v| v.is_finite() && *v > 0.0)
-                        {
-                            base_mid_by_period
-                                .entry((symbol_market_key.clone(), timeframe, market_open_ts))
-                                .or_insert(mid_cb);
+                        let market_close_ms = market_close_ts.saturating_mul(1_000);
+                        let market_open_ms = market_open_ts.saturating_mul(1_000);
+                        let period_key = (symbol_market_key.clone(), timeframe, market_open_ts);
+                        let primary_proxy_kind = match endgame_proxy_source_for_symbol_timeframe(
+                            symbol.as_str(),
+                            timeframe,
+                        ) {
+                            EndgameProxySource::Coinbase => EndgameV1ProxyKind::Coinbase,
+                            EndgameProxySource::Binance => EndgameV1ProxyKind::Binance,
+                        };
+                        let mut required_proxy_kinds = vec![primary_proxy_kind];
+                        if endgame_v1_requires_dual_proxy(symbol.as_str()) {
+                            for proxy_kind in
+                                [EndgameV1ProxyKind::Coinbase, EndgameV1ProxyKind::Binance]
+                            {
+                                if !required_proxy_kinds.contains(&proxy_kind) {
+                                    required_proxy_kinds.push(proxy_kind);
+                                }
+                            }
                         }
-                        let Some(base_mid_cb) = base_mid_by_period
-                            .get(&(symbol_market_key.clone(), timeframe, market_open_ts))
+                        let mut anchor_ready = true;
+                        for proxy_kind in required_proxy_kinds.iter().copied() {
+                            let anchor_key = (
+                                symbol_market_key.clone(),
+                                timeframe,
+                                market_open_ts,
+                                proxy_kind,
+                            );
+                            if endgame_v1_open_spot_by_period_proxy.contains_key(&anchor_key) {
+                                continue;
+                            }
+                            if let Some(retry_after_ms) =
+                                endgame_base_anchor_retry_after_ms.get(&anchor_key).copied()
+                            {
+                                if now_ms < retry_after_ms {
+                                    anchor_ready = false;
+                                    break;
+                                }
+                            }
+                            match timeout(
+                                Duration::from_millis(ENDGAME_BASE_ANCHOR_REST_TIMEOUT_MS),
+                                fetch_endgame_v1_period_open_sample(
+                                    api_for_endgame.as_ref(),
+                                    symbol.as_str(),
+                                    timeframe,
+                                    market_open_ts,
+                                    proxy_kind,
+                                ),
+                            )
+                            .await
+                            {
+                                Ok(Ok(Some(sample))) => {
+                                    endgame_base_anchor_retry_after_ms.remove(&anchor_key);
+                                    endgame_v1_open_spot_by_period_proxy
+                                        .insert(anchor_key.clone(), sample);
+                                    log_event(
+                                        "endgame_base_anchor_initialized",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                            "asset_symbol": symbol,
+                                            "market_key": symbol_market_key.as_str(),
+                                            "timeframe": timeframe.as_str(),
+                                            "market_open_ts": market_open_ts,
+                                            "proxy_kind": match proxy_kind {
+                                                EndgameV1ProxyKind::Coinbase => "coinbase",
+                                                EndgameV1ProxyKind::Binance => "binance",
+                                            },
+                                            "base_mid": sample.price,
+                                            "source_ts_ms": sample.source_ts_ms,
+                                            "timeout_ms": ENDGAME_BASE_ANCHOR_REST_TIMEOUT_MS,
+                                            "source": "rest_exact"
+                                        }),
+                                    );
+                                }
+                                Ok(Ok(None)) => {
+                                    let retry_after_ms =
+                                        now_ms.saturating_add(ENDGAME_BASE_ANCHOR_REST_RETRY_MS);
+                                    endgame_base_anchor_retry_after_ms
+                                        .insert(anchor_key, retry_after_ms);
+                                    log_event(
+                                        "endgame_base_anchor_unavailable",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                            "asset_symbol": symbol,
+                                            "market_key": symbol_market_key.as_str(),
+                                            "timeframe": timeframe.as_str(),
+                                            "market_open_ts": market_open_ts,
+                                            "proxy_kind": match proxy_kind {
+                                                EndgameV1ProxyKind::Coinbase => "coinbase",
+                                                EndgameV1ProxyKind::Binance => "binance",
+                                            },
+                                            "retry_after_ms": retry_after_ms,
+                                            "timeout_ms": ENDGAME_BASE_ANCHOR_REST_TIMEOUT_MS,
+                                            "reason": "rest_exact_open_missing"
+                                        }),
+                                    );
+                                    anchor_ready = false;
+                                    break;
+                                }
+                                Ok(Err(error)) => {
+                                    let retry_after_ms =
+                                        now_ms.saturating_add(ENDGAME_BASE_ANCHOR_REST_RETRY_MS);
+                                    endgame_base_anchor_retry_after_ms
+                                        .insert(anchor_key, retry_after_ms);
+                                    log_event(
+                                        "endgame_base_anchor_unavailable",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                            "asset_symbol": symbol,
+                                            "market_key": symbol_market_key.as_str(),
+                                            "timeframe": timeframe.as_str(),
+                                            "market_open_ts": market_open_ts,
+                                            "proxy_kind": match proxy_kind {
+                                                EndgameV1ProxyKind::Coinbase => "coinbase",
+                                                EndgameV1ProxyKind::Binance => "binance",
+                                            },
+                                            "retry_after_ms": retry_after_ms,
+                                            "timeout_ms": ENDGAME_BASE_ANCHOR_REST_TIMEOUT_MS,
+                                            "reason": "rest_exact_open_error",
+                                            "error": error.to_string()
+                                        }),
+                                    );
+                                    anchor_ready = false;
+                                    break;
+                                }
+                                Err(_) => {
+                                    let retry_after_ms =
+                                        now_ms.saturating_add(ENDGAME_BASE_ANCHOR_REST_RETRY_MS);
+                                    endgame_base_anchor_retry_after_ms
+                                        .insert(anchor_key, retry_after_ms);
+                                    log_event(
+                                        "endgame_base_anchor_unavailable",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                            "asset_symbol": symbol,
+                                            "market_key": symbol_market_key.as_str(),
+                                            "timeframe": timeframe.as_str(),
+                                            "market_open_ts": market_open_ts,
+                                            "proxy_kind": match proxy_kind {
+                                                EndgameV1ProxyKind::Coinbase => "coinbase",
+                                                EndgameV1ProxyKind::Binance => "binance",
+                                            },
+                                            "retry_after_ms": retry_after_ms,
+                                            "timeout_ms": ENDGAME_BASE_ANCHOR_REST_TIMEOUT_MS,
+                                            "reason": "rest_exact_open_timeout"
+                                        }),
+                                    );
+                                    anchor_ready = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if !anchor_ready {
+                            continue;
+                        }
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        let now_ts = now_ms.saturating_div(1_000);
+                        if now_ts < market_open_ts || now_ts >= market_close_ts {
+                            continue;
+                        }
+                        let primary_anchor_key = (
+                            symbol_market_key.clone(),
+                            timeframe,
+                            market_open_ts,
+                            primary_proxy_kind,
+                        );
+                        let Some(primary_open) = endgame_v1_open_spot_by_period_proxy
+                            .get(&primary_anchor_key)
                             .copied()
                         else {
                             continue;
                         };
-                        let market_close_ms = market_close_ts.saturating_mul(1_000);
-                        let market_open_ms = market_open_ts.saturating_mul(1_000);
-                        let period_key = (symbol_market_key.clone(), timeframe, market_open_ts);
-                        if endgame_v1_requires_dual_proxy(symbol.as_str()) {
-                            if let Some(coinbase_sample) =
-                                endgame_v1_spot_sample_from_book(&coinbase_snapshot)
-                            {
-                                endgame_v1_open_spot_by_period_proxy
-                                    .entry((
-                                        symbol_market_key.clone(),
-                                        timeframe,
-                                        market_open_ts,
-                                        EndgameV1ProxyKind::Coinbase,
-                                    ))
-                                    .or_insert(coinbase_sample);
-                            }
-                            if let Some(binance_sample) = read_endgame_binance_spot_sample(
-                                symbol.as_str(),
-                                now_ms,
-                                endgame_cfg_for_loop.book_freshness_ms,
-                                endgame_binance_states_for_loop.as_ref(),
-                            )
-                            .await
-                            {
-                                endgame_v1_open_spot_by_period_proxy
-                                    .entry((
-                                        symbol_market_key.clone(),
-                                        timeframe,
-                                        market_open_ts,
-                                        EndgameV1ProxyKind::Binance,
-                                    ))
-                                    .or_insert(binance_sample);
-                            }
-                        }
+                        base_mid_by_period.insert(period_key.clone(), primary_open.price);
+                        let base_mid_cb = primary_open.price;
                         if !endgame_alpha_policy_by_period.contains_key(&period_key) {
                             let policy = local_endgame_alpha_policy(endgame_cfg_for_loop.as_ref());
                             log_event(
@@ -9522,75 +9662,9 @@ async fn main() -> Result<()> {
                             if period_remaining_usd <= 0.0 {
                                 continue;
                             }
-                            if let Some(locked_direction) =
-                                period_direction_locks.get(&period_budget_key).copied()
-                            {
-                                if locked_direction != plan.direction {
-                                    log_event(
-                                        "endgame_direction_lock_reject",
-                                        json!({
-                                            "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                            "market_key": symbol_market_key.as_str(),
-                                            "asset_symbol": symbol,
-                                            "timeframe": timeframe.as_str(),
-                                            "market_open_ts": market_open_ts,
-                                            "condition_id": market.condition_id,
-                                            "locked_direction": match locked_direction { Direction::Up => "UP", Direction::Down => "DOWN" },
-                                            "proposed_direction": match plan.direction { Direction::Up => "UP", Direction::Down => "DOWN" },
-                                            "reason": "period_direction_lock_active"
-                                        }),
-                                    );
-                                    continue;
-                                }
-                            }
+                            let locked_direction =
+                                period_direction_locks.get(&period_budget_key).copied();
                             let allow_cross_spread = endgame_cfg_for_loop.allow_cross_spread;
-                            if plan.thin_flip_guard_action
-                                == endgame_sweep::ThinFlipGuardAction::HardSkip
-                            {
-                                let guarded_direction = match plan.direction {
-                                    Direction::Up => "UP",
-                                    Direction::Down => "DOWN",
-                                };
-                                let guarded_token_id =
-                                    select_token_id_for_direction(&market, plan.direction.clone());
-                                log_event(
-                                    "endgame_skip_thin_flip_guard",
-                                    json!({
-                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                        "market_key": symbol_market_key.as_str(),
-                                        "asset_symbol": symbol,
-                                        "timeframe": timeframe.as_str(),
-                                        "market_open_ts": market_open_ts,
-                                        "condition_id": market.condition_id,
-                                        "token_id": guarded_token_id,
-                                        "direction": guarded_direction,
-                                        "tick_index": plan.tick_index,
-                                        "tau_seconds": plan.tau_seconds,
-                                        "thin_flip_guard_action": plan.thin_flip_guard_action.as_str(),
-                                        "thin_flip_guard_reason": plan.thin_flip_guard_reason.as_str(),
-                                        "base_mid_cb": plan.base_mid_cb,
-                                        "mid_cb": plan.mid_cb,
-                                        "distance_to_base_bps": plan.distance_to_base_bps,
-                                        "opposing_depth_usd": plan.opposing_depth_usd,
-                                        "thin_flip_near_threshold_bps": plan.thin_flip_near_threshold_bps,
-                                        "thin_flip_min_distance_required_bps": plan.thin_flip_min_distance_required_bps,
-                                        "thin_flip_impact_usd": plan.thin_flip_impact_usd,
-                                        "thin_flip_impact_ratio": plan.thin_flip_impact_ratio,
-                                        "thin_flip_impact_ratio_threshold": plan.thin_flip_impact_ratio_threshold,
-                                        "thin_flip_guard_bps": endgame_cfg_for_loop.thin_flip_guard_bps,
-                                        "thin_flip_guard_max_depth_usd": endgame_cfg_for_loop.thin_flip_guard_max_depth_usd,
-                                        "reason": "guard_action_hard_skip"
-                                    }),
-                                );
-                                processed_tick_slots.insert((
-                                    symbol_market_key.clone(),
-                                    timeframe,
-                                    market_open_ts,
-                                    plan.tick_index,
-                                ));
-                                continue;
-                            }
-                            let favored_direction = plan.direction.clone();
                             let min_entry_price = endgame_cfg_for_loop.min_entry_price;
                             let using_share_size = endgame_cfg_for_loop.uses_share_size();
                             let mut best_candidate: Option<EndgameSideCandidate> = None;
@@ -9598,7 +9672,10 @@ async fn main() -> Result<()> {
                             let mut side_eval_count = 0usize;
                             let sweep_fixed_limit_price = 0.99_f64;
                             for direction in [Direction::Up, Direction::Down] {
-                                if direction != favored_direction {
+                                if locked_direction
+                                    .as_ref()
+                                    .is_some_and(|locked| *locked != direction)
+                                {
                                     continue;
                                 }
                                 let Some(token_id) =
@@ -10268,27 +10345,6 @@ async fn main() -> Result<()> {
                                 ));
                                 continue;
                             };
-                            if selected.direction != plan.direction {
-                                log_event(
-                                    "endgame_skip_direction_mismatch",
-                                    json!({
-                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                        "timeframe": timeframe.as_str(),
-                                        "market_open_ts": market_open_ts,
-                                        "condition_id": market.condition_id,
-                                        "expected_direction": match plan.direction { Direction::Up => "UP", Direction::Down => "DOWN" },
-                                        "selected_direction": match selected.direction { Direction::Up => "UP", Direction::Down => "DOWN" },
-                                        "reason": "selected_direction_not_favored_probability_side"
-                                    }),
-                                );
-                                processed_tick_slots.insert((
-                                    symbol_market_key.clone(),
-                                    timeframe,
-                                    market_open_ts,
-                                    plan.tick_index,
-                                ));
-                                continue;
-                            }
                             let side_label = selected.side_label.clone();
                             let token_id = selected.token_id.clone();
                             let emit_key = selected.emit_key.clone();
@@ -10326,6 +10382,36 @@ async fn main() -> Result<()> {
                             let time_remaining_seconds =
                                 timeframe_seconds.saturating_sub(elapsed_seconds);
                             if time_remaining_seconds == 0 {
+                                continue;
+                            }
+                            let latest_submit_ms =
+                                market_close_ms.saturating_sub(ENDGAME_FINAL_SUBMIT_GUARD_MS);
+                            if now_ms >= latest_submit_ms {
+                                log_event(
+                                    "endgame_skip_submit_deadline_guard",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                        "market_key": symbol_market_key.as_str(),
+                                        "asset_symbol": symbol,
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "market_close_ts": market_close_ts,
+                                        "condition_id": market.condition_id.as_str(),
+                                        "token_id": token_id.as_str(),
+                                        "direction": side_label.as_str(),
+                                        "tick_index": plan.tick_index,
+                                        "now_ms": now_ms,
+                                        "latest_submit_ms": latest_submit_ms,
+                                        "guard_ms": ENDGAME_FINAL_SUBMIT_GUARD_MS,
+                                        "reason": "too_close_to_market_close"
+                                    }),
+                                );
+                                processed_tick_slots.insert((
+                                    symbol_market_key.clone(),
+                                    timeframe,
+                                    market_open_ts,
+                                    plan.tick_index,
+                                ));
                                 continue;
                             }
                             let opportunity = polymarket_arbitrage_bot::detector::BuyOpportunity {
@@ -10562,6 +10648,13 @@ async fn main() -> Result<()> {
                             endgame_tick_payload.insert(
                                 "selected_direction".to_string(),
                                 json!(side_label.as_str()),
+                            );
+                            endgame_tick_payload.insert(
+                                "favored_direction".to_string(),
+                                json!(match plan.direction {
+                                    Direction::Up => "UP",
+                                    Direction::Down => "DOWN",
+                                }),
                             );
                             endgame_tick_payload.insert(
                                 "fair_probability".to_string(),
@@ -11035,6 +11128,16 @@ async fn main() -> Result<()> {
                 endgame_alpha_policy_missing_periods.retain(|(_, timeframe, market_open_ts)| {
                     market_open_ts.saturating_add(timeframe.duration_seconds() * 2) >= now_ts
                 });
+                endgame_base_anchor_retry_after_ms.retain(
+                    |(_, timeframe, market_open_ts, _), _| {
+                        market_open_ts.saturating_add(timeframe.duration_seconds() * 2) >= now_ts
+                    },
+                );
+                endgame_v1_open_spot_by_period_proxy.retain(
+                    |(_, timeframe, market_open_ts, _), _| {
+                        market_open_ts.saturating_add(timeframe.duration_seconds() * 2) >= now_ts
+                    },
+                );
                 let default_wake_ms = now_ms.saturating_add(safety_poll_ms);
                 let target_wake_ms = next_tick_deadline_ms
                     .map(|deadline_ms| deadline_ms.min(default_wake_ms))
@@ -28888,6 +28991,34 @@ struct EndgameV1SpotSample {
     price: f64,
 }
 
+async fn fetch_endgame_v1_period_open_sample(
+    api: &PolymarketApi,
+    symbol: &str,
+    timeframe: Timeframe,
+    market_open_ts: i64,
+    proxy_kind: EndgameV1ProxyKind,
+) -> Result<Option<EndgameV1SpotSample>> {
+    let Ok(period_open_ts) = u64::try_from(market_open_ts) else {
+        return Ok(None);
+    };
+    let price = match proxy_kind {
+        EndgameV1ProxyKind::Coinbase => {
+            api.fetch_coinbase_period_open_price(symbol, timeframe.as_str(), period_open_ts)
+                .await?
+        }
+        EndgameV1ProxyKind::Binance => {
+            api.fetch_binance_period_open_price(symbol, timeframe.as_str(), period_open_ts)
+                .await?
+        }
+    };
+    Ok(price
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .map(|price| EndgameV1SpotSample {
+            source_ts_ms: market_open_ts.saturating_mul(1_000),
+            price,
+        }))
+}
+
 #[derive(Debug, Clone)]
 struct EndgameV1ProxyDirectionGuardDecision {
     skip: bool,
@@ -29552,6 +29683,38 @@ mod tests {
         );
         assert!(guard.skip);
         assert_eq!(guard.reason, "proxy_direction_mismatch");
+    }
+
+    #[test]
+    fn endgame_v1_proxy_direction_guard_allows_agreed_down_move() {
+        let coinbase_open = Some(EndgameV1SpotSample {
+            source_ts_ms: 1_000,
+            price: 100.0,
+        });
+        let binance_open = Some(EndgameV1SpotSample {
+            source_ts_ms: 1_000,
+            price: 100.0,
+        });
+        let coinbase_live = Some(EndgameV1SpotSample {
+            source_ts_ms: 2_000,
+            price: 99.9,
+        });
+        let binance_live = Some(EndgameV1SpotSample {
+            source_ts_ms: 2_000,
+            price: 99.8,
+        });
+
+        let guard = evaluate_endgame_v1_proxy_direction_guard(
+            coinbase_open,
+            coinbase_live,
+            binance_open,
+            binance_live,
+        );
+
+        assert!(!guard.skip);
+        assert_eq!(guard.reason, "proxy_direction_agrees");
+        assert!(guard.coinbase_move_bps.expect("coinbase move") < 0.0);
+        assert!(guard.binance_move_bps.expect("binance move") < 0.0);
     }
 
     #[test]

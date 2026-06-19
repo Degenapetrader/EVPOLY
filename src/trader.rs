@@ -46,6 +46,7 @@ pub const STRATEGY_ID_MANUAL_PREMARKET_V1: &str = "manual_premarket_v1";
 pub const STRATEGY_ID_MANUAL_PREMARKET_TAKER_V1: &str = "manual_premarket_taker_v1";
 pub const STRATEGY_ID_MANUAL_CHASE_LIMIT_V1: &str = "manual_chase_limit_v1";
 pub const STRATEGY_ID_MANUAL_CHASE_LIMIT_TAKER_V1: &str = "manual_chase_limit_taker_v1";
+const ENDGAME_FAST_SUBMIT_DEADLINE_GUARD_MS: i64 = 250;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EvsnipeOrderIntent {
@@ -5890,6 +5891,48 @@ impl Trader {
                 None,
                 None,
                 reason.clone(),
+            );
+            return Err(anyhow!(reason));
+        }
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let market_close_ms = intent.market_close_ts.saturating_mul(1_000);
+        let latest_submit_ms =
+            market_close_ms.saturating_sub(ENDGAME_FAST_SUBMIT_DEADLINE_GUARD_MS);
+        if market_close_ms <= 0 || now_ms >= latest_submit_ms {
+            let reason = format!(
+                "endgame_submit_deadline_guard: now_ms={} market_close_ms={} guard_ms={}",
+                now_ms, market_close_ms, ENDGAME_FAST_SUBMIT_DEADLINE_GUARD_MS
+            );
+            self.record_entry_precheck_failure(
+                strategy_id,
+                source_timeframe.as_str(),
+                entry_mode,
+                opportunity,
+                Some(intent.limit_price),
+                Some(intent.units),
+                Some(intent.notional_usd),
+                reason.clone(),
+            );
+            log_event(
+                "endgame_submit_deadline_guard",
+                json!({
+                    "strategy_id": strategy_id,
+                    "request_id": request_id.as_deref(),
+                    "symbol": intent.symbol.as_str(),
+                    "timeframe": intent.timeframe.as_str(),
+                    "condition_id": intent.condition_id.as_str(),
+                    "token_id": intent.token_id.as_str(),
+                    "direction": intent.direction.as_str(),
+                    "market_open_ts": intent.market_open_ts,
+                    "market_close_ts": intent.market_close_ts,
+                    "tick_index": intent.tick_index,
+                    "now_ms": now_ms,
+                    "market_close_ms": market_close_ms,
+                    "latest_submit_ms": latest_submit_ms,
+                    "guard_ms": ENDGAME_FAST_SUBMIT_DEADLINE_GUARD_MS,
+                    "reason": "too_close_to_market_close"
+                }),
             );
             return Err(anyhow!(reason));
         }

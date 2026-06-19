@@ -505,10 +505,14 @@ pub fn evaluate_dvol_fair(
     );
     let edge_bps_at_price =
         fair_probability.map(|fair| (fair - input.submit_price - fee_at_submit) * 10_000.0);
-    let dvol_pass = !stale
-        && dvol_required_bps
-            .map(|required| positive_distance_bps + 1e-9 >= required)
-            .unwrap_or(false);
+    let distance_pass = dvol_required_bps
+        .map(|required| positive_distance_bps + 1e-9 >= required)
+        .unwrap_or(false);
+    let edge_floor_bps = (input.edge_floor_prob.clamp(0.0, 1.0) * 10_000.0).max(0.0);
+    let edge_pass = edge_bps_at_price
+        .map(|edge| edge + 1e-9 >= edge_floor_bps)
+        .unwrap_or(false);
+    let dvol_pass = !stale && distance_pass && edge_pass;
     let status = if stale {
         if dvol_source_age_ms > cfg.stale_ms {
             "source_stale"
@@ -565,6 +569,9 @@ pub fn evaluate_dvol_fair(
             "fair_probability": fair_probability,
             "submit_fee_rate": fee_at_submit,
             "edge_bps_at_submit_price": edge_bps_at_price,
+            "edge_floor_bps": edge_floor_bps,
+            "distance_pass": distance_pass,
+            "edge_pass": edge_pass,
             "dvol_pass": dvol_pass,
             "decision_path": "book99_dvol_port"
         }),
@@ -1161,6 +1168,52 @@ mod tests {
             decision.fair_probability.unwrap_or_default() > 0.92,
             "{:?}",
             decision.payload
+        );
+    }
+
+    #[test]
+    fn dvol_pass_requires_edge_at_probed_polymarket_price() {
+        let cfg = EndgameDvolConfig::from_env();
+        let cache: EndgameDvolCache = Arc::new(StdRwLock::new(HashMap::from([(
+            "ETH".to_string(),
+            EndgameDvolSnapshot {
+                dvol_pct: 60.0,
+                source_ts_ms: 1_000,
+                fetched_ms: 1_000,
+            },
+        )])));
+        let rv_cache = new_rv_multiplier_cache();
+
+        let decision = evaluate_dvol_fair(
+            &cfg,
+            &cache,
+            &rv_cache,
+            EndgameDvolInput {
+                symbol: "ETH".to_string(),
+                timeframe: Timeframe::M5,
+                direction: Direction::Up,
+                tau_sec: 1,
+                base_mid: 100.0,
+                current_mid: 99.99,
+                submit_price: 0.99,
+                required_probability: 0.99,
+                cex_depth_multiplier: 1.0,
+                uncertainty_penalty: 0.0,
+                buffer_prob: 0.0,
+                edge_floor_prob: 12.0 / 10_000.0,
+                bias_multiplier: 1.0,
+                fee_model: PolymarketFeeModel::default(),
+            },
+            1_500,
+        );
+
+        assert!(!decision.pass, "{:?}", decision.payload);
+        assert_eq!(
+            decision
+                .payload
+                .get("edge_pass")
+                .and_then(serde_json::Value::as_bool),
+            Some(false)
         );
     }
 }

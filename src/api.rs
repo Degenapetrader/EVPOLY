@@ -4096,8 +4096,20 @@ impl PolymarketApi {
 
         let rows: Vec<Vec<Value>> = serde_json::from_str(&body)
             .with_context(|| format!("coinbase candles parse failed body={}", body))?;
+        Ok(Self::coinbase_open_close_from_candle_rows(
+            rows,
+            period_open_ts as i64,
+            period_close_ts as i64,
+        ))
+    }
+
+    fn coinbase_open_close_from_candle_rows(
+        rows: Vec<Vec<Value>>,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Option<(f64, f64)> {
         if rows.is_empty() {
-            return Ok(None);
+            return None;
         }
 
         let mut candles: Vec<(i64, f64, f64)> = Vec::new(); // (open_ts, open, close)
@@ -4115,23 +4127,35 @@ impl PolymarketApi {
             }
         }
         if candles.is_empty() {
-            return Ok(None);
+            return None;
         }
         candles.sort_by_key(|row| row.0);
 
-        let start = period_open_ts as i64;
-        let end = period_close_ts as i64;
         let mut in_window = candles
             .into_iter()
-            .filter(|(ts, _, _)| *ts >= start && *ts < end)
+            .filter(|(ts, _, _)| *ts >= start_ts && *ts < end_ts)
             .collect::<Vec<_>>();
         if in_window.is_empty() {
-            return Ok(None);
+            return None;
         }
         in_window.sort_by_key(|row| row.0);
-        let open_px = in_window.first().map(|row| row.1);
+        let open_px = in_window
+            .iter()
+            .find(|(ts, _, _)| *ts == start_ts)
+            .map(|row| row.1);
         let close_px = in_window.last().map(|row| row.2);
-        Ok(open_px.zip(close_px))
+        open_px.zip(close_px)
+    }
+
+    fn binance_interval_for_proxy_resolution(timeframe: &str) -> Option<(&'static str, u64)> {
+        match timeframe.trim().to_ascii_lowercase().as_str() {
+            "5m" => Some(("1s", 1)),
+            "15m" => Some(("1s", 1)),
+            "1h" => Some(("1m", 60)),
+            "4h" => Some(("1m", 60)),
+            "1d" | "d1" | "24h" | "daily" => Some(("1h", 3_600)),
+            _ => None,
+        }
     }
 
     async fn fetch_binance_open_close(
@@ -4141,17 +4165,20 @@ impl PolymarketApi {
         period_open_ts: u64,
         period_close_ts: u64,
     ) -> Result<Option<(f64, f64)>> {
-        let interval = match timeframe.trim().to_ascii_lowercase().as_str() {
-            "1h" => "1h",
-            "1d" | "d1" | "24h" | "daily" => "1d",
-            _ => return Ok(None),
+        let Some((interval, interval_secs)) =
+            Self::binance_interval_for_proxy_resolution(timeframe)
+        else {
+            return Ok(None);
         };
         let pair = format!("{}USDT", symbol.trim().to_ascii_uppercase());
         let url = "https://api.binance.com/api/v3/klines";
         let start_ms = (period_open_ts as i64).saturating_mul(1_000);
-        let end_ms = (period_close_ts as i64)
-            .saturating_mul(1_000)
-            .saturating_add(1_000);
+        let end_ms = (period_close_ts as i64).saturating_mul(1_000);
+        let period_secs = period_close_ts.saturating_sub(period_open_ts).max(1);
+        let limit = period_secs
+            .saturating_div(interval_secs.max(1))
+            .saturating_add(2)
+            .clamp(2, 1_000);
 
         let response = self
             .client
@@ -4161,7 +4188,7 @@ impl PolymarketApi {
                 ("interval", interval.to_string()),
                 ("startTime", start_ms.to_string()),
                 ("endTime", end_ms.to_string()),
-                ("limit", "3".to_string()),
+                ("limit", limit.to_string()),
             ])
             .send()
             .await
@@ -4182,8 +4209,18 @@ impl PolymarketApi {
 
         let rows: Vec<Vec<Value>> = serde_json::from_str(&body)
             .with_context(|| format!("binance klines parse failed body={}", body))?;
+        Ok(Self::binance_open_close_from_kline_rows(
+            rows, start_ms, end_ms,
+        ))
+    }
+
+    fn binance_open_close_from_kline_rows(
+        rows: Vec<Vec<Value>>,
+        start_ms: i64,
+        end_ms: i64,
+    ) -> Option<(f64, f64)> {
         if rows.is_empty() {
-            return Ok(None);
+            return None;
         }
 
         let mut parsed: Vec<(i64, f64, f64)> = Vec::new(); // (open_ms, open, close)
@@ -4207,10 +4244,23 @@ impl PolymarketApi {
             }
         }
         if parsed.is_empty() {
-            return Ok(None);
+            return None;
         }
         parsed.sort_by_key(|row| row.0);
-        Ok(parsed.first().map(|row| (row.1, row.2)))
+        let mut in_window = parsed
+            .into_iter()
+            .filter(|(open_ms, _, _)| *open_ms >= start_ms && *open_ms < end_ms)
+            .collect::<Vec<_>>();
+        if in_window.is_empty() {
+            return None;
+        }
+        in_window.sort_by_key(|row| row.0);
+        let open_px = in_window
+            .iter()
+            .find(|(open_ms, _, _)| *open_ms == start_ms)
+            .map(|row| row.1);
+        let close_px = in_window.last().map(|row| row.2);
+        open_px.zip(close_px)
     }
 
     pub async fn fetch_coinbase_period_open_price(
@@ -9288,6 +9338,91 @@ mod tests {
         let (best_bid, best_ask) = PolymarketApi::best_bid_ask_from_orderbook(&orderbook);
         assert_eq!(best_bid, Some(rust_decimal::Decimal::new(40, 2)));
         assert_eq!(best_ask, Some(rust_decimal::Decimal::new(55, 2)));
+    }
+
+    #[test]
+    fn binance_proxy_resolution_uses_short_interval_for_endgame_windows() {
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("5m"),
+            Some(("1s", 1))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("15m"),
+            Some(("1s", 1))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("1h"),
+            Some(("1m", 60))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("4h"),
+            Some(("1m", 60))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("1d"),
+            Some(("1h", 3_600))
+        );
+    }
+
+    #[test]
+    fn binance_open_close_excludes_next_period_boundary_candle() {
+        let rows = vec![
+            vec![
+                serde_json::json!(1_000_i64),
+                serde_json::json!("100.0"),
+                Value::Null,
+                Value::Null,
+                serde_json::json!("101.0"),
+            ],
+            vec![
+                serde_json::json!(2_000_i64),
+                serde_json::json!("101.0"),
+                Value::Null,
+                Value::Null,
+                serde_json::json!("102.0"),
+            ],
+            vec![
+                serde_json::json!(3_000_i64),
+                serde_json::json!("999.0"),
+                Value::Null,
+                Value::Null,
+                serde_json::json!("999.0"),
+            ],
+        ];
+
+        let open_close = PolymarketApi::binance_open_close_from_kline_rows(rows, 1_000, 3_000);
+
+        assert_eq!(open_close, Some((100.0, 102.0)));
+    }
+
+    #[test]
+    fn binance_open_close_requires_exact_open_candle() {
+        let rows = vec![vec![
+            serde_json::json!(2_000_i64),
+            serde_json::json!("101.0"),
+            Value::Null,
+            Value::Null,
+            serde_json::json!("102.0"),
+        ]];
+
+        let open_close = PolymarketApi::binance_open_close_from_kline_rows(rows, 1_000, 3_000);
+
+        assert_eq!(open_close, None);
+    }
+
+    #[test]
+    fn coinbase_open_close_requires_exact_open_candle() {
+        let rows = vec![vec![
+            serde_json::json!(2_000_i64),
+            Value::Null,
+            Value::Null,
+            serde_json::json!(101.0),
+            serde_json::json!(102.0),
+        ]];
+
+        let open_close = PolymarketApi::coinbase_open_close_from_candle_rows(rows, 1_000, 3_000);
+
+        assert_eq!(open_close, None);
     }
 
     #[test]

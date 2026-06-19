@@ -9,6 +9,10 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-06-19
+- `endgame_sweep_v1`: upgraded the local Endgame fast path with live CEX-depth size reduction, bounded quote rescue, retryable readiness semantics for registry/constraints/fee/quote misses, Endgame-specific order-submit lane/timeout handling, nonblocking submit-outcome budget accounting, and fee/collateral prewarm defaults (`src/endgame_cex_depth.rs`, `src/endgame_quote_cache.rs`, `src/main.rs`, `src/api.rs`, `src/trader.rs`, `.env.example`, `.env.full.example`).
+  - Applies to Endgame V1 across enabled symbols/timeframes. CEX-depth is live by default and only reduces size, never increases it; clear submit failures no longer reserve period budget, while submitted/unknown outcomes do.
+
 ### 2026-06-17
 - `evcurve_v1` and remote alpha integrations: hardened remote decision boundaries by requiring remote alpha and relayer-signer URLs to use HTTPS unless `EVPOLY_ALLOW_INSECURE_REMOTE_URLS=true`, and by rejecting malformed remote EVcurve decision payloads with non-finite or out-of-range price/probability fields (`src/main.rs`, `src/api.rs`, `.env.example`, `.env.full.example`).
   - Applies only to remote alpha / relayer-signer configuration and remote EVcurve payload acceptance. Local EVcurve decision logic, strategy thresholds, and order sizing are unchanged.

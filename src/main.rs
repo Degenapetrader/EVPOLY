@@ -35,6 +35,9 @@ use polymarket_arbitrage_bot::coinbase_ws::{
     self, new_shared_coinbase_book_state, new_shared_coinbase_trade_notify, CoinbaseWsConfig,
 };
 use polymarket_arbitrage_bot::detector::PriceDetector;
+use polymarket_arbitrage_bot::endgame_cex_depth::{
+    self, EndgameCexDepthCache, EndgameCexDepthConfig, EndgameCexDepthDecision,
+};
 use polymarket_arbitrage_bot::endgame_quote_cache::{EndgameQuoteCache, EndgameQuoteSource};
 use polymarket_arbitrage_bot::endgame_registry::EndgameRegistry;
 use polymarket_arbitrage_bot::endgame_sweep;
@@ -285,6 +288,7 @@ enum EvsnipeSubmitOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EndgameSubmitOutcome {
     Submitted,
+    Unknown,
     Failed,
 }
 
@@ -8267,7 +8271,14 @@ async fn main() -> Result<()> {
                                     err_text
                                 );
                             }
-                            endgame_submit_outcome_guard.send(EndgameSubmitOutcome::Failed);
+                            if err_text
+                                .to_ascii_lowercase()
+                                .contains("endgame_submit_unknown_timeout")
+                            {
+                                endgame_submit_outcome_guard.send(EndgameSubmitOutcome::Unknown);
+                            } else {
+                                endgame_submit_outcome_guard.send(EndgameSubmitOutcome::Failed);
+                            }
                             request.timing.worker_done_ts_ms =
                                 Some(chrono::Utc::now().timestamp_millis());
                             log_arbiter_request_timing(
@@ -9050,6 +9061,13 @@ async fn main() -> Result<()> {
         let enqueue_dedupe_for_endgame = enqueue_dedupe_for_endgame.clone();
         let endgame_registry = EndgameRegistry::new();
         let endgame_quote_cache = EndgameQuoteCache::new();
+        let endgame_cex_depth_cache = EndgameCexDepthCache::new();
+        let endgame_cex_depth_cfg = EndgameCexDepthConfig::from_env();
+        endgame_cex_depth::spawn_cex_depth_hub(
+            endgame_cex_depth_cache.clone(),
+            endgame_cex_depth_cfg.clone(),
+            endgame_symbols.clone(),
+        );
         if env_bool_named("EVPOLY_ENDGAME_PM_QUOTE_CACHE_ENABLE", true) {
             polymarket_ws_state.attach_endgame_quote_cache(endgame_quote_cache.clone());
         }
@@ -9067,6 +9085,8 @@ async fn main() -> Result<()> {
         );
         let endgame_registry_for_loop = endgame_registry.clone();
         let endgame_quote_cache_for_loop = endgame_quote_cache.clone();
+        let endgame_cex_depth_cache_for_loop = endgame_cex_depth_cache.clone();
+        let endgame_cex_depth_cfg_for_loop = endgame_cex_depth_cfg.clone();
         tokio::spawn(async move {
             let safety_poll_ms = i64::try_from(endgame_cfg_for_loop.safety_poll_ms)
                 .unwrap_or(500)
@@ -9112,6 +9132,34 @@ async fn main() -> Result<()> {
                 (String, Timeframe, i64, EndgameV1ProxyKind),
                 EndgameV1SpotSample,
             > = std::collections::HashMap::new();
+            #[derive(Debug)]
+            struct EndgameSubmitOutcomeEvent {
+                logical_key: EntryLogicalKey,
+                symbol_market_key: String,
+                asset_symbol: String,
+                timeframe: Timeframe,
+                market_open_ts: i64,
+                tick_index: u32,
+                request_id: String,
+                emit_key: (String, Timeframe, i64, String, String, u32),
+                period_budget_key: (String, Timeframe, i64),
+                direction: Direction,
+                effective_size_usd: f64,
+                outcome: EndgameSubmitOutcome,
+                outcome_wait_ms: i64,
+                alpha_tick_offsets_ms: Vec<u64>,
+                alpha_submit_proxy_max_age_ms: i64,
+                alpha_source: String,
+                alpha_reason: Option<String>,
+            }
+            let (endgame_submit_outcome_tx, mut endgame_submit_outcome_rx) =
+                tokio::sync::mpsc::unbounded_channel::<EndgameSubmitOutcomeEvent>();
+            let endgame_quote_rescue_enabled =
+                env_bool_named("EVPOLY_ENDGAME_QUOTE_RESCUE_ENABLE", true);
+            let endgame_quote_rescue_timeout_ms =
+                env_i64_clamped("EVPOLY_ENDGAME_QUOTE_RESCUE_TIMEOUT_MS", 120, 10, 2_000);
+            let endgame_quote_rescue_final_guard_ms =
+                env_i64_clamped("EVPOLY_ENDGAME_QUOTE_RESCUE_FINAL_GUARD_MS", 250, 25, 2_000);
             #[derive(Debug, Clone)]
             struct EndgameSideCandidate {
                 direction: Direction,
@@ -9126,12 +9174,15 @@ async fn main() -> Result<()> {
                 divergence_target_notional_usd: f64,
                 divergence_reduced: bool,
                 divergence: Option<f64>,
+                cex_depth_decision: EndgameCexDepthDecision,
                 poly_mid_at_intent: Option<f64>,
                 best_bid: Option<f64>,
                 best_ask: Option<f64>,
                 asks_within_qmax: usize,
                 ask_level_count: usize,
                 quote_updated_ms: i64,
+                quote_ws_updated_ms: Option<i64>,
+                quote_rest_updated_ms: Option<i64>,
                 quote_source: String,
                 min_order_size_usd: f64,
                 min_tick_size: f64,
@@ -9140,6 +9191,52 @@ async fn main() -> Result<()> {
             loop {
                 let now_ms = chrono::Utc::now().timestamp_millis();
                 let now_ts = now_ms.saturating_div(1_000);
+                while let Ok(event) = endgame_submit_outcome_rx.try_recv() {
+                    let submit_status = match event.outcome {
+                        EndgameSubmitOutcome::Submitted => "submitted",
+                        EndgameSubmitOutcome::Unknown => "submit_unknown",
+                        EndgameSubmitOutcome::Failed => "submit_failed",
+                    };
+                    if matches!(
+                        event.outcome,
+                        EndgameSubmitOutcome::Submitted | EndgameSubmitOutcome::Unknown
+                    ) {
+                        emitted_ticks.insert(event.emit_key);
+                        processed_tick_slots.insert((
+                            event.symbol_market_key.clone(),
+                            event.timeframe,
+                            event.market_open_ts,
+                            event.tick_index,
+                        ));
+                        period_direction_locks
+                            .insert(event.period_budget_key.clone(), event.direction);
+                        submitted_notional_by_period
+                            .entry(event.period_budget_key)
+                            .and_modify(|v| *v += event.effective_size_usd)
+                            .or_insert(event.effective_size_usd);
+                    } else {
+                        forget_enqueue_dedupe_key(&enqueue_dedupe_for_endgame, &event.logical_key)
+                            .await;
+                    }
+                    log_event(
+                        "endgame_alpha_tick_executed",
+                        json!({
+                            "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                            "asset_symbol": event.asset_symbol.as_str(),
+                            "market_key": event.symbol_market_key.as_str(),
+                            "timeframe": event.timeframe.as_str(),
+                            "market_open_ts": event.market_open_ts,
+                            "tick_index": event.tick_index,
+                            "request_id": event.request_id.as_str(),
+                            "status": submit_status,
+                            "submit_outcome_wait_ms": event.outcome_wait_ms,
+                            "alpha_tick_offsets_ms": event.alpha_tick_offsets_ms,
+                            "alpha_submit_proxy_max_age_ms": event.alpha_submit_proxy_max_age_ms,
+                            "alpha_source": event.alpha_source.as_str(),
+                            "alpha_reason": event.alpha_reason.as_deref()
+                        }),
+                    );
+                }
                 let mut next_tick_deadline_ms: Option<i64> = None;
                 let signal_snapshot = {
                     let guard = signal_state_for_endgame.read().await;
@@ -9410,12 +9507,6 @@ async fn main() -> Result<()> {
                                     "reason": "registry_not_prewarmed"
                                 }),
                             );
-                            processed_tick_slots.insert((
-                                symbol_market_key.clone(),
-                                timeframe,
-                                market_open_ts,
-                                due_tick_index,
-                            ));
                             continue;
                         };
                         let market = market_ctx.market.clone();
@@ -9526,6 +9617,7 @@ async fn main() -> Result<()> {
                         let min_entry_price = endgame_cfg_for_loop.min_entry_price;
                         let using_share_size = endgame_cfg_for_loop.uses_share_size();
                         let mut best_candidate: Option<EndgameSideCandidate> = None;
+                        let mut retryable_readiness_deferred = false;
                         let mut side_eval_count = 0usize;
                         let sweep_fixed_limit_price = 0.99_f64;
                         let (sweep_poly_price_min, sweep_poly_price_max) =
@@ -9583,6 +9675,7 @@ async fn main() -> Result<()> {
                                         <= endgame_constraints_max_age_ms
                                 })
                             else {
+                                retryable_readiness_deferred = true;
                                 log_event(
                                     "endgame_market_constraints_unavailable",
                                     json!({
@@ -9605,15 +9698,26 @@ async fn main() -> Result<()> {
                                 f64::try_from(constraints_ctx.snapshot.minimum_tick_size)
                                     .unwrap_or(0.01)
                                     .clamp(0.001, 0.10);
-                            let endgame_fee_model = match api_for_endgame
-                                .get_clob_fee_model(market.condition_id.as_str())
-                                .await
-                            {
+                            let fee_model_result =
+                                if env_bool_named("EVPOLY_ENDGAME_FEE_PREWARM_ENABLE", true) {
+                                    api_for_endgame
+                                        .cached_clob_fee_model(market.condition_id.as_str())
+                                        .await
+                                        .ok_or_else(|| {
+                                            anyhow::anyhow!("prewarmed fee model missing")
+                                        })
+                                } else {
+                                    api_for_endgame
+                                        .get_clob_fee_model(market.condition_id.as_str())
+                                        .await
+                                };
+                            let endgame_fee_model = match fee_model_result {
                                 Ok(model) => endgame_sweep::PolymarketFeeModel::new(
                                     model.rate,
                                     model.exponent,
                                 ),
                                 Err(e) => {
+                                    retryable_readiness_deferred = true;
                                     log_event(
                                         "endgame_fee_model_unavailable",
                                         json!({
@@ -9635,6 +9739,77 @@ async fn main() -> Result<()> {
                                 .filter(|quote| {
                                     quote.valid && quote.age_ms(now_ms) <= endgame_quote_max_age_ms
                                 });
+                            let rescued_quote = if cached_quote.is_none()
+                                && endgame_quote_rescue_enabled
+                            {
+                                let tau_ms = market_close_ms.saturating_sub(now_ms).max(0);
+                                if tau_ms > endgame_quote_rescue_final_guard_ms {
+                                    match timeout(
+                                        Duration::from_millis(
+                                            endgame_quote_rescue_timeout_ms as u64,
+                                        ),
+                                        api_for_endgame
+                                            .get_orderbook_rest_snapshot(token_id.as_str()),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(snapshot)) => {
+                                            let source_ts_ms = snapshot
+                                                .source_ts_ms
+                                                .unwrap_or(snapshot.fetched_at_ms);
+                                            endgame_quote_cache_for_loop
+                                                .upsert_from_orderbook(
+                                                    token_id.as_str(),
+                                                    &snapshot.orderbook,
+                                                    source_ts_ms,
+                                                    EndgameQuoteSource::RestExactBook,
+                                                )
+                                                .filter(|quote| {
+                                                    quote.valid
+                                                        && quote.age_ms(now_ms)
+                                                            <= endgame_quote_max_age_ms
+                                                })
+                                        }
+                                        Ok(Err(error)) => {
+                                            log_event(
+                                                "endgame_quote_rescue_failed",
+                                                json!({
+                                                    "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                                    "timeframe": timeframe.as_str(),
+                                                    "market_open_ts": market_open_ts,
+                                                    "condition_id": market.condition_id.as_str(),
+                                                    "token_id": token_id.as_str(),
+                                                    "direction": side_label.as_str(),
+                                                    "timeout_ms": endgame_quote_rescue_timeout_ms,
+                                                    "error": error.to_string()
+                                                }),
+                                            );
+                                            None
+                                        }
+                                        Err(_) => {
+                                            log_event(
+                                                "endgame_quote_rescue_failed",
+                                                json!({
+                                                    "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                                    "timeframe": timeframe.as_str(),
+                                                    "market_open_ts": market_open_ts,
+                                                    "condition_id": market.condition_id.as_str(),
+                                                    "token_id": token_id.as_str(),
+                                                    "direction": side_label.as_str(),
+                                                    "timeout_ms": endgame_quote_rescue_timeout_ms,
+                                                    "error": "timeout"
+                                                }),
+                                            );
+                                            None
+                                        }
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            let cached_quote = cached_quote.or(rescued_quote);
                             let (
                                 ask_levels,
                                 best_bid,
@@ -9643,6 +9818,8 @@ async fn main() -> Result<()> {
                                 _cached_asks_within_limit,
                                 _cached_ask_level_count,
                                 quote_updated_ms,
+                                quote_ws_updated_ms,
+                                quote_rest_updated_ms,
                                 quote_source,
                             ) = if let Some(quote) = cached_quote {
                                 (
@@ -9653,9 +9830,12 @@ async fn main() -> Result<()> {
                                     quote.asks_within_limit,
                                     quote.ask_level_count,
                                     quote.updated_ms,
+                                    quote.ws_updated_ms,
+                                    quote.rest_updated_ms,
                                     quote.source.as_str().to_string(),
                                 )
                             } else {
+                                retryable_readiness_deferred = true;
                                 log_event(
                                     "endgame_quote_missing_or_stale",
                                     json!({
@@ -9666,21 +9846,16 @@ async fn main() -> Result<()> {
                                         "token_id": token_id.as_str(),
                                         "direction": side_label.as_str(),
                                         "quote_max_age_ms": endgame_quote_max_age_ms,
-                                        "hot_rest_fallback": false
+                                        "hot_rest_fallback": endgame_quote_rescue_enabled
                                     }),
                                 );
-                                processed_tick_slots.insert((
-                                    symbol_market_key.clone(),
-                                    timeframe,
-                                    market_open_ts,
-                                    due_tick_index,
-                                ));
                                 continue;
                             };
                             let fair_probability = pricing.fair_probability;
                             let Some(poly_mid_at_intent_value) =
                                 poly_mid_at_intent.filter(|v| v.is_finite())
                             else {
+                                retryable_readiness_deferred = true;
                                 log_event(
                                     "endgame_skip_invalid_fair_or_poly",
                                     json!({
@@ -9764,7 +9939,7 @@ async fn main() -> Result<()> {
                             let divergence_target_notional_usd = target_notional_usd;
                             let divergence_reduced = false;
                             let divergence: Option<f64> = None;
-                            let sizing = if using_share_size {
+                            let mut sizing = if using_share_size {
                                 let fixed_limit_price = sweep_fixed_limit_price.clamp(0.01, 0.99);
                                 let target_shares = target_notional_usd / fixed_limit_price;
                                 if !target_shares.is_finite() || target_shares <= 0.0 {
@@ -9854,6 +10029,25 @@ async fn main() -> Result<()> {
                                     edge_bps_at_vwap: fallback_edge_bps,
                                 }
                             };
+                            let tau_ms = market_close_ms.saturating_sub(now_ms).max(0);
+                            let cex_depth_decision = endgame_cex_depth::evaluate_cex_depth(
+                                &endgame_cex_depth_cfg_for_loop,
+                                &endgame_cex_depth_cache_for_loop,
+                                symbol.as_str(),
+                                direction.clone(),
+                                plan.base_mid_cb,
+                                tau_ms,
+                                now_ms,
+                            );
+                            let cex_depth_multiplier =
+                                cex_depth_decision.multiplier.clamp(0.0, 1.0);
+                            if cex_depth_decision.enabled
+                                && cex_depth_multiplier < 1.0
+                                && cex_depth_multiplier.is_finite()
+                            {
+                                sizing.shares *= cex_depth_multiplier;
+                                sizing.notional_usd *= cex_depth_multiplier;
+                            }
                             let effective_size_usd = sizing.notional_usd.min(period_remaining_usd);
                             if effective_size_usd <= 0.0 {
                                 continue;
@@ -9919,12 +10113,15 @@ async fn main() -> Result<()> {
                                 divergence_target_notional_usd,
                                 divergence_reduced,
                                 divergence,
+                                cex_depth_decision,
                                 poly_mid_at_intent,
                                 best_bid,
                                 best_ask,
                                 asks_within_qmax,
                                 ask_level_count: ask_levels.len(),
                                 quote_updated_ms,
+                                quote_ws_updated_ms,
+                                quote_rest_updated_ms,
                                 quote_source,
                                 min_order_size_usd,
                                 min_tick_size,
@@ -9945,6 +10142,22 @@ async fn main() -> Result<()> {
                             }
                         }
                         let Some(selected) = best_candidate else {
+                            if retryable_readiness_deferred {
+                                log_event(
+                                    "endgame_retryable_readiness_deferred",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                        "market_key": symbol_market_key.as_str(),
+                                        "asset_symbol": symbol,
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "tick_index": plan.tick_index,
+                                        "tau_seconds": plan.tau_seconds,
+                                        "reason": "retryable_readiness_missing"
+                                    }),
+                                );
+                                continue;
+                            }
                             processed_tick_slots.insert((
                                 symbol_market_key.clone(),
                                 timeframe,
@@ -9986,10 +10199,13 @@ async fn main() -> Result<()> {
                             selected.divergence_target_notional_usd;
                         let divergence_reduced = selected.divergence_reduced;
                         let divergence = selected.divergence;
+                        let cex_depth_decision = selected.cex_depth_decision.clone();
                         let poly_mid_at_intent = selected.poly_mid_at_intent;
                         let min_order_size_usd = selected.min_order_size_usd;
                         let min_tick_size = selected.min_tick_size;
                         let quote_updated_ms = selected.quote_updated_ms;
+                        let quote_ws_updated_ms = selected.quote_ws_updated_ms;
+                        let quote_rest_updated_ms = selected.quote_rest_updated_ms;
                         let quote_source = selected.quote_source.clone();
                         let selected_impulse_id = format!(
                             "endgame:{}:{}:{}:{}:tick{}",
@@ -10050,6 +10266,10 @@ async fn main() -> Result<()> {
                             token_id,
                             plan.tick_index
                         );
+                        let (endgame_submit_tx, endgame_submit_rx) =
+                            tokio::sync::oneshot::channel();
+                        let endgame_submit_outcome =
+                            Some(Arc::new(StdMutex::new(Some(endgame_submit_tx))));
                         let endgame_intent = EndgameOrderIntent {
                             request_id: request_id.clone(),
                             strategy_id: plan.strategy_id.clone(),
@@ -10097,7 +10317,7 @@ async fn main() -> Result<()> {
                             place_sell_orders: false,
                             source_timeframe: Some(timeframe.as_str().to_string()),
                             endgame_intent: Some(endgame_intent),
-                            endgame_submit_outcome: None,
+                            endgame_submit_outcome,
                             evsnipe_intent: None,
                             evsnipe_submit_outcome: None,
                             timing: ArbiterExecutionTiming::new_decision(
@@ -10282,6 +10502,38 @@ async fn main() -> Result<()> {
                         endgame_tick_payload
                             .insert("divergence_reduced".to_string(), json!(divergence_reduced));
                         endgame_tick_payload.insert("divergence".to_string(), json!(divergence));
+                        endgame_tick_payload.insert(
+                            "cex_depth_enabled".to_string(),
+                            json!(cex_depth_decision.enabled),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_multiplier".to_string(),
+                            json!(cex_depth_decision.multiplier),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_reason".to_string(),
+                            json!(cex_depth_decision.reason.as_str()),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_fail_open".to_string(),
+                            json!(cex_depth_decision.fail_open),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_tick_band_ms".to_string(),
+                            json!(cex_depth_decision.tick_band_ms),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_snapshot_age_ms".to_string(),
+                            json!(cex_depth_decision.snapshot_age_ms),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_cost_to_boundary_usd".to_string(),
+                            json!(cex_depth_decision.cost_to_boundary_usd),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_threshold_usd".to_string(),
+                            json!(cex_depth_decision.threshold_usd),
+                        );
                         endgame_tick_payload
                             .insert("poly_mid_at_intent".to_string(), json!(poly_mid_at_intent));
                         endgame_tick_payload
@@ -10311,6 +10563,14 @@ async fn main() -> Result<()> {
                             .insert("best_ask".to_string(), json!(selected.best_ask));
                         endgame_tick_payload
                             .insert("quote_updated_ms".to_string(), json!(quote_updated_ms));
+                        endgame_tick_payload.insert(
+                            "quote_ws_updated_ms".to_string(),
+                            json!(quote_ws_updated_ms),
+                        );
+                        endgame_tick_payload.insert(
+                            "quote_rest_updated_ms".to_string(),
+                            json!(quote_rest_updated_ms),
+                        );
                         endgame_tick_payload
                             .insert("quote_source".to_string(), json!(quote_source.as_str()));
                         endgame_tick_payload.insert(
@@ -10426,10 +10686,15 @@ async fn main() -> Result<()> {
                                     "best_bid": selected.best_bid,
                                     "best_ask": selected.best_ask,
                                     "quote_updated_ms": quote_updated_ms,
+                                    "quote_ws_updated_ms": quote_ws_updated_ms,
+                                    "quote_rest_updated_ms": quote_rest_updated_ms,
                                     "quote_source": quote_source,
                                     "bias_alignment": plan.bias_alignment,
                                     "bias_confidence": plan.bias_confidence,
                                     "divergence_reduced": divergence_reduced,
+                                    "cex_depth_multiplier": cex_depth_decision.multiplier,
+                                    "cex_depth_reason": cex_depth_decision.reason.as_str(),
+                                    "cex_depth_fail_open": cex_depth_decision.fail_open,
                                     "alpha_tick_offsets_ms": alpha_policy.tick_offsets_ms.clone(),
                                     "alpha_submit_proxy_max_age_ms": alpha_submit_proxy_max_age_ms,
                                     "alpha_source": alpha_policy.source.as_str(),
@@ -10438,6 +10703,7 @@ async fn main() -> Result<()> {
                             },
                             "endgame_tick_plan",
                         );
+                        let endgame_logical_key = logical_entry_key_from_request(&request);
                         match enqueue_arbiter_request(
                             &arbiter_exec_tx_for_endgame,
                             &enqueue_dedupe_for_endgame,
@@ -10447,21 +10713,56 @@ async fn main() -> Result<()> {
                         .await
                         {
                             Ok(ArbiterEnqueueResult::Sent) => {
-                                emitted_ticks.insert(emit_key);
-                                processed_tick_slots.insert((
-                                    symbol_market_key.clone(),
+                                let outcome_wait_default_ms = env_i64_clamped(
+                                    "EVPOLY_ENDGAME_SUBMIT_TIMEOUT_MS",
+                                    1_500,
+                                    100,
+                                    30_000,
+                                )
+                                .saturating_add(1_000);
+                                let outcome_wait_ms = env_i64_clamped(
+                                    "EVPOLY_ENDGAME_SUBMIT_OUTCOME_WAIT_MS",
+                                    outcome_wait_default_ms,
+                                    100,
+                                    60_000,
+                                );
+                                let outcome_tx = endgame_submit_outcome_tx.clone();
+                                let pending_event = EndgameSubmitOutcomeEvent {
+                                    logical_key: endgame_logical_key,
+                                    symbol_market_key: symbol_market_key.clone(),
+                                    asset_symbol: symbol.clone(),
                                     timeframe,
                                     market_open_ts,
-                                    plan.tick_index,
-                                ));
-                                period_direction_locks
-                                    .insert(period_budget_key.clone(), selected.direction);
-                                submitted_notional_by_period
-                                    .entry(period_budget_key)
-                                    .and_modify(|v| *v += effective_size_usd)
-                                    .or_insert(effective_size_usd);
+                                    tick_index: plan.tick_index,
+                                    request_id: selected_impulse_id.clone(),
+                                    emit_key,
+                                    period_budget_key,
+                                    direction: selected.direction,
+                                    effective_size_usd,
+                                    outcome: EndgameSubmitOutcome::Unknown,
+                                    outcome_wait_ms,
+                                    alpha_tick_offsets_ms: alpha_policy.tick_offsets_ms.clone(),
+                                    alpha_submit_proxy_max_age_ms,
+                                    alpha_source: alpha_policy.source.as_str().to_string(),
+                                    alpha_reason: alpha_policy.reason.clone(),
+                                };
+                                tokio::spawn(async move {
+                                    let outcome = match timeout(
+                                        Duration::from_millis(outcome_wait_ms as u64),
+                                        endgame_submit_rx,
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(outcome)) => outcome,
+                                        Ok(Err(_)) | Err(_) => EndgameSubmitOutcome::Unknown,
+                                    };
+                                    let _ = outcome_tx.send(EndgameSubmitOutcomeEvent {
+                                        outcome,
+                                        ..pending_event
+                                    });
+                                });
                                 log_event(
-                                    "endgame_alpha_tick_executed",
+                                    "endgame_alpha_tick_enqueued",
                                     json!({
                                         "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
                                         "asset_symbol": symbol,
@@ -10470,7 +10771,8 @@ async fn main() -> Result<()> {
                                         "market_open_ts": market_open_ts,
                                         "tick_index": plan.tick_index,
                                         "request_id": selected_impulse_id.as_str(),
-                                        "status": "sent",
+                                        "status": "sent_to_worker",
+                                        "submit_outcome_wait_ms": outcome_wait_ms,
                                         "alpha_tick_offsets_ms": alpha_policy.tick_offsets_ms.clone(),
                                         "alpha_submit_proxy_max_age_ms": alpha_submit_proxy_max_age_ms,
                                         "alpha_source": alpha_policy.source.as_str(),
@@ -10479,15 +10781,6 @@ async fn main() -> Result<()> {
                                 );
                             }
                             Ok(ArbiterEnqueueResult::Deduped) => {
-                                emitted_ticks.insert(emit_key);
-                                processed_tick_slots.insert((
-                                    symbol_market_key.clone(),
-                                    timeframe,
-                                    market_open_ts,
-                                    plan.tick_index,
-                                ));
-                                period_direction_locks
-                                    .insert(period_budget_key, selected.direction);
                                 log_event(
                                     "endgame_alpha_tick_executed",
                                     json!({
@@ -23868,6 +24161,18 @@ fn enqueue_dedupe_shard_index(logical_key: &EntryLogicalKey, shard_count: usize)
         .unwrap_or(0)
 }
 
+async fn forget_enqueue_dedupe_key(
+    dedupe_shards: &Arc<Vec<tokio::sync::Mutex<EnqueueDedupe>>>,
+    logical_key: &EntryLogicalKey,
+) {
+    if dedupe_shards.is_empty() {
+        return;
+    }
+    let shard_idx = enqueue_dedupe_shard_index(logical_key, dedupe_shards.len());
+    let mut guard = dedupe_shards[shard_idx].lock().await;
+    guard.forget(logical_key);
+}
+
 fn safe_ms_delta(start_ms: Option<i64>, end_ms: Option<i64>) -> Option<i64> {
     match (start_ms, end_ms) {
         (Some(start), Some(end)) if end >= start => Some(end.saturating_sub(start)),
@@ -26015,17 +26320,71 @@ fn spawn_endgame_registry_worker(
         1_000,
         600_000,
     );
+    let submit_path_failure_cooldown_ms = env_i64_clamped(
+        "EVPOLY_ENDGAME_SUBMIT_PATH_PREWARM_FAILURE_COOLDOWN_MS",
+        10_000,
+        1_000,
+        600_000,
+    );
+    let collateral_prewarm_interval_ms = env_i64_clamped(
+        "EVPOLY_ENDGAME_SUBMIT_COLLATERAL_PREWARM_INTERVAL_MS",
+        5_000,
+        1_000,
+        300_000,
+    );
+    let collateral_prewarm_timeout_ms = env_i64_clamped(
+        "EVPOLY_ENDGAME_SUBMIT_COLLATERAL_PREWARM_TIMEOUT_MS",
+        750,
+        50,
+        15_000,
+    );
 
     tokio::spawn(async move {
         let mut discovery_backoff_until_ms: HashMap<(String, Timeframe, i64), i64> = HashMap::new();
         let mut metadata_prewarm_retry_after_ms: HashMap<String, i64> = HashMap::new();
         let mut constraints_retry_after_ms_by_condition: HashMap<String, i64> = HashMap::new();
+        let mut submit_path_retry_after_ms_by_condition: HashMap<String, i64> = HashMap::new();
+        let mut last_collateral_prewarm_ms = 0_i64;
         let mut interval = tokio::time::interval(Duration::from_millis(poll_ms as u64));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
             let now_ms = chrono::Utc::now().timestamp_millis();
             let now_ts = now_ms / 1_000;
+            if env_bool_named("EVPOLY_ENDGAME_SUBMIT_COLLATERAL_PREWARM_ENABLE", true)
+                && now_ms.saturating_sub(last_collateral_prewarm_ms)
+                    >= collateral_prewarm_interval_ms
+            {
+                last_collateral_prewarm_ms = now_ms;
+                match timeout(
+                    Duration::from_millis(collateral_prewarm_timeout_ms as u64),
+                    api.check_usdc_balance_allowance(),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        log_event(
+                            "endgame_submit_collateral_prewarm_failed",
+                            json!({
+                                "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                "timeout_ms": collateral_prewarm_timeout_ms,
+                                "error": error.to_string()
+                            }),
+                        );
+                    }
+                    Err(_) => {
+                        log_event(
+                            "endgame_submit_collateral_prewarm_failed",
+                            json!({
+                                "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                "timeout_ms": collateral_prewarm_timeout_ms,
+                                "error": "timeout"
+                            }),
+                        );
+                    }
+                }
+            }
             for symbol in symbols.iter() {
                 let symbol_key = normalize_market_symbol(symbol);
                 for timeframe in cfg.enabled_timeframes() {
@@ -26078,6 +26437,45 @@ fn spawn_endgame_registry_worker(
                                 );
                             } else {
                                 metadata_prewarm_retry_after_ms.remove(token_id.as_str());
+                            }
+                        }
+                        if env_bool_named("EVPOLY_ENDGAME_FEE_PREWARM_ENABLE", true) {
+                            if !submit_path_retry_after_ms_by_condition
+                                .get(ctx.market.condition_id.as_str())
+                                .map(|retry_after_ms| *retry_after_ms > now_ms)
+                                .unwrap_or(false)
+                            {
+                                match api
+                                    .prewarm_endgame_submit_path(ctx.market.condition_id.as_str())
+                                    .await
+                                {
+                                    Ok(()) => {
+                                        submit_path_retry_after_ms_by_condition
+                                            .remove(ctx.market.condition_id.as_str());
+                                    }
+                                    Err(error) => {
+                                        let retry_after_ms =
+                                            now_ms.saturating_add(submit_path_failure_cooldown_ms);
+                                        submit_path_retry_after_ms_by_condition.insert(
+                                            ctx.market.condition_id.clone(),
+                                            retry_after_ms,
+                                        );
+                                        log_event(
+                                            "endgame_submit_path_prewarm_failed",
+                                            json!({
+                                                "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                                "asset_symbol": symbol,
+                                                "market_key": symbol_key.as_str(),
+                                                "timeframe": timeframe.as_str(),
+                                                "market_open_ts": market_open_ts,
+                                                "condition_id": ctx.market.condition_id.as_str(),
+                                                "cooldown_ms": submit_path_failure_cooldown_ms,
+                                                "retry_after_ms": retry_after_ms,
+                                                "error": error.to_string()
+                                            }),
+                                        );
+                                    }
+                                }
                             }
                         }
                         let constraints_fresh = ctx
@@ -26220,6 +26618,8 @@ fn spawn_endgame_registry_worker(
             discovery_backoff_until_ms.retain(|_, until_ms| *until_ms > now_ms);
             metadata_prewarm_retry_after_ms.retain(|_, retry_after_ms| *retry_after_ms > now_ms);
             constraints_retry_after_ms_by_condition
+                .retain(|_, retry_after_ms| *retry_after_ms > now_ms);
+            submit_path_retry_after_ms_by_condition
                 .retain(|_, retry_after_ms| *retry_after_ms > now_ms);
         }
     });

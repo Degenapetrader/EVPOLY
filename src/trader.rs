@@ -6025,10 +6025,24 @@ impl Trader {
             return Ok(());
         }
 
-        let place_result = self
-            .api
-            .place_order_with_timing_cached_metadata_only(&order)
-            .await;
+        let submit_timeout_ms = std::env::var("EVPOLY_ENDGAME_SUBMIT_TIMEOUT_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(1_500)
+            .clamp(100, 30_000);
+        let place_result = match tokio::time::timeout(
+            tokio::time::Duration::from_millis(submit_timeout_ms),
+            self.api
+                .place_order_with_timing_cached_metadata_only_endgame(&order),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(anyhow!(
+                "endgame_submit_unknown_timeout: timeout_ms={}",
+                submit_timeout_ms
+            )),
+        };
         match place_result {
             Ok((response, api_timing)) => {
                 let ack_ts_ms = chrono::Utc::now().timestamp_millis();

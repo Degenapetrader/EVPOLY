@@ -380,6 +380,12 @@ struct LocalOrderPostStats {
     attempts: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderSubmitLane {
+    Default,
+    Endgame,
+}
+
 #[derive(Debug, Clone)]
 pub struct BatchPlaceOrderResult {
     pub response: Option<OrderResponse>,
@@ -574,6 +580,7 @@ pub struct PolymarketApi {
     mm_proxy_fallback_max: usize,
     http_read_semaphore: Arc<tokio::sync::Semaphore>,
     order_submit_semaphore: Arc<tokio::sync::Semaphore>,
+    endgame_order_submit_semaphore: Arc<tokio::sync::Semaphore>,
     mm_read_proxy_attempts: AtomicU64,
     mm_read_direct_attempts: AtomicU64,
     mm_read_proxy_successes: AtomicU64,
@@ -840,6 +847,9 @@ impl PolymarketApi {
                 1,
                 128,
             ))),
+            endgame_order_submit_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                Self::env_usize_clamped("EVPOLY_ENDGAME_SUBMIT_LANE_PERMITS", 1, 1, 16),
+            )),
             mm_read_proxy_attempts: AtomicU64::new(0),
             mm_read_direct_attempts: AtomicU64::new(0),
             mm_read_proxy_successes: AtomicU64::new(0),
@@ -4326,6 +4336,7 @@ impl PolymarketApi {
         self.place_order_with_timing_with_metadata_policy(
             order,
             PlaceOrderMetadataPolicy::default(),
+            OrderSubmitLane::Default,
         )
         .await
     }
@@ -4337,6 +4348,19 @@ impl PolymarketApi {
         self.place_order_with_timing_with_metadata_policy(
             order,
             PlaceOrderMetadataPolicy::cached_only(),
+            OrderSubmitLane::Default,
+        )
+        .await
+    }
+
+    pub async fn place_order_with_timing_cached_metadata_only_endgame(
+        &self,
+        order: &OrderRequest,
+    ) -> Result<(OrderResponse, PlaceOrderTiming)> {
+        self.place_order_with_timing_with_metadata_policy(
+            order,
+            PlaceOrderMetadataPolicy::cached_only(),
+            OrderSubmitLane::Endgame,
         )
         .await
     }
@@ -4345,6 +4369,7 @@ impl PolymarketApi {
         &self,
         order: &OrderRequest,
         metadata_policy: PlaceOrderMetadataPolicy,
+        submit_lane: OrderSubmitLane,
     ) -> Result<(OrderResponse, PlaceOrderTiming)> {
         let (effective_order_type, retry_policy, attempts) =
             Self::retry_policy_for_order_type(order.order_type.as_str());
@@ -4362,7 +4387,7 @@ impl PolymarketApi {
             let handle = self.get_or_create_clob_client().await?;
             timing.get_client_ms += get_client_started.elapsed().as_millis() as i64;
             match self
-                .place_order_with_handle(&handle, order, metadata_policy)
+                .place_order_with_handle(&handle, order, metadata_policy, submit_lane)
                 .await
             {
                 Ok((resp, handle_timing)) => {
@@ -4676,6 +4701,28 @@ impl PolymarketApi {
         Ok(model)
     }
 
+    pub async fn cached_clob_fee_model(&self, condition_id: &str) -> Option<ClobFeeModel> {
+        let condition_id = condition_id.trim();
+        if condition_id.is_empty() {
+            return None;
+        }
+        self.clob_fee_models_by_condition
+            .lock()
+            .await
+            .get(condition_id)
+            .copied()
+    }
+
+    pub async fn prewarm_endgame_submit_path(&self, condition_id: &str) -> Result<()> {
+        let condition_id = condition_id.trim();
+        if condition_id.is_empty() {
+            anyhow::bail!("condition_id is required for Endgame submit path prewarm");
+        }
+        let _ = self.get_or_create_clob_client().await?;
+        let _ = self.get_clob_fee_model(condition_id).await?;
+        Ok(())
+    }
+
     async fn tick_metadata_retry_after_ms(&self, token_id: &str) -> Option<i64> {
         let token_retry_after_ms = self
             .tick_metadata_retry_after_ms_by_token
@@ -4817,6 +4864,7 @@ impl PolymarketApi {
         handle: &ClobClientHandle,
         order: &OrderRequest,
         metadata_policy: PlaceOrderMetadataPolicy,
+        submit_lane: OrderSubmitLane,
     ) -> Result<(OrderResponse, PlaceOrderHandleTiming)> {
         let mut prepared = self
             .build_and_sign_order_with_handle(handle, order, metadata_policy)
@@ -4832,7 +4880,12 @@ impl PolymarketApi {
 
         for retry_idx in 0..=rate_limit_retry_attempts {
             match self
-                .post_signed_order_local(handle, prepared.signed_order, &mut post_stats)
+                .post_signed_order_local(
+                    handle,
+                    prepared.signed_order,
+                    &mut post_stats,
+                    submit_lane,
+                )
                 .await
             {
                 Ok(resp) => {
@@ -5182,13 +5235,24 @@ impl PolymarketApi {
         handle: &ClobClientHandle,
         signed_order: ClobSignedOrder,
         post_stats: &mut LocalOrderPostStats,
+        submit_lane: OrderSubmitLane,
     ) -> Result<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse> {
-        let _order_permit = self
-            .order_submit_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| anyhow::anyhow!("order submit concurrency limiter closed"))?;
+        let semaphore = if submit_lane == OrderSubmitLane::Endgame
+            && Self::env_bool("EVPOLY_ENDGAME_SUBMIT_LANE_ENABLE", true)
+        {
+            self.endgame_order_submit_semaphore.clone()
+        } else {
+            self.order_submit_semaphore.clone()
+        };
+        let _order_permit = semaphore.acquire_owned().await.map_err(|_| {
+            anyhow::anyhow!(
+                "{} order submit concurrency limiter closed",
+                match submit_lane {
+                    OrderSubmitLane::Default => "default",
+                    OrderSubmitLane::Endgame => "endgame",
+                }
+            )
+        })?;
         let post_started = Instant::now();
         let result = handle.client.post_order(signed_order).await;
         let post_ms = post_started.elapsed().as_millis() as i64;

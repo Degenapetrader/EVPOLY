@@ -948,7 +948,7 @@ pub fn evaluate_cex_depth(
             "venues": venue_payloads,
             "fail_open": all_fail_open,
             "metric": "cost_to_flip_endgame_base_boundary_usd_compared_to_matching_rolling_bps_bucket",
-            "base_price_source": "external_depth_venue_open_mid_cache",
+            "base_price_source": "external_depth_venue_open_mid_cache_or_endgame_base_anchor_fallback",
             "fallback_endgame_base_price": boundary_price
         }),
     }
@@ -1397,28 +1397,11 @@ fn evaluate_external_depth_venue(
     }
     let history = cache.history(symbol, venue);
     let market_open_ms = market_open_ts.saturating_mul(1_000);
-    let Some(base_price) =
+    let (base_price, base_price_source) =
         external_depth_base_mid_at_or_near_open(&history, market_open_ms, cfg.base_max_age_ms)
             .filter(|price| price.is_finite() && *price > 0.0)
-    else {
-        return ExternalVenueDecision {
-            payload: json!({
-                "enabled": true,
-                "status": "base_price_missing",
-                "symbol": depth.symbol,
-                "venue": depth.venue,
-                "age_ms": age_ms,
-                "max_age_ms": cfg.max_age_ms,
-                "base_max_age_ms": cfg.base_max_age_ms,
-                "market_open_ts": market_open_ts,
-                "fallback_endgame_base_price": boundary_price
-            }),
-            fail_reason: Some("base_price_missing".to_string()),
-            snapshot_age_ms: Some(age_ms),
-            cex_mid: Some(depth.mid()),
-            ..ExternalVenueDecision::default()
-        };
-    };
+            .map(|price| (price, "external_depth_venue_open_mid_cache"))
+            .unwrap_or((boundary_price, "endgame_base_anchor_fallback"));
     let delta_history = cache.delta_history(symbol, venue);
     let mid = depth.mid();
     let direction_label = direction_label(direction);
@@ -1550,7 +1533,7 @@ fn evaluate_external_depth_venue(
                 "direction": direction_label,
                 "risk_flip_side": risk_flip_side,
                 "base_price": base_price,
-                "base_price_source": "external_depth_venue_open_mid_cache",
+                "base_price_source": base_price_source,
                 "fallback_endgame_base_price": boundary_price,
                 "actual_distance_bps": actual_distance_bps,
                 "bucket_bps": bucket_bps
@@ -1730,7 +1713,7 @@ fn evaluate_external_depth_venue(
             "direction": direction_label,
             "risk_flip_side": risk_flip_side,
             "base_price": base_price,
-            "base_price_source": "external_depth_venue_open_mid_cache",
+            "base_price_source": base_price_source,
             "fallback_endgame_base_price": boundary_price,
             "actual_distance_bps": actual_distance_bps,
             "bucket_bps": bucket_bps,
@@ -3998,6 +3981,39 @@ mod tests {
         assert!(!decision.fail_open);
         assert_eq!(decision.multiplier, 1.0);
         assert_eq!(decision.trigger_count, 0);
+    }
+
+    #[test]
+    fn evaluator_uses_endgame_anchor_when_venue_open_sample_is_missing() {
+        let mut cfg = EndgameCexDepthConfig::from_env();
+        cfg.base_max_age_ms = 500;
+        cfg.health_snapshot_detail_enabled = true;
+        cfg.min_samples = 300;
+        let cache = EndgameCexDepthCache::new();
+        cache.upsert(snapshot("BTC", COINBASE_DEPTH_VENUE, 20_000), &cfg);
+        let decision = evaluate_cex_depth(
+            &cfg,
+            &cache,
+            "BTC",
+            "5m",
+            10,
+            Direction::Up,
+            100.0,
+            100,
+            20_050,
+        );
+        assert!(!decision.fail_open, "payload={}", decision.payload);
+        assert_eq!(decision.reason, "pass");
+        assert_eq!(decision.boundary_price, Some(100.0));
+        assert_eq!(
+            decision
+                .payload
+                .get("venues")
+                .and_then(|venues| venues.get(0))
+                .and_then(|venue| venue.get("base_price_source"))
+                .and_then(|source| source.as_str()),
+            Some("endgame_base_anchor_fallback")
+        );
     }
 
     #[test]

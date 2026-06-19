@@ -49,7 +49,7 @@ Multipliers:
 ## Core Guards
 - `BTC/ETH/SOL/XRP` require exact Coinbase and Binance period-open anchors whose candle timestamps equal the market open, and both sources must agree on up/down direction before an Endgame tick can submit. Coinbase intraday REST anchors use live 1-minute candles so current-period opens are available during the period.
 - `HYPE` exact REST anchors use Binance futures 1-minute klines for intraday periods because Binance spot does not expose the `HYPEUSDT` kline symbol.
-- Book99-port CEX depth checks whether live external orderbook depth is strong enough for the current distance-to-base bucket and can reduce size on weak depth.
+- Book99-port CEX depth checks whether live external orderbook depth is strong enough for the current distance-to-base bucket and can reduce size on weak depth. The distance baseline uses the venue-specific open mid when present; after an in-period restart, if that venue-open sample is unavailable but the exact Endgame period anchor is valid, CEX-depth falls back to the Endgame anchor instead of fail-opening the tick.
 - Book99-port DVOL fetches Deribit BTC/ETH DVOL, uses ETH-DVOL synthetic multipliers plus RV30 overrides for alt symbols, and converts distance-to-base plus remaining tau into a fair probability.
 - Entry price is no longer fixed at 99c. Each tick uses the current fair probability, fees, and edge floor to compute the max acceptable limit price. Visible asks under that limit size immediate executable shares; when no ask is visible under the limit, share mode can still submit a resting LIMIT order at the edge-safe limit price. Hidden-depth backfill is not assumed.
 - Quote/proxy freshness gates

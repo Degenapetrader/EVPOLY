@@ -34,13 +34,13 @@ The submit path also enforces a final close guard: strategy ticks and trader fas
 9. Evaluate live CEX-depth cost to flip the period base boundary.
 10. Evaluate Book99-port DVOL fair probability against the live Polymarket ask/mid and remaining tau, including edge at the probed Polymarket price.
 11. Derive a dynamic edge-safe limit price from DVOL fair probability, Polymarket taker fees, and the configured edge floor, then floor it to the market tick.
-12. Enforce quote freshness, market constraints, entry-price floor, visible-depth VWAP, and fee-aware edge.
+12. Enforce quote freshness, market constraints, entry-price floor, and fee-aware edge. If live asks are visible at or below the dynamic limit, size against their VWAP; if no ask is visible under the limit in share mode, size a resting LIMIT order at the edge-safe limit price.
 13. Apply share sizing and cap checks.
 14. Enqueue to arbiter/trader only outside the final 250ms close guard.
 15. Enforce submit-time proxy freshness, close guard, and cached-metadata fast submit checks.
 
 ## Sizing Policy
-Endgame execution is fixed to share sizing. Base share key: `EVPOLY_ENDGAME_BASE_SIZE_SHARES` (blank defaults to `50`). `EVPOLY_ENDGAME_EXECUTION_SIZE_MODE` is retained for desktop profile compatibility but does not change runtime mode.
+Endgame execution is fixed to share sizing. Base share key: `EVPOLY_ENDGAME_BASE_SIZE_SHARES` (blank defaults to `50`). If the share key is blank, the legacy desktop profile field `EVPOLY_ENDGAME_BASE_SIZE_USD` is accepted as the share-size fallback. `EVPOLY_ENDGAME_EXECUTION_SIZE_MODE` is retained for desktop profile compatibility but does not change runtime mode.
 
 Multipliers:
 - Symbol: `BTC=1.0`, `ETH=0.8`, `SOL/XRP/DOGE/BNB/HYPE=0.5`
@@ -51,11 +51,11 @@ Multipliers:
 - `HYPE` exact REST anchors use Binance futures 1-minute klines for intraday periods because Binance spot does not expose the `HYPEUSDT` kline symbol.
 - Book99-port CEX depth checks whether live external orderbook depth is strong enough for the current distance-to-base bucket and can reduce size on weak depth.
 - Book99-port DVOL fetches Deribit BTC/ETH DVOL, uses ETH-DVOL synthetic multipliers plus RV30 overrides for alt symbols, and converts distance-to-base plus remaining tau into a fair probability.
-- Entry price is no longer fixed at 99c. Each tick uses the current fair probability, fees, edge floor, and live visible Polymarket asks to compute the max acceptable limit price and executable share count. Hidden-depth backfill is not assumed.
+- Entry price is no longer fixed at 99c. Each tick uses the current fair probability, fees, and edge floor to compute the max acceptable limit price. Visible asks under that limit size immediate executable shares; when no ask is visible under the limit, share mode can still submit a resting LIMIT order at the edge-safe limit price. Hidden-depth backfill is not assumed.
 - Quote/proxy freshness gates
 - Submit-time stale guard from the local V1 policy plus a 250ms final close guard
 - Safety stop defaults to `0s` so local late-window checkpoints can fire.
-- Min entry and fee-aware VWAP edge gates
+- Min entry defaults to the market minimum tick (`0.01`) and fee-aware edge is checked at the visible VWAP or resting limit price.
 - Per-period and strategy cap gates
 
 ## Key Env Knobs

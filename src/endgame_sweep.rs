@@ -998,6 +998,36 @@ pub fn visible_share_execution_sizing(
     })
 }
 
+pub fn resting_share_limit_sizing(
+    fair_probability: f64,
+    edge_floor_bps: f64,
+    limit_price: f64,
+    target_shares: f64,
+    fee_model: PolymarketFeeModel,
+) -> Option<EndgameExecutionSizing> {
+    if !fair_probability.is_finite()
+        || !limit_price.is_finite()
+        || !target_shares.is_finite()
+        || fair_probability <= 0.0
+        || limit_price <= 0.0
+        || target_shares <= 0.0
+    {
+        return None;
+    }
+    let fee_at_limit = polymarket_taker_fee_rate(limit_price, fee_model);
+    let edge_bps_at_limit = ((fair_probability - limit_price - fee_at_limit) * 10_000.0).max(0.0);
+    if edge_bps_at_limit + 1e-6 < edge_floor_bps.max(0.0) {
+        return None;
+    }
+    Some(EndgameExecutionSizing {
+        shares: target_shares,
+        notional_usd: target_shares * limit_price,
+        vwap_price: limit_price,
+        taker_fee_rate_at_vwap: fee_at_limit,
+        edge_bps_at_vwap: edge_bps_at_limit,
+    })
+}
+
 pub fn apply_divergence_size_guard(
     target_notional_usd: f64,
     fair_probability: f64,
@@ -1244,6 +1274,24 @@ mod tests {
         assert_eq!(sizing.shares, 10.0);
         assert!((sizing.vwap_price - 0.88).abs() < 1e-9);
         assert!(sizing.edge_bps_at_vwap >= 50.0);
+    }
+
+    #[test]
+    fn resting_share_limit_sizing_allows_edge_safe_empty_book_limit() {
+        let sizing =
+            resting_share_limit_sizing(0.08, 50.0, 0.03, 25.0, PolymarketFeeModel::default())
+                .expect("expected edge-safe resting sizing");
+        assert_eq!(sizing.shares, 25.0);
+        assert!((sizing.notional_usd - 0.75).abs() < 1e-9);
+        assert!((sizing.vwap_price - 0.03).abs() < 1e-9);
+        assert!(sizing.edge_bps_at_vwap >= 50.0);
+    }
+
+    #[test]
+    fn resting_share_limit_sizing_rejects_when_limit_lacks_edge() {
+        let sizing =
+            resting_share_limit_sizing(0.0304, 50.0, 0.03, 25.0, PolymarketFeeModel::default());
+        assert!(sizing.is_none());
     }
 
     #[test]

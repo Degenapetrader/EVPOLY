@@ -10000,10 +10000,12 @@ async fn main() -> Result<()> {
                                 if let Some(dvol_pricing) = dvol_decision.pricing.clone() {
                                     pricing = dvol_pricing;
                                 }
-                                if !pricing.max_price.is_finite() || pricing.max_price <= 0.01 {
+                                if !pricing.max_price.is_finite()
+                                    || pricing.max_price + 1e-12 < min_tick_size
+                                {
                                     continue;
                                 }
-                                if pricing.max_price <= min_entry_price {
+                                if pricing.max_price + 1e-12 < min_entry_price {
                                     log_event(
                                         "endgame_skip_price_floor",
                                         json!({
@@ -10103,7 +10105,7 @@ async fn main() -> Result<()> {
                                 if !limit_price.is_finite() || limit_price <= 0.0 {
                                     continue;
                                 }
-                                if limit_price <= min_entry_price {
+                                if limit_price + 1e-12 < min_entry_price {
                                     log_event(
                                         "endgame_skip_price_floor",
                                         json!({
@@ -10166,14 +10168,28 @@ async fn main() -> Result<()> {
                                     if !target_shares.is_finite() || target_shares <= 0.0 {
                                         continue;
                                     }
-                                    endgame_sweep::visible_share_execution_sizing(
-                                        pricing.fair_probability,
-                                        endgame_cfg_for_loop.edge_floor_bps,
-                                        limit_price,
-                                        target_shares,
-                                        ask_levels.as_slice(),
-                                        endgame_fee_model,
-                                    )
+                                    let visible_sizing =
+                                        endgame_sweep::visible_share_execution_sizing(
+                                            pricing.fair_probability,
+                                            endgame_cfg_for_loop.edge_floor_bps,
+                                            limit_price,
+                                            target_shares,
+                                            ask_levels.as_slice(),
+                                            endgame_fee_model,
+                                        );
+                                    if visible_sizing.is_some() {
+                                        visible_sizing
+                                    } else if asks_within_qmax == 0 {
+                                        endgame_sweep::resting_share_limit_sizing(
+                                            pricing.fair_probability,
+                                            endgame_cfg_for_loop.edge_floor_bps,
+                                            limit_price,
+                                            target_shares,
+                                            endgame_fee_model,
+                                        )
+                                    } else {
+                                        None
+                                    }
                                 } else if let Some(sizing) = endgame_sweep::ev_safe_execution_sizing(
                                     pricing.fair_probability,
                                     endgame_cfg_for_loop.edge_floor_bps,

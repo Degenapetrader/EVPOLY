@@ -316,7 +316,7 @@ impl EndgameExecutionConfig {
                 .unwrap_or(12.0)
                 .max(0.0),
             min_entry_price: env_f64_any(&["EVPOLY_ENDGAME_MIN_ENTRY_PRICE".to_string()])
-                .unwrap_or(0.5)
+                .unwrap_or(0.01)
                 .clamp(0.0, 0.99),
             probability_min: env_f64_any(&["EVPOLY_ENDGAME_PROB_MIN".to_string()])
                 .unwrap_or(0.005)
@@ -369,9 +369,12 @@ impl EndgameExecutionConfig {
             .unwrap_or(0.10)
             .clamp(0.0, 1.0),
             execution_size_mode: StrategyExecutionSizeMode::Shares,
-            base_size_shares: env_f64_any(&["EVPOLY_ENDGAME_BASE_SIZE_SHARES".to_string()])
-                .unwrap_or(50.0)
-                .max(0.0),
+            base_size_shares: env_f64_any(&[
+                "EVPOLY_ENDGAME_BASE_SIZE_SHARES".to_string(),
+                "EVPOLY_ENDGAME_BASE_SIZE_USD".to_string(),
+            ])
+            .unwrap_or(50.0)
+            .max(0.0),
         }
     }
 
@@ -983,6 +986,50 @@ mod tests {
             || {
                 let cfg = EndgameExecutionConfig::from_env();
                 assert_eq!(cfg.execution_size_mode(), StrategyExecutionSizeMode::Shares);
+            },
+        );
+    }
+
+    #[test]
+    fn endgame_defaults_use_dynamic_price_floor_and_share_size() {
+        with_env(
+            &[
+                ("EVPOLY_ENDGAME_MIN_ENTRY_PRICE", None),
+                ("EVPOLY_ENDGAME_BASE_SIZE_SHARES", None),
+                ("EVPOLY_ENDGAME_BASE_SIZE_USD", None),
+            ],
+            || {
+                let cfg = EndgameExecutionConfig::from_env();
+                assert!((cfg.min_entry_price - 0.01).abs() < 1e-9);
+                assert!((cfg.base_size_shares - 50.0).abs() < 1e-9);
+            },
+        );
+    }
+
+    #[test]
+    fn endgame_share_size_accepts_legacy_ui_usd_field() {
+        with_env(
+            &[
+                ("EVPOLY_ENDGAME_BASE_SIZE_SHARES", None),
+                ("EVPOLY_ENDGAME_BASE_SIZE_USD", Some("200")),
+            ],
+            || {
+                let cfg = EndgameExecutionConfig::from_env();
+                assert!((cfg.base_size_shares - 200.0).abs() < 1e-9);
+            },
+        );
+    }
+
+    #[test]
+    fn endgame_share_size_prefers_explicit_share_field() {
+        with_env(
+            &[
+                ("EVPOLY_ENDGAME_BASE_SIZE_SHARES", Some("125")),
+                ("EVPOLY_ENDGAME_BASE_SIZE_USD", Some("200")),
+            ],
+            || {
+                let cfg = EndgameExecutionConfig::from_env();
+                assert!((cfg.base_size_shares - 125.0).abs() < 1e-9);
             },
         );
     }

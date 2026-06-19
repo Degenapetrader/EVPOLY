@@ -38,6 +38,7 @@ use polymarket_arbitrage_bot::detector::PriceDetector;
 use polymarket_arbitrage_bot::endgame_cex_depth::{
     self, EndgameCexDepthCache, EndgameCexDepthConfig, EndgameCexDepthDecision,
 };
+use polymarket_arbitrage_bot::endgame_dvol::{self, EndgameDvolDecision};
 use polymarket_arbitrage_bot::endgame_quote_cache::{EndgameQuoteCache, EndgameQuoteSource};
 use polymarket_arbitrage_bot::endgame_registry::EndgameRegistry;
 use polymarket_arbitrage_bot::endgame_sweep;
@@ -139,7 +140,6 @@ fn install_fatal_panic_hook() {
     }));
 }
 
-const ENDGAME_V1_NEAR_BASE_SKIP_BPS: f64 = 1.5;
 static ALPHA_REQUEST_ID_NONCE: AtomicU64 = AtomicU64::new(1);
 static DB_BACKGROUND_JITTER_NONCE: AtomicU64 = AtomicU64::new(1);
 static MM_SPORT_ORDER_SUBMIT_THROTTLE_LOG_MS: AtomicU64 = AtomicU64::new(0);
@@ -1471,14 +1471,6 @@ fn log_runtime_contention(kind: &'static str, waited_ms: i64, payload: Value) {
 
 fn near_base_skip_threshold_bps() -> f64 {
     env_f64_named("EVPOLY_NEAR_BASE_SKIP_BPS", 1.0).clamp(0.0, 10_000.0)
-}
-
-fn endgame_v1_near_base_skip_threshold_bps() -> f64 {
-    env_f64_named(
-        "EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS",
-        ENDGAME_V1_NEAR_BASE_SKIP_BPS,
-    )
-    .clamp(0.0, 50.0)
 }
 
 fn near_base_distance_bps(base: f64, current: f64) -> Option<f64> {
@@ -8925,8 +8917,6 @@ async fn main() -> Result<()> {
     let enqueue_dedupe_for_evsnipe = enqueue_dedupe.clone();
     let enqueue_dedupe_for_premarket = enqueue_dedupe.clone();
     let near_base_skip_bps = near_base_skip_threshold_bps();
-    let endgame_near_base_skip_bps = endgame_v1_near_base_skip_threshold_bps();
-    let near_base_skip_endgame = true;
     let near_base_skip_evcurve = env_bool_named("EVPOLY_NEAR_BASE_SKIP_ENABLE_EVCURVE", true);
     let near_base_skip_sessionband =
         env_bool_named("EVPOLY_NEAR_BASE_SKIP_ENABLE_SESSIONBAND", true);
@@ -8950,7 +8940,7 @@ async fn main() -> Result<()> {
             .collect::<Vec<_>>()
             .join(",");
         eprintln!(
-            "🎯 Endgame strategy enabled (scheduler=sleep_until, safety_poll={}ms, tick_jitter={}ms, legacy_poll={}ms, symbols=[{}], tfs=[{}], tick_offsets_ms={:?}, allow_cross_spread={}, size_mode=shares, base_size_shares={:.2}, tick_split=20/40/40, period_cap_usd={:.2}, near_base_skip={}, near_base_bps={:.3})",
+            "🎯 Endgame strategy enabled (scheduler=sleep_until, safety_poll={}ms, tick_jitter={}ms, legacy_poll={}ms, symbols=[{}], tfs=[{}], tick_offsets_ms={:?}, allow_cross_spread={}, size_mode=shares, base_size_shares={:.2}, tick_split=4/5/6/7/8/9/10/11/12/13/15, period_cap_usd={:.2})",
             endgame_cfg.safety_poll_ms,
             endgame_cfg.tick_random_jitter_ms,
             endgame_cfg.poll_interval_ms,
@@ -8959,9 +8949,7 @@ async fn main() -> Result<()> {
             endgame_cfg.tick_offsets_sec,
             endgame_cfg.allow_cross_spread,
             endgame_cfg.base_size_shares,
-            endgame_cfg.period_cap_usd(),
-            near_base_skip_endgame,
-            endgame_near_base_skip_bps
+            endgame_cfg.period_cap_usd()
         );
     } else {
         eprintln!("🎯 Endgame strategy disabled (set EVPOLY_STRATEGY_ENDGAME_ENABLE=true)");
@@ -8969,7 +8957,6 @@ async fn main() -> Result<()> {
     if endgame_cfg.enable {
         let endgame_cfg_for_loop = endgame_cfg.clone();
         let endgame_symbols_for_loop = endgame_symbols.clone();
-        let near_base_skip_bps_for_endgame = endgame_near_base_skip_bps;
         let signal_state_for_endgame = signal_state.clone();
         let endgame_timeframes = endgame_cfg.enabled_timeframes();
         let mut coinbase_states_by_symbol: std::collections::HashMap<
@@ -9063,6 +9050,9 @@ async fn main() -> Result<()> {
         let endgame_quote_cache = EndgameQuoteCache::new();
         let endgame_cex_depth_cache = EndgameCexDepthCache::new();
         let endgame_cex_depth_cfg = EndgameCexDepthConfig::from_env();
+        let endgame_dvol_cache = endgame_dvol::new_dvol_cache();
+        let endgame_dvol_rv_cache = endgame_dvol::new_rv_multiplier_cache();
+        let endgame_dvol_cfg = endgame_dvol::EndgameDvolConfig::from_env();
         let endgame_cex_depth_timeframes = endgame_timeframes
             .iter()
             .map(|tf| tf.as_str().to_string())
@@ -9073,6 +9063,8 @@ async fn main() -> Result<()> {
             endgame_symbols.clone(),
             endgame_cex_depth_timeframes,
         );
+        endgame_dvol::spawn_dvol_refresh(endgame_dvol_cache.clone(), endgame_dvol_cfg);
+        endgame_dvol::spawn_rv_multiplier_refresh(endgame_dvol_rv_cache.clone(), endgame_dvol_cfg);
         if env_bool_named("EVPOLY_ENDGAME_PM_QUOTE_CACHE_ENABLE", true) {
             polymarket_ws_state.attach_endgame_quote_cache(endgame_quote_cache.clone());
         }
@@ -9092,6 +9084,9 @@ async fn main() -> Result<()> {
         let endgame_quote_cache_for_loop = endgame_quote_cache.clone();
         let endgame_cex_depth_cache_for_loop = endgame_cex_depth_cache.clone();
         let endgame_cex_depth_cfg_for_loop = endgame_cex_depth_cfg.clone();
+        let endgame_dvol_cache_for_loop = endgame_dvol_cache.clone();
+        let endgame_dvol_rv_cache_for_loop = endgame_dvol_rv_cache.clone();
+        let endgame_dvol_cfg_for_loop = endgame_dvol_cfg;
         tokio::spawn(async move {
             let safety_poll_ms = i64::try_from(endgame_cfg_for_loop.safety_poll_ms)
                 .unwrap_or(500)
@@ -9180,6 +9175,7 @@ async fn main() -> Result<()> {
                 divergence_reduced: bool,
                 divergence: Option<f64>,
                 cex_depth_decision: EndgameCexDepthDecision,
+                dvol_decision: EndgameDvolDecision,
                 poly_mid_at_intent: Option<f64>,
                 best_bid: Option<f64>,
                 best_ask: Option<f64>,
@@ -9461,36 +9457,6 @@ async fn main() -> Result<()> {
                             ));
                             continue;
                         };
-                        if let Some(distance_bps) = near_base_distance_bps(base_mid_cb, plan.mid_cb)
-                        {
-                            if distance_bps < near_base_skip_bps_for_endgame {
-                                log_event(
-                                    "endgame_skip_near_base_proxy_bps",
-                                    json!({
-                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                        "asset_symbol": symbol,
-                                        "market_key": symbol_market_key.as_str(),
-                                        "timeframe": timeframe.as_str(),
-                                        "market_open_ts": market_open_ts,
-                                        "tick_index": plan.tick_index,
-                                        "tau_seconds": plan.tau_seconds,
-                                        "base_mid_cb": base_mid_cb,
-                                        "proxy_mid_cb": plan.mid_cb,
-                                        "distance_bps": distance_bps,
-                                        "threshold_bps": near_base_skip_bps_for_endgame,
-                                        "reason": "near_base_proxy_bps"
-                                    }),
-                                );
-                                processed_tick_slots.insert((
-                                    symbol_market_key.clone(),
-                                    timeframe,
-                                    market_open_ts,
-                                    due_tick_index,
-                                ));
-                                continue;
-                            }
-                        }
-
                         let Some(market_open_ts_u64) = u64::try_from(market_open_ts).ok() else {
                             continue;
                         };
@@ -9625,9 +9591,6 @@ async fn main() -> Result<()> {
                         let mut retryable_readiness_deferred = false;
                         let mut side_eval_count = 0usize;
                         let sweep_fixed_limit_price = 0.99_f64;
-                        let (sweep_poly_price_min, sweep_poly_price_max) =
-                            endgame_sweep_poly_price_band_for_tick(plan.tick_index);
-                        let sweep_fair_poly_gap_max: Option<f64> = None;
                         for direction in [Direction::Up, Direction::Down] {
                             if direction != favored_direction {
                                 continue;
@@ -9653,27 +9616,7 @@ async fn main() -> Result<()> {
                             if emitted_ticks.contains(&emit_key) {
                                 continue;
                             }
-                            let pricing = plan.side_pricing(direction.clone());
-                            if !pricing.max_price.is_finite() || pricing.max_price <= 0.01 {
-                                continue;
-                            }
-                            if pricing.max_price <= min_entry_price {
-                                log_event(
-                                    "endgame_skip_price_floor",
-                                    json!({
-                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                        "timeframe": timeframe.as_str(),
-                                        "market_open_ts": market_open_ts,
-                                        "condition_id": market.condition_id,
-                                        "token_id": token_id,
-                                        "direction": side_label,
-                                        "min_entry_price": min_entry_price,
-                                        "max_price": pricing.max_price,
-                                        "reason": "max_price_below_entry_floor"
-                                    }),
-                                );
-                                continue;
-                            }
+                            let mut pricing = plan.side_pricing(direction.clone());
                             let Some(constraints_ctx) =
                                 market_ctx.constraints.as_ref().filter(|constraints| {
                                     now_ms.saturating_sub(constraints.fetched_ms).max(0)
@@ -9856,6 +9799,107 @@ async fn main() -> Result<()> {
                                 );
                                 continue;
                             };
+                            let tau_ms = market_close_ms.saturating_sub(now_ms).max(0);
+                            let cex_depth_decision = endgame_cex_depth::evaluate_cex_depth(
+                                &endgame_cex_depth_cfg_for_loop,
+                                &endgame_cex_depth_cache_for_loop,
+                                symbol.as_str(),
+                                timeframe.as_str(),
+                                market_open_ts,
+                                direction.clone(),
+                                plan.base_mid_cb,
+                                tau_ms,
+                                now_ms,
+                            );
+                            let cex_depth_multiplier =
+                                cex_depth_decision.multiplier.clamp(0.0, 1.0);
+                            let dvol_tau_sec = if tau_ms <= 500 {
+                                0
+                            } else {
+                                tau_ms.saturating_add(999).saturating_div(1_000)
+                            };
+                            let dvol_probe_price = best_ask
+                                .or(poly_mid_at_intent)
+                                .unwrap_or(sweep_fixed_limit_price)
+                                .clamp(0.001, sweep_fixed_limit_price);
+                            let dvol_required_probability = dvol_probe_price.clamp(0.001, 0.999);
+                            let dvol_decision = if endgame_dvol_cfg_for_loop.enabled {
+                                endgame_dvol::evaluate_dvol_fair(
+                                    &endgame_dvol_cfg_for_loop,
+                                    &endgame_dvol_cache_for_loop,
+                                    &endgame_dvol_rv_cache_for_loop,
+                                    endgame_dvol::EndgameDvolInput {
+                                        symbol: symbol.to_string(),
+                                        timeframe,
+                                        direction: direction.clone(),
+                                        tau_sec: dvol_tau_sec,
+                                        base_mid: plan.base_mid_cb,
+                                        current_mid: plan.mid_cb,
+                                        submit_price: dvol_probe_price,
+                                        required_probability: dvol_required_probability,
+                                        cex_depth_multiplier,
+                                        uncertainty_penalty: plan.uncertainty_penalty,
+                                        buffer_prob: plan.buffer_prob,
+                                        edge_floor_prob: plan.edge_floor_prob,
+                                        bias_multiplier: plan.bias_multiplier,
+                                        fee_model: endgame_fee_model,
+                                    },
+                                    now_ms,
+                                )
+                            } else {
+                                EndgameDvolDecision::disabled(pricing.clone())
+                            };
+                            if !dvol_decision.pass {
+                                log_event(
+                                    "endgame_skip_dvol_fair_gate",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "condition_id": market.condition_id,
+                                        "token_id": token_id,
+                                        "direction": side_label,
+                                        "tick_index": plan.tick_index,
+                                        "tau_seconds": plan.tau_seconds,
+                                        "dvol_tau_sec": dvol_tau_sec,
+                                        "dvol_status": dvol_decision.status,
+                                        "dvol_probe_price": dvol_probe_price,
+                                        "dvol_required_probability": dvol_required_probability,
+                                        "best_bid": best_bid,
+                                        "best_ask": best_ask,
+                                        "poly_mid_at_intent": poly_mid_at_intent,
+                                        "cex_depth_multiplier": cex_depth_decision.multiplier,
+                                        "cex_depth_reason": cex_depth_decision.reason.as_str(),
+                                        "dvol_payload": dvol_decision.payload.clone(),
+                                        "reason": "dvol_price_not_worth_trade"
+                                    }),
+                                );
+                                continue;
+                            }
+                            if let Some(dvol_pricing) = dvol_decision.pricing.clone() {
+                                pricing = dvol_pricing;
+                            }
+                            if !pricing.max_price.is_finite() || pricing.max_price <= 0.01 {
+                                continue;
+                            }
+                            if pricing.max_price <= min_entry_price {
+                                log_event(
+                                    "endgame_skip_price_floor",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "condition_id": market.condition_id,
+                                        "token_id": token_id,
+                                        "direction": side_label,
+                                        "min_entry_price": min_entry_price,
+                                        "max_price": pricing.max_price,
+                                        "dvol_payload": dvol_decision.payload.clone(),
+                                        "reason": "dvol_max_price_below_entry_floor"
+                                    }),
+                                );
+                                continue;
+                            }
                             let fair_probability = pricing.fair_probability;
                             let Some(poly_mid_at_intent_value) =
                                 poly_mid_at_intent.filter(|v| v.is_finite())
@@ -9902,29 +9946,6 @@ async fn main() -> Result<()> {
                                 );
                                 continue;
                             }
-                            if poly_mid_at_intent_value < sweep_poly_price_min
-                                || poly_mid_at_intent_value > sweep_poly_price_max
-                            {
-                                log_event(
-                                    "endgame_skip_poly_price_band",
-                                    json!({
-                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                        "timeframe": timeframe.as_str(),
-                                        "market_open_ts": market_open_ts,
-                                        "condition_id": market.condition_id,
-                                        "token_id": token_id,
-                                        "direction": side_label,
-                                        "tick_index": plan.tick_index,
-                                        "tau_seconds": plan.tau_seconds,
-                                        "poly_mid_at_intent": poly_mid_at_intent_value,
-                                        "fair_probability": fair_probability,
-                                        "poly_price_min": sweep_poly_price_min,
-                                        "poly_price_max": sweep_poly_price_max,
-                                        "reason": "poly_mid_outside_entry_band"
-                                    }),
-                                );
-                                continue;
-                            }
                             let poly_mid_at_intent = Some(poly_mid_at_intent_value);
                             let asks_within_qmax = ask_levels
                                 .iter()
@@ -9950,24 +9971,61 @@ async fn main() -> Result<()> {
                                 if !target_shares.is_finite() || target_shares <= 0.0 {
                                     continue;
                                 }
+                                let mut remaining_shares = target_shares;
+                                let mut total_shares = 0.0_f64;
+                                let mut total_notional = 0.0_f64;
+                                let mut sorted_asks = ask_levels.clone();
+                                sorted_asks.sort_by(|a, b| {
+                                    a.price
+                                        .partial_cmp(&b.price)
+                                        .unwrap_or(std::cmp::Ordering::Equal)
+                                });
+                                for level in sorted_asks.iter().filter(|level| {
+                                    level.price.is_finite()
+                                        && level.size.is_finite()
+                                        && level.price > 0.0
+                                        && level.size > 0.0
+                                        && level.price <= fixed_limit_price
+                                }) {
+                                    if remaining_shares <= 0.0 {
+                                        break;
+                                    }
+                                    let take_shares = remaining_shares.min(level.size);
+                                    total_shares += take_shares;
+                                    total_notional += take_shares * level.price;
+                                    remaining_shares -= take_shares;
+                                }
+                                if remaining_shares > 0.0 {
+                                    total_shares += remaining_shares;
+                                    total_notional += remaining_shares * fixed_limit_price;
+                                }
+                                if !total_shares.is_finite()
+                                    || total_shares <= 0.0
+                                    || !total_notional.is_finite()
+                                    || total_notional <= 0.0
+                                {
+                                    continue;
+                                }
+                                let expected_vwap_price =
+                                    (total_notional / total_shares).clamp(0.001, fixed_limit_price);
                                 let taker_fee_rate = endgame_sweep::polymarket_taker_fee_rate(
-                                    fixed_limit_price,
+                                    expected_vwap_price,
                                     endgame_fee_model,
                                 );
-                                let edge_bps_at_vwap = ((pricing.execution_probability
-                                    - fixed_limit_price
+                                let edge_bps_at_vwap = ((pricing.fair_probability
+                                    - expected_vwap_price
                                     - taker_fee_rate)
                                     * 10_000.0)
                                     .max(0.0);
                                 endgame_sweep::EndgameExecutionSizing {
-                                    shares: target_shares,
-                                    notional_usd: target_shares * fixed_limit_price,
-                                    vwap_price: fixed_limit_price,
+                                    shares: total_shares,
+                                    notional_usd: total_shares * fixed_limit_price,
+                                    vwap_price: expected_vwap_price,
                                     taker_fee_rate_at_vwap: taker_fee_rate,
                                     edge_bps_at_vwap,
                                 }
                             } else if let Some(sizing) = endgame_sweep::ev_safe_execution_sizing(
-                                pricing.execution_probability,
+                                pricing.fair_probability,
                                 endgame_cfg_for_loop.edge_floor_bps,
                                 pricing.max_price,
                                 divergence_target_notional_usd,
@@ -9991,11 +10049,10 @@ async fn main() -> Result<()> {
                                     fallback_price,
                                     endgame_fee_model,
                                 );
-                                let fallback_edge_bps = ((pricing.execution_probability
-                                    - fallback_price
-                                    - fallback_fee)
-                                    * 10_000.0)
-                                    .max(0.0);
+                                let fallback_edge_bps =
+                                    ((pricing.fair_probability - fallback_price - fallback_fee)
+                                        * 10_000.0)
+                                        .max(0.0);
                                 log_event(
                                     "endgame_ev_safe_bypass",
                                     json!({
@@ -10034,20 +10091,36 @@ async fn main() -> Result<()> {
                                     edge_bps_at_vwap: fallback_edge_bps,
                                 }
                             };
-                            let tau_ms = market_close_ms.saturating_sub(now_ms).max(0);
-                            let cex_depth_decision = endgame_cex_depth::evaluate_cex_depth(
-                                &endgame_cex_depth_cfg_for_loop,
-                                &endgame_cex_depth_cache_for_loop,
-                                symbol.as_str(),
-                                timeframe.as_str(),
-                                market_open_ts,
-                                direction.clone(),
-                                plan.base_mid_cb,
-                                tau_ms,
-                                now_ms,
-                            );
-                            let cex_depth_multiplier =
-                                cex_depth_decision.multiplier.clamp(0.0, 1.0);
+                            if sizing.edge_bps_at_vwap + 1e-9
+                                < endgame_cfg_for_loop.edge_floor_bps.max(0.0)
+                            {
+                                log_event(
+                                    "endgame_skip_dvol_fair_gate",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                        "timeframe": timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "condition_id": market.condition_id,
+                                        "token_id": token_id,
+                                        "direction": side_label,
+                                        "tick_index": plan.tick_index,
+                                        "tau_seconds": plan.tau_seconds,
+                                        "dvol_tau_sec": dvol_tau_sec,
+                                        "fair_probability": pricing.fair_probability,
+                                        "execution_probability": pricing.execution_probability,
+                                        "vwap_price": sizing.vwap_price,
+                                        "taker_fee_rate_at_vwap": sizing.taker_fee_rate_at_vwap,
+                                        "edge_bps_at_vwap": sizing.edge_bps_at_vwap,
+                                        "edge_floor_bps": endgame_cfg_for_loop.edge_floor_bps,
+                                        "best_bid": best_bid,
+                                        "best_ask": best_ask,
+                                        "poly_mid_at_intent": poly_mid_at_intent,
+                                        "dvol_payload": dvol_decision.payload.clone(),
+                                        "reason": "dvol_vwap_edge_below_floor"
+                                    }),
+                                );
+                                continue;
+                            }
                             if cex_depth_decision.enabled
                                 && cex_depth_multiplier < 1.0
                                 && cex_depth_multiplier.is_finite()
@@ -10121,6 +10194,7 @@ async fn main() -> Result<()> {
                                 divergence_reduced,
                                 divergence,
                                 cex_depth_decision,
+                                dvol_decision,
                                 poly_mid_at_intent,
                                 best_bid,
                                 best_ask,
@@ -10207,6 +10281,7 @@ async fn main() -> Result<()> {
                         let divergence_reduced = selected.divergence_reduced;
                         let divergence = selected.divergence;
                         let cex_depth_decision = selected.cex_depth_decision.clone();
+                        let dvol_decision = selected.dvol_decision.clone();
                         let poly_mid_at_intent = selected.poly_mid_at_intent;
                         let min_order_size_usd = selected.min_order_size_usd;
                         let min_tick_size = selected.min_tick_size;
@@ -10562,24 +10637,36 @@ async fn main() -> Result<()> {
                             cex_depth_decision.payload.clone(),
                         );
                         endgame_tick_payload
+                            .insert("dvol_enabled".to_string(), json!(dvol_decision.enabled));
+                        endgame_tick_payload
+                            .insert("dvol_status".to_string(), json!(dvol_decision.status));
+                        endgame_tick_payload
+                            .insert("dvol_pass".to_string(), json!(dvol_decision.pass));
+                        endgame_tick_payload.insert(
+                            "dvol_fair_probability".to_string(),
+                            json!(dvol_decision.fair_probability),
+                        );
+                        endgame_tick_payload.insert(
+                            "dvol_required_bps".to_string(),
+                            json!(dvol_decision.dvol_required_bps),
+                        );
+                        endgame_tick_payload.insert(
+                            "dvol_actual_distance_bps".to_string(),
+                            json!(dvol_decision.actual_distance_bps),
+                        );
+                        endgame_tick_payload.insert(
+                            "dvol_edge_bps_at_price".to_string(),
+                            json!(dvol_decision.edge_bps_at_price),
+                        );
+                        endgame_tick_payload
+                            .insert("dvol_payload".to_string(), dvol_decision.payload.clone());
+                        endgame_tick_payload
                             .insert("poly_mid_at_intent".to_string(), json!(poly_mid_at_intent));
                         endgame_tick_payload
                             .insert("entry_price_mode".to_string(), json!("fixed_limit_0.99"));
                         endgame_tick_payload.insert(
                             "fixed_limit_price".to_string(),
                             json!(sweep_fixed_limit_price),
-                        );
-                        endgame_tick_payload.insert(
-                            "poly_price_gate_min".to_string(),
-                            json!(sweep_poly_price_min),
-                        );
-                        endgame_tick_payload.insert(
-                            "poly_price_gate_max".to_string(),
-                            json!(sweep_poly_price_max),
-                        );
-                        endgame_tick_payload.insert(
-                            "fair_poly_gap_gate_max".to_string(),
-                            json!(sweep_fair_poly_gap_max),
                         );
                         endgame_tick_payload.insert("limit_price".to_string(), json!(limit_price));
                         endgame_tick_payload
@@ -10722,6 +10809,10 @@ async fn main() -> Result<()> {
                                     "cex_depth_multiplier": cex_depth_decision.multiplier,
                                     "cex_depth_reason": cex_depth_decision.reason.as_str(),
                                     "cex_depth_fail_open": cex_depth_decision.fail_open,
+                                    "dvol_status": dvol_decision.status,
+                                    "dvol_pass": dvol_decision.pass,
+                                    "dvol_required_bps": dvol_decision.dvol_required_bps,
+                                    "dvol_actual_distance_bps": dvol_decision.actual_distance_bps,
                                     "alpha_tick_offsets_ms": alpha_policy.tick_offsets_ms.clone(),
                                     "alpha_submit_proxy_max_age_ms": alpha_submit_proxy_max_age_ms,
                                     "alpha_source": alpha_policy.source.as_str(),
@@ -25217,35 +25308,6 @@ fn round_price_to_tick(price: f64, tick: f64) -> f64 {
     (price / tick).round() * tick
 }
 
-fn endgame_sweep_poly_price_band_for_tick(tick_index: u32) -> (f64, f64) {
-    if let Ok(raw) = std::env::var("EVPOLY_ENDGAME_SWEEP_POLY_PRICE_BAND") {
-        if let Some(parsed) = parse_price_band(raw.as_str()) {
-            return parsed;
-        }
-    }
-    let tick_key = format!("EVPOLY_ENDGAME_SWEEP_POLY_PRICE_BAND_TICK{}", tick_index);
-    if let Ok(raw) = std::env::var(tick_key.as_str()) {
-        if let Some(parsed) = parse_price_band(raw.as_str()) {
-            return parsed;
-        }
-    }
-    match tick_index {
-        0 => (0.95, 0.99),
-        1 => (0.97, 0.99),
-        _ => (0.98, 0.99),
-    }
-}
-
-fn parse_price_band(raw: &str) -> Option<(f64, f64)> {
-    let (min_raw, max_raw) = raw.split_once('-')?;
-    let min_v = min_raw.trim().parse::<f64>().ok()?;
-    let max_v = max_raw.trim().parse::<f64>().ok()?;
-    if !min_v.is_finite() || !max_v.is_finite() || min_v <= 0.0 || max_v < min_v {
-        return None;
-    }
-    Some((min_v.clamp(0.01, 0.99), max_v.clamp(0.01, 0.99)))
-}
-
 fn to_json_string(value: Value) -> Option<String> {
     serde_json::to_string(&value).ok()
 }
@@ -26283,7 +26345,9 @@ fn remote_premarket_alpha_config() -> Option<&'static RemotePremarketAlphaConfig
 fn local_endgame_alpha_policy(cfg: &EndgameExecutionConfig) -> EndgameAlphaPolicy {
     let mut tick_offsets_ms = cfg.tick_offsets_sec.clone();
     if tick_offsets_ms.is_empty() {
-        tick_offsets_ms = vec![2_000, 1_000, 0];
+        tick_offsets_ms = vec![
+            10_000, 9_000, 8_000, 7_000, 6_000, 5_000, 4_000, 3_000, 2_000, 1_000, 100,
+        ];
     }
     tick_offsets_ms.sort_by(|a, b| b.cmp(a));
     tick_offsets_ms.dedup();
@@ -29314,14 +29378,6 @@ mod tests {
     }
 
     #[test]
-    fn endgame_sweep_price_band_varies_by_tick() {
-        assert_eq!(endgame_sweep_poly_price_band_for_tick(0), (0.95, 0.99));
-        assert_eq!(endgame_sweep_poly_price_band_for_tick(1), (0.97, 0.99));
-        assert_eq!(endgame_sweep_poly_price_band_for_tick(2), (0.98, 0.99));
-        assert_eq!(endgame_sweep_poly_price_band_for_tick(7), (0.98, 0.99));
-    }
-
-    #[test]
     fn symbol_ownership_bootstrap_filters_specials_to_endgame_and_evsnipe() {
         let raw = vec![
             "BTC".to_string(),
@@ -29386,26 +29442,6 @@ mod tests {
         assert_eq!(
             endgame_proxy_source_for_symbol_timeframe("BTC", Timeframe::M5),
             EndgameProxySource::Coinbase
-        );
-    }
-
-    #[test]
-    fn endgame_uses_v1_near_base_skip_threshold() {
-        with_admin_env(
-            &[
-                ("EVPOLY_NEAR_BASE_SKIP_BPS", Some("0.1")),
-                ("EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS", None),
-            ],
-            || {
-                assert!((near_base_skip_threshold_bps() - 0.1).abs() < 1e-9);
-                assert!((endgame_v1_near_base_skip_threshold_bps() - 1.5).abs() < 1e-9);
-            },
-        );
-        with_admin_env(
-            &[("EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS", Some("2.25"))],
-            || {
-                assert!((endgame_v1_near_base_skip_threshold_bps() - 2.25).abs() < 1e-9);
-            },
         );
     }
 

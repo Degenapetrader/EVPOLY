@@ -5,7 +5,9 @@ use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
 
-const DEFAULT_ENDGAME_TICK_OFFSETS_MS: &[u64] = &[2_000, 1_000, 100];
+const DEFAULT_ENDGAME_TICK_OFFSETS_MS: &[u64] = &[
+    10_000, 9_000, 8_000, 7_000, 6_000, 5_000, 4_000, 3_000, 2_000, 1_000, 100,
+];
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]

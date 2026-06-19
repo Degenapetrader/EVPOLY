@@ -350,9 +350,6 @@ pub fn build_intent_plan_for_tick(
         bias_multiplier,
         fee_model,
     );
-    if up_pricing.edge_bps < edge_floor_bps && down_pricing.edge_bps < edge_floor_bps {
-        return None;
-    }
     // Endgame must trade the favored probability side only; do not flip side solely
     // because opposite-token orderbook edge looks temporarily better.
     let (direction, selected_side) = if p_up >= p_down {
@@ -409,16 +406,6 @@ pub fn build_intent_plan_for_tick(
             disabled_last_tick: false,
         };
     }
-    if selected_side.edge_bps < edge_floor_bps {
-        return None;
-    }
-    if !selected_side.max_price.is_finite() || selected_side.max_price <= 0.01 {
-        return None;
-    }
-    if selected_side.max_price <= cfg.min_entry_price {
-        return None;
-    }
-
     let target_size_usd =
         (per_tick_notional_usd * latency_haircut * thin_guard.size_multiplier).max(1.0);
     let score = selected_side.score;
@@ -753,7 +740,7 @@ fn symmetric_direction_probabilities(
     (p_up, p_down, z)
 }
 
-fn side_pricing_from_probability(
+pub fn side_pricing_from_probability(
     direction: Direction,
     fair_probability: f64,
     uncertainty_penalty: f64,
@@ -922,7 +909,7 @@ fn advisory_bias_state() -> (String, f64, f64) {
     ("none".to_string(), 0.0, 0.9)
 }
 
-fn normal_cdf(x: f64) -> f64 {
+pub fn normal_cdf(x: f64) -> f64 {
     // Abramowitz and Stegun approximation.
     let sign = if x < 0.0 { -1.0 } else { 1.0 };
     let z = x.abs() / (2.0_f64).sqrt();
@@ -1249,7 +1236,7 @@ mod tests {
     }
 
     #[test]
-    fn build_intent_plan_respects_min_entry_price_floor() {
+    fn build_intent_plan_defers_min_entry_price_floor_to_live_quote() {
         let market_open_ts = 1_771_602_400_i64;
         let now_ms = (market_open_ts + 240) * 1_000;
         let signal = test_signal(now_ms);
@@ -1257,7 +1244,7 @@ mod tests {
 
         let mut cfg = test_endgame_cfg();
         cfg.min_entry_price = 0.99;
-        let blocked = build_intent_plan(
+        let high_floor_plan = build_intent_plan(
             &cfg,
             "BTC",
             Timeframe::M5,
@@ -1267,7 +1254,7 @@ mod tests {
             &coinbase,
             now_ms,
         );
-        assert!(blocked.is_none());
+        assert!(high_floor_plan.is_some());
 
         cfg.min_entry_price = 0.5;
         let allowed = build_intent_plan(
@@ -1533,10 +1520,10 @@ mod tests {
         )
         .expect("eth tick1 plan");
 
-        assert!((plan_tick0.target_size_usd - 20.0).abs() < 1e-6);
-        assert!((plan_tick1.target_size_usd - 40.0).abs() < 1e-6);
-        assert!((plan_tick2.target_size_usd - 40.0).abs() < 1e-6);
-        assert!((plan_eth_tick1.target_size_usd - 32.0).abs() < 1e-6);
+        assert!((plan_tick0.target_size_usd - 4.0).abs() < 1e-6);
+        assert!((plan_tick1.target_size_usd - 5.0).abs() < 1e-6);
+        assert!((plan_tick2.target_size_usd - 6.0).abs() < 1e-6);
+        assert!((plan_eth_tick1.target_size_usd - 4.0).abs() < 1e-6);
         unsafe { std::env::remove_var("EVPOLY_ENDGAME_BASE_SIZE_USD") };
     }
 
@@ -1569,6 +1556,6 @@ mod tests {
         )
         .expect("share-sized tick0 plan");
 
-        assert!((plan.target_size_usd - 19.8).abs() < 1e-6);
+        assert!((plan.target_size_usd - 3.96).abs() < 1e-6);
     }
 }

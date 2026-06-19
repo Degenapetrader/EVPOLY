@@ -15,7 +15,7 @@
 - `DOGE/BNB/HYPE` use a more tolerant alpha freshness guard for Binance-routed submits.
 
 ## Local V1 Policy And Fast Path
-Endgame V1 uses the configured local tick offsets as its checkpoint policy. A background registry worker discovers the current Polymarket market, prewarms token metadata and market constraints, and keeps the Endgame Polymarket websocket scope subscribed before the due ticks.
+Endgame V1 uses the configured local tick offsets as its checkpoint policy. The default schedule is `10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,100` ms before close. A background registry worker discovers the current Polymarket market, prewarms token metadata and market constraints, and keeps the Endgame Polymarket websocket scope subscribed before the due ticks.
 
 Polymarket quotes are read from the compact Endgame quote cache. The REST `/books` batch worker refreshes that cache, and websocket book updates can refresh it as well. At the due tick, the decision path skips if the current market context or quote snapshot is missing/stale instead of doing cold discovery/orderbook work on the submit path.
 
@@ -25,14 +25,14 @@ Fast submit uses a typed Endgame intent and requires prewarmed order metadata by
 1. Build symbol proxy feeds (Coinbase primary feeds plus Binance guard/routing feeds).
 2. Compute/restore period base anchor.
 3. Prewarm the current Polymarket market, constraints, metadata, and quote cache before close.
-4. Use the local V1 checkpoint offsets for due ticks.
+4. Use the local V1 checkpoint offsets for due ticks from `t-10s` through the final `t-100ms` slot.
 5. For each due checkpoint, require Coinbase/Binance direction agreement for `BTC/ETH/SOL/XRP`.
 6. Build direction/probability plan.
-7. Apply mandatory near-base skip gate.
-8. Read market context and quotes from the Endgame registry/cache.
-9. Enforce quote freshness + market constraints.
-10. Apply poly price-band / entry-price guards.
-11. Apply EV-safe sizing and cap checks.
+7. Read market context and quotes from the Endgame registry/cache.
+8. Evaluate live CEX-depth cost to flip the period base boundary.
+9. Evaluate Book99-port DVOL fair probability against the live Polymarket ask/mid and remaining tau.
+10. Enforce quote freshness, market constraints, entry-price floor, and fee-aware VWAP edge.
+11. Apply share sizing and cap checks.
 12. Enqueue to arbiter/trader.
 13. Enforce submit-time proxy freshness and cached-metadata fast submit checks.
 
@@ -41,15 +41,16 @@ Endgame execution is fixed to share sizing. Base share key: `EVPOLY_ENDGAME_BASE
 
 Multipliers:
 - Symbol: `BTC=1.0`, `ETH=0.8`, `SOL/XRP/DOGE/BNB/HYPE=0.5`
-- Checkpoint size weights use fixed runtime defaults.
+- Checkpoint size weights use fixed runtime defaults: `4/5/6/7/8/9/10/11/12/13/15` percent across the eleven default checkpoints.
 
 ## Core Guards
-- Mandatory Endgame near-base skip gate defaults to `1.5` bps (`EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS`).
 - `BTC/ETH/SOL/XRP` require Coinbase and Binance to agree on up/down direction versus their period-open proxy base before an Endgame tick can submit.
+- Book99-port CEX depth checks whether live external orderbook depth is strong enough for the current distance-to-base bucket and can reduce size on weak depth.
+- Book99-port DVOL fetches Deribit BTC/ETH DVOL, uses ETH-DVOL synthetic multipliers plus RV30 overrides for alt symbols, and converts distance-to-base plus remaining tau into a fair probability.
 - Quote/proxy freshness gates
 - Submit-time stale guard from the local V1 policy
 - Safety stop defaults to `0s` so local late-window checkpoints can fire.
-- Min entry / price-band gates
+- Min entry and fee-aware VWAP edge gates
 - Per-period and strategy cap gates
 
 ## Key Env Knobs
@@ -58,6 +59,7 @@ Multipliers:
 - `EVPOLY_ENDGAME_PER_PERIOD_CAP_USD`
 - `EVPOLY_ENDGAME_SYMBOLS`
 - `EVPOLY_ENDGAME_TIMEFRAMES`
+- `EVPOLY_ENDGAME_TICK_OFFSETS_MS`
 - `EVPOLY_ENTRY_WORKER_COUNT_ENDGAME` (code default `8`)
 - `EVPOLY_ENDGAME_FAST_SUBMIT_ENABLE`
 - `EVPOLY_ENDGAME_PM_QUOTE_CACHE_ENABLE`
@@ -65,5 +67,9 @@ Multipliers:
 - `EVPOLY_ENDGAME_REGISTRY_WORKER_ENABLE`
 - `EVPOLY_ENDGAME_REST_BATCH_POLL_ENABLE`
 - `EVPOLY_ENDGAME_REQUIRE_PREWARMED_METADATA`
-- `EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS`
 - `EVPOLY_ENDGAME_SAFETY_STOP_SEC` (default `0`)
+- `EVPOLY_ENDGAME_DVOL_ENABLE`
+- `EVPOLY_ENDGAME_DVOL_REFRESH_MS`
+- `EVPOLY_ENDGAME_DVOL_STALE_MS`
+- `EVPOLY_ENDGAME_DVOL_RV_SYNTHETIC_ENABLE`
+- `EVPOLY_ENDGAME_CEX_DEPTH_GUARD_ENABLE`

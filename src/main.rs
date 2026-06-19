@@ -9063,10 +9063,15 @@ async fn main() -> Result<()> {
         let endgame_quote_cache = EndgameQuoteCache::new();
         let endgame_cex_depth_cache = EndgameCexDepthCache::new();
         let endgame_cex_depth_cfg = EndgameCexDepthConfig::from_env();
+        let endgame_cex_depth_timeframes = endgame_timeframes
+            .iter()
+            .map(|tf| tf.as_str().to_string())
+            .collect::<Vec<_>>();
         endgame_cex_depth::spawn_cex_depth_hub(
             endgame_cex_depth_cache.clone(),
             endgame_cex_depth_cfg.clone(),
             endgame_symbols.clone(),
+            endgame_cex_depth_timeframes,
         );
         if env_bool_named("EVPOLY_ENDGAME_PM_QUOTE_CACHE_ENABLE", true) {
             polymarket_ws_state.attach_endgame_quote_cache(endgame_quote_cache.clone());
@@ -10034,6 +10039,8 @@ async fn main() -> Result<()> {
                                 &endgame_cex_depth_cfg_for_loop,
                                 &endgame_cex_depth_cache_for_loop,
                                 symbol.as_str(),
+                                timeframe.as_str(),
+                                market_open_ts,
                                 direction.clone(),
                                 plan.base_mid_cb,
                                 tau_ms,
@@ -10533,6 +10540,26 @@ async fn main() -> Result<()> {
                         endgame_tick_payload.insert(
                             "cex_depth_threshold_usd".to_string(),
                             json!(cex_depth_decision.threshold_usd),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_trigger_count".to_string(),
+                            json!(cex_depth_decision.trigger_count),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_reduce_trigger_count".to_string(),
+                            json!(cex_depth_decision.reduce_trigger_count),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_increase_trigger_count".to_string(),
+                            json!(cex_depth_decision.increase_trigger_count),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_desired_venues".to_string(),
+                            json!(cex_depth_decision.desired_venues),
+                        );
+                        endgame_tick_payload.insert(
+                            "cex_depth_payload".to_string(),
+                            cex_depth_decision.payload.clone(),
                         );
                         endgame_tick_payload
                             .insert("poly_mid_at_intent".to_string(), json!(poly_mid_at_intent));

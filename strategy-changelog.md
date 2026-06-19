@@ -10,6 +10,7 @@ Older entries may reference env keys that were removed in later commits.
 ## Change Log
 
 ### 2026-06-19
+- `endgame_sweep_v1`: replaced the initial Binance-only fixed-threshold CEX-depth reducer with the Book99-style external-depth guard (`src/endgame_cex_depth.rs`, `src/main.rs`, `.env.example`, `.env.full.example`). Endgame now routes external depth by symbol/timeframe across Coinbase, Kraken, Bitstamp, Binance spot/futures, and Hyperliquid; uses adaptive hot/warm/cold polling around closes; compares flip-to-boundary cost against rolling 1h/2h/4h quantile thresholds with cold-start sample gating; applies Book99 group confirmation rules; keeps the delta-collapse trigger; and persists rolling depth history across restarts.
 - `endgame_sweep_v1`: upgraded the local Endgame fast path with live CEX-depth size reduction, bounded quote rescue, retryable readiness semantics for registry/constraints/fee/quote misses, Endgame-specific order-submit lane/timeout handling, nonblocking submit-outcome budget accounting, and fee/collateral prewarm defaults (`src/endgame_cex_depth.rs`, `src/endgame_quote_cache.rs`, `src/main.rs`, `src/api.rs`, `src/trader.rs`, `.env.example`, `.env.full.example`).
   - Applies to Endgame V1 across enabled symbols/timeframes. CEX-depth is live by default and only reduces size, never increases it; clear submit failures no longer reserve period budget, while submitted/unknown outcomes do.
 

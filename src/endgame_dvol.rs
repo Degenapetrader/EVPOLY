@@ -406,6 +406,28 @@ pub fn evaluate_dvol_fair(
     if !cfg.enabled {
         return EndgameDvolDecision::disabled(legacy_pricing);
     }
+    let normalized_symbol = normalize_symbol(input.symbol.as_str());
+    if !matches!(
+        normalized_symbol.as_str(),
+        "BTC" | "ETH" | "BNB" | "SOL" | "XRP" | "DOGE" | "HYPE"
+    ) {
+        return EndgameDvolDecision {
+            enabled: true,
+            pass: false,
+            status: "unsupported_symbol",
+            fair_probability: None,
+            dvol_required_bps: None,
+            actual_distance_bps: None,
+            edge_bps_at_price: None,
+            pricing: None,
+            payload: json!({
+                "enabled": true,
+                "status": "unsupported_symbol",
+                "symbol": normalized_symbol,
+                "decision_path": "book99_dvol_port"
+            }),
+        };
+    }
     let source_info = dvol_source_for_symbol(input.symbol.as_str(), *cfg, rv_cache, now_ms);
     let snapshot = cache
         .read()
@@ -433,7 +455,8 @@ pub fn evaluate_dvol_fair(
         };
     };
     let dvol_age_ms = now_ms.saturating_sub(snapshot.fetched_ms).max(0);
-    let stale = dvol_age_ms > cfg.stale_ms;
+    let dvol_source_age_ms = now_ms.saturating_sub(snapshot.source_ts_ms).max(0);
+    let stale = dvol_age_ms > cfg.stale_ms || dvol_source_age_ms > cfg.stale_ms;
     let bps_per_second = dvol_bps_per_second(snapshot.dvol_pct);
     let actual_distance_bps =
         signed_distance_bps(input.direction, input.base_mid, input.current_mid);
@@ -487,7 +510,11 @@ pub fn evaluate_dvol_fair(
             .map(|required| positive_distance_bps + 1e-9 >= required)
             .unwrap_or(false);
     let status = if stale {
-        "stale"
+        if dvol_source_age_ms > cfg.stale_ms {
+            "source_stale"
+        } else {
+            "stale"
+        }
     } else if bps_per_second.is_none() || dvol_required_bps.is_none() || fair_probability.is_none()
     {
         "invalid"
@@ -514,6 +541,7 @@ pub fn evaluate_dvol_fair(
             "dvol_source_ts_ms": snapshot.source_ts_ms,
             "dvol_fetched_ms": snapshot.fetched_ms,
             "dvol_age_ms": dvol_age_ms,
+            "dvol_source_age_ms": dvol_source_age_ms,
             "dvol_stale_ms": cfg.stale_ms,
             "dvol_stale": stale,
             "symbol_multiplier": source_info.multiplier,

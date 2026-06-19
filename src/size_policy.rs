@@ -13,7 +13,7 @@ const DEFAULT_SYMBOL_MULTIPLIER_HYPE: f64 = 0.5;
 const DEFAULT_PREMARKET_TIMEFRAME_MULTIPLIERS: [f64; 5] = [0.75, 1.0, 1.25, 1.25, 1.25];
 const DEFAULT_EVCURVE_TIMEFRAME_MULTIPLIERS: [f64; 4] = [0.75, 1.0, 1.25, 1.25];
 const DEFAULT_ENDGAME_TICK_MULTIPLIERS: [f64; 11] = [
-    0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.11, 0.12, 0.13, 0.15,
+    0.05, 0.052, 0.055, 0.060, 0.067, 0.076, 0.088, 0.102, 0.118, 0.132, 0.200,
 ];
 const DEFAULT_SESSIONBAND_TAU2_MULTIPLIER: f64 = 0.30;
 const DEFAULT_SESSIONBAND_TAU1_MULTIPLIER: f64 = 0.70;
@@ -88,15 +88,7 @@ pub fn sessionband_tau_multiplier(tau_sec: i64) -> Option<f64> {
 }
 
 fn endgame_tick_multipliers() -> &'static [f64; 11] {
-    static MULTIPLIERS: OnceLock<[f64; 11]> = OnceLock::new();
-    MULTIPLIERS.get_or_init(|| {
-        let mut multipliers = DEFAULT_ENDGAME_TICK_MULTIPLIERS;
-        for (idx, value) in multipliers.iter_mut().enumerate() {
-            let key = format!("EVPOLY_ENDGAME_TICK{idx}_MULTIPLIER");
-            *value = env_nonnegative_f64(key.as_str(), *value);
-        }
-        multipliers
-    })
+    &DEFAULT_ENDGAME_TICK_MULTIPLIERS
 }
 
 fn symbol_size_multipliers() -> &'static [f64; 7] {
@@ -268,10 +260,16 @@ mod tests {
 
     #[test]
     fn endgame_tick_multiplier_matches_policy() {
-        assert_eq!(endgame_tick_multiplier(0), Some(0.04));
-        assert_eq!(endgame_tick_multiplier(5), Some(0.09));
-        assert_eq!(endgame_tick_multiplier(10), Some(0.15));
+        assert_eq!(endgame_tick_multiplier(0), Some(0.05));
+        assert_eq!(endgame_tick_multiplier(5), Some(0.076));
+        assert_eq!(endgame_tick_multiplier(10), Some(0.20));
         assert_eq!(endgame_tick_multiplier(11), None);
+    }
+
+    #[test]
+    fn endgame_tick_multipliers_sum_to_one_period() {
+        let sum = (0..11).filter_map(endgame_tick_multiplier).sum::<f64>();
+        assert!((sum - 1.0).abs() < 1e-12);
     }
 
     #[test]

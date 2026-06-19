@@ -5831,31 +5831,6 @@ impl Trader {
             .map(ToString::to_string)
             .or_else(|| Some(intent.request_id.clone()));
 
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let max_decision_age_ms = std::env::var("EVPOLY_ENDGAME_DECISION_MAX_AGE_MS")
-            .ok()
-            .and_then(|v| v.trim().parse::<i64>().ok())
-            .unwrap_or(300)
-            .clamp(25, 10_000);
-        let decision_age_ms = now_ms.saturating_sub(intent.decision_ts_ms).max(0);
-        if decision_age_ms > max_decision_age_ms {
-            let reason = format!(
-                "endgame_decision_stale: decision_age_ms={} max_decision_age_ms={}",
-                decision_age_ms, max_decision_age_ms
-            );
-            self.record_entry_precheck_failure(
-                strategy_id,
-                source_timeframe.as_str(),
-                entry_mode,
-                opportunity,
-                Some(intent.limit_price),
-                None,
-                None,
-                reason.clone(),
-            );
-            return Err(anyhow!(reason));
-        }
-
         let expected_direction = if matches!(
             &opportunity.token_type,
             TokenType::BtcUp | TokenType::EthUp | TokenType::SolanaUp | TokenType::XrpUp

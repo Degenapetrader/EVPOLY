@@ -166,6 +166,47 @@ pub fn polymarket_taker_fee_rate(p: f64, fee_model: PolymarketFeeModel) -> f64 {
     fee_model.rate * pq.powi(fee_model.exponent.min(12) as i32)
 }
 
+pub fn edge_safe_limit_price(
+    fair_probability: f64,
+    edge_floor_bps: f64,
+    fee_model: PolymarketFeeModel,
+    tick_size: f64,
+) -> Option<f64> {
+    if !fair_probability.is_finite() || fair_probability <= 0.0 {
+        return None;
+    }
+    let tick_size = tick_size.clamp(0.001, 0.10);
+    let edge_floor_prob = (edge_floor_bps / 10_000.0).max(0.0);
+    let edge_at = |price: f64| -> f64 {
+        fair_probability - price - polymarket_taker_fee_rate(price, fee_model) - edge_floor_prob
+    };
+    if edge_at(tick_size) < -1e-12 {
+        return None;
+    }
+    let mut low = tick_size;
+    let mut high = 0.99_f64.min(fair_probability.clamp(tick_size, 0.999));
+    if edge_at(high) >= 0.0 {
+        return Some(floor_price_to_tick(high, tick_size).clamp(tick_size, 0.99));
+    }
+    for _ in 0..48 {
+        let mid = (low + high) * 0.5;
+        if edge_at(mid) >= 0.0 {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    Some(floor_price_to_tick(low, tick_size).clamp(tick_size, 0.99))
+}
+
+fn floor_price_to_tick(price: f64, tick_size: f64) -> f64 {
+    if !price.is_finite() || price <= 0.0 {
+        return 0.0;
+    }
+    let tick = tick_size.clamp(0.001, 0.10);
+    ((price / tick).floor() * tick).clamp(tick, 0.99)
+}
+
 pub fn timeframe_open_ts(now_ts: i64, timeframe: Timeframe) -> i64 {
     let duration = timeframe.duration_seconds().max(1);
     (now_ts.div_euclid(duration)) * duration
@@ -882,6 +923,81 @@ pub fn ev_safe_execution_sizing(
     })
 }
 
+pub fn visible_share_execution_sizing(
+    fair_probability: f64,
+    edge_floor_bps: f64,
+    max_price: f64,
+    target_shares: f64,
+    asks: &[BookAskLevel],
+    fee_model: PolymarketFeeModel,
+) -> Option<EndgameExecutionSizing> {
+    if !fair_probability.is_finite()
+        || !max_price.is_finite()
+        || !target_shares.is_finite()
+        || fair_probability <= 0.0
+        || max_price <= 0.0
+        || target_shares <= 0.0
+    {
+        return None;
+    }
+
+    let mut levels = asks
+        .iter()
+        .filter(|level| {
+            level.price.is_finite()
+                && level.size.is_finite()
+                && level.price > 0.0
+                && level.size > 0.0
+                && level.price <= max_price + 1e-12
+        })
+        .collect::<Vec<_>>();
+    levels.sort_by(|a, b| {
+        a.price
+            .partial_cmp(&b.price)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut remaining_shares = target_shares;
+    let mut total_shares = 0.0_f64;
+    let mut total_notional = 0.0_f64;
+    let mut total_fee_notional = 0.0_f64;
+    for level in levels {
+        if remaining_shares <= 0.0 {
+            break;
+        }
+        let take_shares = remaining_shares.min(level.size);
+        if !take_shares.is_finite() || take_shares <= 0.0 {
+            continue;
+        }
+        let fee_rate = polymarket_taker_fee_rate(level.price, fee_model);
+        total_shares += take_shares;
+        total_notional += take_shares * level.price;
+        total_fee_notional += take_shares * fee_rate;
+        remaining_shares -= take_shares;
+    }
+
+    if total_shares <= 0.0 || total_notional <= 0.0 {
+        return None;
+    }
+    let vwap_price = total_notional / total_shares;
+    let fee_per_share = total_fee_notional / total_shares;
+    if !vwap_price.is_finite() || !fee_per_share.is_finite() || vwap_price <= 0.0 {
+        return None;
+    }
+    let edge_bps_at_vwap = ((fair_probability - vwap_price - fee_per_share) * 10_000.0).max(0.0);
+    if edge_bps_at_vwap + 1e-6 < edge_floor_bps.max(0.0) {
+        return None;
+    }
+
+    Some(EndgameExecutionSizing {
+        shares: total_shares,
+        notional_usd: total_notional,
+        vwap_price,
+        taker_fee_rate_at_vwap: fee_per_share,
+        edge_bps_at_vwap,
+    })
+}
+
 pub fn apply_divergence_size_guard(
     target_notional_usd: f64,
     fair_probability: f64,
@@ -1094,6 +1210,40 @@ mod tests {
         assert!(sizing.notional_usd > 0.0);
         assert!(sizing.vwap_price <= 0.43 + 1e-9);
         assert!(sizing.edge_bps_at_vwap >= 30.0);
+    }
+
+    #[test]
+    fn edge_safe_limit_price_respects_fair_fee_and_edge_floor() {
+        let limit = edge_safe_limit_price(0.95, 50.0, PolymarketFeeModel::default(), 0.01)
+            .expect("expected edge-safe limit");
+        assert!(limit <= 0.94 + 1e-9);
+        assert!(limit > 0.90);
+    }
+
+    #[test]
+    fn visible_share_execution_sizing_uses_visible_depth_only() {
+        let asks = vec![
+            BookAskLevel {
+                price: 0.88,
+                size: 10.0,
+            },
+            BookAskLevel {
+                price: 0.96,
+                size: 500.0,
+            },
+        ];
+        let sizing = visible_share_execution_sizing(
+            0.95,
+            50.0,
+            0.90,
+            100.0,
+            &asks,
+            PolymarketFeeModel::default(),
+        )
+        .expect("expected partial visible sizing");
+        assert_eq!(sizing.shares, 10.0);
+        assert!((sizing.vwap_price - 0.88).abs() < 1e-9);
+        assert!(sizing.edge_bps_at_vwap >= 50.0);
     }
 
     #[test]
@@ -1520,10 +1670,10 @@ mod tests {
         )
         .expect("eth tick1 plan");
 
-        assert!((plan_tick0.target_size_usd - 4.0).abs() < 1e-6);
-        assert!((plan_tick1.target_size_usd - 5.0).abs() < 1e-6);
-        assert!((plan_tick2.target_size_usd - 6.0).abs() < 1e-6);
-        assert!((plan_eth_tick1.target_size_usd - 4.0).abs() < 1e-6);
+        assert!((plan_tick0.target_size_usd - 5.0).abs() < 1e-6);
+        assert!((plan_tick1.target_size_usd - 5.2).abs() < 1e-6);
+        assert!((plan_tick2.target_size_usd - 5.5).abs() < 1e-6);
+        assert!((plan_eth_tick1.target_size_usd - 4.16).abs() < 1e-6);
         unsafe { std::env::remove_var("EVPOLY_ENDGAME_BASE_SIZE_USD") };
     }
 
@@ -1556,6 +1706,6 @@ mod tests {
         )
         .expect("share-sized tick0 plan");
 
-        assert!((plan.target_size_usd - 3.96).abs() < 1e-6);
+        assert!((plan.target_size_usd - 4.95).abs() < 1e-6);
     }
 }

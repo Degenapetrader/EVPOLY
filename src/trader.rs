@@ -5819,17 +5819,21 @@ impl Trader {
 
     fn infer_endgame_fak_buy_fill(
         response: &crate::models::OrderResponse,
-        requested_units: f64,
+        _requested_units: f64,
         requested_notional: f64,
         limit_price: f64,
         tick: f64,
     ) -> Option<(f64, f64, f64, &'static str)> {
         let making = Self::parse_order_response_amount(response.making_amount.as_deref())?;
         let taking = Self::parse_order_response_amount(response.taking_amount.as_deref())?;
-        let max_units = requested_units.max(0.0) * 1.05 + 1e-6;
         let max_notional = requested_notional.max(0.0) * 1.05 + 1e-6;
         let min_price = tick.max(0.000_001) * 0.5;
         let max_price = limit_price.max(tick) + tick.max(0.000_001) * 2.0 + 1e-9;
+        let max_units_by_notional = if min_price > 0.0 {
+            max_notional / min_price + 1e-6
+        } else {
+            f64::INFINITY
+        };
 
         let candidates = [
             (taking, making, "making_usdc_taking_shares"),
@@ -5842,7 +5846,7 @@ impl Trader {
                     || !notional.is_finite()
                     || shares <= 0.0
                     || notional <= 0.0
-                    || shares > max_units
+                    || shares > max_units_by_notional
                     || notional > max_notional
                 {
                     return None;
@@ -6304,6 +6308,28 @@ impl Trader {
                     "FILLED",
                     Some(opportunity.condition_id.as_str()),
                 )?;
+                self.on_order_filled(FillTransition {
+                    order_id: Some(tracking_order_id.clone()),
+                    trade_key: Some(trade_key.clone()),
+                    strategy_id: Some(strategy_id.to_string()),
+                    period_timestamp: opportunity.period_timestamp,
+                    timeframe: Some(source_timeframe.clone()),
+                    condition_id: Some(opportunity.condition_id.clone()),
+                    token_id: opportunity.token_id.clone(),
+                    token_type: Some(opportunity.token_type.display_name().to_string()),
+                    side: Some("BUY".to_string()),
+                    price: Some(filled_price),
+                    units: Some(filled_units),
+                    notional_usd: Some(filled_notional),
+                    reason: format!(
+                        "endgame_fak_runtime_fill:{}:making_amount={:?}:taking_amount={:?}:source={}",
+                        response.status,
+                        response.making_amount,
+                        response.taking_amount,
+                        fill_amount_source
+                    ),
+                    reconciled: false,
+                });
                 if tracking_order_id != provisional_order_id {
                     self.upsert_pending_order_tracking_for_strategy(
                         &provisional_order_id,
@@ -16228,6 +16254,19 @@ mod tests {
         assert!((shares - 50.0).abs() < 1e-9);
         assert!((notional - 25.0).abs() < 1e-9);
         assert!((price - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn endgame_fak_fill_accepts_cheaper_notional_execution() {
+        let response = fak_order_response("5.939998", "7.518985");
+        let (shares, notional, price, source) =
+            Trader::infer_endgame_fak_buy_fill(&response, 6.46, 5.9432, 0.92, 0.01)
+                .expect("cheaper FAK execution can fill more shares than requested_units");
+
+        assert_eq!(source, "making_usdc_taking_shares");
+        assert!((shares - 7.518985).abs() < 1e-9);
+        assert!((notional - 5.939998).abs() < 1e-9);
+        assert!((price - 0.78999998).abs() < 1e-6);
     }
 
     #[test]

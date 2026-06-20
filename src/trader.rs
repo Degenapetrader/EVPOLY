@@ -5812,6 +5812,47 @@ impl Trader {
         .await
     }
 
+    fn parse_order_response_amount(raw: Option<&str>) -> Option<f64> {
+        raw.and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+    }
+
+    fn infer_endgame_fak_buy_fill(
+        response: &crate::models::OrderResponse,
+        requested_units: f64,
+        requested_notional: f64,
+        limit_price: f64,
+        tick: f64,
+    ) -> Option<(f64, f64, f64, &'static str)> {
+        let making = Self::parse_order_response_amount(response.making_amount.as_deref())?;
+        let taking = Self::parse_order_response_amount(response.taking_amount.as_deref())?;
+        let max_units = requested_units.max(0.0) * 1.05 + 1e-6;
+        let max_notional = requested_notional.max(0.0) * 1.05 + 1e-6;
+        let min_price = tick.max(0.000_001) * 0.5;
+        let max_price = limit_price.max(tick) + tick.max(0.000_001) * 2.0 + 1e-9;
+
+        let candidates = [
+            (taking, making, "making_usdc_taking_shares"),
+            (making, taking, "making_shares_taking_usdc"),
+        ];
+        candidates
+            .into_iter()
+            .find_map(|(shares, notional, source)| {
+                if !shares.is_finite()
+                    || !notional.is_finite()
+                    || shares <= 0.0
+                    || notional <= 0.0
+                    || shares > max_units
+                    || notional > max_notional
+                {
+                    return None;
+                }
+                let price = notional / shares;
+                (price.is_finite() && price >= min_price && price <= max_price)
+                    .then_some((shares, notional, price, source))
+            })
+    }
+
     pub async fn execute_endgame_buy_fast(
         &self,
         opportunity: &BuyOpportunity,
@@ -5995,7 +6036,8 @@ impl Trader {
             &opportunity.token_id,
             trade_key.as_str(),
         );
-        let post_only_enabled = Self::entry_post_only_enabled_for_strategy(strategy_id);
+        let post_only_enabled = false;
+        let endgame_order_type = "FAK";
         let submit_ts_ms = chrono::Utc::now().timestamp_millis();
         let submit_instant = std::time::Instant::now();
         let api_call_started_ms = chrono::Utc::now().timestamp_millis();
@@ -6004,9 +6046,9 @@ impl Trader {
             side: "BUY".to_string(),
             size: format!("{:.2}", units),
             price: format!("{:.*}", Self::tick_decimal_places(tick), submit_price),
-            order_type: "GTC".to_string(),
+            order_type: endgame_order_type.to_string(),
             expiration_ts: None,
-            post_only: if post_only_enabled { Some(true) } else { None },
+            post_only: None,
         };
 
         if self.simulation_mode {
@@ -6072,7 +6114,8 @@ impl Trader {
                 let pre_api_ms = api_call_started_ms.saturating_sub(submit_ts_ms);
                 let submit_meta = json!({
                     "phase": "submit",
-                    "order_kind": "endgame_fast_limit_buy",
+                    "order_kind": "endgame_fast_fak_buy",
+                    "order_type": endgame_order_type,
                     "request_id": request_id.as_deref(),
                     "quote_source": intent.quote_source.as_str(),
                     "quote_updated_ms": intent.quote_updated_ms,
@@ -6113,7 +6156,8 @@ impl Trader {
 
                 let ack_meta = json!({
                     "phase": "ack",
-                    "order_kind": "endgame_fast_limit_buy",
+                    "order_kind": "endgame_fast_fak_buy",
+                    "order_type": endgame_order_type,
                     "request_id": request_id.as_deref(),
                     "order_id": tracking_order_id.as_str(),
                     "status": response.status.as_str(),
@@ -6130,6 +6174,9 @@ impl Trader {
                     "api_post_order_ms": api_timing.post_order_ms,
                     "api_retry_count": api_timing.retry_count,
                     "api_order_type_effective": api_timing.order_type_effective.as_str(),
+                    "making_amount": response.making_amount.as_deref(),
+                    "taking_amount": response.taking_amount.as_deref(),
+                    "trade_ids": response.trade_ids.clone(),
                     "quote_source": intent.quote_source.as_str()
                 });
                 self.record_trade_event_for_strategy(
@@ -6155,6 +6202,59 @@ impl Trader {
                     Some(ack_meta.to_string()),
                 );
 
+                let Some((filled_units, filled_notional, filled_price, fill_amount_source)) =
+                    Self::infer_endgame_fak_buy_fill(
+                        &response,
+                        units,
+                        investment_amount,
+                        submit_price,
+                        tick,
+                    )
+                else {
+                    self.upsert_pending_order_tracking_for_strategy(
+                        &tracking_order_id,
+                        &trade_key,
+                        &opportunity.token_id,
+                        source_timeframe.as_str(),
+                        entry_mode.as_str(),
+                        Some(strategy_id),
+                        Some(Self::token_family(&opportunity.token_type)),
+                        opportunity.period_timestamp,
+                        submit_price,
+                        0.0,
+                        "BUY",
+                        "CANCELED",
+                        Some(opportunity.condition_id.as_str()),
+                    )?;
+                    log_event(
+                        "endgame_fast_entry_no_fill",
+                        json!({
+                            "strategy_id": strategy_id,
+                            "request_id": request_id.as_deref(),
+                            "timeframe": source_timeframe.as_str(),
+                            "period_timestamp": opportunity.period_timestamp,
+                            "condition_id": opportunity.condition_id.as_str(),
+                            "token_id": opportunity.token_id.as_str(),
+                            "order_id": tracking_order_id.as_str(),
+                            "status": response.status.as_str(),
+                            "requested_price": submit_price,
+                            "requested_units": units,
+                            "requested_notional_usd": investment_amount,
+                            "making_amount": response.making_amount.as_deref(),
+                            "taking_amount": response.taking_amount.as_deref(),
+                            "trade_ids": response.trade_ids.clone(),
+                            "reason": "fak_ack_without_positive_fill"
+                        }),
+                    );
+                    return Err(anyhow!(
+                        "endgame_fak_no_fill: status={} order_id={} making_amount={:?} taking_amount={:?}",
+                        response.status,
+                        tracking_order_id,
+                        response.making_amount,
+                        response.taking_amount
+                    ));
+                };
+
                 let mut pending = self.pending_trades.lock().await;
                 pending.insert(
                     trade_key.clone(),
@@ -6162,10 +6262,10 @@ impl Trader {
                         token_id: opportunity.token_id.clone(),
                         condition_id: opportunity.condition_id.clone(),
                         token_type: opportunity.token_type.clone(),
-                        investment_amount,
-                        units,
-                        purchase_price: submit_price,
-                        sell_price: submit_price,
+                        investment_amount: filled_notional,
+                        units: filled_units,
+                        purchase_price: filled_price,
+                        sell_price: filled_price,
                         timestamp: submit_instant,
                         market_timestamp: opportunity.period_timestamp,
                         source_timeframe: source_timeframe.clone(),
@@ -6177,8 +6277,8 @@ impl Trader {
                             source_timeframe.as_str(),
                         )),
                         sold: false,
-                        confirmed_balance: None,
-                        buy_order_confirmed: false,
+                        confirmed_balance: Some(filled_units),
+                        buy_order_confirmed: true,
                         limit_sell_orders_placed: false,
                         no_sell: true,
                         claim_on_closure: true,
@@ -6198,10 +6298,10 @@ impl Trader {
                     Some(strategy_id),
                     Some(Self::token_family(&opportunity.token_type)),
                     opportunity.period_timestamp,
-                    submit_price,
-                    investment_amount,
+                    filled_price,
+                    filled_notional,
                     "BUY",
-                    "OPEN",
+                    "FILLED",
                     Some(opportunity.condition_id.as_str()),
                 )?;
                 if tracking_order_id != provisional_order_id {
@@ -6215,7 +6315,7 @@ impl Trader {
                         Some(Self::token_family(&opportunity.token_type)),
                         opportunity.period_timestamp,
                         submit_price,
-                        investment_amount,
+                        0.0,
                         "BUY",
                         "SUPERSEDED",
                         Some(opportunity.condition_id.as_str()),
@@ -6232,9 +6332,16 @@ impl Trader {
                         "condition_id": opportunity.condition_id.as_str(),
                         "token_id": opportunity.token_id.as_str(),
                         "order_id": tracking_order_id.as_str(),
-                        "price": submit_price,
-                        "units": units,
-                        "notional_usd": investment_amount,
+                        "requested_price": submit_price,
+                        "requested_units": units,
+                        "requested_notional_usd": investment_amount,
+                        "fill_price": filled_price,
+                        "filled_units": filled_units,
+                        "filled_notional_usd": filled_notional,
+                        "fill_amount_source": fill_amount_source,
+                        "making_amount": response.making_amount.as_deref(),
+                        "taking_amount": response.taking_amount.as_deref(),
+                        "trade_ids": response.trade_ids.clone(),
                         "ack_latency_ms": ack_latency_ms,
                         "api_total_ms": api_timing.total_api_ms
                     }),
@@ -15932,7 +16039,7 @@ impl Trader {
 mod tests {
     use super::{EntryExecutionMode, MarketOrderConstraints, Trader};
     use crate::detector::TokenType;
-    use crate::models::PendingTrade;
+    use crate::models::{OrderResponse, PendingTrade};
     use crate::tracking_db::MmWalletInventoryRow;
 
     fn redemption_test_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -16084,6 +16191,54 @@ mod tests {
             Some("endgame:5m:1771430700:token-a"),
         );
         assert!(key.ends_with("_endgame_99_5m_endgame_sweep_v1"));
+    }
+
+    fn fak_order_response(making_amount: &str, taking_amount: &str) -> OrderResponse {
+        OrderResponse {
+            order_id: Some("order-fill".to_string()),
+            status: "matched".to_string(),
+            message: None,
+            making_amount: Some(making_amount.to_string()),
+            taking_amount: Some(taking_amount.to_string()),
+            trade_ids: vec!["trade-a".to_string()],
+        }
+    }
+
+    #[test]
+    fn endgame_fak_fill_infers_taking_shares_shape() {
+        let response = fak_order_response("25.00", "50.00");
+        let (shares, notional, price, source) =
+            Trader::infer_endgame_fak_buy_fill(&response, 100.0, 55.0, 0.55, 0.01)
+                .expect("FAK fill should be inferred");
+
+        assert_eq!(source, "making_usdc_taking_shares");
+        assert!((shares - 50.0).abs() < 1e-9);
+        assert!((notional - 25.0).abs() < 1e-9);
+        assert!((price - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn endgame_fak_fill_accepts_inverted_amount_shape() {
+        let response = fak_order_response("50.00", "25.00");
+        let (shares, notional, price, source) =
+            Trader::infer_endgame_fak_buy_fill(&response, 100.0, 55.0, 0.55, 0.01)
+                .expect("FAK fill should be inferred");
+
+        assert_eq!(source, "making_shares_taking_usdc");
+        assert!((shares - 50.0).abs() < 1e-9);
+        assert!((notional - 25.0).abs() < 1e-9);
+        assert!((price - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn endgame_fak_fill_rejects_zero_or_above_limit_amounts() {
+        let zero = fak_order_response("0", "0");
+        assert!(Trader::infer_endgame_fak_buy_fill(&zero, 100.0, 55.0, 0.55, 0.01).is_none());
+
+        let above_limit = fak_order_response("100.00", "100.00");
+        assert!(
+            Trader::infer_endgame_fak_buy_fill(&above_limit, 100.0, 55.0, 0.55, 0.01).is_none()
+        );
     }
 
     #[test]

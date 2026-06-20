@@ -5062,6 +5062,9 @@ impl PolymarketApi {
                             "Order placed successfully. Order ID unavailable".to_string()
                         }),
                 ),
+                making_amount: Some(response.making_amount.to_string()),
+                taking_amount: Some(response.taking_amount.to_string()),
+                trade_ids: response.trade_ids.clone(),
             },
             PlaceOrderHandleTiming {
                 post_order_ms,
@@ -5279,6 +5282,9 @@ impl PolymarketApi {
                                     "Order placed successfully. Order ID unavailable".to_string()
                                 }),
                         ),
+                        making_amount: Some(response.making_amount.to_string()),
+                        taking_amount: Some(response.taking_amount.to_string()),
+                        trade_ids: response.trade_ids.clone(),
                     }),
                     timing,
                     error: None,
@@ -8487,6 +8493,9 @@ impl PolymarketApi {
             } else {
                 response.error_msg.clone()
             },
+            making_amount: Some(response.making_amount.to_string()),
+            taking_amount: Some(response.taking_amount.to_string()),
+            trade_ids: response.trade_ids.clone(),
         };
 
         if normalized_order_id.is_some() {

@@ -41,6 +41,7 @@ use polymarket_arbitrage_bot::endgame_cex_depth::{
 use polymarket_arbitrage_bot::endgame_dvol::{self, EndgameDvolDecision};
 use polymarket_arbitrage_bot::endgame_quote_cache::{EndgameQuoteCache, EndgameQuoteSource};
 use polymarket_arbitrage_bot::endgame_registry::EndgameRegistry;
+use polymarket_arbitrage_bot::endgame_rtds::{self, EndgameRtdsGuardDecision};
 use polymarket_arbitrage_bot::endgame_sweep;
 use polymarket_arbitrage_bot::entry_idempotency::{
     classify_entry_error, EnqueueDedupe, EntryIdempotencyConfig, EntryLogicalKey, EntryScopeKey,
@@ -9062,7 +9063,10 @@ async fn main() -> Result<()> {
         let endgame_cex_depth_cfg = EndgameCexDepthConfig::from_env();
         let endgame_dvol_cache = endgame_dvol::new_dvol_cache();
         let endgame_dvol_rv_cache = endgame_dvol::new_rv_multiplier_cache();
+        let endgame_atr_cache = endgame_dvol::new_atr_multiplier_cache();
         let endgame_dvol_cfg = endgame_dvol::EndgameDvolConfig::from_env();
+        let endgame_rtds_cfg = endgame_rtds::EndgameRtdsGuardConfig::from_env();
+        let endgame_rtds_states = endgame_rtds::new_rtds_price_states(endgame_symbols.as_slice());
         let endgame_cex_depth_timeframes = endgame_timeframes
             .iter()
             .map(|tf| tf.as_str().to_string())
@@ -9075,6 +9079,12 @@ async fn main() -> Result<()> {
         );
         endgame_dvol::spawn_dvol_refresh(endgame_dvol_cache.clone(), endgame_dvol_cfg);
         endgame_dvol::spawn_rv_multiplier_refresh(endgame_dvol_rv_cache.clone(), endgame_dvol_cfg);
+        endgame_dvol::spawn_atr_multiplier_refresh(
+            endgame_atr_cache.clone(),
+            endgame_dvol_cfg,
+            endgame_symbols.clone(),
+        );
+        endgame_rtds::spawn_rtds_chainlink_feed(endgame_rtds_states.clone(), endgame_rtds_cfg);
         if env_bool_named("EVPOLY_ENDGAME_PM_QUOTE_CACHE_ENABLE", true) {
             polymarket_ws_state.attach_endgame_quote_cache(endgame_quote_cache.clone());
         }
@@ -9096,7 +9106,10 @@ async fn main() -> Result<()> {
         let endgame_cex_depth_cfg_for_loop = endgame_cex_depth_cfg.clone();
         let endgame_dvol_cache_for_loop = endgame_dvol_cache.clone();
         let endgame_dvol_rv_cache_for_loop = endgame_dvol_rv_cache.clone();
+        let endgame_atr_cache_for_loop = endgame_atr_cache.clone();
         let endgame_dvol_cfg_for_loop = endgame_dvol_cfg;
+        let endgame_rtds_cfg_for_loop = endgame_rtds_cfg;
+        let endgame_rtds_states_for_loop = endgame_rtds_states.clone();
         tokio::spawn(async move {
             let safety_poll_ms = i64::try_from(endgame_cfg_for_loop.safety_poll_ms)
                 .unwrap_or(500)
@@ -9190,6 +9203,7 @@ async fn main() -> Result<()> {
                 divergence_reduced: bool,
                 divergence: Option<f64>,
                 cex_depth_decision: EndgameCexDepthDecision,
+                rtds_guard_decision: EndgameRtdsGuardDecision,
                 dvol_decision: EndgameDvolDecision,
                 poly_mid_at_intent: Option<f64>,
                 best_bid: Option<f64>,
@@ -9919,6 +9933,41 @@ async fn main() -> Result<()> {
                                     );
                                     continue;
                                 }
+                                let rtds_guard_decision = endgame_rtds::evaluate_rtds_guard(
+                                    &endgame_rtds_cfg_for_loop,
+                                    &endgame_rtds_states_for_loop,
+                                    symbol.as_str(),
+                                    timeframe.as_str(),
+                                    market_open_ts,
+                                    market_close_ts,
+                                    i64::try_from(plan.tau_seconds).unwrap_or(i64::MAX),
+                                    direction,
+                                    now_ms,
+                                );
+                                if let Some(rtds_skip_reason) = rtds_guard_decision.skip_reason {
+                                    log_event(
+                                        "endgame_skip_rtds_guard",
+                                        json!({
+                                            "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                            "timeframe": timeframe.as_str(),
+                                            "market_open_ts": market_open_ts,
+                                            "condition_id": market.condition_id.as_str(),
+                                            "token_id": token_id.as_str(),
+                                            "direction": side_label.as_str(),
+                                            "tick_index": plan.tick_index,
+                                            "tau_seconds": plan.tau_seconds,
+                                            "rtds_payload": rtds_guard_decision.payload.clone(),
+                                            "reason": rtds_skip_reason
+                                        }),
+                                    );
+                                    continue;
+                                }
+                                let atr_decision = endgame_dvol::atr_multiplier_for_symbol(
+                                    &endgame_atr_cache_for_loop,
+                                    &endgame_dvol_cfg_for_loop,
+                                    symbol.as_str(),
+                                    now_ms,
+                                );
                                 let dvol_tau_sec = if tau_ms <= 500 {
                                     0
                                 } else {
@@ -9962,6 +10011,10 @@ async fn main() -> Result<()> {
                                         submit_price: dvol_probe_price,
                                         required_probability: dvol_required_probability,
                                         cex_depth_multiplier,
+                                        required_distance_extra_bps: rtds_guard_decision
+                                            .no_guard_extra_bps,
+                                        atr_multiplier: atr_decision.multiplier,
+                                        atr_payload: atr_decision.payload.clone(),
                                         uncertainty_penalty: plan.uncertainty_penalty,
                                         buffer_prob: plan.buffer_prob,
                                         edge_floor_prob: plan.edge_floor_prob,
@@ -9991,6 +10044,11 @@ async fn main() -> Result<()> {
                                             "poly_mid_at_intent": poly_mid_at_intent,
                                             "cex_depth_multiplier": cex_depth_decision.multiplier,
                                             "cex_depth_reason": cex_depth_decision.reason.as_str(),
+                                            "rtds_guard_ready": rtds_guard_decision.ready,
+                                            "rtds_no_guard_extra_bps": rtds_guard_decision.no_guard_extra_bps,
+                                            "rtds_payload": rtds_guard_decision.payload.clone(),
+                                            "atr_multiplier": atr_decision.multiplier,
+                                            "atr_payload": atr_decision.payload.clone(),
                                             "dvol_payload": dvol_decision.payload.clone(),
                                             "reason": "dvol_price_not_worth_trade"
                                         }),
@@ -10168,28 +10226,14 @@ async fn main() -> Result<()> {
                                     if !target_shares.is_finite() || target_shares <= 0.0 {
                                         continue;
                                     }
-                                    let visible_sizing =
-                                        endgame_sweep::visible_share_execution_sizing(
-                                            pricing.fair_probability,
-                                            endgame_cfg_for_loop.edge_floor_bps,
-                                            limit_price,
-                                            target_shares,
-                                            ask_levels.as_slice(),
-                                            endgame_fee_model,
-                                        );
-                                    if visible_sizing.is_some() {
-                                        visible_sizing
-                                    } else if asks_within_qmax == 0 {
-                                        endgame_sweep::resting_share_limit_sizing(
-                                            pricing.fair_probability,
-                                            endgame_cfg_for_loop.edge_floor_bps,
-                                            limit_price,
-                                            target_shares,
-                                            endgame_fee_model,
-                                        )
-                                    } else {
-                                        None
-                                    }
+                                    endgame_sweep::visible_share_execution_sizing(
+                                        pricing.fair_probability,
+                                        endgame_cfg_for_loop.edge_floor_bps,
+                                        limit_price,
+                                        target_shares,
+                                        ask_levels.as_slice(),
+                                        endgame_fee_model,
+                                    )
                                 } else if let Some(sizing) = endgame_sweep::ev_safe_execution_sizing(
                                     pricing.fair_probability,
                                     endgame_cfg_for_loop.edge_floor_bps,
@@ -10308,6 +10352,7 @@ async fn main() -> Result<()> {
                                     divergence_reduced,
                                     divergence,
                                     cex_depth_decision,
+                                    rtds_guard_decision,
                                     dvol_decision,
                                     poly_mid_at_intent,
                                     best_bid,
@@ -10375,6 +10420,7 @@ async fn main() -> Result<()> {
                             let divergence_reduced = selected.divergence_reduced;
                             let divergence = selected.divergence;
                             let cex_depth_decision = selected.cex_depth_decision.clone();
+                            let rtds_guard_decision = selected.rtds_guard_decision.clone();
                             let dvol_decision = selected.dvol_decision.clone();
                             let poly_mid_at_intent = selected.poly_mid_at_intent;
                             let min_order_size_usd = selected.min_order_size_usd;
@@ -10784,6 +10830,22 @@ async fn main() -> Result<()> {
                                 "cex_depth_payload".to_string(),
                                 cex_depth_decision.payload.clone(),
                             );
+                            endgame_tick_payload.insert(
+                                "rtds_guard_enabled".to_string(),
+                                json!(rtds_guard_decision.enabled),
+                            );
+                            endgame_tick_payload.insert(
+                                "rtds_guard_ready".to_string(),
+                                json!(rtds_guard_decision.ready),
+                            );
+                            endgame_tick_payload.insert(
+                                "rtds_no_guard_extra_bps".to_string(),
+                                json!(rtds_guard_decision.no_guard_extra_bps),
+                            );
+                            endgame_tick_payload.insert(
+                                "rtds_guard_payload".to_string(),
+                                rtds_guard_decision.payload.clone(),
+                            );
                             endgame_tick_payload
                                 .insert("dvol_enabled".to_string(), json!(dvol_decision.enabled));
                             endgame_tick_payload
@@ -10966,6 +11028,9 @@ async fn main() -> Result<()> {
                                         "cex_depth_multiplier": cex_depth_decision.multiplier,
                                         "cex_depth_reason": cex_depth_decision.reason.as_str(),
                                         "cex_depth_fail_open": cex_depth_decision.fail_open,
+                                        "rtds_guard_ready": rtds_guard_decision.ready,
+                                        "rtds_no_guard_extra_bps": rtds_guard_decision.no_guard_extra_bps,
+                                        "rtds_guard_payload": rtds_guard_decision.payload.clone(),
                                         "dvol_status": dvol_decision.status,
                                         "dvol_pass": dvol_decision.pass,
                                         "dvol_required_bps": dvol_decision.dvol_required_bps,

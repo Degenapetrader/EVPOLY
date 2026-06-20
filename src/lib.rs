@@ -11,6 +11,7 @@ pub mod endgame_cex_depth;
 pub mod endgame_dvol;
 pub mod endgame_quote_cache;
 pub mod endgame_registry;
+pub mod endgame_rtds;
 pub mod endgame_sweep;
 pub mod entry_idempotency;
 pub mod evcurve;

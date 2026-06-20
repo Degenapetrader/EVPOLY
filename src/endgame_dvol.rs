@@ -31,6 +31,13 @@ pub struct EndgameDvolConfig {
     pub rv_synthetic_min_samples: usize,
     pub rv_synthetic_min_multiplier: f64,
     pub rv_synthetic_max_multiplier: f64,
+    pub atr_enabled: bool,
+    pub atr_refresh_ms: u64,
+    pub atr_timeout_ms: u64,
+    pub atr_stale_ms: i64,
+    pub atr_fallback_multiplier: f64,
+    pub atr_min_multiplier: f64,
+    pub atr_max_multiplier: f64,
 }
 
 impl EndgameDvolConfig {
@@ -100,6 +107,19 @@ impl EndgameDvolConfig {
                 0.0,
                 10.0,
             ),
+            atr_enabled: env_bool("EVPOLY_ENDGAME_ATR_ENABLE", true),
+            atr_refresh_ms: env_u64("EVPOLY_ENDGAME_ATR_REFRESH_MS", 60_000, 10_000, 10 * 60_000),
+            atr_timeout_ms: env_u64("EVPOLY_ENDGAME_ATR_TIMEOUT_MS", 1_500, 250, 10_000),
+            atr_stale_ms: env_i64(
+                "EVPOLY_ENDGAME_ATR_STALE_MS",
+                3 * 60_000,
+                30_000,
+                30 * 60_000,
+            ),
+            atr_fallback_multiplier: env_f64("EVPOLY_ENDGAME_ATR_FALLBACK_MULT", 1.0, 0.0, 10.0),
+            atr_min_multiplier: env_f64("EVPOLY_ENDGAME_ATR_MIN_MULT", 1.0, 0.0, 10.0),
+            atr_max_multiplier: env_f64("EVPOLY_ENDGAME_ATR_MAX_MULT", 2.5, 0.0, 10.0)
+                .max(env_f64("EVPOLY_ENDGAME_ATR_MIN_MULT", 1.0, 0.0, 10.0)),
         }
     }
 }
@@ -127,6 +147,28 @@ pub struct EndgameDvolRvMultiplierSnapshot {
 
 pub type EndgameDvolRvMultiplierCache =
     Arc<StdRwLock<HashMap<String, EndgameDvolRvMultiplierSnapshot>>>;
+
+#[derive(Debug, Clone)]
+pub struct EndgameAtrMultiplierSnapshot {
+    pub multiplier: f64,
+    pub raw_multiplier: f64,
+    pub atr14_1m_bps: Option<f64>,
+    pub atr14_1h_bps: Option<f64>,
+    pub atr14_1d_bps: Option<f64>,
+    pub multiplier_1m: f64,
+    pub multiplier_1h: f64,
+    pub multiplier_1d: f64,
+    pub fetched_ms: i64,
+    pub source: &'static str,
+}
+
+pub type EndgameAtrMultiplierCache = Arc<StdRwLock<HashMap<String, EndgameAtrMultiplierSnapshot>>>;
+
+#[derive(Debug, Clone)]
+pub struct EndgameAtrMultiplierDecision {
+    pub multiplier: f64,
+    pub payload: Value,
+}
 
 #[derive(Debug, Clone)]
 pub struct EndgameDvolDecision {
@@ -168,6 +210,9 @@ pub struct EndgameDvolInput {
     pub submit_price: f64,
     pub required_probability: f64,
     pub cex_depth_multiplier: f64,
+    pub required_distance_extra_bps: f64,
+    pub atr_multiplier: f64,
+    pub atr_payload: Value,
     pub uncertainty_penalty: f64,
     pub buffer_prob: f64,
     pub edge_floor_prob: f64,
@@ -195,6 +240,10 @@ pub fn new_dvol_cache() -> EndgameDvolCache {
 }
 
 pub fn new_rv_multiplier_cache() -> EndgameDvolRvMultiplierCache {
+    Arc::new(StdRwLock::new(HashMap::new()))
+}
+
+pub fn new_atr_multiplier_cache() -> EndgameAtrMultiplierCache {
     Arc::new(StdRwLock::new(HashMap::new()))
 }
 
@@ -387,6 +436,168 @@ pub fn spawn_rv_multiplier_refresh(cache: EndgameDvolRvMultiplierCache, cfg: End
     });
 }
 
+pub fn spawn_atr_multiplier_refresh(
+    cache: EndgameAtrMultiplierCache,
+    cfg: EndgameDvolConfig,
+    symbols: Vec<String>,
+) {
+    if !cfg.atr_enabled {
+        log_event(
+            "endgame_atr_multiplier_refresh_started",
+            json!({
+                "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                "enabled": false
+            }),
+        );
+        return;
+    }
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let mut symbols = symbols
+            .into_iter()
+            .map(|symbol| normalize_symbol(symbol.as_str()))
+            .filter(|symbol| !symbol.is_empty())
+            .collect::<Vec<_>>();
+        symbols.sort();
+        symbols.dedup();
+        log_event(
+            "endgame_atr_multiplier_refresh_started",
+            json!({
+                "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                "enabled": true,
+                "symbols": symbols,
+                "source": "binance_spot_ohlc",
+                "refresh_ms": cfg.atr_refresh_ms,
+                "timeout_ms": cfg.atr_timeout_ms,
+                "stale_ms": cfg.atr_stale_ms,
+                "min_multiplier": cfg.atr_min_multiplier,
+                "max_multiplier": cfg.atr_max_multiplier,
+                "fallback_multiplier": cfg.atr_fallback_multiplier,
+                "decision_path": "book99_atr_hardened_port"
+            }),
+        );
+        loop {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let mut refreshed = 0usize;
+            let mut failed = 0usize;
+            let mut payloads = Vec::new();
+            for symbol in symbols.iter() {
+                match fetch_binance_atr_snapshot(&client, symbol, cfg, now_ms).await {
+                    Ok(snapshot) => {
+                        if let Ok(mut guard) = cache.write() {
+                            guard.insert(symbol.clone(), snapshot.clone());
+                        }
+                        refreshed += 1;
+                        payloads.push(json!({
+                            "symbol": symbol,
+                            "multiplier": snapshot.multiplier,
+                            "raw_multiplier": snapshot.raw_multiplier,
+                            "atr14_1m_bps": snapshot.atr14_1m_bps,
+                            "atr14_1h_bps": snapshot.atr14_1h_bps,
+                            "atr14_1d_bps": snapshot.atr14_1d_bps,
+                            "source": snapshot.source
+                        }));
+                    }
+                    Err(err) => {
+                        failed += 1;
+                        log_event(
+                            "endgame_atr_multiplier_refresh_failed",
+                            json!({
+                                "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                "symbol": symbol,
+                                "error": err.to_string(),
+                                "cache_invalidated": false
+                            }),
+                        );
+                    }
+                }
+            }
+            log_event(
+                "endgame_atr_multiplier_refresh_complete",
+                json!({
+                    "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                    "refreshed": refreshed,
+                    "failed": failed,
+                    "refresh_ms": cfg.atr_refresh_ms,
+                    "multipliers": payloads,
+                    "decision_path": "book99_atr_hardened_port"
+                }),
+            );
+            tokio::time::sleep(Duration::from_millis(cfg.atr_refresh_ms)).await;
+        }
+    });
+}
+
+pub fn atr_multiplier_for_symbol(
+    cache: &EndgameAtrMultiplierCache,
+    cfg: &EndgameDvolConfig,
+    symbol: &str,
+    now_ms: i64,
+) -> EndgameAtrMultiplierDecision {
+    if !cfg.atr_enabled {
+        return EndgameAtrMultiplierDecision {
+            multiplier: 1.0,
+            payload: json!({
+                "enabled": false,
+                "status": "disabled",
+                "multiplier": 1.0,
+                "decision_path": "book99_atr_hardened_port"
+            }),
+        };
+    }
+    let normalized = normalize_symbol(symbol);
+    let snapshot = cache
+        .read()
+        .ok()
+        .and_then(|guard| guard.get(normalized.as_str()).cloned());
+    if let Some(snapshot) = snapshot {
+        let age_ms = now_ms.saturating_sub(snapshot.fetched_ms).max(0);
+        if age_ms <= cfg.atr_stale_ms
+            && snapshot.multiplier.is_finite()
+            && snapshot.multiplier > 0.0
+        {
+            return EndgameAtrMultiplierDecision {
+                multiplier: snapshot
+                    .multiplier
+                    .clamp(cfg.atr_min_multiplier, cfg.atr_max_multiplier),
+                payload: json!({
+                    "enabled": true,
+                    "status": "ready",
+                    "symbol": normalized,
+                    "source": snapshot.source,
+                    "age_ms": age_ms,
+                    "stale_ms": cfg.atr_stale_ms,
+                    "atr14_1m_bps": snapshot.atr14_1m_bps,
+                    "atr14_1h_bps": snapshot.atr14_1h_bps,
+                    "atr14_1d_bps": snapshot.atr14_1d_bps,
+                    "multiplier_1m": snapshot.multiplier_1m,
+                    "multiplier_1h": snapshot.multiplier_1h,
+                    "multiplier_1d": snapshot.multiplier_1d,
+                    "raw_multiplier": snapshot.raw_multiplier,
+                    "multiplier": snapshot.multiplier,
+                    "min_multiplier": cfg.atr_min_multiplier,
+                    "max_multiplier": cfg.atr_max_multiplier,
+                    "decision_path": "book99_atr_hardened_port"
+                }),
+            };
+        }
+    }
+    let fallback = cfg
+        .atr_fallback_multiplier
+        .clamp(cfg.atr_min_multiplier, cfg.atr_max_multiplier);
+    EndgameAtrMultiplierDecision {
+        multiplier: fallback,
+        payload: json!({
+            "enabled": true,
+            "status": "missing_or_stale",
+            "symbol": normalized,
+            "fallback_multiplier": fallback,
+            "stale_ms": cfg.atr_stale_ms,
+            "decision_path": "book99_atr_hardened_port"
+        }),
+    }
+}
+
 pub fn evaluate_dvol_fair(
     cfg: &EndgameDvolConfig,
     cache: &EndgameDvolCache,
@@ -478,12 +689,26 @@ pub fn evaluate_dvol_fair(
     } else {
         1.0
     };
+    let required_distance_extra_bps = input.required_distance_extra_bps.max(0.0);
+    let atr_multiplier = if !cfg.atr_enabled {
+        1.0
+    } else if input.atr_multiplier.is_finite() && input.atr_multiplier > 0.0 {
+        input
+            .atr_multiplier
+            .clamp(cfg.atr_min_multiplier, cfg.atr_max_multiplier)
+    } else {
+        1.0
+    };
     let raw_dvol_required_bps = bps_per_second
         .map(|bps| bps * (input.tau_sec.max(1) as f64).sqrt() * z_score * source_info.multiplier);
-    let dvol_required_bps =
-        raw_dvol_required_bps.map(|required| required * cex_depth_required_multiplier);
-    let sigma_bps = bps_per_second
-        .map(|bps| (bps * (input.tau_sec.max(1) as f64).sqrt() * source_info.multiplier).max(1e-9));
+    let nonnegative_dvol_required_bps = raw_dvol_required_bps.map(|required| required.max(0.0));
+    let dvol_required_bps = nonnegative_dvol_required_bps.map(|required| {
+        (required + required_distance_extra_bps) * cex_depth_required_multiplier * atr_multiplier
+    });
+    let sigma_bps = bps_per_second.map(|bps| {
+        (bps * (input.tau_sec.max(1) as f64).sqrt() * source_info.multiplier * atr_multiplier)
+            .max(1e-9)
+    });
     let fair_probability = sigma_bps.map(|sigma| {
         let z = (actual_distance_bps / sigma).clamp(-8.0, 8.0);
         normal_cdf(z).clamp(0.001, 0.999)
@@ -563,8 +788,12 @@ pub fn evaluate_dvol_fair(
             "actual_distance_bps": positive_distance_bps,
             "signed_distance_bps": actual_distance_bps,
             "raw_dvol_required_bps": raw_dvol_required_bps,
+            "nonnegative_dvol_required_bps": nonnegative_dvol_required_bps,
+            "required_distance_extra_bps": required_distance_extra_bps,
             "cex_depth_multiplier": input.cex_depth_multiplier,
             "cex_depth_required_multiplier": cex_depth_required_multiplier,
+            "atr_multiplier": atr_multiplier,
+            "atr_payload": input.atr_payload,
             "dvol_required_bps": dvol_required_bps,
             "fair_probability": fair_probability,
             "submit_fee_rate": fee_at_submit,
@@ -622,6 +851,357 @@ async fn fetch_deribit_dvol_snapshot(
             })
         })
         .context("deribit_dvol_no_valid_rows")
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EndgameBinanceOhlc {
+    open_ms: i64,
+    close_ms: i64,
+    high: f64,
+    low: f64,
+    close: f64,
+}
+
+async fn fetch_binance_atr_snapshot(
+    client: &reqwest::Client,
+    symbol: &str,
+    cfg: EndgameDvolConfig,
+    now_ms: i64,
+) -> Result<EndgameAtrMultiplierSnapshot> {
+    let atr14_1m_bps =
+        match fetch_binance_atr14_bps(client, symbol, "1m", 60_000, cfg, now_ms).await {
+            Ok(value) => value,
+            Err(err) => {
+                log_event(
+                    "endgame_atr_interval_refresh_failed",
+                    json!({
+                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                        "symbol": normalize_symbol(symbol),
+                        "interval": "1m",
+                        "error": err.to_string()
+                    }),
+                );
+                None
+            }
+        };
+    let atr14_1h_bps =
+        match fetch_binance_atr14_bps(client, symbol, "1h", 3_600_000, cfg, now_ms).await {
+            Ok(value) => value,
+            Err(err) => {
+                log_event(
+                    "endgame_atr_interval_refresh_failed",
+                    json!({
+                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                        "symbol": normalize_symbol(symbol),
+                        "interval": "1h",
+                        "error": err.to_string()
+                    }),
+                );
+                None
+            }
+        };
+    let atr14_1d_bps =
+        match fetch_binance_atr14_bps(client, symbol, "1d", 86_400_000, cfg, now_ms).await {
+            Ok(value) => value,
+            Err(err) => {
+                log_event(
+                    "endgame_atr_interval_refresh_failed",
+                    json!({
+                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                        "symbol": normalize_symbol(symbol),
+                        "interval": "1d",
+                        "error": err.to_string()
+                    }),
+                );
+                None
+            }
+        };
+    if atr14_1m_bps.is_none() && atr14_1h_bps.is_none() && atr14_1d_bps.is_none() {
+        anyhow::bail!("endgame_atr_no_valid_intervals");
+    }
+    let multiplier_1m = endgame_entry_atr_multiplier_1m(atr14_1m_bps);
+    let multiplier_1h = endgame_atr1h14_multiplier(atr14_1h_bps);
+    let multiplier_1d = endgame_atr1d14_multiplier(atr14_1d_bps);
+    let raw_multiplier = multiplier_1m * multiplier_1h * multiplier_1d;
+    let multiplier = raw_multiplier.clamp(cfg.atr_min_multiplier, cfg.atr_max_multiplier);
+    Ok(EndgameAtrMultiplierSnapshot {
+        multiplier,
+        raw_multiplier,
+        atr14_1m_bps,
+        atr14_1h_bps,
+        atr14_1d_bps,
+        multiplier_1m,
+        multiplier_1h,
+        multiplier_1d,
+        fetched_ms: now_ms,
+        source: "binance_spot_ohlc",
+    })
+}
+
+async fn fetch_binance_atr14_bps(
+    client: &reqwest::Client,
+    symbol: &str,
+    interval: &str,
+    interval_ms: i64,
+    cfg: EndgameDvolConfig,
+    now_ms: i64,
+) -> Result<Option<f64>> {
+    let normalized = normalize_symbol(symbol);
+    match fetch_binance_atr14_bps_from_base(
+        client,
+        "https://api.binance.com/api/v3/klines",
+        normalized.as_str(),
+        interval,
+        interval_ms,
+        cfg,
+        now_ms,
+    )
+    .await
+    {
+        Ok(value) => Ok(value),
+        Err(spot_err) => fetch_binance_atr14_bps_from_base(
+            client,
+            "https://fapi.binance.com/fapi/v1/klines",
+            normalized.as_str(),
+            interval,
+            interval_ms,
+            cfg,
+            now_ms,
+        )
+        .await
+        .with_context(|| format!("binance_spot_atr_failed:{spot_err}")),
+    }
+}
+
+async fn fetch_binance_atr14_bps_from_base(
+    client: &reqwest::Client,
+    base_url: &str,
+    normalized: &str,
+    interval: &str,
+    interval_ms: i64,
+    cfg: EndgameDvolConfig,
+    now_ms: i64,
+) -> Result<Option<f64>> {
+    let url = format!("{base_url}?symbol={normalized}USDT&interval={interval}&limit=20");
+    let payload: Value = timeout(Duration::from_millis(cfg.atr_timeout_ms), async {
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .context("binance_atr_klines_request")?;
+        response.json().await.context("binance_atr_klines_json")
+    })
+    .await
+    .context("binance_atr_klines_timeout")??;
+    let rows = payload
+        .as_array()
+        .context("binance_atr_klines_expected_array")?;
+    let mut klines = Vec::with_capacity(rows.len());
+    for row in rows {
+        let Some(row) = row.as_array() else {
+            continue;
+        };
+        let Some(open_ms) = row.first().and_then(Value::as_i64) else {
+            continue;
+        };
+        let high = row.get(2).and_then(parse_binance_number);
+        let low = row.get(3).and_then(parse_binance_number);
+        let close = row.get(4).and_then(parse_binance_number);
+        let close_ms = row
+            .get(6)
+            .and_then(Value::as_i64)
+            .unwrap_or_else(|| open_ms.saturating_add(interval_ms).saturating_sub(1));
+        if let (Some(high), Some(low), Some(close)) = (high, low, close) {
+            klines.push(EndgameBinanceOhlc {
+                open_ms,
+                close_ms,
+                high,
+                low,
+                close,
+            });
+        }
+    }
+    Ok(endgame_atr14_ohlc_bps(
+        klines.as_slice(),
+        interval_ms,
+        now_ms,
+    ))
+}
+
+fn parse_binance_number(value: &Value) -> Option<f64> {
+    value
+        .as_str()
+        .and_then(|raw| raw.parse::<f64>().ok())
+        .or_else(|| value.as_f64())
+        .filter(|v| v.is_finite() && *v > 0.0)
+}
+
+fn endgame_atr14_ohlc_bps(
+    klines: &[EndgameBinanceOhlc],
+    interval_ms: i64,
+    now_ms: i64,
+) -> Option<f64> {
+    let mut completed = klines
+        .iter()
+        .copied()
+        .filter(|kline| {
+            kline.close_ms < now_ms
+                && kline.open_ms > 0
+                && kline.high.is_finite()
+                && kline.low.is_finite()
+                && kline.close.is_finite()
+                && kline.high > 0.0
+                && kline.low > 0.0
+                && kline.close > 0.0
+        })
+        .collect::<Vec<_>>();
+    completed.sort_by_key(|kline| kline.open_ms);
+    if completed.len() < 15 {
+        return None;
+    }
+    let start = completed.len().saturating_sub(15);
+    let window = &completed[start..];
+    let expected_first_open_ms = window.first()?.open_ms;
+    for (idx, kline) in window.iter().enumerate() {
+        let expected_open_ms =
+            expected_first_open_ms.saturating_add(i64::try_from(idx).ok()? * interval_ms);
+        if kline.open_ms != expected_open_ms {
+            return None;
+        }
+    }
+    let mut sum_tr_bps = 0.0;
+    for idx in 1..window.len() {
+        let kline = window[idx];
+        let prev_close = window[idx - 1].close;
+        let true_range = (kline.high - kline.low)
+            .abs()
+            .max((kline.high - prev_close).abs())
+            .max((kline.low - prev_close).abs());
+        if !true_range.is_finite() {
+            return None;
+        }
+        sum_tr_bps += (true_range / kline.close) * 10_000.0;
+    }
+    Some(sum_tr_bps / 14.0)
+}
+
+const ENDGAME_ATR_MIN_BPS: f64 = 1.0;
+const ENDGAME_ATR_MAX_BPS: f64 = 30.0;
+const ENDGAME_ATR_FALLBACK_MULTIPLIER: f64 = 1.5;
+const ENDGAME_ATR_VERY_LOW_MULTIPLIER: f64 = 0.4;
+const ENDGAME_ATR_LEGACY_LINEAR_INTERCEPT: f64 = 0.726;
+const ENDGAME_ATR_LEGACY_LINEAR_SLOPE: f64 = 3.248;
+const ENDGAME_ATR_LINEAR_NEUTRAL_BPS: f64 = ENDGAME_ATR_MIN_BPS
+    + ((1.0 - ENDGAME_ATR_LEGACY_LINEAR_INTERCEPT) / ENDGAME_ATR_LEGACY_LINEAR_SLOPE)
+        * (ENDGAME_ATR_MAX_BPS - ENDGAME_ATR_MIN_BPS);
+const ENDGAME_ATR_LOW_MULTIPLIER_POINTS: [(f64, f64); 6] = [
+    (1.0, 0.5),
+    (1.5, 0.6),
+    (2.0, 0.7),
+    (2.5, 0.8),
+    (3.0, 0.9),
+    (3.45, 1.0),
+];
+const ENDGAME_ATR_ADJUSTED_POINTS: [(f64, f64); 7] = [
+    (4.0, 1.062),
+    (5.0, 1.12),
+    (6.0, 1.18),
+    (7.0, 1.24),
+    (8.0, 1.33),
+    (9.0, 1.45),
+    (10.0, 1.734),
+];
+
+fn endgame_entry_atr_multiplier_1m(atr14_1m_bps: Option<f64>) -> f64 {
+    let Some(atr_bps) = atr14_1m_bps.filter(|value| value.is_finite() && *value > 0.0) else {
+        return ENDGAME_ATR_FALLBACK_MULTIPLIER;
+    };
+    let clipped = atr_bps.clamp(ENDGAME_ATR_MIN_BPS, ENDGAME_ATR_MAX_BPS);
+    if let (Some(first), Some(last)) = (
+        ENDGAME_ATR_ADJUSTED_POINTS.first(),
+        ENDGAME_ATR_ADJUSTED_POINTS.last(),
+    ) {
+        if clipped >= first.0 && clipped <= last.0 {
+            for window in ENDGAME_ATR_ADJUSTED_POINTS.windows(2) {
+                let (left_atr, left_mult) = window[0];
+                let (right_atr, right_mult) = window[1];
+                if clipped >= left_atr && clipped <= right_atr {
+                    let span = (right_atr - left_atr).max(f64::EPSILON);
+                    let fraction = (clipped - left_atr) / span;
+                    return (left_mult + fraction * (right_mult - left_mult)).max(0.0);
+                }
+            }
+        }
+    }
+    if atr_bps < ENDGAME_ATR_MIN_BPS {
+        return ENDGAME_ATR_VERY_LOW_MULTIPLIER;
+    }
+    if atr_bps
+        <= ENDGAME_ATR_LOW_MULTIPLIER_POINTS
+            .last()
+            .map(|(bps, _)| *bps)
+            .unwrap_or(ENDGAME_ATR_MIN_BPS)
+    {
+        for window in ENDGAME_ATR_LOW_MULTIPLIER_POINTS.windows(2) {
+            let (left_atr, left_mult) = window[0];
+            let (right_atr, right_mult) = window[1];
+            if atr_bps >= left_atr && atr_bps <= right_atr {
+                let span = (right_atr - left_atr).max(f64::EPSILON);
+                let fraction = (atr_bps - left_atr) / span;
+                return (left_mult + fraction * (right_mult - left_mult)).max(0.0);
+            }
+        }
+    }
+    endgame_entry_atr_multiplier_linear(clipped)
+}
+
+fn endgame_entry_atr_multiplier_linear(clipped_atr_bps: f64) -> f64 {
+    if clipped_atr_bps < ENDGAME_ATR_LINEAR_NEUTRAL_BPS {
+        let span = (ENDGAME_ATR_LINEAR_NEUTRAL_BPS - ENDGAME_ATR_MIN_BPS).max(f64::EPSILON);
+        let fraction = ((clipped_atr_bps - ENDGAME_ATR_MIN_BPS) / span).clamp(0.0, 1.0);
+        return (0.5 + fraction * 0.5).max(0.0);
+    }
+    let span = (ENDGAME_ATR_MAX_BPS - ENDGAME_ATR_MIN_BPS).max(f64::EPSILON);
+    (ENDGAME_ATR_LEGACY_LINEAR_INTERCEPT
+        + ENDGAME_ATR_LEGACY_LINEAR_SLOPE * ((clipped_atr_bps - ENDGAME_ATR_MIN_BPS) / span))
+        .max(0.0)
+}
+
+fn endgame_atr1h14_multiplier(atr14_1h_bps: Option<f64>) -> f64 {
+    let Some(atr_bps) = atr14_1h_bps.filter(|value| value.is_finite() && *value > 0.0) else {
+        return 1.0;
+    };
+    if atr_bps <= 30.0 {
+        return 0.9;
+    }
+    if atr_bps <= 50.0 {
+        return 1.0;
+    }
+    if atr_bps >= 150.0 {
+        return 1.4;
+    }
+    let fraction = ((atr_bps - 50.0) / 100.0).clamp(0.0, 1.0);
+    1.0 + fraction * 0.4
+}
+
+fn endgame_atr1d14_multiplier(atr14_1d_bps: Option<f64>) -> f64 {
+    let Some(atr_bps) = atr14_1d_bps.filter(|value| value.is_finite() && *value > 0.0) else {
+        return 1.0;
+    };
+    if atr_bps < 200.0 {
+        return 0.9;
+    }
+    if atr_bps < 300.0 {
+        return 1.0;
+    }
+    if atr_bps < 400.0 {
+        return 1.1;
+    }
+    if atr_bps < 500.0 {
+        return 1.15;
+    }
+    let extra_100_bps = ((atr_bps - 500.0) / 100.0).floor().max(0.0);
+    (1.15 + extra_100_bps * 0.05).clamp(0.0, 1.5)
 }
 
 async fn fetch_annualized_rv_snapshot(
@@ -1155,6 +1735,9 @@ mod tests {
                 submit_price: 0.92,
                 required_probability: 0.92,
                 cex_depth_multiplier: 1.0,
+                required_distance_extra_bps: 0.0,
+                atr_multiplier: 1.0,
+                atr_payload: json!({"status": "test"}),
                 uncertainty_penalty: 0.0,
                 buffer_prob: 0.0,
                 edge_floor_prob: 0.0,
@@ -1198,6 +1781,9 @@ mod tests {
                 submit_price: 0.99,
                 required_probability: 0.99,
                 cex_depth_multiplier: 1.0,
+                required_distance_extra_bps: 0.0,
+                atr_multiplier: 1.0,
+                atr_payload: json!({"status": "test"}),
                 uncertainty_penalty: 0.0,
                 buffer_prob: 0.0,
                 edge_floor_prob: 12.0 / 10_000.0,
@@ -1214,6 +1800,174 @@ mod tests {
                 .get("edge_pass")
                 .and_then(serde_json::Value::as_bool),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn dvol_low_submit_price_does_not_create_negative_required_distance() {
+        let cfg = EndgameDvolConfig::from_env();
+        let cache: EndgameDvolCache = Arc::new(StdRwLock::new(HashMap::from([(
+            "ETH".to_string(),
+            EndgameDvolSnapshot {
+                dvol_pct: 60.0,
+                source_ts_ms: 1_000,
+                fetched_ms: 1_000,
+            },
+        )])));
+        let rv_cache = new_rv_multiplier_cache();
+
+        let decision = evaluate_dvol_fair(
+            &cfg,
+            &cache,
+            &rv_cache,
+            EndgameDvolInput {
+                symbol: "ETH".to_string(),
+                timeframe: Timeframe::M5,
+                direction: Direction::Up,
+                tau_sec: 8,
+                base_mid: 100.0,
+                current_mid: 100.01,
+                submit_price: 0.04,
+                required_probability: 0.04,
+                cex_depth_multiplier: 1.0,
+                required_distance_extra_bps: 1.5,
+                atr_multiplier: 1.0,
+                atr_payload: json!({"status": "test"}),
+                uncertainty_penalty: 0.0,
+                buffer_prob: 0.0,
+                edge_floor_prob: 0.0,
+                bias_multiplier: 1.0,
+                fee_model: PolymarketFeeModel::default(),
+            },
+            1_500,
+        );
+
+        assert!(!decision.pass, "{:?}", decision.payload);
+        assert!(
+            decision.dvol_required_bps.unwrap_or_default() >= 1.5,
+            "{:?}",
+            decision.payload
+        );
+        assert_eq!(
+            decision
+                .payload
+                .get("nonnegative_dvol_required_bps")
+                .and_then(serde_json::Value::as_f64),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn atr_curve_matches_book99_values_before_endgame_hardening() {
+        assert!((endgame_entry_atr_multiplier_1m(Some(1.5)) - 0.6).abs() < 1e-9);
+        assert!((endgame_entry_atr_multiplier_1m(Some(3.45)) - 1.0).abs() < 1e-9);
+        assert!((endgame_entry_atr_multiplier_1m(Some(5.0)) - 1.12).abs() < 1e-9);
+        assert!((endgame_atr1h14_multiplier(Some(100.0)) - 1.2).abs() < 1e-9);
+        assert!((endgame_atr1d14_multiplier(Some(600.0)) - 1.20).abs() < 1e-9);
+    }
+
+    #[test]
+    fn dvol_atr_multiplier_hardens_required_distance_and_sigma() {
+        let cfg = EndgameDvolConfig::from_env();
+        let cache: EndgameDvolCache = Arc::new(StdRwLock::new(HashMap::from([(
+            "BTC".to_string(),
+            EndgameDvolSnapshot {
+                dvol_pct: 60.0,
+                source_ts_ms: 1_000,
+                fetched_ms: 1_000,
+            },
+        )])));
+        let rv_cache = new_rv_multiplier_cache();
+        let base_input = EndgameDvolInput {
+            symbol: "BTC".to_string(),
+            timeframe: Timeframe::M5,
+            direction: Direction::Up,
+            tau_sec: 8,
+            base_mid: 100.0,
+            current_mid: 100.03,
+            submit_price: 0.80,
+            required_probability: 0.80,
+            cex_depth_multiplier: 1.0,
+            required_distance_extra_bps: 0.0,
+            atr_multiplier: 1.0,
+            atr_payload: json!({"status": "test"}),
+            uncertainty_penalty: 0.0,
+            buffer_prob: 0.0,
+            edge_floor_prob: 0.0,
+            bias_multiplier: 1.0,
+            fee_model: PolymarketFeeModel::default(),
+        };
+        let normal = evaluate_dvol_fair(&cfg, &cache, &rv_cache, base_input.clone(), 1_500);
+        let mut hardened_input = base_input;
+        hardened_input.atr_multiplier = 2.0;
+        let hardened = evaluate_dvol_fair(&cfg, &cache, &rv_cache, hardened_input, 1_500);
+
+        assert!(
+            hardened.dvol_required_bps.unwrap_or_default()
+                > normal.dvol_required_bps.unwrap_or_default(),
+            "normal={:?} hardened={:?}",
+            normal.payload,
+            hardened.payload
+        );
+        assert!(
+            hardened.fair_probability.unwrap_or_default()
+                < normal.fair_probability.unwrap_or_default(),
+            "normal={:?} hardened={:?}",
+            normal.payload,
+            hardened.payload
+        );
+    }
+
+    #[test]
+    fn dvol_atr_disabled_ignores_input_multiplier_and_hardening_floor() {
+        let mut cfg = EndgameDvolConfig::from_env();
+        cfg.atr_enabled = false;
+        cfg.atr_min_multiplier = 2.0;
+        cfg.atr_max_multiplier = 3.0;
+        let cache: EndgameDvolCache = Arc::new(StdRwLock::new(HashMap::from([(
+            "BTC".to_string(),
+            EndgameDvolSnapshot {
+                dvol_pct: 60.0,
+                source_ts_ms: 1_000,
+                fetched_ms: 1_000,
+            },
+        )])));
+        let rv_cache = new_rv_multiplier_cache();
+
+        let decision = evaluate_dvol_fair(
+            &cfg,
+            &cache,
+            &rv_cache,
+            EndgameDvolInput {
+                symbol: "BTC".to_string(),
+                timeframe: Timeframe::M5,
+                direction: Direction::Up,
+                tau_sec: 8,
+                base_mid: 100.0,
+                current_mid: 100.03,
+                submit_price: 0.80,
+                required_probability: 0.80,
+                cex_depth_multiplier: 1.0,
+                required_distance_extra_bps: 0.0,
+                atr_multiplier: 2.5,
+                atr_payload: json!({"status": "test"}),
+                uncertainty_penalty: 0.0,
+                buffer_prob: 0.0,
+                edge_floor_prob: 0.0,
+                bias_multiplier: 1.0,
+                fee_model: PolymarketFeeModel::default(),
+            },
+            1_500,
+        );
+
+        assert_eq!(
+            decision
+                .payload
+                .get("atr_multiplier")
+                .and_then(serde_json::Value::as_f64),
+            Some(1.0),
+            "{:?}",
+            decision.payload
         );
     }
 }

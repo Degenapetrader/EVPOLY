@@ -140,6 +140,12 @@ pub struct OrderResponse {
     pub order_id: Option<String>,
     pub status: String,
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub making_amount: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub taking_amount: Option<String>,
+    #[serde(default)]
+    pub trade_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

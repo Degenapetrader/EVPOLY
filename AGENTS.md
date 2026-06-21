@@ -1,5 +1,11 @@
 # EVPOLY Agent Notes
 
+## Temporary Local-Only Rule
+
+- Until this section is removed, do not push, tag, release, open/merge PRs, or deploy from this repo.
+- Allowed Git/release-adjacent actions are local commits and local rebuild/reinstall only.
+- This temporary rule overrides any instruction below that says to push or publish changes.
+
 ## Mandatory Update Rule
 
 - If any strategy logic, checkpoint schedule, entry/exit behavior, risk gate, sizing, or strategy env defaults are changed, update `strategy-changelog.md` in the same task.

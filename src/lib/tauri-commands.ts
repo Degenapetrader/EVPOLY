@@ -175,6 +175,7 @@ export interface HomeApiActivityItem {
   detail: string | null;
   condition_id: string | null;
   token_id: string | null;
+  price: number | null;
   activity_type: string | null;
   side: string | null;
   transaction_hash: string | null;

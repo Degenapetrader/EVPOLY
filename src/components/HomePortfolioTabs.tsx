@@ -227,6 +227,9 @@ function ActivityTab({ items, botState }: { items: HomeApiActivityItem[]; botSta
               {item.quantity !== null && item.quantity !== undefined ? (
                 <span>{formatControlValue(item.quantity)} shares</span>
               ) : null}
+              {item.price !== null && item.price !== undefined ? (
+                <span>@ {formatPriceCents(item.price)}</span>
+              ) : null}
             </div>
           </div>
 

@@ -2519,11 +2519,15 @@ input[type="number"]::-webkit-inner-spin-button {
   flex: 0 0 auto;
   width: 1.7rem;
   height: 1.7rem;
+  appearance: none;
+  padding: 0;
   border-radius: 0.7rem;
   border: 1px solid rgba(99, 181, 255, 0.22);
   background: rgba(99, 181, 255, 0.08);
   color: #b8d8ff;
+  font: inherit;
   text-decoration: none;
+  cursor: pointer;
   transition:
     border-color 150ms ease,
     background 150ms ease,
@@ -3166,7 +3170,7 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 .performance-share-modal__tools {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .unsaved-changes-modal__card {

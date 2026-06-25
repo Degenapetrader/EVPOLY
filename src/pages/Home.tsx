@@ -54,7 +54,6 @@ import {
   type PendingLinuxResumeOffer,
   type SetupDoctorResult,
   type ProfilePerformancePoint,
-  type ProfilePerformanceView,
 } from "../lib/tauri-commands";
 import {
   buildHomePerformanceSnapshot,
@@ -231,7 +230,6 @@ export function Home() {
   const [pendingResumeOffer, setPendingResumeOffer] = useState<PendingLinuxResumeOffer | null>(null);
   const [resumeLoading, setResumeLoading] = useState(false);
   const [portfolioFeedSeed, setPortfolioFeedSeed] = useState(0);
-  const [performance, setPerformance] = useState<ProfilePerformanceView | null>(null);
   const [overviewRefreshing, setOverviewRefreshing] = useState(false);
   const [performanceShareCard, setPerformanceShareCard] =
     useState<PerformanceShareCardPayload | null>(null);
@@ -344,36 +342,6 @@ export function Home() {
     };
   }, [configLoaded]);
 
-  useEffect(() => {
-    let active = true;
-    let interval: ReturnType<typeof setInterval> | null = null;
-
-    const load = async () => {
-      if (!activeProfileId) {
-        setPerformance(null);
-        return;
-      }
-      try {
-        const nextPerformance = await getHomePerformanceApi("1d");
-        if (active) {
-          setPerformance(nextPerformance);
-        }
-      } catch {
-        if (active) {
-          setPerformance(null);
-        }
-      }
-    };
-
-    void load();
-    interval = setInterval(() => void load(), 60_000);
-
-    return () => {
-      active = false;
-      if (interval) clearInterval(interval);
-    };
-  }, [activeProfileId, portfolioFeedSeed]);
-
   const dirty = useMemo(() => JSON.stringify(config) !== savedSnapshot, [config, savedSnapshot]);
   const displayError = actionError || overviewError;
   const canOperate = Boolean(activeProfileId && configLoaded);
@@ -384,10 +352,10 @@ export function Home() {
     () =>
       buildHomePerformanceSnapshot({
         overview,
-        performance,
+        performance: null,
         publicOpenPositionsValue: overview?.portfolio_value ?? null,
       }),
-    [overview, performance]
+    [overview]
   );
 
   const handleUpdate = async () => {
@@ -466,12 +434,6 @@ export function Home() {
     setOverviewRefreshing(true);
     try {
       await refreshOverview(true);
-      try {
-        const nextPerformance = await getHomePerformanceApi("1d");
-        setPerformance(nextPerformance);
-      } catch {
-        setPerformance(null);
-      }
       setPortfolioFeedSeed((current) => current + 1);
     } finally {
       setOverviewRefreshing(false);
@@ -1162,7 +1124,6 @@ export function Home() {
           onOpenLogs={() => setLogsOpen(true)}
           onSharePosition={openPerformanceShare}
           onShareReward={openPerformanceShare}
-          performanceSnapshot={performanceSnapshot}
         />
       </div>
     );

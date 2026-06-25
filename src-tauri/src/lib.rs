@@ -141,6 +141,8 @@ struct GammaEventResponse {
 #[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GammaMarketResponse {
+    #[serde(rename = "conditionId", alias = "condition_id")]
+    condition_id: Option<String>,
     question: Option<String>,
     slug: Option<String>,
     #[serde(rename = "eventSlug")]
@@ -3244,6 +3246,23 @@ fn build_liquidity_rewards_query(
     })
 }
 
+fn build_open_orders_query(
+    profile: &Profile,
+    auth: &AppAuth,
+) -> Result<portfolio_api::AuthenticatedClobQuery, String> {
+    let secrets = decrypt_profile_secrets(profile, auth)?;
+    let private_key = secrets
+        .get("POLY_PRIVATE_KEY")
+        .cloned()
+        .ok_or_else(|| "missing POLY_PRIVATE_KEY in profile secrets".to_string())?;
+
+    Ok(portfolio_api::AuthenticatedClobQuery {
+        private_key,
+        maker_address: profile.primary_wallet_address(),
+        signature_type: profile.signature_type,
+    })
+}
+
 async fn load_liquidity_rewards_overview(
     query: &LiquidityRewardsQuery,
     cache: &Mutex<Option<LiquidityRewardsCacheEntry>>,
@@ -3363,6 +3382,23 @@ fn activity_cashflow_usd(row: &portfolio_api::ActivityRow) -> Option<f64> {
         ("REDEEM", _) => Some(amount),
         _ => Some(amount),
     }
+}
+
+fn activity_trade_price(row: &portfolio_api::ActivityRow) -> Option<f64> {
+    if let Some(price) = row.price {
+        if price.is_finite() && price > 0.0 {
+            return Some(price);
+        }
+    }
+    let notional = row.usdc_size?;
+    let size = row.size?;
+    if notional.is_finite() && size.is_finite() && notional > 0.0 && size > 0.0 {
+        let price = notional / size;
+        if price.is_finite() && price > 0.0 {
+            return Some(price);
+        }
+    }
+    None
 }
 
 fn timeframe_seconds(timeframe: &str) -> Option<i64> {
@@ -3620,6 +3656,38 @@ fn fetch_gamma_market_metadata(
     payload.into_iter().next()
 }
 
+fn fetch_gamma_market_metadata_batch(
+    client: &reqwest::blocking::Client,
+    condition_ids: &[String],
+) -> HashMap<String, GammaMarketResponse> {
+    let joined = condition_ids.join(",");
+    if joined.is_empty() {
+        return HashMap::new();
+    }
+    let url = format!("https://gamma-api.polymarket.com/markets?condition_ids={joined}");
+    let response = match client.get(&url).send() {
+        Ok(response) if response.status().is_success() => response,
+        _ => return HashMap::new(),
+    };
+    let payload: Vec<GammaMarketResponse> = match response.json() {
+        Ok(payload) => payload,
+        Err(_) => return HashMap::new(),
+    };
+
+    payload
+        .into_iter()
+        .filter_map(|market| {
+            let condition_id = market
+                .condition_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_ascii_lowercase())?;
+            Some((condition_id, market))
+        })
+        .collect()
+}
+
 fn gamma_market_thumbnail(payload: &GammaMarketResponse) -> Option<String> {
     let event = payload.events.first();
     first_non_empty(&[
@@ -3698,23 +3766,102 @@ fn fetch_market_metadata(condition_id: &str) -> Option<MarketMetadata> {
     })
 }
 
+fn market_metadata_from_gamma(payload: &GammaMarketResponse) -> Option<MarketMetadata> {
+    let title = payload
+        .question
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)?;
+    Some(MarketMetadata {
+        title,
+        outcomes_by_token: HashMap::new(),
+        thumbnail_url: gamma_market_thumbnail(payload),
+        market_slug: payload.slug.clone(),
+        event_slug: gamma_market_event_slug(payload),
+    })
+}
+
+fn resolve_gamma_market_metadata_batch(
+    condition_ids: &[String],
+    cache: &MarketMetadataState,
+) -> HashMap<String, MarketMetadata> {
+    let normalized_ids = condition_ids
+        .iter()
+        .map(|condition_id| condition_id.trim().to_ascii_lowercase())
+        .filter(|condition_id| !condition_id.is_empty())
+        .collect::<Vec<_>>();
+    if normalized_ids.is_empty() {
+        return HashMap::new();
+    }
+
+    let mut resolved = HashMap::new();
+    let missing = if let Ok(guard) = cache.0.lock() {
+        normalized_ids
+            .iter()
+            .filter_map(|condition_id| {
+                if let Some(entry) = guard.get(condition_id).cloned() {
+                    resolved.insert(condition_id.clone(), entry);
+                    None
+                } else {
+                    Some(condition_id.clone())
+                }
+            })
+            .collect::<Vec<_>>()
+    } else {
+        normalized_ids.clone()
+    };
+
+    if missing.is_empty() {
+        return resolved;
+    }
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return resolved,
+    };
+    let fetched = fetch_gamma_market_metadata_batch(&client, &missing);
+    if fetched.is_empty() {
+        return resolved;
+    }
+
+    let mut new_entries = HashMap::new();
+    for (condition_id, payload) in fetched {
+        if let Some(metadata) = market_metadata_from_gamma(&payload) {
+            resolved.insert(condition_id.clone(), metadata.clone());
+            new_entries.insert(condition_id, metadata);
+        }
+    }
+    if !new_entries.is_empty() {
+        if let Ok(mut guard) = cache.0.lock() {
+            guard.extend(new_entries);
+        }
+    }
+
+    resolved
+}
+
 fn resolve_market_metadata(
     condition_id: &str,
     cache: &MarketMetadataState,
 ) -> Option<MarketMetadata> {
-    if condition_id.trim().is_empty() {
+    let cache_key = condition_id.trim().to_ascii_lowercase();
+    if cache_key.is_empty() {
         return None;
     }
 
     if let Ok(guard) = cache.0.lock() {
-        if let Some(entry) = guard.get(condition_id).cloned() {
+        if let Some(entry) = guard.get(&cache_key).cloned() {
             return Some(entry);
         }
     }
 
     let fetched = fetch_market_metadata(condition_id)?;
     if let Ok(mut guard) = cache.0.lock() {
-        guard.insert(condition_id.to_string(), fetched.clone());
+        guard.insert(cache_key, fetched.clone());
     }
     Some(fetched)
 }
@@ -5972,6 +6119,7 @@ async fn get_home_activity_api(
             let title = row.title.clone();
             let slug = row.slug.clone();
             let cashflow_usd = activity_cashflow_usd(&row);
+            let price = activity_trade_price(&row);
             let timestamp =
                 format_api_timestamp(row.timestamp).unwrap_or_else(|| Utc::now().to_rfc3339());
             let is_reward = row
@@ -6006,7 +6154,7 @@ async fn get_home_activity_api(
                 "detail": slug,
                 "condition_id": row.condition_id,
                 "token_id": row.asset,
-                "price": row.price,
+                "price": price,
                 "activity_type": row.activity_type,
                 "side": row.side,
                 "transaction_hash": row.transaction_hash,
@@ -6060,98 +6208,80 @@ async fn get_home_positions_api(
 #[tauri::command]
 async fn get_home_open_orders_api(
     profiles: State<'_, ProfileState>,
-    data_dir: State<'_, AppDataDir>,
+    auth: State<'_, AuthState>,
+    market_metadata: State<'_, MarketMetadataState>,
     limit: usize,
 ) -> Result<serde_json::Value, String> {
     let profile = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
         active_profile(&pm)?
     };
-    let db_path = resolve_tracking_db_path(&data_dir.0);
-    let conn = Connection::open(&db_path).map_err(|e| format!("open tracking db: {e}"))?;
-    let profile_start_ms = profile_stats_start_ms(&profile);
-    let mut stmt = conn
-        .prepare(
-            "SELECT order_id, token_id, COALESCE(condition_id, ''), \
-                    NULLIF(TRIM(timeframe), ''), COALESCE(strategy_id, ''), \
-                    COALESCE(entry_mode, ''), COALESCE(period_timestamp, 0), \
-                    COALESCE(price, 0.0), COALESCE(size_usd, 0.0), \
-                    UPPER(TRIM(COALESCE(side, ''))), UPPER(TRIM(COALESCE(status, ''))), \
-                    COALESCE(created_at_ms, 0), COALESCE(updated_at_ms, 0), \
-                    NULLIF(TRIM(asset_symbol), '') \
-             FROM pending_orders \
-             WHERE UPPER(TRIM(COALESCE(status, ''))) IN ('OPEN','PENDING','PLACED','LIVE') \
-               AND COALESCE(created_at_ms, updated_at_ms, 0) >= ?1 \
-             ORDER BY COALESCE(updated_at_ms, created_at_ms, 0) DESC \
-             LIMIT ?2",
-        )
-        .map_err(|e| format!("prepare open orders query: {e}"))?;
-    let rows = stmt
-        .query_map([profile_start_ms, limit.clamp(1, 500) as i64], |row| {
-            let order_id: String = row.get(0)?;
-            let token_id: String = row.get(1)?;
-            let condition_id: String = row.get(2)?;
-            let timeframe: Option<String> = row.get(3)?;
-            let strategy_id: String = row.get(4)?;
-            let entry_mode: String = row.get(5)?;
-            let period_timestamp: i64 = row.get(6)?;
-            let price: f64 = row.get(7)?;
-            let notional_usd: f64 = row.get(8)?;
-            let side: String = row.get(9)?;
-            let status: String = row.get(10)?;
-            let created_at_ms: i64 = row.get(11)?;
-            let asset_symbol: Option<String> = row.get(13)?;
-            let original_size = if price.is_finite() && price > 0.0 {
-                Some(notional_usd / price)
-            } else {
-                None
+    let query = {
+        let auth = auth.lock().map_err(|e| e.to_string())?;
+        build_open_orders_query(&profile, &auth)?
+    };
+    let rows = portfolio_api::fetch_open_orders(&query, limit.clamp(1, 200)).await?;
+    let condition_ids = rows
+        .iter()
+        .map(|order| format!("{:#x}", order.market))
+        .collect::<Vec<_>>();
+    let metadata_by_condition =
+        resolve_gamma_market_metadata_batch(&condition_ids, &market_metadata);
+    let items = rows
+        .into_iter()
+        .map(|order| {
+            let condition_id = format!("{:#x}", order.market);
+            let condition_key = condition_id.to_ascii_lowercase();
+            let token_id = order.asset_id.to_string();
+            let price = order.price.to_string().parse::<f64>().ok();
+            let original_size = order.original_size.to_string().parse::<f64>().ok();
+            let size_matched = order.size_matched.to_string().parse::<f64>().ok();
+            let remaining_size = match (original_size, size_matched) {
+                (Some(original), Some(matched)) => Some((original - matched).max(0.0)),
+                (Some(original), None) => Some(original),
+                _ => None,
             };
-            let market_title = match (
-                asset_symbol.as_deref(),
-                timeframe.as_deref(),
-                period_timestamp,
-            ) {
-                (Some(symbol), timeframe, period_timestamp)
-                    if !symbol.eq_ignore_ascii_case("SPORT") && period_timestamp > 0 =>
-                {
-                    format_market_title(Some(symbol), timeframe, Some(period_timestamp))
+            let total_notional_usd = match (remaining_size, price) {
+                (Some(size), Some(limit_price)) if size.is_finite() && limit_price.is_finite() => {
+                    Some((size * limit_price).max(0.0))
                 }
-                _ => {
+                _ => None,
+            };
+            let metadata = metadata_by_condition.get(&condition_key).cloned();
+            let market_title = metadata
+                .as_ref()
+                .map(|entry| entry.title.clone())
+                .unwrap_or_else(|| {
                     let short_condition = if condition_id.len() > 14 {
                         format!("{}...", &condition_id[..14])
-                    } else if condition_id.is_empty() {
-                        "unknown".to_string()
                     } else {
                         condition_id.clone()
                     };
-                    format!("Open order {short_condition}")
-                }
-            };
-            let market_slug =
-                local_updown_market_slug(asset_symbol.as_deref(), timeframe.as_deref(), Some(period_timestamp));
-            Ok(serde_json::json!({
-                "id": order_id,
-                "status": status,
-                "condition_id": if condition_id.is_empty() { Value::Null } else { serde_json::json!(condition_id) },
+                    format!("Unknown market {short_condition}")
+                });
+
+            serde_json::json!({
+                "id": order.id,
+                "status": format!("{:?}", order.status),
+                "condition_id": condition_id,
                 "token_id": token_id,
                 "market_title": market_title,
-                "market_slug": market_slug,
-                "event_slug": Value::Null,
-                "thumbnail_url": Value::Null,
-                "outcome": Value::Null,
-                "side": if side.is_empty() { Value::Null } else { serde_json::json!(side) },
-                "price": if price.is_finite() && price > 0.0 { serde_json::json!(price) } else { Value::Null },
+                "market_slug": metadata.as_ref().and_then(|entry| entry.market_slug.clone()),
+                "event_slug": metadata.as_ref().and_then(|entry| entry.event_slug.clone()),
+                "thumbnail_url": metadata.as_ref().and_then(|entry| entry.thumbnail_url.clone()),
+                "outcome": order.outcome,
+                "side": format!("{:?}", order.side),
+                "price": price,
                 "original_size": original_size,
-                "size_matched": 0.0,
-                "remaining_size": original_size,
-                "total_notional_usd": notional_usd,
-                "created_at": iso_from_ms(created_at_ms),
-                "expiration": Value::Null,
-                "order_type": if entry_mode.is_empty() { serde_json::json!(strategy_id) } else { serde_json::json!(entry_mode) },
-            }))
+                "size_matched": size_matched,
+                "remaining_size": remaining_size,
+                "total_notional_usd": total_notional_usd,
+                "created_at": order.created_at.to_rfc3339(),
+                "expiration": order.expiration.to_rfc3339(),
+                "order_type": format!("{:?}", order.order_type),
+            })
         })
-        .map_err(|e| format!("read open orders: {e}"))?;
-    let items = rows.filter_map(Result::ok).collect::<Vec<_>>();
+        .collect::<Vec<_>>();
     Ok(serde_json::Value::Array(items))
 }
 
@@ -6808,9 +6938,9 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        active_profile_bot_state, default_desktop_config, desktop_config_to_profile_payload,
-        desktop_magic_finish_payload, merge_config_object, merge_desktop_secrets,
-        polymarket_funders_from_private_key, profile_to_desktop_config,
+        active_profile_bot_state, activity_trade_price, default_desktop_config,
+        desktop_config_to_profile_payload, desktop_magic_finish_payload, merge_config_object,
+        merge_desktop_secrets, polymarket_funders_from_private_key, profile_to_desktop_config,
         remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
         PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
         PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
@@ -6839,6 +6969,30 @@ mod tests {
             created_at: "now".to_string(),
             last_used: "now".to_string(),
         }
+    }
+
+    #[test]
+    fn activity_trade_price_uses_api_price_when_available() {
+        let row = crate::portfolio_api::ActivityRow {
+            price: Some(0.42),
+            size: Some(10.0),
+            usdc_size: Some(8.0),
+            ..Default::default()
+        };
+
+        assert_eq!(activity_trade_price(&row), Some(0.42));
+    }
+
+    #[test]
+    fn activity_trade_price_derives_missing_api_price() {
+        let row = crate::portfolio_api::ActivityRow {
+            price: None,
+            size: Some(29.2),
+            usdc_size: Some(14.6),
+            ..Default::default()
+        };
+
+        assert_eq!(activity_trade_price(&row), Some(0.5));
     }
 
     #[test]

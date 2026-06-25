@@ -177,6 +177,10 @@ pub struct MmSportConfig {
     pub min_top_depth_usd: f64,
     pub nonsport_min_top_depth_usd: f64,
     pub nonsport_end_exit_start_sec: u64,
+    pub sport_entry_schedule_enabled: bool,
+    pub sport_entry_schedule_days_utc: Vec<u8>,
+    pub sport_entry_schedule_start_minute_utc: u16,
+    pub sport_entry_schedule_end_minute_utc: u16,
     pub nonsport_entry_schedule_enabled: bool,
     pub nonsport_entry_schedule_days_utc: Vec<u8>,
     pub nonsport_entry_schedule_start_minute_utc: u16,
@@ -255,6 +259,16 @@ impl MmSportConfig {
         .min(1_439) as u16;
         let nonsport_entry_schedule_end_minute_utc = env_u64(
             "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC",
+            4 * 60,
+        )
+        .min(1_439) as u16;
+        let sport_entry_schedule_start_minute_utc = env_u64(
+            "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_START_MINUTE_UTC",
+            13 * 60,
+        )
+        .min(1_439) as u16;
+        let sport_entry_schedule_end_minute_utc = env_u64(
+            "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_END_MINUTE_UTC",
             4 * 60,
         )
         .min(1_439) as u16;
@@ -342,6 +356,15 @@ impl MmSportConfig {
                 172_800,
             )
             .clamp(0, 2_592_000),
+            sport_entry_schedule_enabled: env_bool(
+                "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_ENABLE",
+                false,
+            ),
+            sport_entry_schedule_days_utc: parse_mm_sport_weekdays_env(
+                "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_DAYS_UTC",
+            ),
+            sport_entry_schedule_start_minute_utc,
+            sport_entry_schedule_end_minute_utc,
             nonsport_entry_schedule_enabled: env_bool(
                 "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE",
                 false,
@@ -721,6 +744,13 @@ mod tests {
                 ("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", None),
                 ("EVPOLY_MM_SPORT_EXIT_MODE", None),
                 ("EVPOLY_MM_SPORT_NO_EXIT_SIDE_PAUSE_SEC", None),
+                ("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_ENABLE", None),
+                ("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_DAYS_UTC", None),
+                (
+                    "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_START_MINUTE_UTC",
+                    None,
+                ),
+                ("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_END_MINUTE_UTC", None),
                 ("EVPOLY_MM_SPORT_MATCH_ONLY", None),
             ],
             || {
@@ -736,6 +766,10 @@ mod tests {
                 assert_eq!(cfg.pause_after_fill_sec, 3_600);
                 assert_eq!(cfg.exit_mode, MmSportExitMode::Normal);
                 assert_eq!(cfg.no_exit_side_pause_sec, 3_600);
+                assert!(!cfg.sport_entry_schedule_enabled);
+                assert_eq!(cfg.sport_entry_schedule_days_utc, vec![1, 2, 3, 4, 5]);
+                assert_eq!(cfg.sport_entry_schedule_start_minute_utc, 780);
+                assert_eq!(cfg.sport_entry_schedule_end_minute_utc, 240);
                 assert!(cfg.match_only);
             },
         );
@@ -811,6 +845,19 @@ mod tests {
                     "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC",
                     Some("240"),
                 ),
+                ("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_ENABLE", Some("true")),
+                (
+                    "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_DAYS_UTC",
+                    Some("tue,thu"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_START_MINUTE_UTC",
+                    Some("800"),
+                ),
+                (
+                    "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_END_MINUTE_UTC",
+                    Some("300"),
+                ),
                 ("EVPOLY_MM_SPORT_MIN_ENTRY_TOP_BID_PRICE", Some("0.15")),
                 ("EVPOLY_MM_SPORT_ALLOW_SPONSORED_REWARDS", Some("false")),
                 ("EVPOLY_MM_SPORT_SPONSORED_REWARD_MIN_SHARE", Some("0.65")),
@@ -822,6 +869,10 @@ mod tests {
                 assert_eq!(cfg.nonsport_entry_schedule_days_utc, vec![1, 3, 7]);
                 assert_eq!(cfg.nonsport_entry_schedule_start_minute_utc, 780);
                 assert_eq!(cfg.nonsport_entry_schedule_end_minute_utc, 240);
+                assert!(cfg.sport_entry_schedule_enabled);
+                assert_eq!(cfg.sport_entry_schedule_days_utc, vec![2, 4]);
+                assert_eq!(cfg.sport_entry_schedule_start_minute_utc, 800);
+                assert_eq!(cfg.sport_entry_schedule_end_minute_utc, 300);
                 assert!((cfg.min_entry_top_bid_price - 0.15).abs() < 1e-9);
                 assert!(!cfg.allow_sponsored_rewards);
                 assert!((cfg.sponsored_reward_min_share - 0.65).abs() < 1e-9);

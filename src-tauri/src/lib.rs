@@ -90,6 +90,8 @@ struct MarketMetadata {
     title: String,
     outcomes_by_token: HashMap<String, String>,
     thumbnail_url: Option<String>,
+    market_slug: Option<String>,
+    event_slug: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -115,6 +117,7 @@ struct GammaOptimizedImage {
 #[derive(Default, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GammaEventResponse {
+    slug: Option<String>,
     image: Option<String>,
     icon: Option<String>,
     image_optimized: Option<GammaOptimizedImage>,
@@ -125,6 +128,9 @@ struct GammaEventResponse {
 #[serde(rename_all = "camelCase")]
 struct GammaMarketResponse {
     question: Option<String>,
+    slug: Option<String>,
+    #[serde(rename = "eventSlug")]
+    event_slug: Option<String>,
     image: Option<String>,
     icon: Option<String>,
     image_optimized: Option<GammaOptimizedImage>,
@@ -316,6 +322,10 @@ struct DesktopMmSportSettings {
     pause_after_fill_sec: f64,
     inventory_exit_start_hours: f64,
     nonsport_end_exit_start_hours: f64,
+    sport_entry_schedule_enabled: bool,
+    sport_entry_schedule_days_utc: String,
+    sport_entry_schedule_start_minute_utc: f64,
+    sport_entry_schedule_end_minute_utc: f64,
     nonsport_entry_schedule_enabled: bool,
     nonsport_entry_schedule_days_utc: String,
     nonsport_entry_schedule_start_minute_utc: f64,
@@ -998,6 +1008,22 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC",
                     172800.0,
                 ) / 3600.0,
+                sport_entry_schedule_enabled: config_io::env_template_default_bool(
+                    "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_ENABLE",
+                    false,
+                ),
+                sport_entry_schedule_days_utc: config_io::env_template_default_string(
+                    "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_DAYS_UTC",
+                )
+                .unwrap_or_else(|| "mon,tue,wed,thu,fri".to_string()),
+                sport_entry_schedule_start_minute_utc: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_START_MINUTE_UTC",
+                    780.0,
+                ),
+                sport_entry_schedule_end_minute_utc: config_io::env_template_default_f64(
+                    "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_END_MINUTE_UTC",
+                    240.0,
+                ),
                 nonsport_entry_schedule_enabled: config_io::env_template_default_bool(
                     "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE",
                     false,
@@ -2151,6 +2177,46 @@ fn desktop_config_to_profile_payload(
         ),
     );
     strategy.insert(
+        "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_ENABLE".to_string(),
+        bool_to_json(
+            config
+                .strategy_settings
+                .mm_sport
+                .sport_entry_schedule_enabled,
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_DAYS_UTC".to_string(),
+        Value::String(
+            config
+                .strategy_settings
+                .mm_sport
+                .sport_entry_schedule_days_utc
+                .trim()
+                .to_string(),
+        ),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_START_MINUTE_UTC".to_string(),
+        number_to_json(normalize_utc_minute_f64(
+            config
+                .strategy_settings
+                .mm_sport
+                .sport_entry_schedule_start_minute_utc,
+            780.0,
+        )),
+    );
+    strategy.insert(
+        "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_END_MINUTE_UTC".to_string(),
+        number_to_json(normalize_utc_minute_f64(
+            config
+                .strategy_settings
+                .mm_sport
+                .sport_entry_schedule_end_minute_utc,
+            240.0,
+        )),
+    );
+    strategy.insert(
         "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE".to_string(),
         bool_to_json(
             config
@@ -2747,6 +2813,10 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "pause_after_fill_sec": f64_from_object(&strategy, "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC", 3600.0)),
                 "inventory_exit_start_hours": f64_from_object(&strategy, "EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_INVENTORY_EXIT_START_SEC", 3600.0)) / 3600.0,
                 "nonsport_end_exit_start_hours": f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_NONSPORT_END_EXIT_START_SEC", 172800.0)) / 3600.0,
+                "sport_entry_schedule_enabled": bool_from_object(&strategy, "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_ENABLE", bool_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE", config_io::env_template_default_bool("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_ENABLE", false))),
+                "sport_entry_schedule_days_utc": string_from_object(&strategy, "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_DAYS_UTC", string_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC", config_io::env_template_default_string("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_DAYS_UTC").as_deref().unwrap_or("mon,tue,wed,thu,fri")).as_str()),
+                "sport_entry_schedule_start_minute_utc": normalize_utc_minute_f64(f64_from_object(&strategy, "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_START_MINUTE_UTC", f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_START_MINUTE_UTC", 780.0))), 780.0),
+                "sport_entry_schedule_end_minute_utc": normalize_utc_minute_f64(f64_from_object(&strategy, "EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_END_MINUTE_UTC", f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_END_MINUTE_UTC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_END_MINUTE_UTC", 240.0))), 240.0),
                 "nonsport_entry_schedule_enabled": bool_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE", config_io::env_template_default_bool("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE", false)),
                 "nonsport_entry_schedule_days_utc": string_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC", config_io::env_template_default_string("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_DAYS_UTC").as_deref().unwrap_or("mon,tue,wed,thu,fri")),
                 "nonsport_entry_schedule_start_minute_utc": normalize_utc_minute_f64(f64_from_object(&strategy, "EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC", config_io::env_template_default_f64("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_START_MINUTE_UTC", 780.0)), 780.0),
@@ -3478,6 +3548,27 @@ fn gamma_market_thumbnail(payload: &GammaMarketResponse) -> Option<String> {
     ])
 }
 
+fn gamma_market_event_slug(payload: &GammaMarketResponse) -> Option<String> {
+    first_non_empty(&[
+        payload.event_slug.clone(),
+        payload.events.first().and_then(|entry| entry.slug.clone()),
+    ])
+}
+
+fn local_updown_market_slug(
+    symbol: Option<&str>,
+    timeframe: Option<&str>,
+    period_timestamp: Option<i64>,
+) -> Option<String> {
+    let symbol = symbol?.trim().to_ascii_lowercase();
+    let timeframe = timeframe?.trim().to_ascii_lowercase();
+    let period_timestamp = period_timestamp?;
+    if symbol.is_empty() || timeframe.is_empty() || period_timestamp <= 0 {
+        return None;
+    }
+    Some(format!("{symbol}-updown-{timeframe}-{period_timestamp}"))
+}
+
 fn fetch_market_metadata(condition_id: &str) -> Option<MarketMetadata> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -3495,13 +3586,19 @@ fn fetch_market_metadata(condition_id: &str) -> Option<MarketMetadata> {
         .filter(|value| !value.is_empty())?;
 
     let outcomes_by_token = clob
-        .map(|(_, outcomes_by_token)| outcomes_by_token)
+        .as_ref()
+        .map(|(_, outcomes_by_token)| outcomes_by_token.clone())
         .unwrap_or_default();
 
     Some(MarketMetadata {
         title,
         outcomes_by_token,
         thumbnail_url: gamma.as_ref().and_then(gamma_market_thumbnail),
+        market_slug: clob
+            .as_ref()
+            .and_then(|(slug, _)| slug.clone())
+            .or_else(|| gamma.as_ref().and_then(|payload| payload.slug.clone())),
+        event_slug: gamma.as_ref().and_then(gamma_market_event_slug),
     })
 }
 
@@ -3580,6 +3677,11 @@ fn build_home_activity_batch(
             .and_then(|entry| entry.outcomes_by_token.get(&record.token_id).cloned())
             .or(fallback_outcome)
             .and_then(|outcome| format_trade_outcome(Some(outcome.as_str()), record.price));
+        let fallback_slug = local_updown_market_slug(
+            record.asset_symbol.as_deref(),
+            record.timeframe.as_deref(),
+            record.period_timestamp,
+        );
 
         let cashflow_usd = signed_trade_cashflow(
             &record.side,
@@ -3590,20 +3692,30 @@ fn build_home_activity_batch(
         let action = trade_action_label(&record.side).to_string();
 
         items.push(serde_json::json!({
+            "id": record.id.to_string(),
             "timestamp": record.timestamp,
             "severity": "info",
             "source": "trade",
             "kind": "trade",
+            "is_reward": false,
             "message": title.clone(),
             "action": action,
             "thumbnail_url": market.as_ref().and_then(|entry| entry.thumbnail_url.clone()),
             "market_title": title.clone(),
+            "market_slug": market.as_ref().and_then(|entry| entry.market_slug.clone()).or(fallback_slug),
+            "event_slug": market.as_ref().and_then(|entry| entry.event_slug.clone()),
             "title": title,
             "outcome": outcome_label,
             "detail": serde_json::Value::Null,
             "quantity": record.quantity,
             "cashflow_usd": cashflow_usd,
             "value_usd": cashflow_usd,
+            "condition_id": if record.condition_id.is_empty() { Value::Null } else { serde_json::json!(record.condition_id) },
+            "token_id": if record.token_id.is_empty() { Value::Null } else { serde_json::json!(record.token_id) },
+            "price": if record.price.is_finite() && record.price > 0.0 { serde_json::json!(record.price) } else { Value::Null },
+            "activity_type": "TRADE",
+            "side": record.side,
+            "transaction_hash": Value::Null,
         }));
         next_cursor = next_cursor.max(record.id);
     }
@@ -5102,6 +5214,263 @@ fn build_trade_stats_value(data_dir: &Path, profile_start_ms: i64) -> serde_json
     })
 }
 
+fn normalize_performance_range(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "6h" => "6h",
+        "7d" => "7d",
+        "30d" => "30d",
+        "all" => "all",
+        _ => "1d",
+    }
+}
+
+fn performance_range_label(range: &str) -> &'static str {
+    match range {
+        "6h" => "6H",
+        "7d" => "7D",
+        "30d" => "30D",
+        "all" => "ALL",
+        _ => "1D",
+    }
+}
+
+fn performance_range_start_ms(range: &str, now_ms: i64, profile_start_ms: i64) -> i64 {
+    let window_ms = match range {
+        "6h" => Some(6 * 60 * 60 * 1_000),
+        "1d" => Some(24 * 60 * 60 * 1_000),
+        "7d" => Some(7 * 24 * 60 * 60 * 1_000),
+        "30d" => Some(30 * 24 * 60 * 60 * 1_000),
+        "all" => None,
+        _ => Some(24 * 60 * 60 * 1_000),
+    };
+    window_ms
+        .map(|ms| now_ms.saturating_sub(ms).max(profile_start_ms))
+        .unwrap_or(profile_start_ms)
+}
+
+fn performance_window_value(conn: &Connection, range: &str, start_ms: i64) -> serde_json::Value {
+    let bucket_ms = if range == "30d" || range == "all" {
+        24 * 60 * 60 * 1_000_i64
+    } else {
+        60 * 60 * 1_000_i64
+    };
+    let mut series = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT ((ts_ms / ?2) * ?2) AS bucket_ms, \
+                COALESCE(SUM(COALESCE(pnl_usd, 0.0)), 0.0) AS pnl_delta \
+         FROM trade_events \
+         WHERE event_type='EXIT' AND COALESCE(ts_ms, 0) >= ?1 \
+         GROUP BY bucket_ms \
+         ORDER BY bucket_ms ASC",
+    ) {
+        if let Ok(rows) = stmt.query_map([start_ms, bucket_ms], |row| {
+            let bucket_ms: i64 = row.get(0)?;
+            let pnl_delta: f64 = row.get(1)?;
+            Ok((bucket_ms, pnl_delta))
+        }) {
+            let mut cumulative = 0.0_f64;
+            for row in rows.flatten() {
+                cumulative += row.1;
+                series.push(serde_json::json!({
+                    "ts": iso_from_ms(row.0),
+                    "value": cumulative,
+                    "raw_value": cumulative,
+                }));
+            }
+        }
+    }
+    let profit_loss = series
+        .last()
+        .and_then(|value| value.get("value"))
+        .and_then(Value::as_f64);
+    serde_json::json!({
+        "range": range,
+        "label": performance_range_label(range),
+        "profit_loss": profit_loss,
+        "series": series,
+    })
+}
+
+fn performance_daily_stats(conn: &Connection, profile_start_ms: i64) -> Vec<serde_json::Value> {
+    let mut stats = Vec::new();
+    let sql = "SELECT \
+            strftime('%Y-%m-%d', COALESCE(ts_ms, 0) / 1000, 'unixepoch') AS day, \
+            COALESCE(SUM(CASE WHEN event_type='EXIT' THEN COALESCE(pnl_usd, 0.0) ELSE 0.0 END), 0.0), \
+            COALESCE(SUM(ABS(COALESCE(notional_usd, 0.0))), 0.0), \
+            COUNT(*) \
+        FROM trade_events \
+        WHERE COALESCE(ts_ms, 0) >= ?1 \
+        GROUP BY day \
+        ORDER BY day ASC";
+    let Ok(mut stmt) = conn.prepare(sql) else {
+        return stats;
+    };
+    if let Ok(rows) = stmt.query_map([profile_start_ms], |row| {
+        let date: String = row.get(0)?;
+        let pnl: f64 = row.get(1)?;
+        let volume: f64 = row.get(2)?;
+        let trades: i64 = row.get(3)?;
+        Ok((date, pnl, volume, trades))
+    }) {
+        for row in rows.flatten() {
+            stats.push(serde_json::json!({
+                "date": row.0,
+                "pnl": row.1,
+                "volume": row.2,
+                "maker_rebate": Value::Null,
+                "lp_rewards": Value::Null,
+                "trades": row.3,
+            }));
+        }
+    }
+    stats
+}
+
+fn open_position_performance_summary(conn: &Connection) -> (Option<f64>, Option<f64>) {
+    let sql = "SELECT \
+            SUM(CASE WHEN lm.price IS NOT NULL THEN (lm.price - avg_entry_price) * net_units ELSE NULL END), \
+            SUM(CASE WHEN lm.price IS NOT NULL THEN lm.price * net_units ELSE avg_entry_price * net_units END) \
+        FROM ( \
+            SELECT p.position_key, \
+                (COALESCE(p.entry_units, 0.0) - COALESCE(p.exit_units, 0.0) - COALESCE(p.inventory_consumed_units, 0.0)) AS net_units, \
+                CASE WHEN COALESCE(p.entry_units, 0.0) > 0.0 THEN COALESCE(p.entry_notional_usd, 0.0) / p.entry_units ELSE 0.0 END AS avg_entry_price \
+            FROM positions_v2 p \
+            WHERE p.status='OPEN' \
+        ) open_pos \
+        LEFT JOIN ( \
+            SELECT m.position_key, m.price \
+            FROM marks_v2 m \
+            INNER JOIN ( \
+                SELECT position_key, MAX(ts_ms) AS max_ts \
+                FROM marks_v2 GROUP BY position_key \
+            ) latest ON latest.position_key = m.position_key AND latest.max_ts = m.ts_ms \
+        ) lm ON lm.position_key = open_pos.position_key \
+        WHERE net_units > 1e-9";
+    conn.query_row(sql, [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap_or((None, None))
+}
+
+fn build_home_performance_value(
+    data_dir: &Path,
+    profile: &Profile,
+    range: &str,
+) -> serde_json::Value {
+    let range = normalize_performance_range(range);
+    let now_ms = Utc::now().timestamp_millis();
+    let as_of_utc = Utc::now().to_rfc3339();
+    let empty_windows = ["6h", "1d", "7d", "30d", "all"]
+        .into_iter()
+        .map(|entry| {
+            (
+                entry.to_string(),
+                serde_json::json!({
+                    "range": entry,
+                    "label": performance_range_label(entry),
+                    "profit_loss": Value::Null,
+                    "series": [],
+                }),
+            )
+        })
+        .collect::<Map<_, _>>();
+
+    let Some(conn) = open_tracking_connection(data_dir) else {
+        return serde_json::json!({
+            "ok": true,
+            "profile_id": profile.id,
+            "profile_name": profile.name,
+            "range": range,
+            "profit_loss": Value::Null,
+            "realized_pnl": Value::Null,
+            "open_pnl": Value::Null,
+            "position_value": Value::Null,
+            "available_balance": Value::Null,
+            "rewards": Value::Null,
+            "series": [],
+            "windows": Value::Object(empty_windows),
+            "daily_stats": [],
+            "daily_stats_partial": false,
+            "all_time": {
+                "profit_loss": Value::Null,
+                "volume": Value::Null,
+                "maker_rebate": Value::Null,
+                "lp_rewards": Value::Null,
+                "volume_partial": false,
+                "maker_rebate_partial": false,
+            },
+            "as_of_utc": as_of_utc,
+            "source": "local_tracking_empty",
+            "error": "tracking_db_unavailable",
+        });
+    };
+
+    let profile_start_ms = profile_stats_start_ms(profile);
+    let mut windows = Map::new();
+    for entry in ["6h", "1d", "7d", "30d", "all"] {
+        let start_ms = performance_range_start_ms(entry, now_ms, profile_start_ms);
+        windows.insert(
+            entry.to_string(),
+            performance_window_value(&conn, entry, start_ms),
+        );
+    }
+
+    let selected = windows.get(range).cloned().unwrap_or_else(|| {
+        serde_json::json!({
+            "range": range,
+            "label": performance_range_label(range),
+            "profit_loss": Value::Null,
+            "series": [],
+        })
+    });
+    let profit_loss = selected.get("profit_loss").cloned().unwrap_or(Value::Null);
+    let series = selected
+        .get("series")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+    let daily_stats = performance_daily_stats(&conn, profile_start_ms);
+    let (open_pnl, position_value) = open_position_performance_summary(&conn);
+    let all_time_window = windows
+        .get("all")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let all_time_pnl = all_time_window
+        .get("profit_loss")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let all_time_volume = daily_stats
+        .iter()
+        .filter_map(|stat| stat.get("volume").and_then(Value::as_f64))
+        .sum::<f64>();
+    let realized_pnl = profit_loss.clone();
+
+    serde_json::json!({
+        "ok": true,
+        "profile_id": profile.id,
+        "profile_name": profile.name,
+        "range": range,
+        "profit_loss": profit_loss,
+        "realized_pnl": realized_pnl,
+        "open_pnl": open_pnl,
+        "position_value": position_value,
+        "available_balance": Value::Null,
+        "rewards": Value::Null,
+        "series": series,
+        "windows": Value::Object(windows),
+        "daily_stats": daily_stats,
+        "daily_stats_partial": false,
+        "all_time": {
+            "profit_loss": all_time_pnl,
+            "volume": all_time_volume,
+            "maker_rebate": Value::Null,
+            "lp_rewards": Value::Null,
+            "volume_partial": false,
+            "maker_rebate_partial": false,
+        },
+        "as_of_utc": as_of_utc,
+        "source": "local_tracking",
+        "error": Value::Null,
+    })
+}
+
 #[tauri::command]
 fn get_trade_stats(
     data_dir: State<'_, AppDataDir>,
@@ -5165,6 +5534,64 @@ fn get_trade_stats(
         });
     }
     value
+}
+
+#[tauri::command]
+fn get_home_performance_api(
+    data_dir: State<'_, AppDataDir>,
+    profiles: State<'_, ProfileState>,
+    range: String,
+) -> serde_json::Value {
+    let profile = {
+        let Ok(pm) = profiles.lock() else {
+            return serde_json::json!({
+                "ok": true,
+                "profile_id": Value::Null,
+                "profile_name": Value::Null,
+                "range": normalize_performance_range(&range),
+                "profit_loss": Value::Null,
+                "realized_pnl": Value::Null,
+                "open_pnl": Value::Null,
+                "position_value": Value::Null,
+                "available_balance": Value::Null,
+                "rewards": Value::Null,
+                "series": [],
+                "windows": {},
+                "daily_stats": [],
+                "daily_stats_partial": false,
+                "all_time": Value::Null,
+                "as_of_utc": Utc::now().to_rfc3339(),
+                "source": "unavailable",
+                "error": "profile_lock_unavailable",
+            });
+        };
+        match active_profile(&pm) {
+            Ok(profile) => profile,
+            Err(err) => {
+                return serde_json::json!({
+                    "ok": true,
+                    "profile_id": Value::Null,
+                    "profile_name": Value::Null,
+                    "range": normalize_performance_range(&range),
+                    "profit_loss": Value::Null,
+                    "realized_pnl": Value::Null,
+                    "open_pnl": Value::Null,
+                    "position_value": Value::Null,
+                    "available_balance": Value::Null,
+                    "rewards": Value::Null,
+                    "series": [],
+                    "windows": {},
+                    "daily_stats": [],
+                    "daily_stats_partial": false,
+                    "all_time": Value::Null,
+                    "as_of_utc": Utc::now().to_rfc3339(),
+                    "source": "unavailable",
+                    "error": err,
+                });
+            }
+        }
+    };
+    build_home_performance_value(&data_dir.0, &profile, &range)
 }
 
 #[tauri::command]
@@ -5370,17 +5797,41 @@ async fn get_home_activity_api(
         .into_iter()
         .map(|row| {
             let action = activity_action_label(&row);
+            let title = row.title.clone();
+            let slug = row.slug.clone();
+            let cashflow_usd = activity_cashflow_usd(&row);
+            let timestamp =
+                format_api_timestamp(row.timestamp).unwrap_or_else(|| Utc::now().to_rfc3339());
+            let is_reward = row
+                .activity_type
+                .as_deref()
+                .map(|value| value.eq_ignore_ascii_case("MAKER_REBATE"))
+                .unwrap_or(false);
+            let id = row
+                .transaction_hash
+                .clone()
+                .or_else(|| row.asset.clone())
+                .or_else(|| row.condition_id.clone())
+                .unwrap_or_else(|| row.timestamp.unwrap_or_default().to_string());
             serde_json::json!({
-                "timestamp": format_api_timestamp(row.timestamp),
+                "id": id,
+                "timestamp": timestamp,
+                "severity": "info",
+                "source": "polymarket",
+                "kind": if is_reward { "maker_rebate" } else { "trade" },
+                "is_reward": is_reward,
                 "action": action,
-                "message": row.title.clone().unwrap_or_else(|| action.clone()),
-                "market_title": row.title,
-                "title": row.title,
+                "message": title.clone().unwrap_or_else(|| action.clone()),
+                "market_title": title.clone(),
+                "market_slug": slug.clone(),
+                "event_slug": row.event_slug,
+                "title": title,
                 "outcome": row.outcome,
                 "quantity": row.size,
-                "cashflow_usd": activity_cashflow_usd(&row),
+                "cashflow_usd": cashflow_usd,
+                "value_usd": cashflow_usd,
                 "thumbnail_url": row.icon,
-                "detail": row.slug,
+                "detail": slug,
                 "condition_id": row.condition_id,
                 "token_id": row.asset,
                 "price": row.price,
@@ -5504,12 +5955,16 @@ async fn get_home_open_orders_api(
                     format!("Open order {short_condition}")
                 }
             };
+            let market_slug =
+                local_updown_market_slug(asset_symbol.as_deref(), timeframe.as_deref(), Some(period_timestamp));
             Ok(serde_json::json!({
                 "id": order_id,
                 "status": status,
                 "condition_id": if condition_id.is_empty() { Value::Null } else { serde_json::json!(condition_id) },
                 "token_id": token_id,
                 "market_title": market_title,
+                "market_slug": market_slug,
+                "event_slug": Value::Null,
                 "thumbnail_url": Value::Null,
                 "outcome": Value::Null,
                 "side": if side.is_empty() { Value::Null } else { serde_json::json!(side) },
@@ -6073,6 +6528,7 @@ pub fn run() {
             export_config,
             import_config,
             get_trade_stats,
+            get_home_performance_api,
             get_recent_trades,
             get_open_positions,
             get_wallet_balance,
@@ -6403,6 +6859,22 @@ mod tests {
         config
             .strategy_settings
             .mm_sport
+            .sport_entry_schedule_enabled = true;
+        config
+            .strategy_settings
+            .mm_sport
+            .sport_entry_schedule_days_utc = "tue,thu".to_string();
+        config
+            .strategy_settings
+            .mm_sport
+            .sport_entry_schedule_start_minute_utc = 800.0;
+        config
+            .strategy_settings
+            .mm_sport
+            .sport_entry_schedule_end_minute_utc = 300.0;
+        config
+            .strategy_settings
+            .mm_sport
             .nonsport_entry_schedule_enabled = true;
         config
             .strategy_settings
@@ -6434,6 +6906,22 @@ mod tests {
         assert_eq!(
             strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_MAX_QUOTE_SHARES"),
             Some(&serde_json::json!(125.0))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_ENABLE"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_DAYS_UTC"),
+            Some(&serde_json::json!("tue,thu"))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_START_MINUTE_UTC"),
+            Some(&serde_json::json!(800.0))
+        );
+        assert_eq!(
+            strategy_object.get("EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_END_MINUTE_UTC"),
+            Some(&serde_json::json!(300.0))
         );
         assert_eq!(
             strategy_object.get("EVPOLY_MM_SPORT_NONSPORT_ENTRY_SCHEDULE_ENABLE"),
@@ -6492,6 +6980,22 @@ mod tests {
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_max_quote_shares"],
             serde_json::json!(125.0)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["sport_entry_schedule_enabled"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["sport_entry_schedule_days_utc"],
+            serde_json::json!("tue,thu")
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["sport_entry_schedule_start_minute_utc"],
+            serde_json::json!(800.0)
+        );
+        assert_eq!(
+            value["strategy_settings"]["mm_sport"]["sport_entry_schedule_end_minute_utc"],
+            serde_json::json!(300.0)
         );
         assert_eq!(
             value["strategy_settings"]["mm_sport"]["nonsport_entry_schedule_enabled"],

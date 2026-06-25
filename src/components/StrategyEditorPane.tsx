@@ -1658,8 +1658,63 @@ export function StrategyEditorPane({
               [isNonSport ? "nonsport_quote_size_multiplier" : "sport_quote_size_multiplier"]: value,
             },
           }));
-        const scheduleEnabled = mmSport.nonsport_entry_schedule_enabled;
-        const scheduleDays = parseMMSportScheduleDays(mmSport.nonsport_entry_schedule_days_utc);
+        const scheduleEnabled = isNonSport
+          ? mmSport.nonsport_entry_schedule_enabled
+          : mmSport.sport_entry_schedule_enabled;
+        const scheduleDays = parseMMSportScheduleDays(
+          isNonSport
+            ? mmSport.nonsport_entry_schedule_days_utc
+            : mmSport.sport_entry_schedule_days_utc
+        );
+        const scheduleStartMinute = isNonSport
+          ? mmSport.nonsport_entry_schedule_start_minute_utc
+          : mmSport.sport_entry_schedule_start_minute_utc;
+        const scheduleEndMinute = isNonSport
+          ? mmSport.nonsport_entry_schedule_end_minute_utc
+          : mmSport.sport_entry_schedule_end_minute_utc;
+        const patchActiveHours = (patch: Partial<BotConfig["strategy_settings"]["mm_sport"]>) =>
+          patchProfile({
+            ...(patch.sport_entry_schedule_enabled !== undefined ||
+            patch.nonsport_entry_schedule_enabled !== undefined
+              ? {
+                  sport_entry_schedule_enabled:
+                    patch.sport_entry_schedule_enabled ?? patch.nonsport_entry_schedule_enabled,
+                  nonsport_entry_schedule_enabled:
+                    patch.nonsport_entry_schedule_enabled ?? patch.sport_entry_schedule_enabled,
+                }
+              : {}),
+            ...(patch.sport_entry_schedule_days_utc !== undefined ||
+            patch.nonsport_entry_schedule_days_utc !== undefined
+              ? {
+                  sport_entry_schedule_days_utc:
+                    patch.sport_entry_schedule_days_utc ?? patch.nonsport_entry_schedule_days_utc,
+                  nonsport_entry_schedule_days_utc:
+                    patch.nonsport_entry_schedule_days_utc ?? patch.sport_entry_schedule_days_utc,
+                }
+              : {}),
+            ...(patch.sport_entry_schedule_start_minute_utc !== undefined ||
+            patch.nonsport_entry_schedule_start_minute_utc !== undefined
+              ? {
+                  sport_entry_schedule_start_minute_utc:
+                    patch.sport_entry_schedule_start_minute_utc ??
+                    patch.nonsport_entry_schedule_start_minute_utc,
+                  nonsport_entry_schedule_start_minute_utc:
+                    patch.nonsport_entry_schedule_start_minute_utc ??
+                    patch.sport_entry_schedule_start_minute_utc,
+                }
+              : {}),
+            ...(patch.sport_entry_schedule_end_minute_utc !== undefined ||
+            patch.nonsport_entry_schedule_end_minute_utc !== undefined
+              ? {
+                  sport_entry_schedule_end_minute_utc:
+                    patch.sport_entry_schedule_end_minute_utc ??
+                    patch.nonsport_entry_schedule_end_minute_utc,
+                  nonsport_entry_schedule_end_minute_utc:
+                    patch.nonsport_entry_schedule_end_minute_utc ??
+                    patch.sport_entry_schedule_end_minute_utc,
+                }
+              : {}),
+          });
         const toggleScheduleDay = (day: MMSportScheduleDay) => {
           const next = new Set(scheduleDays);
           if (next.has(day)) {
@@ -1667,7 +1722,7 @@ export function StrategyEditorPane({
           } else {
             next.add(day);
           }
-          patchProfile({ nonsport_entry_schedule_days_utc: formatMMSportScheduleDays(next) });
+          patchActiveHours({ sport_entry_schedule_days_utc: formatMMSportScheduleDays(next) });
         };
 
         return (
@@ -1723,88 +1778,81 @@ export function StrategyEditorPane({
                   )
               )}
             </div>
-            {isNonSport ? (
-              <>
-                <div className="mm-quote-divider" />
-                <div
-                  className={`mm-active-hours ${
-                    scheduleEnabled ? "" : "mm-active-hours--disabled"
-                  }`.trim()}
-                >
-                  <div className="mm-active-hours__header">
-                    <div>
-                      <h4>Active Hours (UTC)</h4>
-                      <span>Fresh entries only. Exits still run.</span>
-                    </div>
-                    {renderSegment(
-                      [
-                        ["off", "Off"],
-                        ["on", "On"],
-                      ] as const,
-                      scheduleEnabled ? "on" : "off",
-                      (value) =>
-                        patchProfile({ nonsport_entry_schedule_enabled: value === "on" })
-                    )}
-                  </div>
-                  <div className="mm-active-hours__grid">
-                    <div className="mm-active-hours__days">
-                      <label className="field-label">Days</label>
-                      <div className="mm-day-chip-row">
-                        {MM_SPORT_SCHEDULE_DAYS.map(([day, dayLabel]) => (
-                          <button
-                            key={day}
-                            type="button"
-                            disabled={!canEdit || !scheduleEnabled}
-                            onClick={() => toggleScheduleDay(day)}
-                            className={`mm-day-chip ${
-                              scheduleDays.has(day) ? "mm-day-chip--active" : ""
-                            }`.trim()}
-                          >
-                            {dayLabel}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="mm-quote-field">
-                      <label className="field-label">Start UTC</label>
-                      <input
-                        type="time"
-                        value={minuteToTimeInput(
-                          mmSport.nonsport_entry_schedule_start_minute_utc
-                        )}
+            <div className="mm-quote-divider" />
+            <div
+              className={`mm-active-hours ${
+                scheduleEnabled ? "" : "mm-active-hours--disabled"
+              }`.trim()}
+            >
+              <div className="mm-active-hours__header">
+                <div>
+                  <h4>Active Hours (UTC)</h4>
+                  <span>Fresh entries only. Exits still run.</span>
+                </div>
+                {renderSegment(
+                  [
+                    ["off", "Off"],
+                    ["on", "On"],
+                  ] as const,
+                  scheduleEnabled ? "on" : "off",
+                  (value) => patchActiveHours({ sport_entry_schedule_enabled: value === "on" })
+                )}
+              </div>
+              <div className="mm-active-hours__grid">
+                <div className="mm-active-hours__days">
+                  <label className="field-label">Days</label>
+                  <div className="mm-day-chip-row">
+                    {MM_SPORT_SCHEDULE_DAYS.map(([day, dayLabel]) => (
+                      <button
+                        key={day}
+                        type="button"
                         disabled={!canEdit || !scheduleEnabled}
-                        onChange={(event) =>
-                          patchProfile({
-                            nonsport_entry_schedule_start_minute_utc: timeInputToMinute(
-                              event.target.value,
-                              mmSport.nonsport_entry_schedule_start_minute_utc
-                            ),
-                          })
-                        }
-                        className="field-input"
-                      />
-                    </div>
-                    <div className="mm-quote-field">
-                      <label className="field-label">End UTC</label>
-                      <input
-                        type="time"
-                        value={minuteToTimeInput(mmSport.nonsport_entry_schedule_end_minute_utc)}
-                        disabled={!canEdit || !scheduleEnabled}
-                        onChange={(event) =>
-                          patchProfile({
-                            nonsport_entry_schedule_end_minute_utc: timeInputToMinute(
-                              event.target.value,
-                              mmSport.nonsport_entry_schedule_end_minute_utc
-                            ),
-                          })
-                        }
-                        className="field-input"
-                      />
-                    </div>
+                        onClick={() => toggleScheduleDay(day)}
+                        className={`mm-day-chip ${
+                          scheduleDays.has(day) ? "mm-day-chip--active" : ""
+                        }`.trim()}
+                      >
+                        {dayLabel}
+                      </button>
+                    ))}
                   </div>
                 </div>
-              </>
-            ) : null}
+                <div className="mm-quote-field">
+                  <label className="field-label">Start UTC</label>
+                  <input
+                    type="time"
+                    value={minuteToTimeInput(scheduleStartMinute)}
+                    disabled={!canEdit || !scheduleEnabled}
+                    onChange={(event) =>
+                      patchActiveHours({
+                        sport_entry_schedule_start_minute_utc: timeInputToMinute(
+                          event.target.value,
+                          scheduleStartMinute
+                        ),
+                      })
+                    }
+                    className="field-input"
+                  />
+                </div>
+                <div className="mm-quote-field">
+                  <label className="field-label">End UTC</label>
+                  <input
+                    type="time"
+                    value={minuteToTimeInput(scheduleEndMinute)}
+                    disabled={!canEdit || !scheduleEnabled}
+                    onChange={(event) =>
+                      patchActiveHours({
+                        sport_entry_schedule_end_minute_utc: timeInputToMinute(
+                          event.target.value,
+                          scheduleEndMinute
+                        ),
+                      })
+                    }
+                    className="field-input"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
         );
       };

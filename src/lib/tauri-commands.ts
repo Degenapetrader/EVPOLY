@@ -156,14 +156,22 @@ export interface HomeActivityBatch {
 }
 
 export interface HomeApiActivityItem {
+  id: string;
   timestamp: string;
+  severity: "info" | "warning" | "error" | string;
+  source: string;
+  kind: string;
+  is_reward?: boolean;
   action: string | null;
   message: string;
   market_title: string | null;
+  market_slug: string | null;
+  event_slug: string | null;
   title: string | null;
   outcome: string | null;
   quantity: number | null;
   cashflow_usd: number | null;
+  value_usd: number | null;
   thumbnail_url: string | null;
   detail: string | null;
   condition_id: string | null;
@@ -203,6 +211,8 @@ export interface HomeApiOpenOrderItem {
   condition_id: string | null;
   token_id: string | null;
   market_title: string | null;
+  market_slug: string | null;
+  event_slug: string | null;
   thumbnail_url: string | null;
   outcome: string | null;
   side: string | null;
@@ -262,6 +272,58 @@ export interface TradeStats {
   avg_ack_latency_ms: number | null;
   ack_sample_count: number;
   pnl_history: { timestamp: string; pnl: number }[];
+}
+
+export type ProfilePerformanceRange = "6h" | "1d" | "7d" | "30d" | "all";
+
+export interface ProfilePerformancePoint {
+  ts: string;
+  value: number;
+  raw_value: number;
+}
+
+export interface ProfilePerformanceWindow {
+  range: ProfilePerformanceRange;
+  label: string;
+  profit_loss: number | null;
+  series: ProfilePerformancePoint[];
+}
+
+export interface ProfilePerformanceDailyStat {
+  date: string;
+  pnl: number | null;
+  volume: number | null;
+  maker_rebate: number | null;
+  lp_rewards: number | null;
+  trades: number;
+}
+
+export interface ProfilePerformanceView {
+  ok: boolean;
+  profile_id: string | null;
+  profile_name: string | null;
+  range: ProfilePerformanceRange;
+  profit_loss: number | null;
+  realized_pnl: number | null;
+  open_pnl: number | null;
+  position_value: number | null;
+  available_balance: number | null;
+  rewards: number | null;
+  series: ProfilePerformancePoint[];
+  windows: Record<ProfilePerformanceRange, ProfilePerformanceWindow>;
+  daily_stats: ProfilePerformanceDailyStat[];
+  daily_stats_partial?: boolean;
+  all_time: {
+    profit_loss: number | null;
+    volume: number | null;
+    maker_rebate: number | null;
+    lp_rewards: number | null;
+    volume_partial?: boolean;
+    maker_rebate_partial?: boolean;
+  } | null;
+  as_of_utc: string;
+  source: string;
+  error: string | null;
 }
 
 export interface Trade {
@@ -427,6 +489,10 @@ export interface MMSportSettings {
   pause_after_fill_sec: number;
   inventory_exit_start_hours: number;
   nonsport_end_exit_start_hours: number;
+  sport_entry_schedule_enabled: boolean;
+  sport_entry_schedule_days_utc: string;
+  sport_entry_schedule_start_minute_utc: number;
+  sport_entry_schedule_end_minute_utc: number;
   nonsport_entry_schedule_enabled: boolean;
   nonsport_entry_schedule_days_utc: string;
   nonsport_entry_schedule_start_minute_utc: number;
@@ -683,6 +749,11 @@ export const importConfig = (
 // Data
 export const getTradeStats = (): Promise<TradeStats> =>
   invoke("get_trade_stats");
+
+export const getHomePerformanceApi = (
+  range: ProfilePerformanceRange = "1d"
+): Promise<ProfilePerformanceView> =>
+  invoke("get_home_performance_api", { range });
 
 export const getRecentTrades = (limit: number): Promise<Trade[]> =>
   invoke("get_recent_trades", { limit });

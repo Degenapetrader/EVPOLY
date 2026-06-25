@@ -3199,10 +3199,6 @@ fn activity_cashflow_usd(row: &portfolio_api::ActivityRow) -> Option<f64> {
     }
 }
 
-fn decimal_to_f64<T: ToString>(value: T) -> Option<f64> {
-    value.to_string().parse::<f64>().ok()
-}
-
 fn timeframe_seconds(timeframe: &str) -> Option<i64> {
     match timeframe {
         "5m" => Some(5 * 60),
@@ -5387,6 +5383,7 @@ async fn get_home_activity_api(
                 "detail": row.slug,
                 "condition_id": row.condition_id,
                 "token_id": row.asset,
+                "price": row.price,
                 "activity_type": row.activity_type,
                 "side": row.side,
                 "transaction_hash": row.transaction_hash,
@@ -5439,82 +5436,95 @@ async fn get_home_positions_api(
 
 #[tauri::command]
 async fn get_home_open_orders_api(
-    auth: State<'_, AuthState>,
     profiles: State<'_, ProfileState>,
-    market_metadata: State<'_, MarketMetadataState>,
+    data_dir: State<'_, AppDataDir>,
     limit: usize,
 ) -> Result<serde_json::Value, String> {
     let profile = {
         let pm = profiles.lock().map_err(|e| e.to_string())?;
         active_profile(&pm)?
     };
-    let query = {
-        let auth = auth.lock().map_err(|e| e.to_string())?;
-        let secrets = decrypt_profile_secrets(&profile, &auth)?;
-        let private_key = secrets
-            .get("POLY_PRIVATE_KEY")
-            .cloned()
-            .ok_or_else(|| "missing POLY_PRIVATE_KEY in profile secrets".to_string())?;
-        portfolio_api::AuthenticatedClobQuery {
-            private_key,
-            maker_address: profile.primary_wallet_address(),
-            signature_type: profile.signature_type,
-        }
-    };
-    let rows = portfolio_api::fetch_open_orders(&query, limit.clamp(1, 100)).await?;
-    let items = rows
-        .into_iter()
-        .map(|row| {
-            let condition_id = format!("{:#x}", row.market);
-            let token_id = row.asset_id.to_string();
-            let metadata = resolve_market_metadata(&condition_id, &market_metadata);
-            let outcome = row.outcome.trim().to_string();
-            let metadata_outcome = metadata
-                .as_ref()
-                .and_then(|entry| entry.outcomes_by_token.get(&token_id).cloned());
-            let display_outcome = if outcome.is_empty() {
-                metadata_outcome
+    let db_path = resolve_tracking_db_path(&data_dir.0);
+    let conn = Connection::open(&db_path).map_err(|e| format!("open tracking db: {e}"))?;
+    let profile_start_ms = profile_stats_start_ms(&profile);
+    let mut stmt = conn
+        .prepare(
+            "SELECT order_id, token_id, COALESCE(condition_id, ''), \
+                    NULLIF(TRIM(timeframe), ''), COALESCE(strategy_id, ''), \
+                    COALESCE(entry_mode, ''), COALESCE(period_timestamp, 0), \
+                    COALESCE(price, 0.0), COALESCE(size_usd, 0.0), \
+                    UPPER(TRIM(COALESCE(side, ''))), UPPER(TRIM(COALESCE(status, ''))), \
+                    COALESCE(created_at_ms, 0), COALESCE(updated_at_ms, 0), \
+                    NULLIF(TRIM(asset_symbol), '') \
+             FROM pending_orders \
+             WHERE UPPER(TRIM(COALESCE(status, ''))) IN ('OPEN','PENDING','PLACED','LIVE') \
+               AND COALESCE(created_at_ms, updated_at_ms, 0) >= ?1 \
+             ORDER BY COALESCE(updated_at_ms, created_at_ms, 0) DESC \
+             LIMIT ?2",
+        )
+        .map_err(|e| format!("prepare open orders query: {e}"))?;
+    let rows = stmt
+        .query_map([profile_start_ms, limit.clamp(1, 500) as i64], |row| {
+            let order_id: String = row.get(0)?;
+            let token_id: String = row.get(1)?;
+            let condition_id: String = row.get(2)?;
+            let timeframe: Option<String> = row.get(3)?;
+            let strategy_id: String = row.get(4)?;
+            let entry_mode: String = row.get(5)?;
+            let period_timestamp: i64 = row.get(6)?;
+            let price: f64 = row.get(7)?;
+            let notional_usd: f64 = row.get(8)?;
+            let side: String = row.get(9)?;
+            let status: String = row.get(10)?;
+            let created_at_ms: i64 = row.get(11)?;
+            let asset_symbol: Option<String> = row.get(13)?;
+            let original_size = if price.is_finite() && price > 0.0 {
+                Some(notional_usd / price)
             } else {
-                Some(outcome)
+                None
             };
-            let original_size = decimal_to_f64(row.original_size);
-            let size_matched = decimal_to_f64(row.size_matched);
-            let price = decimal_to_f64(row.price);
-            let remaining_size = match (original_size, size_matched) {
-                (Some(total), Some(filled)) => Some((total - filled).max(0.0)),
-                (Some(total), None) => Some(total),
-                _ => None,
+            let market_title = match (
+                asset_symbol.as_deref(),
+                timeframe.as_deref(),
+                period_timestamp,
+            ) {
+                (Some(symbol), timeframe, period_timestamp)
+                    if !symbol.eq_ignore_ascii_case("SPORT") && period_timestamp > 0 =>
+                {
+                    format_market_title(Some(symbol), timeframe, Some(period_timestamp))
+                }
+                _ => {
+                    let short_condition = if condition_id.len() > 14 {
+                        format!("{}...", &condition_id[..14])
+                    } else if condition_id.is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        condition_id.clone()
+                    };
+                    format!("Open order {short_condition}")
+                }
             };
-            let total_notional = match (original_size, price) {
-                (Some(total), Some(px)) => Some(total * px),
-                _ => None,
-            };
-            let side = match row.side {
-                polymarket_client_sdk_v2::clob::types::Side::Buy => "BUY",
-                polymarket_client_sdk_v2::clob::types::Side::Sell => "SELL",
-                polymarket_client_sdk_v2::clob::types::Side::Unknown => "UNKNOWN",
-                _ => "UNKNOWN",
-            };
-            serde_json::json!({
-                "id": row.id,
-                "status": format!("{:?}", row.status),
-                "condition_id": condition_id,
+            Ok(serde_json::json!({
+                "id": order_id,
+                "status": status,
+                "condition_id": if condition_id.is_empty() { Value::Null } else { serde_json::json!(condition_id) },
                 "token_id": token_id,
-                "market_title": metadata.as_ref().map(|entry| entry.title.clone()),
-                "thumbnail_url": metadata.and_then(|entry| entry.thumbnail_url.clone()),
-                "outcome": display_outcome,
-                "side": side,
-                "price": price,
+                "market_title": market_title,
+                "thumbnail_url": Value::Null,
+                "outcome": Value::Null,
+                "side": if side.is_empty() { Value::Null } else { serde_json::json!(side) },
+                "price": if price.is_finite() && price > 0.0 { serde_json::json!(price) } else { Value::Null },
                 "original_size": original_size,
-                "size_matched": size_matched,
-                "remaining_size": remaining_size,
-                "total_notional_usd": total_notional,
-                "created_at": row.created_at.to_rfc3339(),
-                "expiration": row.expiration.to_rfc3339(),
-                "order_type": format!("{:?}", row.order_type),
-            })
+                "size_matched": 0.0,
+                "remaining_size": original_size,
+                "total_notional_usd": notional_usd,
+                "created_at": iso_from_ms(created_at_ms),
+                "expiration": Value::Null,
+                "order_type": if entry_mode.is_empty() { serde_json::json!(strategy_id) } else { serde_json::json!(entry_mode) },
+            }))
         })
-        .collect::<Vec<_>>();
+        .map_err(|e| format!("read open orders: {e}"))?;
+    let items = rows.filter_map(Result::ok).collect::<Vec<_>>();
     Ok(serde_json::Value::Array(items))
 }
 

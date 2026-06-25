@@ -2465,8 +2465,7 @@ async fn collect_doctor_issues(
     let remote_url_has_builtin_default = |key: &str| {
         matches!(
             key,
-            "EVPOLY_REMOTE_PREMARKET_ALPHA_URL"
-                | "EVPOLY_REMOTE_ENDGAME_ALPHA_URL"
+            "EVPOLY_REMOTE_ENDGAME_ALPHA_URL"
                 | "EVPOLY_REMOTE_EVCURVE_ALPHA_URL"
                 | "EVPOLY_REMOTE_MARKET_DISCOVERY_URL"
         )
@@ -2510,14 +2509,6 @@ async fn collect_doctor_issues(
             }),
         });
     };
-    check_remote_alpha_issue(
-        STRATEGY_ID_PREMARKET_V1,
-        "EVPOLY_STRATEGY_PREMARKET_ENABLE",
-        true,
-        "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
-        "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
-        true,
-    );
     check_remote_alpha_issue(
         STRATEGY_ID_EVCURVE_V1,
         "EVPOLY_STRATEGY_EVCURVE_ENABLE",

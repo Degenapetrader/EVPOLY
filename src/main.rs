@@ -142,7 +142,6 @@ fn install_fatal_panic_hook() {
 
 const ENDGAME_V1_NEAR_BASE_SKIP_BPS_BY_TICK: [f64; 3] = [2.0, 1.5, 1.0];
 const ENDGAME_FINAL_SUBMIT_GUARD_MS: i64 = 25;
-static ALPHA_REQUEST_ID_NONCE: AtomicU64 = AtomicU64::new(1);
 static DB_BACKGROUND_JITTER_NONCE: AtomicU64 = AtomicU64::new(1);
 static MM_SPORT_ORDER_SUBMIT_THROTTLE_LOG_MS: AtomicU64 = AtomicU64::new(0);
 const MM_SPORT_EXPIRED_ORDER_RECONCILE_GRACE_MS: i64 = 15_000;
@@ -151,10 +150,6 @@ const MM_SPORT_EXTREME_SIZE_REQUOTE_DELTA_PCT: f64 = 0.75;
 const MM_SPORT_ORDER_SUBMIT_THROTTLE_LOG_COOLDOWN_MS: u64 = 30_000;
 const MM_SPORT_MIN_ENTRY_TOP_BID_SKIP_LOG_COOLDOWN_MS: i64 = 30_000;
 const MM_SPORT_INVENTORY_EXIT_MODE_LOG_COOLDOWN_MS: i64 = 30_000;
-
-fn next_alpha_request_id_nonce() -> u64 {
-    ALPHA_REQUEST_ID_NONCE.fetch_add(1, AtomicOrdering::Relaxed)
-}
 
 fn should_log_atomic_ms(last: &AtomicU64, now_ms: i64, cooldown_ms: u64) -> bool {
     let Ok(now_ms_u64) = u64::try_from(now_ms.max(0)) else {
@@ -1031,9 +1026,6 @@ fn env_nonempty_named(name: &str) -> Option<String> {
 
 fn remote_url_default_named(name: &str) -> Option<&'static str> {
     match name {
-        "EVPOLY_REMOTE_PREMARKET_ALPHA_URL" => {
-            Some("https://alpha.evplus.ai/v1/alpha/premarket/ladder")
-        }
         "EVPOLY_REMOTE_ENDGAME_ALPHA_URL" => {
             Some("https://alpha.evplus.ai/v1/alpha/endgame/policy")
         }
@@ -1048,14 +1040,7 @@ fn remote_url_default_named(name: &str) -> Option<&'static str> {
     }
 }
 
-fn normalize_remote_url_named(name: &str, value: String) -> String {
-    if name == "EVPOLY_REMOTE_PREMARKET_ALPHA_URL" {
-        let trimmed = value.trim().trim_end_matches('/');
-        if let Some(prefix) = trimmed.strip_suffix("/v1/alpha/premarket/should-trade") {
-            return format!("{prefix}/v1/alpha/premarket/ladder");
-        }
-        return value.trim().to_string();
-    }
+fn normalize_remote_url_named(_name: &str, value: String) -> String {
     value
 }
 
@@ -1175,7 +1160,6 @@ fn set_remote_alpha_fallback_envs(alpha_key: &str) {
     }
     for key in [
         "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN",
-        "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
         "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
         "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
         "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
@@ -1375,16 +1359,6 @@ fn warn_remote_alpha_config_startup(endgame_alpha_required: bool) {
         );
     };
 
-    check_strategy(
-        STRATEGY_ID_PREMARKET_V1,
-        "EVPOLY_STRATEGY_PREMARKET_ENABLE",
-        true,
-        &[
-            "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
-            "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
-        ],
-        true,
-    );
     check_strategy(
         STRATEGY_ID_EVCURVE_V1,
         "EVPOLY_STRATEGY_EVCURVE_ENABLE",
@@ -23151,7 +23125,6 @@ async fn main() -> Result<()> {
 
     let premarket_cancel_schedules_for_premarket = premarket_cancel_schedules.clone();
     let premarket_assets_for_premarket = premarket_assets.clone();
-    let premarket_alpha_wallet = remote_alpha_wallet.clone();
     let premarket_enabled_timeframes_for_premarket = premarket_timeframes.clone();
     tokio::spawn(async move {
         let premarket_enqueue_mode_cfg = PremarketEnqueueMode::from_env();
@@ -23272,76 +23245,8 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
-                let alpha_decision_id = format!(
-                    "{}:{}:{}",
-                    intent.decision_id, asset.market_key, market_open_ts
-                );
-                let base_ladder_prices = premarket_fixed_ladder_prices(intent.timeframe);
-                let alpha_result = if let Some(proxy_wallet) = premarket_alpha_wallet.as_deref() {
-                    evaluate_premarket_ladder_remote(
-                        intent.timeframe,
-                        asset.asset_symbol,
-                        alpha_decision_id.as_str(),
-                        intent.market_open_ts,
-                        proxy_wallet,
-                        base_ladder_prices.as_slice(),
-                    )
-                    .await
-                } else {
-                    Err(anyhow::anyhow!(
-                        "remote premarket ladder alpha requires configured proxy wallet address"
-                    ))
-                };
-                let alpha_ladder = match alpha_result {
-                    Ok(alpha_ladder) => alpha_ladder,
-                    Err(err) => {
-                        log_event(
-                            "premarket_ladder_alpha_error",
-                            json!({
-                                "strategy_id": STRATEGY_ID_PREMARKET_V1,
-                                "timeframe": intent.timeframe.as_str(),
-                                "asset_symbol": asset.asset_symbol,
-                                "market_key": asset.market_key,
-                                "market_open_ts": market_open_ts,
-                                "decision_id": alpha_decision_id,
-                                "fallback_applied": false,
-                                "base_prices": base_ladder_prices,
-                                "error": err.to_string()
-                            }),
-                        );
-                        if let Err(skip_err) = tracking_db_for_premarket.record_skip_market(
-                            canonical_period_ts,
-                            intent.timeframe,
-                            asset_decision.strategy_id.as_str(),
-                            Some(asset_decision.market_key.as_str()),
-                            Some(asset_decision.asset_symbol.as_str()),
-                            "premarket_ladder_alpha_unavailable",
-                            "runtime",
-                            asset_decision.confidence,
-                        ) {
-                            warn!(
-                                "Failed to persist premarket ladder-alpha-unavailable skip tf={} asset={} period={}: {}",
-                                intent.timeframe.as_str(),
-                                asset.asset_symbol,
-                                canonical_period_ts,
-                                skip_err
-                            );
-                        }
-                        log_event(
-                            "premarket_alpha_skip",
-                            json!({
-                                "strategy_id": STRATEGY_ID_PREMARKET_V1,
-                                "timeframe": intent.timeframe.as_str(),
-                                "asset_symbol": asset.asset_symbol,
-                                "market_key": asset.market_key,
-                                "market_open_ts": market_open_ts,
-                                "decision_id": alpha_decision_id,
-                                "reason": "premarket_ladder_alpha_unavailable"
-                            }),
-                        );
-                        continue;
-                    }
-                };
+                let base_ladder_prices = premarket_default_ladder_prices(intent.timeframe).to_vec();
+                let local_ladder = premarket_local_ladder_outcome(intent.timeframe);
 
                 let discovered_market = match discover_market_for_timeframe(
                     &api_for_premarket,
@@ -23608,7 +23513,7 @@ async fn main() -> Result<()> {
                     }
                 };
                 let sized_rungs = build_premarket_fixed_rungs_from_prices(
-                    alpha_ladder.prices.as_slice(),
+                    local_ladder.prices.as_slice(),
                     target_size_usd,
                     order_floor,
                 );
@@ -23742,9 +23647,9 @@ async fn main() -> Result<()> {
                                     "rung_price": rung_price,
                                     "rung_size_usd": rung_size_usd,
                                     "weight_pct": rung.size_pct,
-                                    "alpha_ladder_source": alpha_ladder.source.as_str(),
-                                    "alpha_ladder_reason": alpha_ladder.reason.as_str(),
-                                    "alpha_ladder_shift_pct": alpha_ladder.shift_pct,
+                                    "ladder_source": local_ladder.source.as_str(),
+                                    "ladder_reason": local_ladder.reason.as_str(),
+                                    "ladder_bias_pct": local_ladder.bias_pct,
                                     "fixed_min_rung_usd": 5.0,
                                     "reward_min_size_bypassed": true,
                                     "min_notional_usd": order_floor.min_notional_usd,
@@ -23772,11 +23677,12 @@ async fn main() -> Result<()> {
                         "market_key": asset.market_key,
                         "asset_symbol": asset.asset_symbol,
                         "mode": "deterministic_dual_ladder_v1",
-                        "alpha_ladder_source": alpha_ladder.source.as_str(),
-                        "alpha_ladder_reason": alpha_ladder.reason.as_str(),
-                        "alpha_ladder_shift_pct": alpha_ladder.shift_pct,
+                        "ladder_source": local_ladder.source.as_str(),
+                        "ladder_reason": local_ladder.reason.as_str(),
+                        "ladder_mode": local_ladder.mode.as_str(),
+                        "ladder_bias_pct": local_ladder.bias_pct,
                         "base_ladder_prices": base_ladder_prices,
-                        "effective_ladder_prices": alpha_ladder.prices,
+                        "effective_ladder_prices": local_ladder.prices,
                         "db_contention_factor": premarket_db_factor,
                         "target_size_per_side_usd": target_size_usd,
                         "target_size_multiplier": premarket_side_budget_multiplier(asset.asset_symbol),
@@ -25832,14 +25738,69 @@ fn premarket_submit_cap_per_token() -> usize {
     48
 }
 
-#[cfg(test)]
 const PREMARKET_LADDER_MODE_ENV_KEY_SHARED: &str = "EVPOLY_PREMARKET_LADDER_MODE";
-#[cfg(test)]
 const PREMARKET_LADDER_MODE_ENV_KEY_5M: &str = "EVPOLY_PREMARKET_LADDER_MODE_5M";
-#[cfg(test)]
-const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_5M";
-#[cfg(test)]
-const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_M5";
+const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_M5";
+const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_5M";
+const PREMARKET_LADDER_MODE_NORMAL: &str = "normal";
+const PREMARKET_LADDER_MODE_SAFE: &str = "safe";
+const PREMARKET_LADDER_MODE_AGGRESSIVE: &str = "aggressive";
+const PREMARKET_SAFE_BIAS_PCT_ENV_KEY: &str = "EVPOLY_PREMARKET_SAFE_BIAS_PCT";
+const PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY: &str = "EVPOLY_PREMARKET_AGGRESSIVE_BIAS_PCT";
+
+#[derive(Debug, Clone)]
+struct PremarketLadderOutcome {
+    source: String,
+    reason: String,
+    mode: String,
+    prices: Vec<f64>,
+    bias_pct: f64,
+}
+
+fn normalize_premarket_ladder_mode(value: Option<String>, env_key: &str) -> &'static str {
+    match value
+        .as_deref()
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some(PREMARKET_LADDER_MODE_SAFE) => PREMARKET_LADDER_MODE_SAFE,
+        Some(PREMARKET_LADDER_MODE_AGGRESSIVE) => PREMARKET_LADDER_MODE_AGGRESSIVE,
+        Some(PREMARKET_LADDER_MODE_NORMAL) | None => PREMARKET_LADDER_MODE_NORMAL,
+        Some(other) => {
+            warn!(
+                "{}='{}' is invalid; using '{}'",
+                env_key, other, PREMARKET_LADDER_MODE_NORMAL
+            );
+            PREMARKET_LADDER_MODE_NORMAL
+        }
+    }
+}
+
+fn premarket_ladder_mode_for_timeframe(timeframe: Timeframe) -> &'static str {
+    match timeframe {
+        Timeframe::M5 => normalize_premarket_ladder_mode(
+            env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_5M)
+                .or_else(|| env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)),
+            PREMARKET_LADDER_MODE_ENV_KEY_5M,
+        ),
+        _ => normalize_premarket_ladder_mode(
+            env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
+                .or_else(|| env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY))
+                .or_else(|| env_nonempty_named(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)),
+            PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
+        ),
+    }
+}
+
+fn premarket_ladder_bias_pct_for_mode(mode: &str) -> f64 {
+    let (env_key, default) = match mode {
+        PREMARKET_LADDER_MODE_SAFE => (PREMARKET_SAFE_BIAS_PCT_ENV_KEY, -10.0),
+        PREMARKET_LADDER_MODE_AGGRESSIVE => (PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY, 10.0),
+        _ => return 0.0,
+    };
+    env_f64_named(env_key, default).clamp(-90.0, 200.0)
+}
 
 fn premarket_default_ladder_prices(timeframe: Timeframe) -> &'static [f64] {
     const DEFAULT_M5: [f64; 6] = [0.31, 0.26, 0.22, 0.16, 0.09, 0.03];
@@ -25863,12 +25824,36 @@ fn premarket_fixed_ladder_max_rungs() -> usize {
         .max(premarket_default_ladder_prices(Timeframe::H4).len())
 }
 
-fn round_nearest_price_to_cent(value: f64) -> f64 {
-    ((value * 100.0).round() / 100.0).clamp(0.01, 0.99)
+fn round_up_price_to_cent(value: f64) -> f64 {
+    (((value * 100.0) - 1e-9).ceil() / 100.0).clamp(0.01, 0.99)
 }
 
+fn premarket_fixed_ladder_prices_for_mode(timeframe: Timeframe, mode: &str) -> Vec<f64> {
+    let factor = 1.0 + (premarket_ladder_bias_pct_for_mode(mode) / 100.0);
+    premarket_default_ladder_prices(timeframe)
+        .iter()
+        .map(|price| round_up_price_to_cent(price * factor))
+        .collect()
+}
+
+#[cfg(test)]
 fn premarket_fixed_ladder_prices(timeframe: Timeframe) -> Vec<f64> {
-    premarket_default_ladder_prices(timeframe).to_vec()
+    premarket_fixed_ladder_prices_for_mode(
+        timeframe,
+        premarket_ladder_mode_for_timeframe(timeframe),
+    )
+}
+
+fn premarket_local_ladder_outcome(timeframe: Timeframe) -> PremarketLadderOutcome {
+    let mode = premarket_ladder_mode_for_timeframe(timeframe);
+    let bias_pct = premarket_ladder_bias_pct_for_mode(mode);
+    PremarketLadderOutcome {
+        source: "local".to_string(),
+        reason: "local_ladder_mode".to_string(),
+        mode: mode.to_string(),
+        prices: premarket_fixed_ladder_prices_for_mode(timeframe, mode),
+        bias_pct,
+    }
 }
 
 #[cfg(test)]
@@ -26213,13 +26198,6 @@ fn sessionband_entry_price_mode(using_share_size: bool) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone)]
-struct RemotePremarketAlphaConfig {
-    url: String,
-    token: Option<String>,
-    timeout_ms: u64,
-}
-
 #[derive(Debug, Clone, Serialize)]
 struct RemoteEvcurveAlphaRequest {
     symbol: String,
@@ -26340,39 +26318,6 @@ struct RemoteSessionbandAlphaResponse {
     result: RemoteSessionbandAlphaResult,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct RemotePremarketLadderRequest {
-    strategy_id: String,
-    decision_id: String,
-    symbol: String,
-    timeframe: String,
-    market_open_ts: i64,
-    proxy_wallet: String,
-    ts_ms: i64,
-    nonce: String,
-    builder_code: String,
-    base_prices: Vec<f64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RemotePremarketLadderResponse {
-    ok: bool,
-    prices: Vec<f64>,
-    #[serde(default)]
-    reason: Option<String>,
-    #[serde(default)]
-    source: Option<String>,
-    shift_pct: f64,
-}
-
-#[derive(Debug, Clone)]
-struct PremarketLadderOutcome {
-    source: String,
-    reason: String,
-    prices: Vec<f64>,
-    shift_pct: f64,
-}
-
 #[derive(Debug, Clone)]
 struct EndgameAlphaPolicy {
     tick_offsets_ms: Vec<u64>,
@@ -26424,21 +26369,6 @@ fn remote_sessionband_alpha_config() -> Option<&'static RemoteSessionbandAlphaCo
             Some(RemoteSessionbandAlphaConfig {
                 url,
                 token: alpha_bearer_token_named("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN"),
-                timeout_ms,
-            })
-        })
-        .as_ref()
-}
-
-fn remote_premarket_alpha_config() -> Option<&'static RemotePremarketAlphaConfig> {
-    static CONFIG: OnceLock<Option<RemotePremarketAlphaConfig>> = OnceLock::new();
-    CONFIG
-        .get_or_init(|| {
-            let url = secure_remote_url_or_none("EVPOLY_REMOTE_PREMARKET_ALPHA_URL")?;
-            let timeout_ms = 1_000_u64;
-            Some(RemotePremarketAlphaConfig {
-                url,
-                token: alpha_bearer_token_named("EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN"),
                 timeout_ms,
             })
         })
@@ -26970,19 +26900,6 @@ fn spawn_endgame_quote_prewarm_worker(
 
 fn mm_sport_depth_skip_alpha_enabled() -> bool {
     false
-}
-
-fn is_valid_wallet_address(value: &str) -> bool {
-    if value.len() != 42 || !value.starts_with("0x") {
-        return false;
-    }
-    value.chars().skip(2).all(|ch| ch.is_ascii_hexdigit())
-}
-
-fn remote_alpha_nonce(prefix: &str) -> String {
-    let ts_ms = chrono::Utc::now().timestamp_millis();
-    let seq = next_alpha_request_id_nonce();
-    format!("{}:{}:{}", prefix, ts_ms, seq)
 }
 
 fn remote_alpha_http_client() -> &'static reqwest::Client {
@@ -27765,179 +27682,6 @@ async fn evaluate_sessionband_decision_remote_or_local(
             )
         }
     }
-}
-
-fn validate_remote_premarket_ladder_prices(
-    base_prices: &[f64],
-    remote_prices: Vec<f64>,
-    shift_pct: f64,
-) -> Result<Vec<f64>> {
-    if base_prices.is_empty() {
-        anyhow::bail!("premarket ladder base prices are empty");
-    }
-    if remote_prices.len() != base_prices.len() {
-        anyhow::bail!(
-            "remote premarket ladder rung count mismatch response={} expected={}",
-            remote_prices.len(),
-            base_prices.len()
-        );
-    }
-    if !shift_pct.is_finite() || !(-0.100_001..=0.100_001).contains(&shift_pct) {
-        anyhow::bail!("remote premarket ladder shift_pct out of +/-10% band");
-    }
-
-    let mut validated = Vec::with_capacity(remote_prices.len());
-    let mut previous = f64::INFINITY;
-    for (idx, (base_price, remote_price)) in base_prices
-        .iter()
-        .zip(remote_prices.into_iter())
-        .enumerate()
-    {
-        if !base_price.is_finite() || *base_price <= 0.0 {
-            anyhow::bail!("invalid premarket base ladder price at rung {}", idx);
-        }
-        if !remote_price.is_finite() {
-            anyhow::bail!(
-                "remote premarket ladder price is not finite at rung {}",
-                idx
-            );
-        }
-        let price = remote_price.clamp(0.01, 0.99);
-        let expected = round_nearest_price_to_cent(*base_price * (1.0 + shift_pct));
-        if (price - expected).abs() > 1e-9 {
-            anyhow::bail!(
-                "remote premarket ladder price is not aligned at rung {} price={} expected={} base={} shift_pct={}",
-                idx,
-                price,
-                expected,
-                base_price,
-                shift_pct
-            );
-        }
-        if price > previous + 1e-9 {
-            anyhow::bail!(
-                "remote premarket ladder must stay aligned descending at rung {} price={} previous={}",
-                idx,
-                price,
-                previous
-            );
-        }
-        previous = price;
-        validated.push(price);
-    }
-
-    Ok(validated)
-}
-
-async fn fetch_remote_premarket_ladder(
-    cfg: &RemotePremarketAlphaConfig,
-    timeframe: Timeframe,
-    symbol: &str,
-    decision_id: &str,
-    market_open_ts: i64,
-    proxy_wallet: &str,
-    base_prices: &[f64],
-) -> Result<PremarketLadderOutcome> {
-    if !is_valid_wallet_address(proxy_wallet) {
-        anyhow::bail!("invalid proxy wallet address for remote premarket alpha");
-    }
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let payload = RemotePremarketLadderRequest {
-        strategy_id: STRATEGY_ID_PREMARKET_V1.to_string(),
-        decision_id: decision_id.to_string(),
-        symbol: normalize_market_symbol(symbol),
-        timeframe: timeframe.as_str().to_string(),
-        market_open_ts,
-        proxy_wallet: proxy_wallet.to_string(),
-        ts_ms: now_ms,
-        nonce: remote_alpha_nonce("premarket"),
-        builder_code: official_builder_code_for_alpha(),
-        base_prices: base_prices.to_vec(),
-    };
-    let (status, body) = send_remote_json_post_with_alpha_failover(
-        cfg.url.as_str(),
-        cfg.timeout_ms,
-        cfg.token.as_deref(),
-        Some(proxy_wallet),
-        &payload,
-        "premarket_alpha",
-    )
-    .await
-    .context("failed to call remote premarket alpha service")?;
-    if !status.is_success() {
-        anyhow::bail!(
-            "remote premarket alpha rejected request (status={} body={})",
-            status.as_u16(),
-            truncate_for_log(body.as_str(), 300)
-        );
-    }
-    let parsed: RemotePremarketLadderResponse =
-        serde_json::from_str(body.as_str()).with_context(|| {
-            format!(
-                "failed to parse remote premarket alpha response: {}",
-                truncate_for_log(body.as_str(), 300)
-            )
-        })?;
-    if !parsed.ok {
-        anyhow::bail!("remote premarket alpha returned ok=false");
-    }
-    let prices =
-        validate_remote_premarket_ladder_prices(base_prices, parsed.prices, parsed.shift_pct)?;
-    Ok(PremarketLadderOutcome {
-        source: parsed.source.unwrap_or_else(|| "remote".to_string()),
-        reason: parsed
-            .reason
-            .unwrap_or_else(|| "remote_ladder_aligned_shift".to_string()),
-        prices,
-        shift_pct: parsed.shift_pct,
-    })
-}
-
-async fn evaluate_premarket_ladder_remote(
-    timeframe: Timeframe,
-    symbol: &str,
-    decision_id: &str,
-    market_open_ts: i64,
-    proxy_wallet: &str,
-    base_prices: &[f64],
-) -> Result<PremarketLadderOutcome> {
-    let Some(cfg) = remote_premarket_alpha_config() else {
-        warn_remote_alpha_missing_runtime(
-            STRATEGY_ID_PREMARKET_V1,
-            &[
-                "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
-                "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
-            ],
-            "remote_alpha_not_configured",
-        );
-        anyhow::bail!("remote_premarket_alpha_not_configured");
-    };
-    let outcome = fetch_remote_premarket_ladder(
-        cfg,
-        timeframe,
-        symbol,
-        decision_id,
-        market_open_ts,
-        proxy_wallet,
-        base_prices,
-    )
-    .await?;
-    log_event(
-        "remote_premarket_ladder_hit",
-        json!({
-            "strategy_id": STRATEGY_ID_PREMARKET_V1,
-            "symbol": symbol,
-            "timeframe": timeframe.as_str(),
-            "market_open_ts": market_open_ts,
-            "decision_id": decision_id,
-            "source": outcome.source.as_str(),
-            "reason": outcome.reason.as_str(),
-            "shift_pct": outcome.shift_pct,
-            "base_prices": base_prices,
-            "remote_prices": outcome.prices.as_slice()
-        }),
-    );
-    Ok(outcome)
 }
 
 fn build_allowed_market_slugs_for_timeframe(
@@ -29414,10 +29158,6 @@ mod tests {
                 "https://alpha.evplus.ai/v1/discovery/timeframe",
             ),
             (
-                "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
-                "https://alpha.evplus.ai/v1/alpha/premarket/ladder",
-            ),
-            (
                 "EVPOLY_REMOTE_ENDGAME_ALPHA_URL",
                 "https://alpha.evplus.ai/v1/alpha/endgame/policy",
             ),
@@ -29457,24 +29197,6 @@ mod tests {
             || {
                 assert!(!mm_sport_depth_skip_alpha_enabled());
             },
-        );
-    }
-
-    #[test]
-    fn premarket_alpha_url_normalizes_legacy_gate_route() {
-        assert_eq!(
-            normalize_remote_url_named(
-                "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
-                "https://alpha.evplus.ai/v1/alpha/premarket/should-trade".to_string()
-            ),
-            "https://alpha.evplus.ai/v1/alpha/premarket/ladder"
-        );
-        assert_eq!(
-            normalize_remote_url_named(
-                "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
-                "https://alpha2.evplus.ai/v1/alpha/premarket/should-trade/".to_string()
-            ),
-            "https://alpha2.evplus.ai/v1/alpha/premarket/ladder"
         );
     }
 
@@ -29746,49 +29468,28 @@ mod tests {
 
     #[test]
     fn premarket_fixed_ladder_shape_matches_plan() {
-        let prices_m5 = premarket_fixed_ladder_prices(Timeframe::M5);
-        let prices_non_m5 = premarket_fixed_ladder_prices(Timeframe::M15);
-        let weights = premarket_fixed_ladder_weights();
-        assert_eq!(prices_m5.len(), 6);
-        assert_eq!(prices_non_m5.len(), 6);
-        assert_eq!(weights.len(), 6);
-        assert_eq!(prices_m5[0], 0.31);
-        assert_eq!(prices_m5[5], 0.03);
-        assert_eq!(prices_non_m5[0], 0.40);
-        assert_eq!(prices_non_m5[5], 0.06);
-        let sum_weights: f64 = weights.iter().sum();
-        assert!((sum_weights - 1.0).abs() < 1e-9);
-        assert!((weights[0] - 0.23).abs() < 1e-9);
-        assert!((weights[5] - 0.11).abs() < 1e-9);
-    }
-
-    #[test]
-    fn remote_premarket_ladder_validation_preserves_aligned_bounds() {
-        let base = vec![0.31, 0.26, 0.22, 0.16, 0.09, 0.03];
-        let valid = validate_remote_premarket_ladder_prices(
-            base.as_slice(),
-            vec![0.29, 0.24, 0.21, 0.15, 0.08, 0.03],
-            -0.06,
-        )
-        .expect("aligned ladder should validate");
-        assert_eq!(valid, vec![0.29, 0.24, 0.21, 0.15, 0.08, 0.03]);
-
-        assert!(
-            validate_remote_premarket_ladder_prices(base.as_slice(), vec![0.50, 0.24], -0.06)
-                .is_err()
+        with_admin_env(
+            &[
+                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_5M, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, None),
+                (PREMARKET_SAFE_BIAS_PCT_ENV_KEY, None),
+                (PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY, None),
+            ],
+            || {
+                let prices_m5 = premarket_fixed_ladder_prices(Timeframe::M5);
+                let prices_non_m5 = premarket_fixed_ladder_prices(Timeframe::M15);
+                let weights = premarket_fixed_ladder_weights();
+                assert_eq!(prices_m5, vec![0.31, 0.26, 0.22, 0.16, 0.09, 0.03]);
+                assert_eq!(prices_non_m5, vec![0.40, 0.30, 0.24, 0.18, 0.12, 0.06]);
+                assert_eq!(weights.len(), 6);
+                let sum_weights: f64 = weights.iter().sum();
+                assert!((sum_weights - 1.0).abs() < 1e-9);
+                assert!((weights[0] - 0.23).abs() < 1e-9);
+                assert!((weights[5] - 0.11).abs() < 1e-9);
+            },
         );
-        assert!(validate_remote_premarket_ladder_prices(
-            base.as_slice(),
-            vec![0.29, 0.30, 0.21, 0.15, 0.08, 0.03],
-            -0.06
-        )
-        .is_err());
-        assert!(validate_remote_premarket_ladder_prices(
-            base.as_slice(),
-            vec![0.29, 0.24, 0.21, 0.15, 0.08, 0.03],
-            -0.20
-        )
-        .is_err());
     }
 
     #[test]
@@ -29819,16 +29520,15 @@ mod tests {
     }
 
     #[test]
-    fn premarket_ignores_local_ladder_override_envs() {
+    fn premarket_ladder_modes_use_default_biases() {
         with_admin_env(
             &[
-                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, Some("safe")),
+                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, None),
                 (PREMARKET_LADDER_MODE_ENV_KEY_5M, Some("aggressive")),
                 (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, Some("safe")),
-                (
-                    PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
-                    Some("aggressive"),
-                ),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, None),
+                (PREMARKET_SAFE_BIAS_PCT_ENV_KEY, None),
+                (PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY, None),
                 (
                     "EVPOLY_PREMARKET_FIXED_LADDER_PRICES",
                     Some("0.99,0.99,0.99,0.99,0.99,0.99"),
@@ -29838,15 +29538,58 @@ mod tests {
             || {
                 assert_eq!(
                     premarket_fixed_ladder_prices(Timeframe::M5),
-                    vec![0.31, 0.26, 0.22, 0.16, 0.09, 0.03]
+                    vec![0.35, 0.29, 0.25, 0.18, 0.10, 0.04]
                 );
                 assert_eq!(
                     premarket_fixed_ladder_prices(Timeframe::M15),
-                    vec![0.40, 0.30, 0.24, 0.18, 0.12, 0.06]
+                    vec![0.36, 0.27, 0.22, 0.17, 0.11, 0.06]
                 );
                 assert_eq!(
                     premarket_fixed_ladder_weights(),
                     &[0.23, 0.23, 0.17, 0.14, 0.12, 0.11]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn premarket_ladder_modes_use_custom_biases() {
+        with_admin_env(
+            &[
+                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_5M, Some("aggressive")),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, Some("safe")),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, None),
+                (PREMARKET_SAFE_BIAS_PCT_ENV_KEY, Some("-15")),
+                (PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY, Some("30")),
+            ],
+            || {
+                assert_eq!(
+                    premarket_fixed_ladder_prices(Timeframe::M5),
+                    vec![0.41, 0.34, 0.29, 0.21, 0.12, 0.04]
+                );
+                assert_eq!(
+                    premarket_fixed_ladder_prices(Timeframe::M15),
+                    vec![0.34, 0.26, 0.21, 0.16, 0.11, 0.06]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn premarket_ladder_modes_accept_legacy_non_m5_key() {
+        with_admin_env(
+            &[
+                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_5M, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, Some("safe")),
+                (PREMARKET_SAFE_BIAS_PCT_ENV_KEY, None),
+            ],
+            || {
+                assert_eq!(
+                    premarket_fixed_ladder_prices(Timeframe::M15),
+                    vec![0.36, 0.27, 0.22, 0.17, 0.11, 0.06]
                 );
             },
         );

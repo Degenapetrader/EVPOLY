@@ -221,6 +221,24 @@ function themeAccent(theme: PerformanceCardTheme): { primary: string; secondary:
   return { primary: "#47f279", secondary: "#55a8ff", mode: "GREEN" };
 }
 
+function usesTerminalWinLayout(card: PerformanceShareCardPayload): boolean {
+  return card.theme === "good" || card.theme === "reward";
+}
+
+function terminalOutcomeLabel(card: PerformanceShareCardPayload): string {
+  if (card.theme === "reward") {
+    return "REWARD";
+  }
+  if (card.kind === "position_move") {
+    return "BIG WIN";
+  }
+  return "PROFIT";
+}
+
+function terminalConfidenceLabel(card: PerformanceShareCardPayload): string {
+  return card.theme === "reward" ? "PAID" : "HIGH";
+}
+
 function pnlTheme(value: number | null | undefined): PerformanceCardTheme {
   if (typeof value !== "number" || !Number.isFinite(value) || value === 0) {
     return "neutral";
@@ -234,6 +252,28 @@ function normalizeSparkline(values: number[]): number[] {
     return finite;
   }
   return [0, 0, 0, 0, 0, 0, 0, 0];
+}
+
+function terminalChartValues(values: number[]): number[] {
+  const normalized = normalizeSparkline(values);
+  const min = Math.min(...normalized);
+  const max = Math.max(...normalized);
+  if (Math.abs(max - min) > 0.000001) {
+    return normalized;
+  }
+  return [0, 0.08, 0.12, 0.2, 0.34, 0.48, 0.56, 0.72, 0.88, 1];
+}
+
+function terminalChartPoints(values: number[], x: number, y: number, width: number, height: number): Array<readonly [number, number]> {
+  const normalized = terminalChartValues(values);
+  const min = Math.min(...normalized);
+  const max = Math.max(...normalized);
+  const span = Math.max(max - min, 0.000001);
+  return normalized.map((value, index) => {
+    const px = x + (index / Math.max(normalized.length - 1, 1)) * width;
+    const py = y + height - ((value - min) / span) * height;
+    return [px, py] as const;
+  });
 }
 
 function positionSparkline(position: HomePositionItem): number[] {
@@ -556,7 +596,141 @@ function drawPerformanceShareCardCanvas(
   context.restore();
 }
 
+function buildTerminalWinShareCardSvg(card: PerformanceShareCardPayload): string {
+  const { primary } = themeAccent(card.theme);
+  const chartPoints = terminalChartPoints(card.sparkline, 900, 235, 560, 360);
+  const chartPath = chartPoints
+    .map(([px, py], index) => `${index === 0 ? "M" : "L"}${px.toFixed(1)},${py.toFixed(1)}`)
+    .join(" ");
+  const chartArea = `${chartPath} L1460,690 L900,690 Z`;
+  const mainFontSize = card.mainMetric.length > 10 ? 76 : 88;
+  const subtitleLines = wrapWords(card.subtitle, 44, 2);
+  const statusLabel = card.modeLabel || "GREEN";
+  const outcomeLabel = terminalOutcomeLabel(card);
+  const confidenceLabel = terminalConfidenceLabel(card);
+  const chips = [
+    ["STATUS", statusLabel],
+    ["OUTCOME", outcomeLabel],
+    ["CONFIDENCE", confidenceLabel],
+  ] as const;
+  const candles = chartPoints.slice(-10).map(([px, py], index) => {
+    const candleHeight = 42 + (index % 3) * 14;
+    const candleWidth = 20;
+    const top = Math.max(230, py - candleHeight / 2);
+    const opacity = (0.5 + index * 0.045).toFixed(2);
+    return `
+      <line x1="${px.toFixed(1)}" y1="${(top - 24).toFixed(1)}" x2="${px.toFixed(1)}" y2="${(top + candleHeight + 24).toFixed(1)}"
+        stroke="${primary}" stroke-width="3" opacity="${opacity}"/>
+      <rect x="${(px - candleWidth / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${candleWidth}" height="${candleHeight}"
+        rx="3" fill="${primary}" opacity="${opacity}"/>`;
+  });
+  const lastPoint = chartPoints[chartPoints.length - 1];
+
+  return `
+    <svg width="${PERFORMANCE_SHARE_CARD_WIDTH}" height="${PERFORMANCE_SHARE_CARD_HEIGHT}"
+      viewBox="0 0 ${PERFORMANCE_SHARE_CARD_WIDTH} ${PERFORMANCE_SHARE_CARD_HEIGHT}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="terminalBackground" x1="0" x2="1" y1="0" y2="1">
+          <stop offset="0%" stop-color="#030912"/>
+          <stop offset="50%" stop-color="#07111b"/>
+          <stop offset="100%" stop-color="#02070d"/>
+        </linearGradient>
+        <radialGradient id="terminalGlow" cx="78%" cy="47%" r="48%">
+          <stop offset="0%" stop-color="${primary}" stop-opacity="0.22"/>
+          <stop offset="52%" stop-color="#55a8ff" stop-opacity="0.08"/>
+          <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+        </radialGradient>
+        <filter id="terminalMetricGlow" x="-20%" y="-40%" width="140%" height="180%">
+          <feGaussianBlur stdDeviation="9" result="blur"/>
+          <feMerge>
+            <feMergeNode in="blur"/>
+            <feMergeNode in="SourceGraphic"/>
+          </feMerge>
+        </filter>
+      </defs>
+      <rect width="1600" height="900" fill="url(#terminalBackground)"/>
+      <rect width="1600" height="900" fill="url(#terminalGlow)"/>
+      <rect x="28" y="34" width="1544" height="812" rx="38" fill="#050d16" fill-opacity="0.78"
+        stroke="#55a8ff" stroke-opacity="0.48" stroke-width="3"/>
+      <rect x="58" y="194" width="1484" height="536" rx="22" fill="none" stroke="#b4c8dc" stroke-opacity="0.16" stroke-width="2"/>
+      ${Array.from({ length: 8 }, (_, index) => {
+        const x = 900 + index * 80;
+        return `<line x1="${x}" y1="200" x2="${x}" y2="720" stroke="${primary}" stroke-opacity="0.12" stroke-width="1"/>`;
+      }).join("")}
+      ${Array.from({ length: 6 }, (_, index) => {
+        const y = 235 + index * 82;
+        return `<line x1="810" y1="${y}" x2="1510" y2="${y}" stroke="${primary}" stroke-opacity="0.12" stroke-width="1"/>`;
+      }).join("")}
+      <text x="100" y="128" fill="${primary}" font-size="56" font-weight="900" filter="url(#terminalMetricGlow)"
+        font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">EV</text>
+      <text x="190" y="128" fill="#f4f8ff" font-size="56" font-weight="900"
+        font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">PLUS</text>
+      <text x="500" y="122" fill="#dbe4ef" font-size="24" font-weight="800"
+        font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">PREDICT. TRADE.</text>
+      <text x="742" y="122" fill="${primary}" font-size="24" font-weight="900"
+        font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">PROFIT.</text>
+      <rect x="1312" y="88" width="210" height="70" rx="32" fill="#040d14" fill-opacity="0.78"
+        stroke="#7aabe8" stroke-opacity="0.24" stroke-width="2"/>
+      <circle cx="1362" cy="123" r="13" fill="${primary}" filter="url(#terminalMetricGlow)"/>
+      <text x="1394" y="132" fill="${primary}" font-size="24" font-weight="900"
+        font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">${escapeXml(statusLabel)}</text>
+      <line x1="100" y1="176" x2="1504" y2="176" stroke="#b4c8dc" stroke-opacity="0.16" stroke-width="2"/>
+
+      <text x="120" y="294" fill="#aebccc" font-size="34" font-weight="800"
+        font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">${escapeXml(card.title)}</text>
+      <text x="120" y="452" fill="${primary}" font-size="${mainFontSize}" font-weight="900" filter="url(#terminalMetricGlow)"
+        font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">${escapeXml(card.mainMetric)}</text>
+      <line x1="120" y1="502" x2="900" y2="502" stroke="${primary}" stroke-opacity="0.7" stroke-width="3"/>
+      ${textLinesSvg(subtitleLines, 120, 552, 24, 30, 700)}
+      ${chips
+        .map(([label, value], index) => {
+          const x = 120 + index * 300;
+          const icon =
+            index === 0
+              ? `<path d="M${x + 24} 689 L${x + 44} 669 L${x + 58} 679 L${x + 76} 657 M${x + 62} 657 H${x + 76} V671"
+                  fill="none" stroke="${primary}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>`
+              : index === 1
+                ? [30, 48, 66]
+                    .map((barX, barIndex) => {
+                      const top = 667 - barIndex * 6;
+                      return `
+                        <line x1="${x + barX}" y1="${top - 13}" x2="${x + barX}" y2="${top + 31}"
+                          stroke="${primary}" stroke-width="4" stroke-linecap="round"/>
+                        <rect x="${x + barX - 7}" y="${top}" width="14" height="${24 + barIndex * 5}" rx="2" fill="${primary}"/>`;
+                    })
+                    .join("")
+                : [0, 1, 2, 3]
+                    .map(
+                      (barIndex) =>
+                        `<rect x="${x + 25 + barIndex * 13}" y="${691 - barIndex * 10}" width="8" height="${18 + barIndex * 10}" rx="2" fill="${primary}"/>`,
+                    )
+                    .join("");
+          return `
+            <rect x="${x}" y="625" width="96" height="96" rx="14" fill="#050c14" fill-opacity="0.72"
+              stroke="#96aabe" stroke-opacity="0.22" stroke-width="2"/>
+            ${icon}
+            <text x="${x + 118}" y="659" fill="#aebccc" font-size="19" font-weight="700"
+              font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">${escapeXml(label)}</text>
+            <text x="${x + 118}" y="697" fill="${primary}" font-size="28" font-weight="900"
+              font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">${escapeXml(value)}</text>`;
+        })
+        .join("")}
+
+      <path d="${chartArea}" fill="${primary}" fill-opacity="0.18"/>
+      <path d="${chartPath}" fill="none" stroke="${primary}" stroke-width="7" stroke-linecap="round"
+        stroke-linejoin="round" filter="url(#terminalMetricGlow)"/>
+      ${candles.join("")}
+      <circle cx="${lastPoint[0].toFixed(1)}" cy="${lastPoint[1].toFixed(1)}" r="12" fill="${primary}" filter="url(#terminalMetricGlow)"/>
+      <line x1="72" y1="790" x2="640" y2="790" stroke="${primary}" stroke-width="6" opacity="0.85"/>
+    </svg>
+  `;
+}
+
 export function buildPerformanceShareCardSvg(card: PerformanceShareCardPayload, shareUrl?: string | null): string {
+  if (usesTerminalWinLayout(card)) {
+    return buildTerminalWinShareCardSvg(card);
+  }
+
   const { primary, secondary } = themeAccent(card.theme);
   const shortLink = shareUrl ? shortenUrl(shareUrl) : null;
   const mainFontSize = card.mainMetric.length > 9 ? 70 : 82;
@@ -659,8 +833,6 @@ export async function renderPerformanceShareCardBlob(
   shareUrl?: string | null,
   options?: { mimeType?: string; quality?: number },
 ): Promise<Blob> {
-  const background = await loadPerformanceShareCardBackground(backgroundPath);
-  const backgroundImage = await loadImage(background, "performance_share_card_background_failed");
   const canvas = document.createElement("canvas");
   canvas.width = PERFORMANCE_SHARE_CARD_WIDTH;
   canvas.height = PERFORMANCE_SHARE_CARD_HEIGHT;
@@ -668,8 +840,18 @@ export async function renderPerformanceShareCardBlob(
   if (!context) {
     throw new Error("performance_share_card_canvas_unavailable");
   }
-  context.drawImage(backgroundImage, 0, 0, PERFORMANCE_SHARE_CARD_WIDTH, PERFORMANCE_SHARE_CARD_HEIGHT);
-  drawPerformanceShareCardCanvas(context, card, shareUrl);
+  if (usesTerminalWinLayout(card)) {
+    const terminalImage = await loadImage(
+      svgToDataUrl(buildTerminalWinShareCardSvg(card)),
+      "performance_share_card_terminal_failed",
+    );
+    context.drawImage(terminalImage, 0, 0, PERFORMANCE_SHARE_CARD_WIDTH, PERFORMANCE_SHARE_CARD_HEIGHT);
+  } else {
+    const background = await loadPerformanceShareCardBackground(backgroundPath);
+    const backgroundImage = await loadImage(background, "performance_share_card_background_failed");
+    context.drawImage(backgroundImage, 0, 0, PERFORMANCE_SHARE_CARD_WIDTH, PERFORMANCE_SHARE_CARD_HEIGHT);
+    drawPerformanceShareCardCanvas(context, card, shareUrl);
+  }
   const blob = await new Promise<Blob | null>((resolve) =>
     canvas.toBlob(resolve, options?.mimeType ?? "image/png", options?.quality),
   );

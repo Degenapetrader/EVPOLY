@@ -29,6 +29,8 @@ describe("performance share card backgrounds", () => {
     expect(pickPerformanceShareCardBackground(rewardCard!)).toMatch(
       /^\/assets\/performance-positive-cards\//
     );
+    expect(buildPerformanceShareCardSvg(pnlCard!)).toContain("terminalBackground");
+    expect(buildPerformanceShareCardSvg(rewardCard!)).toContain("terminalBackground");
     expect(buildPerformanceShareCardSvg(rewardCard!)).not.toContain('x="1210" y="558"');
   });
 
@@ -48,6 +50,8 @@ describe("performance share card backgrounds", () => {
     expect(pickPerformanceShareCardBackground(card!)).toMatch(
       /^\/assets\/performance-negative-cards\//
     );
+    expect(buildPerformanceShareCardSvg(card!)).toContain("performancePanel");
+    expect(buildPerformanceShareCardSvg(card!)).not.toContain("terminalBackground");
     expect(buildPerformanceShareCardSvg(card!)).not.toContain('x="1210" y="558"');
   });
 });

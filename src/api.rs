@@ -354,6 +354,7 @@ struct PlaceOrderHandleTiming {
 struct PlaceOrderMetadataPolicy {
     require_cached_order_metadata: bool,
     allow_hot_metadata_prewarm: bool,
+    skip_buy_collateral_preflight: bool,
 }
 
 impl PlaceOrderMetadataPolicy {
@@ -361,7 +362,13 @@ impl PlaceOrderMetadataPolicy {
         Self {
             require_cached_order_metadata: true,
             allow_hot_metadata_prewarm: false,
+            skip_buy_collateral_preflight: false,
         }
+    }
+
+    fn skip_buy_collateral_preflight(mut self) -> Self {
+        self.skip_buy_collateral_preflight = true;
+        self
     }
 }
 
@@ -370,6 +377,7 @@ impl Default for PlaceOrderMetadataPolicy {
         Self {
             require_cached_order_metadata: false,
             allow_hot_metadata_prewarm: true,
+            skip_buy_collateral_preflight: false,
         }
     }
 }
@@ -4424,13 +4432,25 @@ impl PolymarketApi {
         .await
     }
 
+    pub async fn place_order_with_timing_no_buy_collateral_preflight(
+        &self,
+        order: &OrderRequest,
+    ) -> Result<(OrderResponse, PlaceOrderTiming)> {
+        self.place_order_with_timing_with_metadata_policy(
+            order,
+            PlaceOrderMetadataPolicy::default().skip_buy_collateral_preflight(),
+            OrderSubmitLane::Default,
+        )
+        .await
+    }
+
     pub async fn place_order_with_timing_cached_metadata_only_endgame(
         &self,
         order: &OrderRequest,
     ) -> Result<(OrderResponse, PlaceOrderTiming)> {
         self.place_order_with_timing_with_metadata_policy(
             order,
-            PlaceOrderMetadataPolicy::cached_only(),
+            PlaceOrderMetadataPolicy::cached_only().skip_buy_collateral_preflight(),
             OrderSubmitLane::Endgame,
         )
         .await
@@ -5585,7 +5605,9 @@ impl PolymarketApi {
                         "{} BUY order token={} price={} size={}",
                         effective_order_type, order.token_id, price, size
                     );
-                    if self.is_deposit_wallet_mode() {
+                    if self.is_deposit_wallet_mode()
+                        && !metadata_policy.skip_buy_collateral_preflight
+                    {
                         self.ensure_buy_collateral_ready(usdc_notional, approval_context.as_str())
                             .await?;
                     }
@@ -9668,6 +9690,22 @@ mod tests {
         let wrapped = source.context("Failed to fetch pUSD balance and allowance");
 
         assert!(PolymarketApi::is_rate_limit_error(&wrapped));
+    }
+
+    #[test]
+    fn buy_collateral_preflight_policy_is_opt_in() {
+        assert!(!PlaceOrderMetadataPolicy::default().skip_buy_collateral_preflight);
+        assert!(!PlaceOrderMetadataPolicy::cached_only().skip_buy_collateral_preflight);
+        assert!(
+            PlaceOrderMetadataPolicy::default()
+                .skip_buy_collateral_preflight()
+                .skip_buy_collateral_preflight
+        );
+        assert!(
+            PlaceOrderMetadataPolicy::cached_only()
+                .skip_buy_collateral_preflight()
+                .skip_buy_collateral_preflight
+        );
     }
 
     #[test]

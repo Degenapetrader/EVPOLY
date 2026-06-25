@@ -6578,7 +6578,8 @@ impl Trader {
 
         let api_call_started_ms = chrono::Utc::now().timestamp_millis();
         let place_result = self
-            .submit_order_with_optional_batch(&order, strategy_id, entry_mode)
+            .api
+            .place_order_with_timing_no_buy_collateral_preflight(&order)
             .await;
         match place_result {
             Ok((response, api_timing)) => {

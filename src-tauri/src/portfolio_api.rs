@@ -1,9 +1,10 @@
 use alloy_primitives::Address;
 use alloy_signer::Signer;
 use alloy_signer_local::LocalSigner;
+use chrono::Utc;
 use polymarket_client_sdk_v2::clob::types::request::OrdersRequest;
 use polymarket_client_sdk_v2::clob::types::response::OpenOrderResponse;
-use polymarket_client_sdk_v2::clob::types::SignatureType;
+use polymarket_client_sdk_v2::clob::types::{OrderStatusType, SignatureType};
 use polymarket_client_sdk_v2::clob::{Client, Config};
 use polymarket_client_sdk_v2::POLYGON;
 use serde::{Deserialize, Serialize};
@@ -256,7 +257,12 @@ pub async fn fetch_open_orders(
         .await
         .map_err(|_| "portfolio open orders fetch timed out".to_string())?
         .map_err(|e| format!("portfolio open orders fetch: {e}"))?;
-        rows.extend(page.data);
+        let now = Utc::now();
+        rows.extend(page.data.into_iter().filter(|order| {
+            order.status == OrderStatusType::Live
+                && order.expiration > now
+                && order.original_size > order.size_matched
+        }));
         if rows.len() >= page_limit || page.next_cursor == TERMINAL_CURSOR {
             break;
         }

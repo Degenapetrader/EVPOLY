@@ -11,16 +11,9 @@ export const PERFORMANCE_SHARE_CARD_DOWNLOAD_QUALITY = 0.88;
 const PERFORMANCE_SHARE_CARD_ASSET_VERSION = "20260519a";
 
 export const PERFORMANCE_SHARE_CARD_POSITIVE_BACKGROUNDS = [
-  "/assets/referral-cards/cat-odds-flip.webp",
-  "/assets/referral-cards/squinting-trader.webp",
-  "/assets/referral-cards/toast-winner.webp",
-  "/assets/referral-cards/absolute-cinema.webp",
-  "/assets/referral-cards/cash-cat.webp",
-  "/assets/referral-cards/green-market-rainbow.webp",
-  "/assets/referral-cards/yellow-suit-entry.webp",
-  "/assets/referral-cards/alpha-whisper.webp",
-  "/assets/referral-cards/fry-side-eye.webp",
-  "/assets/referral-cards/chimp-facepalm.webp",
+  "/assets/performance-positive-cards/green-market-clean.webp",
+  "/assets/performance-positive-cards/payout-clean.webp",
+  "/assets/performance-positive-cards/winner-clean.webp",
 ];
 
 export const PERFORMANCE_SHARE_CARD_NEGATIVE_BACKGROUNDS = [
@@ -454,24 +447,6 @@ function drawSparklineCanvas(context: CanvasRenderingContext2D, values: number[]
   context.restore();
 }
 
-function masksReferralBadge(card: PerformanceShareCardPayload): boolean {
-  return card.kind === "liquidity_reward" || card.theme === "good" || card.theme === "reward";
-}
-
-function referralBadgeMaskSvg(): string {
-  return `
-    <rect x="1210" y="558" width="350" height="98" rx="22" fill="#02070a" opacity="0.92"/>
-    <rect x="1210" y="666" width="350" height="98" rx="22" fill="#02070a" opacity="0.92"/>
-  `;
-}
-
-function drawReferralBadgeMaskCanvas(context: CanvasRenderingContext2D): void {
-  context.save();
-  fillRoundRect(context, 1210, 558, 350, 98, 22, "rgba(2, 7, 10, 0.92)");
-  fillRoundRect(context, 1210, 666, 350, 98, 22, "rgba(2, 7, 10, 0.92)");
-  context.restore();
-}
-
 function drawPerformanceShareCardCanvas(
   context: CanvasRenderingContext2D,
   card: PerformanceShareCardPayload,
@@ -494,9 +469,6 @@ function drawPerformanceShareCardCanvas(
   context.save();
   context.fillStyle = "rgba(0, 0, 0, 0.08)";
   context.fillRect(0, 0, PERFORMANCE_SHARE_CARD_WIDTH, PERFORMANCE_SHARE_CARD_HEIGHT);
-  if (masksReferralBadge(card)) {
-    drawReferralBadgeMaskCanvas(context);
-  }
 
   const seam = context.createLinearGradient(688, 0, 898, 0);
   seam.addColorStop(0, "rgba(2, 7, 10, 0.98)");
@@ -624,7 +596,6 @@ export function buildPerformanceShareCardSvg(card: PerformanceShareCardPayload, 
         </filter>
       </defs>
       <rect width="1600" height="900" fill="#000000" opacity="0.08"/>
-      ${masksReferralBadge(card) ? referralBadgeMaskSvg() : ""}
       <rect x="688" y="0" width="210" height="900" fill="url(#oldPanelSeamMask)"/>
       <rect x="688" y="0" width="210" height="900" fill="url(#cleanupGrid)" opacity="0.16"/>
       <rect x="92" y="76" width="624" height="744" rx="32" fill="url(#performancePanel)" stroke="${primary}" stroke-width="3"/>

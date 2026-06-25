@@ -3170,7 +3170,86 @@ input[type="number"]::-webkit-inner-spin-button {
 }
 
 .performance-share-modal__tools {
+  display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  align-items: stretch;
+  margin-top: 0.9rem;
+}
+
+.performance-share-action {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 5rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.85rem 0.9rem;
+  border: 1px solid rgba(99, 181, 255, 0.32);
+  border-radius: 1rem;
+  background: rgba(6, 12, 22, 0.72);
+  color: #edf5ff;
+  font: inherit;
+  cursor: pointer;
+  transition:
+    transform 150ms ease,
+    border-color 150ms ease,
+    background 150ms ease,
+    box-shadow 150ms ease;
+}
+
+.performance-share-action:hover:not(:disabled) {
+  border-color: rgba(99, 181, 255, 0.58);
+  background: rgba(99, 181, 255, 0.1);
+  transform: translateY(-1px);
+}
+
+.performance-share-action:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.performance-share-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.performance-share-action__icon {
+  display: inline-flex;
+  width: 1.65rem;
+  height: 1.65rem;
+  align-items: center;
+  justify-content: center;
+  color: #67c3ff;
+}
+
+.performance-share-action__icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.performance-share-action__label {
+  overflow-wrap: anywhere;
+  text-align: center;
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1.15;
+}
+
+.performance-share-action--primary {
+  border-color: rgba(43, 221, 236, 0.84);
+  background: linear-gradient(180deg, #25dce9 0%, #17bbc8 100%);
+  color: #031016;
+  box-shadow: 0 0.9rem 2rem rgba(24, 205, 219, 0.18);
+}
+
+.performance-share-action--primary:hover:not(:disabled) {
+  border-color: rgba(109, 248, 255, 0.92);
+  background: linear-gradient(180deg, #36e8f4 0%, #1cc6d4 100%);
+}
+
+.performance-share-action--primary .performance-share-action__icon {
+  color: #031016;
 }
 
 .unsaved-changes-modal__card {
@@ -3194,6 +3273,10 @@ input[type="number"]::-webkit-inner-spin-button {
 @media (max-width: 479px) {
   .performance-share-modal__tools {
     grid-template-columns: 1fr;
+  }
+
+  .performance-share-action {
+    min-height: 4.5rem;
   }
 }
 

@@ -24,7 +24,7 @@ use alloy_primitives::Address as AlloyAddress;
 use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use ethers_signers::{LocalWallet, Signer};
 use polymarket_client_sdk_v2::{derive_proxy_wallet, derive_safe_wallet, POLYGON};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -3564,11 +3564,9 @@ fn fetch_gamma_market_metadata_batch(
     client: &reqwest::blocking::Client,
     condition_ids: &[String],
 ) -> HashMap<String, GammaMarketResponse> {
-    let joined = condition_ids.join(",");
-    if joined.is_empty() {
+    let Some(url) = gamma_market_metadata_batch_url(condition_ids) else {
         return HashMap::new();
-    }
-    let url = format!("https://gamma-api.polymarket.com/markets?condition_ids={joined}");
+    };
     let response = match client.get(&url).send() {
         Ok(response) if response.status().is_success() => response,
         _ => return HashMap::new(),
@@ -3590,6 +3588,27 @@ fn fetch_gamma_market_metadata_batch(
             Some((condition_id, market))
         })
         .collect()
+}
+
+fn gamma_market_metadata_batch_url(condition_ids: &[String]) -> Option<String> {
+    let condition_ids = condition_ids
+        .iter()
+        .map(|condition_id| condition_id.trim().to_ascii_lowercase())
+        .filter(|condition_id| !condition_id.is_empty())
+        .collect::<BTreeSet<_>>();
+    if condition_ids.is_empty() {
+        return None;
+    }
+
+    let mut url = reqwest::Url::parse("https://gamma-api.polymarket.com/markets").ok()?;
+    {
+        let mut query = url.query_pairs_mut();
+        for condition_id in &condition_ids {
+            query.append_pair("condition_ids", condition_id);
+        }
+        query.append_pair("limit", &condition_ids.len().to_string());
+    }
+    Some(url.to_string())
 }
 
 fn gamma_market_thumbnail(payload: &GammaMarketResponse) -> Option<String> {
@@ -6687,8 +6706,9 @@ pub fn run() {
 mod tests {
     use super::{
         active_profile_bot_state, activity_trade_price, default_desktop_config,
-        desktop_config_to_profile_payload, desktop_magic_finish_payload, merge_config_object,
-        merge_desktop_secrets, polymarket_funders_from_private_key, profile_to_desktop_config,
+        desktop_config_to_profile_payload, desktop_magic_finish_payload,
+        gamma_market_metadata_batch_url, merge_config_object, merge_desktop_secrets,
+        polymarket_funders_from_private_key, profile_to_desktop_config,
         remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
         PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
         PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
@@ -6741,6 +6761,22 @@ mod tests {
         };
 
         assert_eq!(activity_trade_price(&row), Some(0.5));
+    }
+
+    #[test]
+    fn gamma_market_metadata_batch_url_uses_repeated_condition_ids() {
+        let url = gamma_market_metadata_batch_url(&[
+            " 0xBBB ".to_string(),
+            "0xaaa".to_string(),
+            "0xaaa".to_string(),
+        ])
+        .expect("gamma url");
+
+        assert_eq!(url.matches("condition_ids=").count(), 2);
+        assert!(url.contains("condition_ids=0xaaa"));
+        assert!(url.contains("condition_ids=0xbbb"));
+        assert!(url.contains("limit=2"));
+        assert!(!url.contains("0xaaa%2C0xbbb"));
     }
 
     #[test]

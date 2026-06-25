@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 import { SectionPanel } from "./SectionPanel";
 import {
   mmSportRouteDefaultCaps,
-  normalizePremarketLadderBiasPct,
   parseNonNegative,
   premarketLadderPricesForMode,
   strategyCapValue,
@@ -79,15 +78,29 @@ const PREMARKET_LADDER_MODES: Array<[PremarketLadderMode, string]> = [
   ["aggressive", "Aggressive"],
 ];
 
-function parseBiasPct(value: string, fallback: number) {
-  if (!value.trim()) return fallback;
+function safeBiasFromInput(value: string, fallback: number) {
+  if (!value.trim() || value.trim() === "-") return null;
   const parsed = Number(value);
-  return normalizePremarketLadderBiasPct(Number.isFinite(parsed) ? parsed : undefined, fallback);
+  if (!Number.isFinite(parsed)) return fallback;
+  return -Math.min(90, Math.abs(parsed));
+}
+
+function aggressiveBiasFromInput(value: string, fallback: number) {
+  if (!value.trim() || value.trim() === "-" || value.trim() === "+") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(200, Math.abs(parsed));
 }
 
 function formatPriceList(values: number[]) {
   return values.map((value) => value.toFixed(2)).join("  ");
 }
+
+function formatBiasInputValue(value: number) {
+  return Number.isFinite(value) ? String(value) : "";
+}
+
+const PREMARKET_BIAS_PRESETS = [10, 15, 20, 25] as const;
 
 const MM_SPORT_SCHEDULE_DAYS = [
   ["mon", "Mon"],
@@ -572,6 +585,14 @@ export function StrategyEditorPane({
   const [mmSportQuoteSizingTab, setMmSportQuoteSizingTab] = useState<
     "scope" | "sport" | "nonsport" | "shared" | "exit"
   >("sport");
+  const [safeBiasDraft, setSafeBiasDraft] = useState(() =>
+    formatBiasInputValue(config.strategy_settings.premarket.safe_bias_pct)
+  );
+  const [aggressiveBiasDraft, setAggressiveBiasDraft] = useState(() =>
+    formatBiasInputValue(config.strategy_settings.premarket.aggressive_bias_pct)
+  );
+  const [safeBiasFocused, setSafeBiasFocused] = useState(false);
+  const [aggressiveBiasFocused, setAggressiveBiasFocused] = useState(false);
 
   const visibleSections = useMemo(() => strategySections(selectedStrategy), [selectedStrategy]);
   const canEdit = Boolean(activeProfileId);
@@ -588,6 +609,20 @@ export function StrategyEditorPane({
       onRequestedSectionConsumed?.();
     }
   }, [onRequestedSectionConsumed, requestedSection, visibleSections]);
+
+  useEffect(() => {
+    if (!safeBiasFocused) {
+      setSafeBiasDraft(formatBiasInputValue(config.strategy_settings.premarket.safe_bias_pct));
+    }
+  }, [config.strategy_settings.premarket.safe_bias_pct, safeBiasFocused]);
+
+  useEffect(() => {
+    if (!aggressiveBiasFocused) {
+      setAggressiveBiasDraft(
+        formatBiasInputValue(config.strategy_settings.premarket.aggressive_bias_pct)
+      );
+    }
+  }, [aggressiveBiasFocused, config.strategy_settings.premarket.aggressive_bias_pct]);
 
   const selectedEnabled = config.strategies[selectedStrategy];
   const selectedSizeValue = strategySizeValue(config, selectedStrategy);
@@ -1001,6 +1036,36 @@ export function StrategyEditorPane({
 
   const renderPremarketLadderModeCard = () => {
     const premarket = config.strategy_settings.premarket;
+    const applySafeBias = (next: number) => {
+      setSafeBiasDraft(formatBiasInputValue(next));
+      patchPremarket({ safe_bias_pct: next });
+    };
+    const applyAggressiveBias = (next: number) => {
+      setAggressiveBiasDraft(formatBiasInputValue(next));
+      patchPremarket({ aggressive_bias_pct: next });
+    };
+    const renderBiasPresets = (kind: "safe" | "aggressive") => (
+      <div className="reward-cap-row__presets mt-3" role="group" aria-label={`${kind} bias presets`}>
+        {PREMARKET_BIAS_PRESETS.map((preset) => {
+          const value = kind === "safe" ? -preset : preset;
+          const active =
+            kind === "safe"
+              ? premarket.safe_bias_pct === value
+              : premarket.aggressive_bias_pct === value;
+          return (
+            <button
+              key={`${kind}-${preset}`}
+              type="button"
+              disabled={!canEdit}
+              className={`reward-cap-preset ${active ? "reward-cap-preset--active" : ""}`.trim()}
+              onClick={() => (kind === "safe" ? applySafeBias(value) : applyAggressiveBias(value))}
+            >
+              {value > 0 ? `+${value}%` : `${value}%`}
+            </button>
+          );
+        })}
+      </div>
+    );
     const renderModeGroup = (
       title: string,
       modeKey: "ladder_mode_m5" | "ladder_mode_non_m5"
@@ -1053,37 +1118,65 @@ export function StrategyEditorPane({
               <input
                 type="number"
                 min="-90"
-                max="200"
+                max="0"
                 step="1"
-                value={premarket.safe_bias_pct}
+                value={safeBiasDraft}
                 disabled={!canEdit}
-                onChange={(event) =>
-                  patchPremarket({
-                    safe_bias_pct: parseBiasPct(event.target.value, premarket.safe_bias_pct),
-                  })
-                }
+                onFocus={() => setSafeBiasFocused(true)}
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  setSafeBiasDraft(raw);
+                  const next = safeBiasFromInput(raw, premarket.safe_bias_pct);
+                  if (next !== null) {
+                    patchPremarket({ safe_bias_pct: next });
+                  }
+                }}
+                onBlur={(event) => {
+                  setSafeBiasFocused(false);
+                  const next = safeBiasFromInput(event.currentTarget.value, premarket.safe_bias_pct);
+                  if (next === null) {
+                    setSafeBiasDraft(formatBiasInputValue(premarket.safe_bias_pct));
+                    return;
+                  }
+                  applySafeBias(next);
+                }}
                 className="field-input"
               />
+              {renderBiasPresets("safe")}
             </div>
             <div>
               <label className="field-label">Aggressive Bias %</label>
               <input
                 type="number"
-                min="-90"
+                min="0"
                 max="200"
                 step="1"
-                value={premarket.aggressive_bias_pct}
+                value={aggressiveBiasDraft}
                 disabled={!canEdit}
-                onChange={(event) =>
-                  patchPremarket({
-                    aggressive_bias_pct: parseBiasPct(
-                      event.target.value,
-                      premarket.aggressive_bias_pct
-                    ),
-                  })
-                }
+                onFocus={() => setAggressiveBiasFocused(true)}
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  setAggressiveBiasDraft(raw);
+                  const next = aggressiveBiasFromInput(raw, premarket.aggressive_bias_pct);
+                  if (next !== null) {
+                    patchPremarket({ aggressive_bias_pct: next });
+                  }
+                }}
+                onBlur={(event) => {
+                  setAggressiveBiasFocused(false);
+                  const next = aggressiveBiasFromInput(
+                    event.currentTarget.value,
+                    premarket.aggressive_bias_pct
+                  );
+                  if (next === null) {
+                    setAggressiveBiasDraft(formatBiasInputValue(premarket.aggressive_bias_pct));
+                    return;
+                  }
+                  applyAggressiveBias(next);
+                }}
                 className="field-input"
               />
+              {renderBiasPresets("aggressive")}
             </div>
           </div>
           <div className="surface-panel surface-panel--subtle">

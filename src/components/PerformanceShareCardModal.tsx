@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { open } from "@tauri-apps/plugin-shell";
 import {
   buildPerformanceShareOnXUrl,
   createPerformanceShareOverlayUrl,
@@ -29,7 +30,6 @@ export function PerformanceShareCardModal({
   useEffect(() => {
     const nextOverlayUrl = createPerformanceShareOverlayUrl(card);
     setOverlayUrl(nextOverlayUrl);
-    return () => URL.revokeObjectURL(nextOverlayUrl);
   }, [card]);
 
   useEffect(() => {
@@ -90,7 +90,7 @@ export function PerformanceShareCardModal({
   }, [backgroundPath, card, downloading, fileName]);
 
   const handleShareOnX = useCallback(() => {
-    window.open(buildPerformanceShareOnXUrl(card), "_blank", "noopener,noreferrer");
+    void open(buildPerformanceShareOnXUrl(card));
   }, [card]);
 
   return (

@@ -11,16 +11,9 @@ export const PERFORMANCE_SHARE_CARD_DOWNLOAD_QUALITY = 0.88;
 const PERFORMANCE_SHARE_CARD_ASSET_VERSION = "20260519a";
 
 export const PERFORMANCE_SHARE_CARD_POSITIVE_BACKGROUNDS = [
-  "/assets/referral-cards/cat-odds-flip.webp",
-  "/assets/referral-cards/squinting-trader.webp",
-  "/assets/referral-cards/toast-winner.webp",
-  "/assets/referral-cards/absolute-cinema.webp",
-  "/assets/referral-cards/cash-cat.webp",
-  "/assets/referral-cards/green-market-rainbow.webp",
-  "/assets/referral-cards/yellow-suit-entry.webp",
-  "/assets/referral-cards/alpha-whisper.webp",
-  "/assets/referral-cards/fry-side-eye.webp",
-  "/assets/referral-cards/chimp-facepalm.webp",
+  "/assets/performance-negative-cards/thumbs-up-cat.webp",
+  "/assets/performance-negative-cards/market-stare.webp",
+  "/assets/performance-negative-cards/terminal-wojak.webp",
 ];
 
 export const PERFORMANCE_SHARE_CARD_NEGATIVE_BACKGROUNDS = [
@@ -74,8 +67,13 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
-function svgToObjectUrl(svg: string): string {
-  return URL.createObjectURL(new Blob([svg], { type: "image/svg+xml;charset=utf-8" }));
+function svgToDataUrl(svg: string): string {
+  const bytes = new TextEncoder().encode(svg);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return `data:image/svg+xml;base64,${btoa(binary)}`;
 }
 
 function canvasFont(size: number, weight = 800): string {
@@ -652,7 +650,7 @@ export function buildPerformanceShareCardSvg(card: PerformanceShareCardPayload, 
 }
 
 export function createPerformanceShareOverlayUrl(card: PerformanceShareCardPayload, shareUrl?: string | null): string {
-  return svgToObjectUrl(buildPerformanceShareCardSvg(card, shareUrl));
+  return svgToDataUrl(buildPerformanceShareCardSvg(card, shareUrl));
 }
 
 export async function renderPerformanceShareCardBlob(

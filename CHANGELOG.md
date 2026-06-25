@@ -1,5 +1,8 @@
 # EVPoly Desktop Changelog
 
+## Local - 2026-06-25
+- Repinned the local desktop sidecar build to the local runtime commit `eaa14ae`, restoring legacy Endgame V1 timing with RTDS, FAK, and Book99 CEX-depth sizing for local testing.
+
 ## UI-v2.4.6 - 2026-06-17
 - Bumped desktop app/updater version to 2.4.6.
 - Repinned the bundled runtime sidecar to runtime `v2.4.6` (`e02c283`) with local secret hardening, fail-closed manual API auth, HTTPS-only remote URL defaults, and remote EVcurve payload validation.

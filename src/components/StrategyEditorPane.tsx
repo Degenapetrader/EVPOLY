@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 import { SectionPanel } from "./SectionPanel";
 import {
   mmSportRouteDefaultCaps,
+  normalizePremarketLadderBiasPct,
   parseNonNegative,
+  premarketLadderPricesForMode,
   strategyCapValue,
   strategyLabel,
   strategySections,
@@ -20,7 +22,7 @@ import {
   type StrategyEditorSection,
   type StrategyKey,
 } from "../lib/desktop-config";
-import type { BotConfig } from "../lib/tauri-commands";
+import type { BotConfig, PremarketLadderMode } from "../lib/tauri-commands";
 
 function renderBooleanChoice(
   value: boolean,
@@ -69,6 +71,23 @@ function sizePreview(baseSize: number, symbolMultiplier: number, timeframeMultip
 }
 
 type MMSportSettings = BotConfig["strategy_settings"]["mm_sport"];
+type PremarketSettings = BotConfig["strategy_settings"]["premarket"];
+
+const PREMARKET_LADDER_MODES: Array<[PremarketLadderMode, string]> = [
+  ["normal", "Normal"],
+  ["safe", "Safe"],
+  ["aggressive", "Aggressive"],
+];
+
+function parseBiasPct(value: string, fallback: number) {
+  if (!value.trim()) return fallback;
+  const parsed = Number(value);
+  return normalizePremarketLadderBiasPct(Number.isFinite(parsed) ? parsed : undefined, fallback);
+}
+
+function formatPriceList(values: number[]) {
+  return values.map((value) => value.toFixed(2)).join("  ");
+}
 
 const MM_SPORT_SCHEDULE_DAYS = [
   ["mon", "Mon"],
@@ -980,6 +999,117 @@ export function StrategyEditorPane({
     </div>
   );
 
+  const renderPremarketLadderModeCard = () => {
+    const premarket = config.strategy_settings.premarket;
+    const renderModeGroup = (
+      title: string,
+      modeKey: "ladder_mode_m5" | "ladder_mode_non_m5"
+    ) => (
+      <div className="surface-panel surface-panel--subtle">
+        <div className="surface-panel__body space-y-4">
+          <div className="metric-label">{title}</div>
+          <div className="grid gap-2 md:grid-cols-3">
+            {PREMARKET_LADDER_MODES.map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                disabled={!canEdit}
+                onClick={() =>
+                  patchPremarket({ [modeKey]: mode } as Pick<PremarketSettings, typeof modeKey>)
+                }
+                className={`ui-button ${premarket[modeKey] === mode ? "ui-button--accent" : ""}`.trim()}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+
+    const previewRows = [
+      ["5 min", "m5", premarket.ladder_mode_m5],
+      ["15m / 1h / 4h", "non_m5", premarket.ladder_mode_non_m5],
+    ] as const;
+
+    return (
+      <div className="surface-panel">
+        <div className="surface-panel__header">
+          <div className="surface-panel__copy">
+            <h2 className="surface-panel__title">Ladder Mode</h2>
+            <p className="surface-panel__subtitle">
+              Safe and Aggressive apply the configured percentage to the fixed ladder.
+            </p>
+          </div>
+        </div>
+        <div className="surface-panel__body space-y-4">
+          <div className="grid gap-4 xl:grid-cols-2">
+            {renderModeGroup("5 min", "ladder_mode_m5")}
+            {renderModeGroup("15m / 1h / 4h", "ladder_mode_non_m5")}
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="field-label">Safe Bias %</label>
+              <input
+                type="number"
+                min="-90"
+                max="200"
+                step="1"
+                value={premarket.safe_bias_pct}
+                disabled={!canEdit}
+                onChange={(event) =>
+                  patchPremarket({
+                    safe_bias_pct: parseBiasPct(event.target.value, premarket.safe_bias_pct),
+                  })
+                }
+                className="field-input"
+              />
+            </div>
+            <div>
+              <label className="field-label">Aggressive Bias %</label>
+              <input
+                type="number"
+                min="-90"
+                max="200"
+                step="1"
+                value={premarket.aggressive_bias_pct}
+                disabled={!canEdit}
+                onChange={(event) =>
+                  patchPremarket({
+                    aggressive_bias_pct: parseBiasPct(
+                      event.target.value,
+                      premarket.aggressive_bias_pct
+                    ),
+                  })
+                }
+                className="field-input"
+              />
+            </div>
+          </div>
+          <div className="surface-panel surface-panel--subtle">
+            <div className="surface-panel__body space-y-3">
+              {previewRows.map(([label, bucket, mode]) => (
+                <div key={bucket} className="grid gap-2 xl:grid-cols-[180px_1fr]">
+                  <div className="metric-label">{label}</div>
+                  <div className="metric-detail">
+                    {formatPriceList(
+                      premarketLadderPricesForMode(
+                        bucket,
+                        mode,
+                        premarket.safe_bias_pct,
+                        premarket.aggressive_bias_pct
+                      )
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderEVCurveMultiplierCard = () => (
     <div className="space-y-4">
       <div className="surface-panel">
@@ -1137,6 +1267,7 @@ export function StrategyEditorPane({
       return (
         <div className="space-y-4">
           {renderSymbolMultiplierCard()}
+          {renderPremarketLadderModeCard()}
           {renderPremarketTimeframeCard()}
           <div className="surface-panel">
             <div className="surface-panel__header">

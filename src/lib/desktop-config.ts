@@ -1,5 +1,6 @@
 import type {
   BotConfig,
+  PremarketLadderMode,
   StrategySettings,
   WeekendPolicy,
 } from "./tauri-commands";
@@ -64,9 +65,39 @@ type Timeframe = "5m" | "15m" | "1h" | "4h" | "1d";
 const ALL_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h", "1d"] as const;
 const PREMARKET_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h"] as const;
 const SESSIONBAND_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h"] as const;
+export type PremarketLadderBucket = "m5" | "non_m5";
+export const PREMARKET_LADDER_BASE_PRICES: Record<PremarketLadderBucket, number[]> = {
+  m5: [0.31, 0.26, 0.22, 0.16, 0.09, 0.03],
+  non_m5: [0.4, 0.3, 0.24, 0.18, 0.12, 0.06],
+};
 
 function normalizeMMRewardsMarketMode(value: string | undefined) {
   return value?.trim().toLowerCase() === "hybrid" ? "hybrid" : "auto";
+}
+
+export function normalizePremarketLadderMode(value: string | undefined): PremarketLadderMode {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "safe" || normalized === "aggressive" ? normalized : "normal";
+}
+
+export function normalizePremarketLadderBiasPct(value: number | undefined, fallback: number) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.min(200, Math.max(-90, value));
+}
+
+function roundUpPriceToCent(value: number) {
+  return Math.min(0.99, Math.max(0.01, Math.ceil(value * 100 - 1e-9) / 100));
+}
+
+export function premarketLadderPricesForMode(
+  bucket: PremarketLadderBucket,
+  mode: PremarketLadderMode,
+  safeBiasPct: number,
+  aggressiveBiasPct: number
+) {
+  const biasPct = mode === "safe" ? safeBiasPct : mode === "aggressive" ? aggressiveBiasPct : 0;
+  const factor = 1 + normalizePremarketLadderBiasPct(biasPct, 0) / 100;
+  return PREMARKET_LADDER_BASE_PRICES[bucket].map((price) => roundUpPriceToCent(price * factor));
 }
 
 function normalizeMMSportQuoteSizeMode(value: string | undefined) {
@@ -180,6 +211,10 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     tp_enabled: true,
     active_cap_per_asset: 100,
     timeframes: ["5m", "15m", "1h", "4h"],
+    ladder_mode_m5: "normal",
+    ladder_mode_non_m5: "normal",
+    safe_bias_pct: -10,
+    aggressive_bias_pct: 10,
     cancel_after_open_sec: {
       m5: 20,
       m15: 15,
@@ -352,7 +387,6 @@ export const DEFAULT_CONFIG: BotConfig = {
   remote_signer_token: "",
   order_signer_primary_token_internal: "",
   remote_discovery_token: "",
-  remote_premarket_alpha_token: "",
   remote_endgame_alpha_token: "",
   remote_mm_rewards_alpha_token: "",
   remote_evsnipe_discovery_token: "",
@@ -361,6 +395,7 @@ export const DEFAULT_CONFIG: BotConfig = {
 
 export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotConfig {
   const savedMmSport = saved?.strategy_settings?.mm_sport;
+  const savedPremarket = saved?.strategy_settings?.premarket;
   const mmSportDiscoveryRoute = normalizeMMSportDiscoveryRoute(savedMmSport?.discovery_route);
   const mmSportCaps = normalizeMMSportRouteCaps(
     mmSportDiscoveryRoute,
@@ -432,14 +467,21 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
       ...saved?.strategy_settings,
       premarket: {
         ...DEFAULT_CONFIG.strategy_settings.premarket,
-        ...saved?.strategy_settings?.premarket,
+        ...savedPremarket,
         timeframes:
-          saved?.strategy_settings?.premarket?.timeframes?.length
-            ? saved.strategy_settings.premarket.timeframes
+          savedPremarket?.timeframes?.length
+            ? savedPremarket.timeframes
             : DEFAULT_CONFIG.strategy_settings.premarket.timeframes,
+        ladder_mode_m5: normalizePremarketLadderMode(savedPremarket?.ladder_mode_m5),
+        ladder_mode_non_m5: normalizePremarketLadderMode(savedPremarket?.ladder_mode_non_m5),
+        safe_bias_pct: normalizePremarketLadderBiasPct(savedPremarket?.safe_bias_pct, -10),
+        aggressive_bias_pct: normalizePremarketLadderBiasPct(
+          savedPremarket?.aggressive_bias_pct,
+          10
+        ),
         cancel_after_open_sec: {
           ...DEFAULT_CONFIG.strategy_settings.premarket.cancel_after_open_sec,
-          ...saved?.strategy_settings?.premarket?.cancel_after_open_sec,
+          ...savedPremarket?.cancel_after_open_sec,
         },
       },
       endgame: {

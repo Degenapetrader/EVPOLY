@@ -410,11 +410,16 @@ export interface SetupDoctorResult {
 }
 
 export type WeekendPolicy = "off" | "pause";
+export type PremarketLadderMode = "normal" | "safe" | "aggressive";
 
 export interface PremarketSettings {
   tp_enabled: boolean;
   active_cap_per_asset: number;
   timeframes: string[];
+  ladder_mode_m5: PremarketLadderMode;
+  ladder_mode_non_m5: PremarketLadderMode;
+  safe_bias_pct: number;
+  aggressive_bias_pct: number;
   cancel_after_open_sec: {
     m5: number;
     m15: number;
@@ -615,7 +620,6 @@ export interface BotConfig {
   remote_signer_token: string;
   order_signer_primary_token_internal?: string;
   remote_discovery_token: string;
-  remote_premarket_alpha_token: string;
   remote_endgame_alpha_token: string;
   remote_mm_rewards_alpha_token: string;
   remote_evsnipe_discovery_token: string;

@@ -54,6 +54,8 @@ describe("desktop config MM 2.0 sizing profiles", () => {
     expect(merged.strategy_settings.mm_sport.active_nonsport_market_cap).toBe(50);
     expect(merged.strategy_settings.mm_sport.quote_cooldown_min_sec).toBe(61);
     expect(merged.strategy_settings.mm_sport.quote_cooldown_max_sec).toBe(61);
+    expect(merged.strategy_settings.mm_sport.sport_entry_schedule_start_minute_utc).toBe(1439);
+    expect(merged.strategy_settings.mm_sport.sport_entry_schedule_end_minute_utc).toBe(240);
     expect(merged.strategy_settings.mm_sport.nonsport_entry_schedule_start_minute_utc).toBe(1439);
     expect(merged.strategy_settings.mm_sport.nonsport_entry_schedule_end_minute_utc).toBe(240);
   });

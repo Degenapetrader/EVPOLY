@@ -5,6 +5,7 @@ import { AppShell } from "../components/AppShell";
 import { GeoAccessDialog } from "../components/GeoAccessDialog";
 import { HomePortfolioTabs } from "../components/HomePortfolioTabs";
 import { LogsDrawer } from "../components/LogsDrawer";
+import { PerformanceShareCardModal } from "../components/PerformanceShareCardModal";
 import { ProfileSwitcher } from "../components/ProfileSwitcher";
 import { SectionPanel } from "../components/SectionPanel";
 import { SetupDoctorDialog } from "../components/SetupDoctorDialog";
@@ -39,8 +40,8 @@ import {
   getGeoAccessStatus,
   getActiveProfileId,
   getLinuxResumeOffer,
+  getHomePerformanceApi,
   getSavedConfig,
-  getTradeStats,
   lockSession,
   restartBot,
   runSetupDoctor,
@@ -52,8 +53,20 @@ import {
   type GeoAccessStatus,
   type PendingLinuxResumeOffer,
   type SetupDoctorResult,
-  type TradeStats,
+  type ProfilePerformancePoint,
+  type ProfilePerformanceView,
 } from "../lib/tauri-commands";
+import {
+  buildHomePerformanceSnapshot,
+} from "../lib/home-performance-snapshot";
+import {
+  buildDailyPnlShareCard,
+  buildLiquidityRewardShareCard,
+  pickPerformanceShareCardBackground,
+  type PerformanceShareCardPayload,
+} from "../lib/performance-share-card";
+
+const PUBLIC_EVPOINT_LEADERBOARD_URL = "https://www.evplus.ai/points";
 
 function getErrorText(err: unknown, fallback: string): string {
   if (typeof err === "string" && err.trim()) return err;
@@ -98,7 +111,40 @@ function clampPercent(value: number): number {
   return Math.min(100, Math.max(0, value));
 }
 
-function PerformanceSparkline({ points }: { points: TradeStats["pnl_history"] }) {
+function RefreshGlyph() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path
+        d="M20 12a8 8 0 0 1-13.7 5.6M4 12A8 8 0 0 1 17.7 6.4M18 3v4h-4M6 21v-4h4"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function ShareGlyph() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <path
+        d="M9.7 10.7l4.6-3.4M9.7 13.3l4.6 3.4"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+      <circle cx="7" cy="12" r="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="17" cy="6" r="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <circle cx="17" cy="18" r="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+function PerformanceSparkline({ points }: { points: ProfilePerformancePoint[] }) {
   if (points.length < 2) {
     return (
       <div className="situation-sparkline situation-sparkline--empty">
@@ -107,7 +153,7 @@ function PerformanceSparkline({ points }: { points: TradeStats["pnl_history"] })
     );
   }
 
-  const values = points.map((point) => point.pnl);
+  const values = points.map((point) => point.value);
   const min = Math.min(...values);
   const max = Math.max(...values);
   const range = Math.max(max - min, 1);
@@ -185,7 +231,11 @@ export function Home() {
   const [pendingResumeOffer, setPendingResumeOffer] = useState<PendingLinuxResumeOffer | null>(null);
   const [resumeLoading, setResumeLoading] = useState(false);
   const [portfolioFeedSeed, setPortfolioFeedSeed] = useState(0);
-  const [tradeStats, setTradeStats] = useState<TradeStats | null>(null);
+  const [performance, setPerformance] = useState<ProfilePerformanceView | null>(null);
+  const [overviewRefreshing, setOverviewRefreshing] = useState(false);
+  const [performanceShareCard, setPerformanceShareCard] =
+    useState<PerformanceShareCardPayload | null>(null);
+  const [performanceShareBackground, setPerformanceShareBackground] = useState<string | null>(null);
   const [requestedEditorSection, setRequestedEditorSection] =
     useState<StrategyEditorSection | null>(null);
   const [railDraftValues, setRailDraftValues] = useState<Record<StrategyKey, string>>(() =>
@@ -299,14 +349,18 @@ export function Home() {
     let interval: ReturnType<typeof setInterval> | null = null;
 
     const load = async () => {
+      if (!activeProfileId) {
+        setPerformance(null);
+        return;
+      }
       try {
-        const nextStats = await getTradeStats();
+        const nextPerformance = await getHomePerformanceApi("1d");
         if (active) {
-          setTradeStats(nextStats);
+          setPerformance(nextPerformance);
         }
       } catch {
         if (active) {
-          setTradeStats(null);
+          setPerformance(null);
         }
       }
     };
@@ -326,6 +380,15 @@ export function Home() {
   const botRunning = overview?.bot_state === "running";
   const otherProfileRunning = Boolean(overview?.other_profile_running && overview.live_profile_id);
   const liveProfileLabel = overview?.live_profile_name?.trim() || "live profile";
+  const performanceSnapshot = useMemo(
+    () =>
+      buildHomePerformanceSnapshot({
+        overview,
+        performance,
+        publicOpenPositionsValue: overview?.portfolio_value ?? null,
+      }),
+    [overview, performance]
+  );
 
   const handleUpdate = async () => {
     if (!pendingUpdate || !updateVersion || updateDownloading) return;
@@ -398,6 +461,27 @@ export function Home() {
     await refreshOverview(true);
     setPortfolioFeedSeed((current) => current + 1);
   };
+
+  const refreshHomeData = useCallback(async () => {
+    setOverviewRefreshing(true);
+    try {
+      await refreshOverview(true);
+      try {
+        const nextPerformance = await getHomePerformanceApi("1d");
+        setPerformance(nextPerformance);
+      } catch {
+        setPerformance(null);
+      }
+      setPortfolioFeedSeed((current) => current + 1);
+    } finally {
+      setOverviewRefreshing(false);
+    }
+  }, [refreshOverview]);
+
+  const openPerformanceShare = useCallback((card: PerformanceShareCardPayload) => {
+    setPerformanceShareCard(card);
+    setPerformanceShareBackground(pickPerformanceShareCardBackground(card));
+  }, []);
 
   const handleOpenLiveProfile = async () => {
     if (!overview?.live_profile_id) return;
@@ -570,6 +654,7 @@ export function Home() {
   const railItems = [
     { label: "Home", to: "/home" },
     { label: "Bot Setup", to: "/bot-setup" },
+    { label: "Public EVPoint Leaderboard", href: PUBLIC_EVPOINT_LEADERBOARD_URL },
     { label: "Settings", to: "/settings" },
     { label: "Open Logs", onClick: () => setLogsOpen(true) },
   ];
@@ -847,13 +932,9 @@ export function Home() {
   );
 
   const renderOverview = () => {
-    const availableBalance = overview?.available_balance ?? null;
-    const openExposure = overview?.portfolio_value ?? null;
-    const totalEquity =
-      overview?.total_equity ??
-      (availableBalance !== null && openExposure !== null
-        ? availableBalance + openExposure
-        : null);
+    const availableBalance = performanceSnapshot.availableBalance;
+    const openExposure = performanceSnapshot.openPositionsValue;
+    const totalEquity = performanceSnapshot.portfolioValue;
     const capitalBase =
       (availableBalance ?? 0) + (openExposure ?? 0) > 0
         ? (availableBalance ?? 0) + (openExposure ?? 0)
@@ -874,13 +955,43 @@ export function Home() {
     const rewardsUpdated = overview?.liquidity_rewards_as_of_utc
       ? `Updated ${formatRelativeTime(overview.liquidity_rewards_as_of_utc)}`
       : "";
-    const feedLabel = tradeStats ? "Synced" : "Pending";
+    const pnlUpdated = performanceSnapshot.pnlAsOfUtc
+      ? formatRelativeTime(performanceSnapshot.pnlAsOfUtc)
+      : null;
+    const dailyPnlShareCard = buildDailyPnlShareCard({
+      pnl: performanceSnapshot.pnl,
+      openPnl: performanceSnapshot.openPnl,
+      realizedPnl: performanceSnapshot.realizedPnl,
+      sourceLabel: performanceSnapshot.pnlSourceLabel,
+      feedLabel: performanceSnapshot.pnlFeedLabel,
+      updatedLabel: pnlUpdated,
+      series: performanceSnapshot.series,
+    });
+    const liquidityRewardShareCard = buildLiquidityRewardShareCard({
+      reward: performanceSnapshot.rewardsToday,
+      title: "Liquidity Rewards",
+      updatedLabel: rewardsUpdated || null,
+    });
 
     return (
       <div className="page-stack overview-operator">
         <div className="home-overview-grid">
           <div className="home-overview-grid__capital">
-            <SectionPanel title="Capital" subtitle="Wallet snapshot and current exposure.">
+            <SectionPanel
+              title="Capital"
+              subtitle="Wallet snapshot and current exposure."
+              actions={
+                <button
+                  type="button"
+                  className="ui-button ui-button--compact performance-share-trigger"
+                  onClick={() => void refreshHomeData()}
+                  disabled={overviewRefreshing}
+                >
+                  <RefreshGlyph />
+                  <span>{overviewRefreshing ? "Refreshing" : "Refresh"}</span>
+                </button>
+              }
+            >
               <div className="situation-card-body situation-card-body--capital">
                 <div className="home-capital-card__grid">
                   <div className="home-capital-card__slot">
@@ -928,56 +1039,85 @@ export function Home() {
           </div>
 
           <div className="home-overview-grid__metric">
-            <SectionPanel title="Profit/Loss" subtitle="Polymarket account movement for the current UTC day.">
+            <SectionPanel
+              title="Profit/Loss"
+              subtitle="Polymarket account movement for the past day."
+              actions={
+                <button
+                  type="button"
+                  className="ui-button ui-button--compact performance-share-trigger"
+                  onClick={() => dailyPnlShareCard ? openPerformanceShare(dailyPnlShareCard) : undefined}
+                  disabled={!dailyPnlShareCard}
+                >
+                  <ShareGlyph />
+                  <span>Share</span>
+                </button>
+              }
+            >
               <div className="situation-card-body situation-card-body--pnl">
                 <div className="situation-pnl-main">
                   <div className="home-capital-card__label">Today</div>
-                  <div className={metricToneClass(overview?.pnl_today_utc)}>
-                    {overview?.pnl_today_utc === null || overview?.pnl_today_utc === undefined
+                  <div className={metricToneClass(performanceSnapshot.pnl)}>
+                    {performanceSnapshot.pnl === null || performanceSnapshot.pnl === undefined
                       ? "N/A"
-                      : formatUsd(overview.pnl_today_utc)}
+                      : formatUsd(performanceSnapshot.pnl)}
                   </div>
                   <div className="situation-inline-metrics">
                     <span>
-                      Total <strong>{formatUsd(tradeStats?.total_pnl ?? null)}</strong>
+                      Open <strong>{formatUsd(performanceSnapshot.openPnl)}</strong>
                     </span>
                     <span>
-                      Feed <strong>{feedLabel}</strong>
+                      Feed <strong>{performanceSnapshot.pnlFeedLabel}</strong>
                     </span>
                   </div>
                 </div>
-                <PerformanceSparkline points={tradeStats?.pnl_history ?? []} />
+                <PerformanceSparkline points={performanceSnapshot.series} />
                 <div className="home-overview__detail home-overview__detail--nowrap">
-                  {overview?.active_strategy_count ?? 0} active strategies
+                  Source {performanceSnapshot.pnlSourceLabel}
+                  {pnlUpdated ? ` | Updated ${pnlUpdated}` : ""}
                 </div>
               </div>
             </SectionPanel>
           </div>
 
           <div className="home-overview-grid__metric">
-            <SectionPanel title="Liquidity Rewards" subtitle="Maker rewards credited to the active wallet.">
+            <SectionPanel
+              title="Liquidity Rewards"
+              subtitle="Maker rewards credited to the active wallet."
+              actions={
+                <button
+                  type="button"
+                  className="ui-button ui-button--compact performance-share-trigger"
+                  onClick={() => liquidityRewardShareCard ? openPerformanceShare(liquidityRewardShareCard) : undefined}
+                  disabled={!liquidityRewardShareCard}
+                >
+                  <ShareGlyph />
+                  <span>Share</span>
+                </button>
+              }
+            >
               <div className="situation-card-body">
                 <div className="home-capital-card__label">Today</div>
-                <div className={metricClass(overview?.liquidity_rewards_today)}>
-                  {overview?.liquidity_rewards_today === null ||
-                  overview?.liquidity_rewards_today === undefined
+                <div className={metricClass(performanceSnapshot.rewardsToday)}>
+                  {performanceSnapshot.rewardsToday === null ||
+                  performanceSnapshot.rewardsToday === undefined
                     ? "Unavailable"
-                    : formatUsd(overview.liquidity_rewards_today)}
+                    : formatUsd(performanceSnapshot.rewardsToday)}
                 </div>
                 <div className="situation-meter situation-meter--reward" aria-hidden="true">
                   <span
                     style={{
                       width:
-                        overview?.liquidity_rewards_today && overview.liquidity_rewards_today > 0
+                        performanceSnapshot.rewardsToday && performanceSnapshot.rewardsToday > 0
                           ? "42%"
                           : "8%",
                     }}
                   />
                 </div>
                 <div className="home-overview__detail home-overview__detail--nowrap">
-                  {overview?.liquidity_rewards_error
-                    ? overview.liquidity_rewards_error
-                    : `Lifetime ${formatUsd(overview?.liquidity_rewards_lifetime ?? null)}${
+                  {performanceSnapshot.rewardsError
+                    ? performanceSnapshot.rewardsError
+                    : `Lifetime ${formatUsd(performanceSnapshot.rewardsLifetime)}${
                         rewardsUpdated ? ` | ${rewardsUpdated}` : ""
                       }`}
                 </div>
@@ -1014,8 +1154,15 @@ export function Home() {
 
         <HomePortfolioTabs
           key={`${activeProfileId ?? "none"}-${portfolioFeedSeed}`}
+          profileId={activeProfileId}
+          walletAddress={null}
+          workerAvailable={botRunning}
           botState={overview?.bot_state}
+          refreshToken={portfolioFeedSeed}
           onOpenLogs={() => setLogsOpen(true)}
+          onSharePosition={openPerformanceShare}
+          onShareReward={openPerformanceShare}
+          performanceSnapshot={performanceSnapshot}
         />
       </div>
     );
@@ -1202,6 +1349,17 @@ export function Home() {
           onOpenSetup={() => {
             setDoctorDialogOpen(false);
             navigate("/settings");
+          }}
+        />
+      ) : null}
+
+      {performanceShareCard && performanceShareBackground ? (
+        <PerformanceShareCardModal
+          card={performanceShareCard}
+          backgroundPath={performanceShareBackground}
+          onClose={() => {
+            setPerformanceShareCard(null);
+            setPerformanceShareBackground(null);
           }}
         />
       ) : null}

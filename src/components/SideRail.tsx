@@ -4,6 +4,7 @@ import { NavLink } from "react-router-dom";
 export type SideRailItem = {
   label: string;
   to?: string;
+  href?: string;
   onClick?: () => void;
 };
 
@@ -36,7 +37,17 @@ export function SideRail({
 
       <nav className="app-rail__nav">
         {items.map((item) =>
-          item.to ? (
+          item.href ? (
+            <a
+              key={`${item.label}:${item.href}`}
+              href={item.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rail-link rail-link--action"
+            >
+              <span>{item.label}</span>
+            </a>
+          ) : item.to ? (
             <NavLink
               key={`${item.label}:${item.to}`}
               to={item.to}

@@ -248,6 +248,10 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     pause_after_fill_sec: 3600,
     inventory_exit_start_hours: 1,
     nonsport_end_exit_start_hours: 48,
+    sport_entry_schedule_enabled: false,
+    sport_entry_schedule_days_utc: "mon,tue,wed,thu,fri",
+    sport_entry_schedule_start_minute_utc: 780,
+    sport_entry_schedule_end_minute_utc: 240,
     nonsport_entry_schedule_enabled: false,
     nonsport_entry_schedule_days_utc: "mon,tue,wed,thu,fri",
     nonsport_entry_schedule_start_minute_utc: 780,
@@ -522,15 +526,40 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
           savedMmSport?.nonsport_min_top_depth_usd ?? sportMinTopDepthUsd,
         quote_cooldown_min_sec: mmSportCooldown.quote_cooldown_min_sec,
         quote_cooldown_max_sec: mmSportCooldown.quote_cooldown_max_sec,
+        sport_entry_schedule_enabled:
+          savedMmSport?.sport_entry_schedule_enabled ??
+          savedMmSport?.nonsport_entry_schedule_enabled ??
+          DEFAULT_CONFIG.strategy_settings.mm_sport.sport_entry_schedule_enabled,
+        sport_entry_schedule_days_utc:
+          savedMmSport?.sport_entry_schedule_days_utc ??
+          savedMmSport?.nonsport_entry_schedule_days_utc ??
+          DEFAULT_CONFIG.strategy_settings.mm_sport.sport_entry_schedule_days_utc,
+        sport_entry_schedule_start_minute_utc: normalizeUtcMinute(
+          savedMmSport?.sport_entry_schedule_start_minute_utc ??
+            savedMmSport?.nonsport_entry_schedule_start_minute_utc,
+          DEFAULT_CONFIG.strategy_settings.mm_sport.sport_entry_schedule_start_minute_utc
+        ),
+        sport_entry_schedule_end_minute_utc: normalizeUtcMinute(
+          savedMmSport?.sport_entry_schedule_end_minute_utc ??
+            savedMmSport?.nonsport_entry_schedule_end_minute_utc,
+          DEFAULT_CONFIG.strategy_settings.mm_sport.sport_entry_schedule_end_minute_utc
+        ),
+        nonsport_entry_schedule_enabled:
+          savedMmSport?.nonsport_entry_schedule_enabled ??
+          savedMmSport?.sport_entry_schedule_enabled ??
+          DEFAULT_CONFIG.strategy_settings.mm_sport.nonsport_entry_schedule_enabled,
         nonsport_entry_schedule_days_utc:
           savedMmSport?.nonsport_entry_schedule_days_utc ??
+          savedMmSport?.sport_entry_schedule_days_utc ??
           DEFAULT_CONFIG.strategy_settings.mm_sport.nonsport_entry_schedule_days_utc,
         nonsport_entry_schedule_start_minute_utc: normalizeUtcMinute(
-          savedMmSport?.nonsport_entry_schedule_start_minute_utc,
+          savedMmSport?.nonsport_entry_schedule_start_minute_utc ??
+            savedMmSport?.sport_entry_schedule_start_minute_utc,
           DEFAULT_CONFIG.strategy_settings.mm_sport.nonsport_entry_schedule_start_minute_utc
         ),
         nonsport_entry_schedule_end_minute_utc: normalizeUtcMinute(
-          savedMmSport?.nonsport_entry_schedule_end_minute_utc,
+          savedMmSport?.nonsport_entry_schedule_end_minute_utc ??
+            savedMmSport?.sport_entry_schedule_end_minute_utc,
           DEFAULT_CONFIG.strategy_settings.mm_sport.nonsport_entry_schedule_end_minute_utc
         ),
         active_sport_market_cap: mmSportCaps.active_sport_market_cap,

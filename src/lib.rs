@@ -8,7 +8,6 @@ pub mod coinbase_ws;
 pub mod config;
 pub mod detector;
 pub mod endgame_cex_depth;
-pub mod endgame_dvol;
 pub mod endgame_quote_cache;
 pub mod endgame_registry;
 pub mod endgame_rtds;

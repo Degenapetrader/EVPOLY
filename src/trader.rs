@@ -46,7 +46,7 @@ pub const STRATEGY_ID_MANUAL_PREMARKET_V1: &str = "manual_premarket_v1";
 pub const STRATEGY_ID_MANUAL_PREMARKET_TAKER_V1: &str = "manual_premarket_taker_v1";
 pub const STRATEGY_ID_MANUAL_CHASE_LIMIT_V1: &str = "manual_chase_limit_v1";
 pub const STRATEGY_ID_MANUAL_CHASE_LIMIT_TAKER_V1: &str = "manual_chase_limit_taker_v1";
-const ENDGAME_FAST_SUBMIT_DEADLINE_GUARD_MS: i64 = 250;
+const ENDGAME_FAST_SUBMIT_DEADLINE_GUARD_MS: i64 = 25;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EvsnipeOrderIntent {

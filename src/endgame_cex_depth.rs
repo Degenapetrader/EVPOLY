@@ -197,7 +197,7 @@ impl EndgameCexDepthConfig {
             ),
             poll_enabled: env_bool("EVPOLY_ENDGAME_CEX_DEPTH_POLL_ENABLE", true),
             adaptive_poll_enabled: env_bool("EVPOLY_ENDGAME_CEX_DEPTH_ADAPTIVE_POLL_ENABLE", true),
-            size_increase_enabled: env_bool("EVPOLY_ENDGAME_CEX_DEPTH_INCREASE_ENABLE", false),
+            size_increase_enabled: true,
             poll_ms: env_u64(
                 "EVPOLY_ENDGAME_CEX_DEPTH_SAMPLE_MS",
                 DEFAULT_EXTERNAL_SAMPLE_MS,
@@ -3881,9 +3881,36 @@ fn env_f64(name: &str, default: f64, min: f64, max: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
 
     fn level(price: f64, size: f64) -> EndgameCexDepthLevel {
         EndgameCexDepthLevel { price, size }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn with_env<F: FnOnce()>(updates: &[(&str, Option<&str>)], f: F) {
+        let _guard = env_lock().lock().expect("env lock");
+        let previous = updates
+            .iter()
+            .map(|(key, _)| (*key, std::env::var_os(key)))
+            .collect::<Vec<_>>();
+        for (key, value) in updates {
+            match value {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
+        f();
+        for (key, value) in previous {
+            match value {
+                Some(value) => unsafe { std::env::set_var(key, value) },
+                None => unsafe { std::env::remove_var(key) },
+            }
+        }
     }
 
     fn snapshot(symbol: &str, venue: &'static str, updated_ms: i64) -> EndgameCexDepthSnapshot {
@@ -3959,6 +3986,17 @@ mod tests {
         assert!(decision.fail_open);
         assert_eq!(decision.reason, "missing_snapshot");
         assert_eq!(decision.multiplier, 1.0);
+    }
+
+    #[test]
+    fn cex_depth_increase_ignores_stale_disable_env() {
+        with_env(
+            &[("EVPOLY_ENDGAME_CEX_DEPTH_INCREASE_ENABLE", Some("false"))],
+            || {
+                let cfg = EndgameCexDepthConfig::from_env();
+                assert!(cfg.size_increase_enabled);
+            },
+        );
     }
 
     #[test]
@@ -4051,5 +4089,51 @@ mod tests {
         assert!(!decision.fail_open);
         assert!(decision.trigger_count > 0, "payload={}", decision.payload);
         assert!(decision.multiplier < 1.0);
+    }
+
+    #[test]
+    fn evaluator_increases_when_rolling_quantile_depth_expands() {
+        let mut cfg = EndgameCexDepthConfig::from_env();
+        cfg.min_samples = 3;
+        cfg.history_sample_ms = 1;
+        cfg.threshold_recompute_ms = 1;
+        cfg.increase_adjustment_per_trigger = 0.12;
+        cfg.size_increase_enabled = true;
+        cfg.floor_btc_usd = 0.0;
+        let cache = EndgameCexDepthCache::new();
+        for idx in 0..4 {
+            let mut snap = snapshot("BTC", COINBASE_DEPTH_VENUE, 1_000 + idx * 10);
+            for cost in snap.cost_to_sell_down_bps_usd.iter_mut().flatten() {
+                *cost = 100.0;
+            }
+            cache.upsert(snap, &cfg);
+        }
+        let mut strong = snapshot("BTC", COINBASE_DEPTH_VENUE, 2_000);
+        strong.bids = vec![
+            level(101.0, 10_000.0),
+            level(100.0, 10_000.0),
+            level(99.0, 10_000.0),
+        ];
+        strong.cost_to_sell_down_bps_usd =
+            cost_to_sell_down_bps_buckets(strong.bids.as_slice(), strong.mid());
+        cache.upsert(strong, &cfg);
+        let decision = evaluate_cex_depth(
+            &cfg,
+            &cache,
+            "BTC",
+            "5m",
+            1,
+            Direction::Up,
+            100.0,
+            100,
+            2_010,
+        );
+        assert!(!decision.fail_open);
+        assert!(
+            decision.increase_trigger_count > 0,
+            "payload={}",
+            decision.payload
+        );
+        assert!(decision.multiplier > 1.0, "payload={}", decision.payload);
     }
 }

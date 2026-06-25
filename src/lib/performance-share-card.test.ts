@@ -24,14 +24,12 @@ describe("performance share card backgrounds", () => {
     expect(pnlCard).not.toBeNull();
     expect(rewardCard).not.toBeNull();
     expect(pickPerformanceShareCardBackground(pnlCard!)).toMatch(
-      /^\/assets\/referral-cards\//
+      /^\/assets\/performance-positive-cards\//
     );
     expect(pickPerformanceShareCardBackground(rewardCard!)).toMatch(
-      /^\/assets\/referral-cards\//
+      /^\/assets\/performance-positive-cards\//
     );
-    expect(buildPerformanceShareCardSvg(rewardCard!)).toContain(
-      'x="1210" y="558"'
-    );
+    expect(buildPerformanceShareCardSvg(rewardCard!)).not.toContain('x="1210" y="558"');
   });
 
   it("uses negative backgrounds for negative PnL cards", () => {
@@ -50,8 +48,6 @@ describe("performance share card backgrounds", () => {
     expect(pickPerformanceShareCardBackground(card!)).toMatch(
       /^\/assets\/performance-negative-cards\//
     );
-    expect(buildPerformanceShareCardSvg(card!)).not.toContain(
-      'x="1210" y="558"'
-    );
+    expect(buildPerformanceShareCardSvg(card!)).not.toContain('x="1210" y="558"');
   });
 });

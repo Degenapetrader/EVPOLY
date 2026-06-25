@@ -127,34 +127,34 @@ export function PerformanceShareCardModal({
         {error ? <div className="referral-message referral-message--error">{error}</div> : null}
         {notice ? <div className="referral-message referral-message--ok">{notice}</div> : null}
 
-        <div className="evpoint-studio__tools performance-share-modal__tools">
-          <button type="button" className="evpoint-tool" onClick={() => void handleCopyImage()} disabled={copyingImage}>
-            <span className="evpoint-tool__icon" aria-hidden="true">
+        <div className="performance-share-modal__tools">
+          <button type="button" className="performance-share-action" onClick={() => void handleCopyImage()} disabled={copyingImage}>
+            <span className="performance-share-action__icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none">
                 <rect x="8" y="8" width="10" height="10" rx="2" stroke="currentColor" strokeWidth="2" />
                 <path d="M6 16H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
             </span>
-            <span className="evpoint-tool__label">{copyingImage ? "Copying..." : "Copy image"}</span>
+            <span className="performance-share-action__label">{copyingImage ? "Copying..." : "Copy image"}</span>
           </button>
 
-          <button type="button" className="evpoint-tool" onClick={() => void handleDownload()} disabled={downloading}>
-            <span className="evpoint-tool__icon" aria-hidden="true">
+          <button type="button" className="performance-share-action" onClick={() => void handleDownload()} disabled={downloading}>
+            <span className="performance-share-action__icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none">
                 <path d="M12 4v10m0 0 4-4m-4 4-4-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
                 <path d="M5 20h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
             </span>
-            <span className="evpoint-tool__label">{downloading ? "Downloading..." : "Download"}</span>
+            <span className="performance-share-action__label">{downloading ? "Downloading..." : "Download"}</span>
           </button>
 
-          <button type="button" className="evpoint-tool evpoint-tool--primary" onClick={handleShareOnX}>
-            <span className="evpoint-tool__icon" aria-hidden="true">
+          <button type="button" className="performance-share-action performance-share-action--primary" onClick={handleShareOnX}>
+            <span className="performance-share-action__icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" fill="none">
                 <path d="M4 5.5 10.8 13 4.4 20h2.4l5.1-5.6L17 20h3L13.3 12.6 19.4 5.5H17l-4.8 5.3-4.8-5.3H4Z" fill="currentColor" />
               </svg>
             </span>
-            <span className="evpoint-tool__label">Share on X</span>
+            <span className="performance-share-action__label">Share on X</span>
           </button>
         </div>
       </div>

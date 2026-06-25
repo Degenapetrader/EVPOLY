@@ -41,6 +41,15 @@ export function PerformanceShareCardModal({
   }, [notice]);
 
   const fileName = useMemo(() => `EVPLUS-${card.filenameSlug}-share-card.jpg`, [card.filenameSlug]);
+  const displayTitle = useMemo(
+    () =>
+      card.title
+        .toLowerCase()
+        .split(/\s+/)
+        .map((word) => (word === "pnl" ? "PnL" : `${word.charAt(0).toUpperCase()}${word.slice(1)}`))
+        .join(" "),
+    [card.title],
+  );
 
   const handleCopyImage = useCallback(async () => {
     if (copyingImage) {
@@ -98,13 +107,18 @@ export function PerformanceShareCardModal({
       <button type="button" className="checkout-modal__backdrop" aria-label="Close share card" onClick={onClose} />
       <div className="checkout-modal__card performance-share-modal__card">
         <div className="checkout-modal__header performance-share-modal__header">
-          <button type="button" className="checkout-modal__close" onClick={onClose} aria-label="Close">
-            X
-          </button>
-          <div className="checkout-modal__title">Share {card.title}</div>
-          <div className="checkout-modal__subtitle">
-            Preview uses the selected character and current performance data.
+          <div className="performance-share-modal__heading">
+            <div className="performance-share-modal__eyebrow">Share Card</div>
+            <div className="checkout-modal__title performance-share-modal__title">{displayTitle}</div>
+            <div className="checkout-modal__subtitle performance-share-modal__subtitle">
+              Preview uses current performance data.
+            </div>
           </div>
+          <button type="button" className="performance-share-modal__close" onClick={onClose} aria-label="Close">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m6 6 12 12M18 6 6 18" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+            </svg>
+          </button>
         </div>
 
         <div className="performance-share-modal__preview">

@@ -1369,6 +1369,10 @@ impl PolymarketApi {
         allowance_raw >= required_usdc_raw
     }
 
+    fn should_invalidate_collateral_cache_after_update_error(force: bool) -> bool {
+        force
+    }
+
     async fn update_balance_allowance_for_collateral(&self, force: bool) -> Result<()> {
         use polymarket_client_sdk_v2::clob::types::request::UpdateBalanceAllowanceRequest;
 
@@ -1378,7 +1382,6 @@ impl PolymarketApi {
             let last_update = self.last_usdc_balance_allowance_update_ms.lock().await;
             if let Some(last_ms) = *last_update {
                 if now_ms.saturating_sub(last_ms) <= USDC_BALANCE_ALLOWANCE_UPDATE_TTL_MS {
-                    self.invalidate_cached_usdc_balance_allowance().await;
                     return Ok(());
                 }
             }
@@ -1430,7 +1433,9 @@ impl PolymarketApi {
                     self.invalidate_cached_usdc_balance_allowance().await;
                     Ok(())
                 } else {
-                    self.invalidate_cached_usdc_balance_allowance().await;
+                    if Self::should_invalidate_collateral_cache_after_update_error(force) {
+                        self.invalidate_cached_usdc_balance_allowance().await;
+                    }
                     Err(first_anyhow).context("Failed to update collateral balance/allowance cache")
                 }
             }
@@ -6708,6 +6713,11 @@ impl PolymarketApi {
                             "pUSD balance check failed; using cached balance snapshot age_ms={} error={}",
                             age_ms, err
                         );
+                        *self.cached_usdc_balance_allowance.lock().await = Some((
+                            cached_balance.clone(),
+                            cached_allowance.clone(),
+                            cached_ts_ms,
+                        ));
                         return Ok((cached_balance, cached_allowance));
                     }
                 }
@@ -9690,6 +9700,137 @@ mod tests {
         let wrapped = source.context("Failed to fetch pUSD balance and allowance");
 
         assert!(PolymarketApi::is_rate_limit_error(&wrapped));
+    }
+
+    #[test]
+    fn collateral_update_error_cache_invalidation_policy_is_force_only() {
+        assert!(!PolymarketApi::should_invalidate_collateral_cache_after_update_error(false));
+        assert!(PolymarketApi::should_invalidate_collateral_cache_after_update_error(true));
+    }
+
+    fn deposit_wallet_test_api() -> PolymarketApi {
+        PolymarketApi::new(
+            "https://gamma-api.polymarket.com".to_string(),
+            "https://clob.polymarket.com".to_string(),
+            None,
+            Some("0x1111111111111111111111111111111111111111".to_string()),
+            Some("0x1111111111111111111111111111111111111111".to_string()),
+            Some("0x1111111111111111111111111111111111111111".to_string()),
+            Some(3),
+        )
+    }
+
+    #[test]
+    fn non_forced_collateral_update_ttl_preserves_cached_snapshot() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let api = deposit_wallet_test_api();
+            let now_ms = Utc::now().timestamp_millis();
+            let cached_snapshot = (
+                Decimal::from(100_000_000u64),
+                Decimal::from(100_000_000u64),
+                now_ms.saturating_sub(USDC_BALANCE_CACHE_HIT_TTL_MS + 1),
+            );
+            *api.cached_usdc_balance_allowance.lock().await = Some(cached_snapshot.clone());
+            *api.last_usdc_balance_allowance_update_ms.lock().await = Some(now_ms);
+
+            api.update_balance_allowance_for_collateral(false)
+                .await
+                .expect("ttl no-op update");
+
+            assert_eq!(
+                *api.cached_usdc_balance_allowance.lock().await,
+                Some(cached_snapshot)
+            );
+        });
+    }
+
+    #[test]
+    fn balance_allowance_backoff_returns_fallback_cached_snapshot() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let api = deposit_wallet_test_api();
+            let now_ms = Utc::now().timestamp_millis();
+            *api.cached_usdc_balance_allowance.lock().await = Some((
+                Decimal::from(123_000_000u64),
+                Decimal::from(456_000_000u64),
+                now_ms.saturating_sub(USDC_BALANCE_CACHE_HIT_TTL_MS + 1),
+            ));
+            *api.usdc_balance_allowance_retry_after_ms.lock().await = now_ms.saturating_add(30_000);
+
+            let (balance, allowance) = api
+                .check_usdc_balance_allowance()
+                .await
+                .expect("fallback cache during backoff");
+
+            assert_eq!(balance, Decimal::from(123_000_000u64));
+            assert_eq!(allowance, Decimal::from(456_000_000u64));
+        });
+    }
+
+    #[test]
+    fn buy_collateral_ready_uses_sufficient_fallback_cache_during_backoff() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let api = deposit_wallet_test_api();
+            let now_ms = Utc::now().timestamp_millis();
+            *api.cached_usdc_balance_allowance.lock().await = Some((
+                Decimal::from(100_000_000u64),
+                Decimal::from(100_000_000u64),
+                now_ms.saturating_sub(USDC_BALANCE_CACHE_HIT_TTL_MS + 1),
+            ));
+            *api.usdc_balance_allowance_retry_after_ms.lock().await = now_ms.saturating_add(30_000);
+
+            api.ensure_buy_collateral_ready(Decimal::from(50u64), "GTD BUY order")
+                .await
+                .expect("sufficient fallback collateral");
+        });
+    }
+
+    #[test]
+    fn buy_collateral_ready_rejects_insufficient_fallback_balance() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let api = deposit_wallet_test_api();
+            let now_ms = Utc::now().timestamp_millis();
+            *api.cached_usdc_balance_allowance.lock().await = Some((
+                Decimal::from(5_000_000u64),
+                Decimal::from(100_000_000u64),
+                now_ms.saturating_sub(USDC_BALANCE_CACHE_HIT_TTL_MS + 1),
+            ));
+            *api.usdc_balance_allowance_retry_after_ms.lock().await = now_ms.saturating_add(30_000);
+
+            let err = api
+                .ensure_buy_collateral_ready(Decimal::from(10u64), "GTD BUY order")
+                .await
+                .expect_err("insufficient fallback balance");
+
+            assert!(err.to_string().contains("Insufficient pUSD balance"));
+        });
+    }
+
+    #[test]
+    fn buy_collateral_ready_rejects_insufficient_fallback_allowance() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let api = deposit_wallet_test_api();
+            let now_ms = Utc::now().timestamp_millis();
+            *api.cached_usdc_balance_allowance.lock().await = Some((
+                Decimal::from(100_000_000u64),
+                Decimal::from(5_000_000u64),
+                now_ms.saturating_sub(USDC_BALANCE_CACHE_HIT_TTL_MS + 1),
+            ));
+            *api.usdc_balance_allowance_retry_after_ms.lock().await = now_ms.saturating_add(30_000);
+
+            let err = api
+                .ensure_buy_collateral_ready(Decimal::from(10u64), "GTD BUY order")
+                .await
+                .expect_err("insufficient fallback allowance");
+
+            assert!(err
+                .to_string()
+                .contains("Failed to sync pUSD collateral allowance before retry"));
+        });
     }
 
     #[test]

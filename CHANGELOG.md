@@ -1,6 +1,7 @@
 # EVPoly Desktop Changelog
 
 ## Local - 2026-06-25
+- Repinned the local desktop sidecar build to runtime `a8b94da`, bypassing synchronous pUSD collateral preflight for Endgame and EVSnipe fast FAK BUY submits while preserving it for resting BUY flows.
 - Repinned the local desktop sidecar build to the local runtime commit `eaa14ae`, restoring legacy Endgame V1 timing with RTDS, FAK, and Book99 CEX-depth sizing for local testing.
 
 ## UI-v2.4.6 - 2026-06-17

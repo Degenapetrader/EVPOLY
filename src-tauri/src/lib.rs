@@ -67,13 +67,16 @@ const DESKTOP_SECRET_KEYS: &[&str] = &[
     "EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN",
     "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN",
     "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN",
-    "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
     "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
     "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
     "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
     "EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN",
     "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
     "EVPOLY_ADMIN_API_TOKEN",
+];
+const OBSOLETE_PREMARKET_REMOTE_ALPHA_KEYS: &[&str] = &[
+    "EVPOLY_REMOTE_PREMARKET_ALPHA_URL",
+    "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN",
 ];
 const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
 const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
@@ -253,6 +256,14 @@ struct DesktopPremarketSettings {
     active_cap_per_asset: f64,
     #[serde(default = "default_premarket_timeframes")]
     timeframes: Vec<String>,
+    #[serde(default = "default_premarket_ladder_mode_m5")]
+    ladder_mode_m5: String,
+    #[serde(default = "default_premarket_ladder_mode_non_m5")]
+    ladder_mode_non_m5: String,
+    #[serde(default = "default_premarket_safe_bias_pct")]
+    safe_bias_pct: f64,
+    #[serde(default = "default_premarket_aggressive_bias_pct")]
+    aggressive_bias_pct: f64,
     cancel_after_open_sec: DesktopPremarketCancelAfterOpen,
 }
 
@@ -500,8 +511,6 @@ struct DesktopConfig {
     #[serde(default)]
     remote_discovery_token: String,
     #[serde(default)]
-    remote_premarket_alpha_token: String,
-    #[serde(default)]
     remote_endgame_alpha_token: String,
     #[serde(default)]
     remote_mm_rewards_alpha_token: String,
@@ -592,12 +601,24 @@ fn number_to_json(v: f64) -> Value {
     serde_json::json!(v.max(0.0))
 }
 
+fn signed_number_to_json(v: f64) -> Value {
+    serde_json::json!(if v.is_finite() { v } else { 0.0 })
+}
+
 fn bool_from_object(obj: &Map<String, Value>, key: &str, default: bool) -> bool {
     obj.get(key).and_then(Value::as_bool).unwrap_or(default)
 }
 
 fn f64_from_object(obj: &Map<String, Value>, key: &str, default: f64) -> f64 {
-    obj.get(key).and_then(Value::as_f64).unwrap_or(default)
+    obj.get(key)
+        .and_then(|value| {
+            value.as_f64().or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|raw| raw.trim().parse::<f64>().ok())
+            })
+        })
+        .unwrap_or(default)
 }
 
 fn string_from_object(obj: &Map<String, Value>, key: &str, default: &str) -> String {
@@ -633,13 +654,16 @@ fn csv_from_object(obj: &Map<String, Value>, key: &str, fallback: &[&str]) -> Ve
 }
 
 const PREMARKET_LADDER_MODE_ENV_KEY_5M: &str = "EVPOLY_PREMARKET_LADDER_MODE_5M";
-const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_5M";
-const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_M5";
+const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_M5";
+const PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: &str = "EVPOLY_PREMARKET_LADDER_MODE_NON_5M";
 const PREMARKET_LADDER_MODE_ENV_KEY_SHARED: &str = "EVPOLY_PREMARKET_LADDER_MODE";
+const PREMARKET_SAFE_BIAS_PCT_ENV_KEY: &str = "EVPOLY_PREMARKET_SAFE_BIAS_PCT";
+const PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY: &str = "EVPOLY_PREMARKET_AGGRESSIVE_BIAS_PCT";
+const PREMARKET_LADDER_MODE_NORMAL: &str = "normal";
+const PREMARKET_LADDER_MODE_SAFE: &str = "safe";
+const PREMARKET_LADDER_MODE_AGGRESSIVE: &str = "aggressive";
 const WEEKEND_POLICY_ENV_KEY: &str = "EVPOLY_WEEKEND_POLICY";
-const PREMARKET_LEGACY_LADDER_KEYS: [&str; 6] = [
-    PREMARKET_LADDER_MODE_ENV_KEY_5M,
-    PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
+const PREMARKET_LEGACY_LADDER_KEYS: [&str; 4] = [
     PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
     PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
     "EVPOLY_PREMARKET_FIXED_LADDER_PRICES",
@@ -663,6 +687,64 @@ fn default_premarket_timeframes() -> Vec<String> {
     csv_list(
         config_io::env_template_default_string("EVPOLY_PREMARKET_TIMEFRAMES"),
         &["5m", "15m", "1h", "4h"],
+    )
+}
+
+fn normalize_premarket_ladder_mode(value: Option<&str>) -> String {
+    match value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some(PREMARKET_LADDER_MODE_SAFE) => PREMARKET_LADDER_MODE_SAFE.to_string(),
+        Some(PREMARKET_LADDER_MODE_AGGRESSIVE) => PREMARKET_LADDER_MODE_AGGRESSIVE.to_string(),
+        _ => PREMARKET_LADDER_MODE_NORMAL.to_string(),
+    }
+}
+
+fn default_premarket_ladder_mode_m5() -> String {
+    normalize_premarket_ladder_mode(
+        config_io::env_template_default_string(PREMARKET_LADDER_MODE_ENV_KEY_5M)
+            .or_else(|| {
+                config_io::env_template_default_string(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)
+            })
+            .as_deref(),
+    )
+}
+
+fn default_premarket_ladder_mode_non_m5() -> String {
+    normalize_premarket_ladder_mode(
+        config_io::env_template_default_string(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
+            .or_else(|| {
+                config_io::env_template_default_string(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY)
+            })
+            .or_else(|| {
+                config_io::env_template_default_string(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)
+            })
+            .as_deref(),
+    )
+}
+
+fn normalize_premarket_ladder_bias_pct(value: f64, default: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(-90.0, 200.0)
+    } else {
+        default
+    }
+}
+
+fn default_premarket_safe_bias_pct() -> f64 {
+    normalize_premarket_ladder_bias_pct(
+        config_io::env_template_default_f64(PREMARKET_SAFE_BIAS_PCT_ENV_KEY, -10.0),
+        -10.0,
+    )
+}
+
+fn default_premarket_aggressive_bias_pct() -> f64 {
+    normalize_premarket_ladder_bias_pct(
+        config_io::env_template_default_f64(PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY, 10.0),
+        10.0,
     )
 }
 
@@ -816,6 +898,10 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                     100.0,
                 ),
                 timeframes: default_premarket_timeframes(),
+                ladder_mode_m5: default_premarket_ladder_mode_m5(),
+                ladder_mode_non_m5: default_premarket_ladder_mode_non_m5(),
+                safe_bias_pct: default_premarket_safe_bias_pct(),
+                aggressive_bias_pct: default_premarket_aggressive_bias_pct(),
                 cancel_after_open_sec: DesktopPremarketCancelAfterOpen {
                     m5: config_io::env_template_default_f64(
                         "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC",
@@ -1121,7 +1207,6 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
         remote_signer_token: String::new(),
         order_signer_primary_token_internal: String::new(),
         remote_discovery_token: String::new(),
-        remote_premarket_alpha_token: String::new(),
         remote_endgame_alpha_token: String::new(),
         remote_mm_rewards_alpha_token: String::new(),
         remote_evsnipe_discovery_token: String::new(),
@@ -1639,6 +1724,9 @@ fn merge_desktop_secrets(
     for &key in DESKTOP_SECRET_KEYS {
         existing.remove(key);
     }
+    for &key in OBSOLETE_PREMARKET_REMOTE_ALPHA_KEYS {
+        existing.remove(key);
+    }
     existing.extend(updates);
     existing
 }
@@ -1701,6 +1789,9 @@ fn remove_legacy_premarket_ladder_keys(strategy_config: &mut Value) {
     if let Some(strategy) = strategy_config.as_object_mut() {
         for key in PREMARKET_LEGACY_LADDER_KEYS {
             strategy.remove(key);
+        }
+        for key in OBSOLETE_PREMARKET_REMOTE_ALPHA_KEYS {
+            strategy.remove(*key);
         }
     }
 }
@@ -1818,6 +1909,36 @@ fn desktop_config_to_profile_payload(
     strategy.insert(
         "EVPOLY_PREMARKET_TIMEFRAMES".to_string(),
         Value::String(config.strategy_settings.premarket.timeframes.join(",")),
+    );
+    strategy.insert(
+        PREMARKET_LADDER_MODE_ENV_KEY_5M.to_string(),
+        Value::String(normalize_premarket_ladder_mode(Some(
+            config.strategy_settings.premarket.ladder_mode_m5.as_str(),
+        ))),
+    );
+    strategy.insert(
+        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5.to_string(),
+        Value::String(normalize_premarket_ladder_mode(Some(
+            config
+                .strategy_settings
+                .premarket
+                .ladder_mode_non_m5
+                .as_str(),
+        ))),
+    );
+    strategy.insert(
+        PREMARKET_SAFE_BIAS_PCT_ENV_KEY.to_string(),
+        signed_number_to_json(normalize_premarket_ladder_bias_pct(
+            config.strategy_settings.premarket.safe_bias_pct,
+            -10.0,
+        )),
+    );
+    strategy.insert(
+        PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY.to_string(),
+        signed_number_to_json(normalize_premarket_ladder_bias_pct(
+            config.strategy_settings.premarket.aggressive_bias_pct,
+            10.0,
+        )),
     );
     strategy.insert(
         "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC".to_string(),
@@ -2463,12 +2584,6 @@ fn desktop_config_to_profile_payload(
             config.remote_discovery_token.trim().to_string(),
         );
     }
-    if !config.remote_premarket_alpha_token.trim().is_empty() {
-        secrets.insert(
-            "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN".to_string(),
-            config.remote_premarket_alpha_token.trim().to_string(),
-        );
-    }
     if !config.remote_endgame_alpha_token.trim().is_empty() {
         secrets.insert(
             "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN".to_string(),
@@ -2521,6 +2636,51 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         config_io::env_template_default_bool("POLY_ENABLE_SOLANA_TRADING", true);
     let default_xrp_enabled = config_io::env_template_default_bool("POLY_ENABLE_XRP_TRADING", true);
     let default_simulation = config_io::env_template_default_bool("APP_SIMULATION", false);
+    let default_premarket_ladder_mode_m5 = default_premarket_ladder_mode_m5();
+    let default_premarket_ladder_mode_non_m5 = default_premarket_ladder_mode_non_m5();
+    let premarket_ladder_mode_m5 = normalize_premarket_ladder_mode(Some(
+        strategy
+            .get(PREMARKET_LADDER_MODE_ENV_KEY_5M)
+            .and_then(Value::as_str)
+            .or_else(|| {
+                strategy
+                    .get(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or(default_premarket_ladder_mode_m5.as_str()),
+    ));
+    let premarket_ladder_mode_non_m5 = normalize_premarket_ladder_mode(Some(
+        strategy
+            .get(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5)
+            .and_then(Value::as_str)
+            .or_else(|| {
+                strategy
+                    .get(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY)
+                    .and_then(Value::as_str)
+            })
+            .or_else(|| {
+                strategy
+                    .get(PREMARKET_LADDER_MODE_ENV_KEY_SHARED)
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or(default_premarket_ladder_mode_non_m5.as_str()),
+    ));
+    let premarket_safe_bias_pct = normalize_premarket_ladder_bias_pct(
+        f64_from_object(
+            &strategy,
+            PREMARKET_SAFE_BIAS_PCT_ENV_KEY,
+            default_premarket_safe_bias_pct(),
+        ),
+        -10.0,
+    );
+    let premarket_aggressive_bias_pct = normalize_premarket_ladder_bias_pct(
+        f64_from_object(
+            &strategy,
+            PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY,
+            default_premarket_aggressive_bias_pct(),
+        ),
+        10.0,
+    );
 
     let mut symbols = vec!["BTC".to_string()];
     if bool_from_object(&strategy, "POLY_ENABLE_ETH_TRADING", default_eth_enabled) {
@@ -2739,6 +2899,10 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 "tp_enabled": bool_from_object(&strategy, "EVPOLY_PREMARKET_TP_ENABLE", config_io::env_template_default_bool("EVPOLY_PREMARKET_TP_ENABLE", true)),
                 "active_cap_per_asset": f64_from_object(&strategy, "EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET", config_io::env_template_default_f64("EVPOLY_PREMARKET_ACTIVE_CAP_PER_ASSET", 100.0)),
                 "timeframes": csv_from_object(&strategy, "EVPOLY_PREMARKET_TIMEFRAMES", &["5m", "15m", "1h", "4h"]),
+                "ladder_mode_m5": premarket_ladder_mode_m5,
+                "ladder_mode_non_m5": premarket_ladder_mode_non_m5,
+                "safe_bias_pct": premarket_safe_bias_pct,
+                "aggressive_bias_pct": premarket_aggressive_bias_pct,
                 "cancel_after_open_sec": {
                     "m5": f64_from_object(&strategy, "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC", config_io::env_template_default_f64("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_5M_SEC", 20.0)),
                     "m15": f64_from_object(&strategy, "EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_15M_SEC", config_io::env_template_default_f64("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_15M_SEC", 40.0)),
@@ -2857,7 +3021,6 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "remote_signer_token": legacy_remote_signer_token,
         "order_signer_primary_token_internal": order_signer_primary_token_internal,
         "remote_discovery_token": secrets.get("EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN").cloned().unwrap_or_default(),
-        "remote_premarket_alpha_token": secrets.get("EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN").cloned().unwrap_or_default(),
         "remote_endgame_alpha_token": secrets.get("EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN").cloned().unwrap_or_default(),
         "remote_mm_rewards_alpha_token": secrets.get("EVPOLY_REMOTE_MM_REWARDS_ALPHA_TOKEN").cloned().unwrap_or_default(),
         "remote_evsnipe_discovery_token": secrets.get("EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN").cloned().unwrap_or_default(),
@@ -6710,8 +6873,9 @@ mod tests {
         gamma_market_metadata_batch_url, merge_config_object, merge_desktop_secrets,
         polymarket_funders_from_private_key, profile_to_desktop_config,
         remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
-        PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
-        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
+        PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY, PREMARKET_LADDER_MODE_ENV_KEY_5M,
+        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
+        PREMARKET_LADDER_MODE_ENV_KEY_SHARED, PREMARKET_SAFE_BIAS_PCT_ENV_KEY,
         WEEKEND_POLICY_ENV_KEY,
     };
     use crate::{auth::AppAuth, config_io, profile_manager::Profile};
@@ -6818,6 +6982,10 @@ mod tests {
                 "EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN".to_string(),
                 "old-signer".to_string(),
             ),
+            (
+                "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN".to_string(),
+                "stale-token".to_string(),
+            ),
             ("CUSTOM_KEEP".to_string(), "keep-me".to_string()),
         ]);
         let updates = HashMap::from([("RELAYER_API_KEY".to_string(), "new-relayer".to_string())]);
@@ -6831,6 +6999,7 @@ mod tests {
         assert_eq!(merged.get("CUSTOM_KEEP"), Some(&"keep-me".to_string()));
         assert!(!merged.contains_key("POLY_PRIVATE_KEY"));
         assert!(!merged.contains_key("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN"));
+        assert!(!merged.contains_key("EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN"));
     }
 
     #[test]
@@ -6870,19 +7039,37 @@ mod tests {
     }
 
     #[test]
-    fn desktop_profile_payload_omits_premarket_ladder_mode() {
+    fn desktop_profile_payload_writes_premarket_ladder_mode() {
         let mut config = default_desktop_config(
             "0x1111111111111111111111111111111111111111".to_string(),
             "0x2222222222222222222222222222222222222222".to_string(),
             1,
         );
         config.strategy_settings.premarket.timeframes = vec!["15m".to_string(), "1h".to_string()];
+        config.strategy_settings.premarket.ladder_mode_m5 = "aggressive".to_string();
+        config.strategy_settings.premarket.ladder_mode_non_m5 = "safe".to_string();
+        config.strategy_settings.premarket.safe_bias_pct = -15.0;
+        config.strategy_settings.premarket.aggressive_bias_pct = 30.0;
 
         let (strategy, _, _, _, _, _, _) = desktop_config_to_profile_payload(&config);
         let strategy = strategy.as_object().expect("strategy object");
 
-        assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_5M));
-        assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5));
+        assert_eq!(
+            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_5M),
+            Some(&serde_json::json!("aggressive"))
+        );
+        assert_eq!(
+            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5),
+            Some(&serde_json::json!("safe"))
+        );
+        assert_eq!(
+            strategy.get(PREMARKET_SAFE_BIAS_PCT_ENV_KEY),
+            Some(&serde_json::json!(-15.0))
+        );
+        assert_eq!(
+            strategy.get(PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY),
+            Some(&serde_json::json!(30.0))
+        );
         assert_eq!(
             strategy.get("EVPOLY_PREMARKET_TIMEFRAMES"),
             Some(&serde_json::json!("15m,1h"))
@@ -7334,14 +7521,18 @@ mod tests {
     }
 
     #[test]
-    fn remove_legacy_premarket_ladder_keys_clears_all_ladder_fields() {
+    fn remove_legacy_premarket_ladder_keys_keeps_restored_mode_fields() {
         let mut strategy_config = serde_json::json!({
             PREMARKET_LADDER_MODE_ENV_KEY_SHARED: "safe",
             PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY: "safe",
+            "EVPOLY_REMOTE_PREMARKET_ALPHA_URL": "https://alpha.evplus.ai/v1/alpha/premarket/ladder",
+            "EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN": "stale-token",
             "EVPOLY_PREMARKET_FIXED_LADDER_PRICES": "0.99,0.99,0.99,0.99,0.99,0.99",
             "EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS": "1,0,0,0,0,0",
             PREMARKET_LADDER_MODE_ENV_KEY_5M: "aggressive",
-            PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: "normal"
+            PREMARKET_LADDER_MODE_ENV_KEY_NON_M5: "normal",
+            PREMARKET_SAFE_BIAS_PCT_ENV_KEY: -15.0,
+            PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY: 30.0
         });
 
         remove_legacy_premarket_ladder_keys(&mut strategy_config);
@@ -7351,8 +7542,24 @@ mod tests {
         assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY));
         assert!(!strategy.contains_key("EVPOLY_PREMARKET_FIXED_LADDER_PRICES"));
         assert!(!strategy.contains_key("EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS"));
-        assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_5M));
-        assert!(!strategy.contains_key(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5));
+        assert!(!strategy.contains_key("EVPOLY_REMOTE_PREMARKET_ALPHA_URL"));
+        assert!(!strategy.contains_key("EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN"));
+        assert_eq!(
+            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_5M),
+            Some(&serde_json::json!("aggressive"))
+        );
+        assert_eq!(
+            strategy.get(PREMARKET_LADDER_MODE_ENV_KEY_NON_M5),
+            Some(&serde_json::json!("normal"))
+        );
+        assert_eq!(
+            strategy.get(PREMARKET_SAFE_BIAS_PCT_ENV_KEY),
+            Some(&serde_json::json!(-15.0))
+        );
+        assert_eq!(
+            strategy.get(PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY),
+            Some(&serde_json::json!(30.0))
+        );
     }
 
     #[test]

@@ -1,5 +1,10 @@
 # EVPoly Desktop Changelog
 
+## UI-v2.4.7 - 2026-06-26
+- Bumped desktop app/updater version to 2.4.7.
+- Repinned the bundled runtime sidecar to runtime `v2.4.7` (`ba7a56a`) with restored Premarket ladder controls, legacy Endgame timing with RTDS/FAK/CEX-depth safeguards, and MM Sport discovery snapshot fallback.
+- Added portfolio/performance share-card updates and restored editable Premarket Safe/Aggressive ladder bias controls.
+
 ## Local - 2026-06-25
 - Repinned the local desktop sidecar build to runtime `31f7115`, preserving the pUSD balance/allowance fallback cache during MM Sport and Endgame collateral backoff.
 - Repinned the local desktop sidecar build to runtime `a8b94da`, bypassing synchronous pUSD collateral preflight for Endgame and EVSnipe fast FAK BUY submits while preserving it for resting BUY flows.

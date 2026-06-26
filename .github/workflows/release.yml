@@ -102,6 +102,10 @@ jobs:
           releaseDraft: false
           prerelease: false
 
+      - name: NSIS install smoke
+        shell: pwsh
+        run: ./scripts/smoke-installer.ps1
+
       - name: Publish Windows updater manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -120,7 +124,3 @@ jobs:
           } else {
             gh release create UI-latest "$manifestPath#latest.json" --title "EVPoly Desktop latest" --notes "Stable updater manifest for EVPoly Desktop releases." --prerelease
           }
-
-      - name: NSIS install smoke
-        shell: pwsh
-        run: ./scripts/smoke-installer.ps1

@@ -1,5 +1,10 @@
 # EVPoly Changelog
 
+## v2.4.7 - 2026-06-26
+- Restored local Premarket ladder controls and retained the local ladder bias percentages for Safe/Aggressive modes.
+- Restored legacy Endgame V1 timing while keeping the RTDS, FAK, and Book99 CEX-depth sizing safeguards.
+- Added MM Sport snapshot fallback handling so degraded discovery can recover from the local snapshot before falling back to CLOB rewards.
+
 ## v2.4.6 - 2026-06-17
 - Hardened local secret handling so generated config/env files are written owner-only on Unix and existing `config.json` files are hardened on load.
 - Stopped serializing env-loaded private keys back into generated `config.json` while preserving compatibility with existing configs.

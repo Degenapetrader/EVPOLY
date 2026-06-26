@@ -15,6 +15,7 @@ use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -94,6 +95,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 static FATAL_PANIC_EXITING: AtomicBool = AtomicBool::new(false);
+const MM_SPORT_DISCOVERY_SNAPSHOT_PATH: &str = "mm_sport_discovery_snapshot.json";
+const MM_SPORT_DISCOVERY_SNAPSHOT_VERSION: u32 = 1;
+const MM_SPORT_DISCOVERY_SNAPSHOT_MIN_SPORTS: usize = 100;
+const MM_SPORT_DISCOVERY_SNAPSHOT_MAX_AGE_MS: i64 = 2 * 60 * 60 * 1_000;
 
 fn install_fatal_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
@@ -358,6 +363,36 @@ struct MmSportMarket {
     period_timestamp: u64,
     up_token_id: String,
     down_token_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MmSportMarketSnapshot {
+    condition_id: String,
+    market_slug: String,
+    is_sports_market: bool,
+    polymarket_sports_game_id: Option<i64>,
+    polymarket_sports_event_slug: Option<String>,
+    reward_rate_per_day: f64,
+    reward_min_size_shares: f64,
+    reward_max_spread: f64,
+    minimum_tick_size: f64,
+    minimum_order_size_usd: f64,
+    game_start_ts_ms: i64,
+    market_end_ts_ms: i64,
+    period_timestamp: u64,
+    up_token_id: String,
+    down_token_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MmSportDiscoverySnapshot {
+    version: u32,
+    created_at_ms: i64,
+    config_fingerprint: String,
+    selected_sports: usize,
+    rewards_rows: usize,
+    market_count: usize,
+    markets: Vec<MmSportMarketSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -2708,6 +2743,166 @@ fn mm_sport_merge_market_cache(
     merged
 }
 
+fn mm_sport_market_snapshot_from_market(market: &MmSportMarket) -> MmSportMarketSnapshot {
+    MmSportMarketSnapshot {
+        condition_id: market.condition_id.clone(),
+        market_slug: market.market_slug.clone(),
+        is_sports_market: market.is_sports_market,
+        polymarket_sports_game_id: market.polymarket_sports_game_id,
+        polymarket_sports_event_slug: market.polymarket_sports_event_slug.clone(),
+        reward_rate_per_day: market.reward_rate_per_day,
+        reward_min_size_shares: market.reward_min_size_shares,
+        reward_max_spread: market.reward_max_spread,
+        minimum_tick_size: market.minimum_tick_size,
+        minimum_order_size_usd: market.minimum_order_size_usd,
+        game_start_ts_ms: market.game_start_ts_ms,
+        market_end_ts_ms: market.market_end_ts_ms,
+        period_timestamp: market.period_timestamp,
+        up_token_id: market.up_token_id.clone(),
+        down_token_id: market.down_token_id.clone(),
+    }
+}
+
+fn mm_sport_market_from_snapshot(snapshot: MmSportMarketSnapshot) -> MmSportMarket {
+    MmSportMarket {
+        condition_id: snapshot.condition_id,
+        market_slug: snapshot.market_slug,
+        is_sports_market: snapshot.is_sports_market,
+        polymarket_sports_game_id: snapshot.polymarket_sports_game_id,
+        polymarket_sports_event_slug: snapshot.polymarket_sports_event_slug,
+        polymarket_sports_event_state: None,
+        reward_rate_per_day: snapshot.reward_rate_per_day,
+        reward_min_size_shares: snapshot.reward_min_size_shares,
+        reward_max_spread: snapshot.reward_max_spread,
+        minimum_tick_size: snapshot.minimum_tick_size,
+        minimum_order_size_usd: snapshot.minimum_order_size_usd,
+        game_start_ts_ms: snapshot.game_start_ts_ms,
+        market_end_ts_ms: snapshot.market_end_ts_ms,
+        period_timestamp: snapshot.period_timestamp,
+        up_token_id: snapshot.up_token_id,
+        down_token_id: snapshot.down_token_id,
+    }
+}
+
+fn mm_sport_discovery_snapshot_write_allowed(
+    report: &MmSportDiscoveryReport,
+    markets: &[MmSportMarket],
+) -> bool {
+    !report.rewards_fallback_used
+        && report.rewards_source == "polymarket_api"
+        && report.rewards_api_skipped_pages == 0
+        && !report.rewards_api_partial_due_to_error
+        && !report.rewards_api_attempts_exhausted
+        && markets
+            .iter()
+            .filter(|market| market.is_sports_market)
+            .count()
+            >= MM_SPORT_DISCOVERY_SNAPSHOT_MIN_SPORTS
+}
+
+fn mm_sport_discovery_snapshot_config_fingerprint(cfg: &mm::MmSportConfig) -> String {
+    serde_json::to_string(&json!({
+        "min_reward_rate_per_day": cfg.min_reward_rate_per_day,
+        "discovery_route": cfg.discovery_route.as_str(),
+        "market_allowlist_keywords": &cfg.market_allowlist_keywords,
+        "market_blacklist_keywords": &cfg.market_blacklist_keywords,
+        "allowed_sport_league_codes": &cfg.allowed_sport_league_codes,
+        "blocked_sport_league_codes": &cfg.blocked_sport_league_codes,
+        "blocked_competition_levels": &cfg.blocked_competition_levels,
+        "reward_min_shares_cap": cfg.reward_min_shares_cap,
+        "allow_sponsored_rewards": cfg.allow_sponsored_rewards,
+        "sponsored_reward_min_share": cfg.sponsored_reward_min_share,
+        "require_reward_eligible": cfg.require_reward_eligible,
+        "pregame_only": cfg.pregame_only,
+        "match_only": cfg.match_only,
+        "max_markets": cfg.max_markets
+    }))
+    .unwrap_or_else(|_| "invalid".to_string())
+}
+
+fn mm_sport_discovery_report_needs_retry(report: &MmSportDiscoveryReport) -> bool {
+    report.rewards_fallback_used
+        || report.rewards_api_skipped_pages > 0
+        || report.rewards_api_partial_due_to_error
+        || report.rewards_api_attempts_exhausted
+        || report.sponsored_reward_filter_failed
+}
+
+fn mm_sport_write_discovery_snapshot(
+    path: &Path,
+    cfg: &mm::MmSportConfig,
+    markets: &[MmSportMarket],
+    report: &MmSportDiscoveryReport,
+    now_ms: i64,
+) -> Result<()> {
+    if !mm_sport_discovery_snapshot_write_allowed(report, markets) {
+        return Ok(());
+    }
+    let snapshot = MmSportDiscoverySnapshot {
+        version: MM_SPORT_DISCOVERY_SNAPSHOT_VERSION,
+        created_at_ms: now_ms,
+        config_fingerprint: mm_sport_discovery_snapshot_config_fingerprint(cfg),
+        selected_sports: markets
+            .iter()
+            .filter(|market| market.is_sports_market)
+            .count(),
+        rewards_rows: report.rewards_rows,
+        market_count: markets.len(),
+        markets: markets
+            .iter()
+            .map(mm_sport_market_snapshot_from_market)
+            .collect(),
+    };
+    let encoded = serde_json::to_vec_pretty(&snapshot)?;
+    std::fs::write(path, encoded)?;
+    Ok(())
+}
+
+fn mm_sport_load_discovery_snapshot(
+    path: &Path,
+    cfg: &mm::MmSportConfig,
+    now_ms: i64,
+) -> Result<Vec<MmSportMarket>> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let snapshot: MmSportDiscoverySnapshot = serde_json::from_str(raw.as_str())
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    if snapshot.version != MM_SPORT_DISCOVERY_SNAPSHOT_VERSION {
+        anyhow::bail!("unsupported snapshot version {}", snapshot.version);
+    }
+    let expected_fingerprint = mm_sport_discovery_snapshot_config_fingerprint(cfg);
+    if snapshot.config_fingerprint != expected_fingerprint {
+        anyhow::bail!("snapshot config mismatch");
+    }
+    let age_ms = now_ms.saturating_sub(snapshot.created_at_ms);
+    if snapshot.created_at_ms <= 0 || age_ms > MM_SPORT_DISCOVERY_SNAPSHOT_MAX_AGE_MS {
+        anyhow::bail!("snapshot stale age_ms={}", age_ms);
+    }
+    let markets = snapshot
+        .markets
+        .into_iter()
+        .map(mm_sport_market_from_snapshot)
+        .filter(|market| {
+            !market.condition_id.trim().is_empty()
+                && !market.up_token_id.trim().is_empty()
+                && !market.down_token_id.trim().is_empty()
+                && (market.market_end_ts_ms <= 0 || market.market_end_ts_ms > now_ms)
+                && (!cfg.pregame_only
+                    || !market.is_sports_market
+                    || market.game_start_ts_ms <= 0
+                    || market.game_start_ts_ms > now_ms)
+        })
+        .collect::<Vec<_>>();
+    let selected_sports = markets
+        .iter()
+        .filter(|market| market.is_sports_market)
+        .count();
+    if selected_sports < MM_SPORT_DISCOVERY_SNAPSHOT_MIN_SPORTS {
+        anyhow::bail!("snapshot has too few sports markets: {}", selected_sports);
+    }
+    Ok(markets)
+}
+
 fn mm_sport_discovery_result_looks_degraded(
     report: &MmSportDiscoveryReport,
     selected_market_count: usize,
@@ -4161,6 +4356,7 @@ async fn mm_sport_discover_markets(
     discovery_mode: &str,
     rewards_page_budget: u32,
     discovery_detail_cap: usize,
+    allow_clob_fallback: bool,
 ) -> Result<(Vec<MmSportMarket>, MmSportDiscoveryReport)> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let mut report = MmSportDiscoveryReport::default();
@@ -4213,14 +4409,18 @@ async fn mm_sport_discover_markets(
         }
         Err(primary_err) => {
             report.rewards_fallback_used = true;
+            report.rewards_source = "polymarket_api_error".to_string();
             log_event(
                 "mm_sport_rewards_api_fallback",
                 json!({
                     "strategy_id": STRATEGY_ID_MM_SPORT_V1,
                     "primary_error": primary_err.to_string(),
-                    "fallback": "clob_current_rewards"
+                    "fallback": if allow_clob_fallback { "clob_current_rewards" } else { "last_good_cache" }
                 }),
             );
+            if !allow_clob_fallback {
+                return Ok((Vec::new(), report));
+            }
             let mut rows_by_condition: std::collections::HashMap<String, RewardsMarketEntry> =
                 std::collections::HashMap::new();
             for sponsored in [false, true] {
@@ -17335,6 +17535,9 @@ async fn main() -> Result<()> {
             tokio::spawn(async move {
                 let mut discovered_markets: Vec<MmSportMarket> = Vec::new();
                 let mut last_good_discovered_markets: Vec<MmSportMarket> = Vec::new();
+                let mm_sport_discovery_snapshot_path =
+                    PathBuf::from(MM_SPORT_DISCOVERY_SNAPSHOT_PATH);
+                let mut discovery_snapshot_loaded = false;
                 let mut last_full_discovery_ms = 0_i64;
                 let mut last_delta_discovery_ms = 0_i64;
                 let mut next_discovery_attempt_ms = 0_i64;
@@ -17790,6 +17993,43 @@ async fn main() -> Result<()> {
                     )
                     .ok()
                     .unwrap_or(600_000);
+                    if !discovery_snapshot_loaded && last_good_discovered_markets.is_empty() {
+                        discovery_snapshot_loaded = true;
+                        match mm_sport_load_discovery_snapshot(
+                            mm_sport_discovery_snapshot_path.as_path(),
+                            mm_sport_cfg_for_loop.as_ref(),
+                            now_ms,
+                        ) {
+                            Ok(snapshot_markets) => {
+                                let snapshot_market_count = snapshot_markets.len();
+                                let snapshot_sports = snapshot_markets
+                                    .iter()
+                                    .filter(|market| market.is_sports_market)
+                                    .count();
+                                discovered_markets = snapshot_markets.clone();
+                                last_good_discovered_markets = snapshot_markets;
+                                log_event(
+                                    "mm_sport_discovery_snapshot_loaded",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                        "path": MM_SPORT_DISCOVERY_SNAPSHOT_PATH,
+                                        "market_count": snapshot_market_count,
+                                        "selected_sports": snapshot_sports
+                                    }),
+                                );
+                            }
+                            Err(err) => {
+                                log_event(
+                                    "mm_sport_discovery_snapshot_load_skipped",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                        "path": MM_SPORT_DISCOVERY_SNAPSHOT_PATH,
+                                        "reason": err.to_string()
+                                    }),
+                                );
+                            }
+                        }
+                    }
                     let should_full_discovery = discovered_markets.is_empty()
                         || last_full_discovery_ms <= 0
                         || now_ms.saturating_sub(last_full_discovery_ms)
@@ -17817,6 +18057,7 @@ async fn main() -> Result<()> {
                             discovery_mode,
                             rewards_page_budget,
                             mm_sport_cfg_for_loop.discovery_detail_cap,
+                            last_good_discovered_markets.is_empty(),
                         )
                         .await
                         {
@@ -17848,6 +18089,30 @@ async fn main() -> Result<()> {
                                         next_discovery_attempt_ms =
                                             now_ms.saturating_add(discovery_backoff_ms);
                                         last_good_discovered_markets.clone()
+                                    } else if mm_sport_discovery_report_needs_retry(
+                                        &discovery_report,
+                                    ) && last_good_discovered_markets.is_empty()
+                                    {
+                                        degraded_discovery = true;
+                                        discovery_backoff_ms =
+                                            (discovery_backoff_ms.saturating_mul(2)).clamp(
+                                                MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MIN_MS,
+                                                MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MAX_MS,
+                                            );
+                                        next_discovery_attempt_ms =
+                                            now_ms.saturating_add(discovery_backoff_ms);
+                                        log_event(
+                                            "mm_sport_degraded_fallback_discovery_used",
+                                            json!({
+                                                "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                                "market_count": selected_market_count,
+                                                "rewards_source": discovery_report.rewards_source.as_str(),
+                                                "rewards_fallback_used": discovery_report.rewards_fallback_used,
+                                                "next_discovery_attempt_ms": next_discovery_attempt_ms,
+                                                "discovery_backoff_ms": discovery_backoff_ms
+                                            }),
+                                        );
+                                        markets
                                     } else {
                                         let merged_markets = if should_delta_discovery
                                             && !last_good_discovered_markets.is_empty()
@@ -17871,6 +18136,36 @@ async fn main() -> Result<()> {
                                         }
                                         last_delta_discovery_ms = now_ms;
                                         last_good_discovered_markets = merged_markets.clone();
+                                        if let Err(err) = mm_sport_write_discovery_snapshot(
+                                            mm_sport_discovery_snapshot_path.as_path(),
+                                            mm_sport_cfg_for_loop.as_ref(),
+                                            merged_markets.as_slice(),
+                                            &discovery_report,
+                                            now_ms,
+                                        ) {
+                                            log_event(
+                                                "mm_sport_discovery_snapshot_write_failed",
+                                                json!({
+                                                    "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                                    "path": MM_SPORT_DISCOVERY_SNAPSHOT_PATH,
+                                                    "error": err.to_string()
+                                                }),
+                                            );
+                                        } else if mm_sport_discovery_snapshot_write_allowed(
+                                            &discovery_report,
+                                            merged_markets.as_slice(),
+                                        ) {
+                                            log_event(
+                                                "mm_sport_discovery_snapshot_written",
+                                                json!({
+                                                    "strategy_id": STRATEGY_ID_MM_SPORT_V1,
+                                                    "path": MM_SPORT_DISCOVERY_SNAPSHOT_PATH,
+                                                    "market_count": merged_markets.len(),
+                                                    "selected_sports": discovery_report.selected_sports,
+                                                    "rewards_rows": discovery_report.rewards_rows
+                                                }),
+                                            );
+                                        }
                                         discovery_backoff_ms =
                                             MM_SPORT_DISCOVERY_EMPTY_BACKOFF_MIN_MS;
                                         next_discovery_attempt_ms =
@@ -30150,6 +30445,117 @@ mod tests {
         report.clob_detail_error = 0;
         report.rewards_api_partial_due_to_error = true;
         assert!(mm_sport_discovery_result_looks_degraded(&report, 199, 200));
+    }
+
+    #[test]
+    fn mm_sport_snapshot_write_allowed_only_for_healthy_primary_discovery() {
+        let now_ms = 2_000_000_000_000_i64;
+        let markets = (0..MM_SPORT_DISCOVERY_SNAPSHOT_MIN_SPORTS)
+            .map(|idx| {
+                mm_sport_test_market(format!("cond-{idx}").as_str(), 300.0, now_ms + 86_400_000)
+            })
+            .collect::<Vec<_>>();
+        let mut report = MmSportDiscoveryReport {
+            rewards_source: "polymarket_api".to_string(),
+            rewards_rows: 800,
+            selected_sports: markets.len(),
+            ..Default::default()
+        };
+
+        assert!(mm_sport_discovery_snapshot_write_allowed(
+            &report,
+            markets.as_slice()
+        ));
+
+        report.rewards_fallback_used = true;
+        assert!(!mm_sport_discovery_snapshot_write_allowed(
+            &report,
+            markets.as_slice()
+        ));
+
+        report.rewards_fallback_used = false;
+        report.skipped_low_reward_rate = 1;
+        assert!(mm_sport_discovery_snapshot_write_allowed(
+            &report,
+            markets.as_slice()
+        ));
+    }
+
+    #[test]
+    fn mm_sport_snapshot_round_trip_rejects_stale_or_too_small_snapshot() {
+        let now_ms = 2_000_000_000_000_i64;
+        let cfg = mm::MmSportConfig::default();
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "evpoly-mm-sport-snapshot-test-{}.json",
+            std::process::id()
+        ));
+        let markets = (0..MM_SPORT_DISCOVERY_SNAPSHOT_MIN_SPORTS)
+            .map(|idx| {
+                mm_sport_test_market(format!("cond-{idx}").as_str(), 300.0, now_ms + 86_400_000)
+            })
+            .collect::<Vec<_>>();
+        let report = MmSportDiscoveryReport {
+            rewards_source: "polymarket_api".to_string(),
+            rewards_rows: 800,
+            selected_sports: markets.len(),
+            ..Default::default()
+        };
+
+        mm_sport_write_discovery_snapshot(
+            path.as_path(),
+            &cfg,
+            markets.as_slice(),
+            &report,
+            now_ms,
+        )
+        .expect("write snapshot");
+        let loaded = mm_sport_load_discovery_snapshot(path.as_path(), &cfg, now_ms + 1_000)
+            .expect("load snapshot");
+        assert_eq!(loaded.len(), markets.len());
+
+        let mut wrong_config_snapshot: MmSportDiscoverySnapshot =
+            serde_json::from_str(std::fs::read_to_string(path.as_path()).unwrap().as_str())
+                .expect("parse snapshot");
+        wrong_config_snapshot.config_fingerprint = "other-config".to_string();
+        std::fs::write(
+            path.as_path(),
+            serde_json::to_vec(&wrong_config_snapshot).expect("serialize snapshot"),
+        )
+        .expect("write wrong config snapshot");
+        assert!(mm_sport_load_discovery_snapshot(path.as_path(), &cfg, now_ms + 1_000).is_err());
+
+        mm_sport_write_discovery_snapshot(
+            path.as_path(),
+            &cfg,
+            markets.as_slice(),
+            &report,
+            now_ms,
+        )
+        .expect("rewrite snapshot");
+        assert!(mm_sport_load_discovery_snapshot(
+            path.as_path(),
+            &cfg,
+            now_ms + MM_SPORT_DISCOVERY_SNAPSHOT_MAX_AGE_MS + 1
+        )
+        .is_err());
+
+        let small_snapshot = MmSportDiscoverySnapshot {
+            version: MM_SPORT_DISCOVERY_SNAPSHOT_VERSION,
+            created_at_ms: now_ms,
+            config_fingerprint: mm_sport_discovery_snapshot_config_fingerprint(&cfg),
+            selected_sports: 1,
+            rewards_rows: 800,
+            market_count: 1,
+            markets: vec![mm_sport_market_snapshot_from_market(&markets[0])],
+        };
+        std::fs::write(
+            path.as_path(),
+            serde_json::to_vec(&small_snapshot).expect("serialize snapshot"),
+        )
+        .expect("write small snapshot");
+        assert!(mm_sport_load_discovery_snapshot(path.as_path(), &cfg, now_ms + 1_000).is_err());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

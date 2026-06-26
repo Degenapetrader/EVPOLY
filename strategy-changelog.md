@@ -9,6 +9,9 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-06-26
+- `mm_sport_v1`: added a local JSON last-good discovery snapshot (`mm_sport_discovery_snapshot.json`) for MM Sport rewards discovery on the legacy Endgame runtime line. Healthy primary Polymarket rewards API discoveries write the snapshot; on primary API failure after restart, the runtime prefers in-memory cache, then the snapshot, and only uses CLOB current rewards when no cache/snapshot is available (`src/main.rs`).
+
 ### 2026-06-25
 - `premarket_v1`: restored local Premarket ladder modes and removed the required remote Premarket alpha ladder call from the live submit path (`src/main.rs`, `src/bot_admin.rs`, `.env.example`, `.env.full.example`, `docs/premarket_v1.md`). `EVPOLY_PREMARKET_LADDER_MODE_5M` and `EVPOLY_PREMARKET_LADDER_MODE_NON_M5` again select `normal`, `safe`, or `aggressive`, with `EVPOLY_PREMARKET_SAFE_BIAS_PCT=-10` and `EVPOLY_PREMARKET_AGGRESSIVE_BIAS_PCT=10` as editable defaults. Applies to Premarket all symbols/timeframes; shared timeframe market discovery remains remote-first with local fallback.
 - `mm_sport_v1`: extended the optional UTC fresh-entry Active Hours schedule to Sport markets with `EVPOLY_MM_SPORT_SPORT_ENTRY_SCHEDULE_*`, while keeping the existing Non-Sport schedule keys separate (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`). In Sport/Dual routes, Sport markets can now halt fresh BUY quotes outside the configured UTC windows while still allowing existing inventory to enter cleanup/exit flow.

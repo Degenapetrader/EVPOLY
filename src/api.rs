@@ -30,7 +30,7 @@ use alloy::primitives::Address as AlloyAddress;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer as _;
 use alloy::sol_types::{SolCall, SolStruct};
-use chrono::{TimeZone, Utc};
+use chrono::{SecondsFormat, TimeZone, Utc};
 use polymarket_client_sdk_v2::auth::state::Authenticated;
 use polymarket_client_sdk_v2::auth::{Credentials, LocalSigner, Normal};
 use polymarket_client_sdk_v2::clob::types::request::CancelMarketOrderRequest;
@@ -354,6 +354,7 @@ struct PlaceOrderHandleTiming {
 struct PlaceOrderMetadataPolicy {
     require_cached_order_metadata: bool,
     allow_hot_metadata_prewarm: bool,
+    skip_buy_collateral_preflight: bool,
 }
 
 impl PlaceOrderMetadataPolicy {
@@ -361,7 +362,13 @@ impl PlaceOrderMetadataPolicy {
         Self {
             require_cached_order_metadata: true,
             allow_hot_metadata_prewarm: false,
+            skip_buy_collateral_preflight: false,
         }
+    }
+
+    fn skip_buy_collateral_preflight(mut self) -> Self {
+        self.skip_buy_collateral_preflight = true;
+        self
     }
 }
 
@@ -370,6 +377,7 @@ impl Default for PlaceOrderMetadataPolicy {
         Self {
             require_cached_order_metadata: false,
             allow_hot_metadata_prewarm: true,
+            skip_buy_collateral_preflight: false,
         }
     }
 }
@@ -378,6 +386,12 @@ impl Default for PlaceOrderMetadataPolicy {
 struct LocalOrderPostStats {
     post_ms: i64,
     attempts: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderSubmitLane {
+    Default,
+    Endgame,
 }
 
 #[derive(Debug, Clone)]
@@ -574,6 +588,7 @@ pub struct PolymarketApi {
     mm_proxy_fallback_max: usize,
     http_read_semaphore: Arc<tokio::sync::Semaphore>,
     order_submit_semaphore: Arc<tokio::sync::Semaphore>,
+    endgame_order_submit_semaphore: Arc<tokio::sync::Semaphore>,
     mm_read_proxy_attempts: AtomicU64,
     mm_read_direct_attempts: AtomicU64,
     mm_read_proxy_successes: AtomicU64,
@@ -840,6 +855,9 @@ impl PolymarketApi {
                 1,
                 128,
             ))),
+            endgame_order_submit_semaphore: Arc::new(tokio::sync::Semaphore::new(
+                Self::env_usize_clamped("EVPOLY_ENDGAME_SUBMIT_LANE_PERMITS", 1, 1, 16),
+            )),
             mm_read_proxy_attempts: AtomicU64::new(0),
             mm_read_direct_attempts: AtomicU64::new(0),
             mm_read_proxy_successes: AtomicU64::new(0),
@@ -1351,6 +1369,10 @@ impl PolymarketApi {
         allowance_raw >= required_usdc_raw
     }
 
+    fn should_invalidate_collateral_cache_after_update_error(force: bool) -> bool {
+        force
+    }
+
     async fn update_balance_allowance_for_collateral(&self, force: bool) -> Result<()> {
         use polymarket_client_sdk_v2::clob::types::request::UpdateBalanceAllowanceRequest;
 
@@ -1360,7 +1382,6 @@ impl PolymarketApi {
             let last_update = self.last_usdc_balance_allowance_update_ms.lock().await;
             if let Some(last_ms) = *last_update {
                 if now_ms.saturating_sub(last_ms) <= USDC_BALANCE_ALLOWANCE_UPDATE_TTL_MS {
-                    self.invalidate_cached_usdc_balance_allowance().await;
                     return Ok(());
                 }
             }
@@ -1412,7 +1433,9 @@ impl PolymarketApi {
                     self.invalidate_cached_usdc_balance_allowance().await;
                     Ok(())
                 } else {
-                    self.invalidate_cached_usdc_balance_allowance().await;
+                    if Self::should_invalidate_collateral_cache_after_update_error(force) {
+                        self.invalidate_cached_usdc_balance_allowance().await;
+                    }
                     Err(first_anyhow).context("Failed to update collateral balance/allowance cache")
                 }
             }
@@ -4027,33 +4050,20 @@ impl PolymarketApi {
         period_open_ts: u64,
         period_close_ts: u64,
     ) -> Result<Option<(f64, f64)>> {
-        let granularity = match timeframe.trim().to_ascii_lowercase().as_str() {
-            "5m" => 300,
-            "15m" => 900,
-            "1h" => 3_600,
-            // Coinbase candles don't support 4h directly; compose from 1h.
-            "4h" => 3_600,
-            // Daily EVcurve periods are noon-to-noon ET, so compose from 1h buckets
-            // instead of relying on exchange-native daily alignment.
-            "1d" | "d1" | "24h" | "daily" => 3_600,
-            _ => return Ok(None),
+        let Some(granularity) = Self::coinbase_granularity_for_proxy_resolution(timeframe) else {
+            return Ok(None);
         };
 
-        let start_iso = Utc
-            .timestamp_opt(period_open_ts as i64, 0)
-            .single()
-            .ok_or_else(|| anyhow::anyhow!("invalid coinbase start ts"))?
-            .to_rfc3339();
-        let end_iso = Utc
-            .timestamp_opt(period_close_ts as i64, 0)
-            .single()
-            .ok_or_else(|| anyhow::anyhow!("invalid coinbase end ts"))?
-            .to_rfc3339();
+        let start_iso =
+            Self::coinbase_query_timestamp(period_open_ts).context("invalid coinbase start ts")?;
+        let end_iso =
+            Self::coinbase_query_timestamp(period_close_ts).context("invalid coinbase end ts")?;
         let product = format!("{}-USD", symbol.trim().to_ascii_uppercase());
         let url = format!(
             "https://api.exchange.coinbase.com/products/{}/candles",
             product
         );
+        let cache_bust = Utc::now().timestamp_millis().to_string();
 
         let response = self
             .client
@@ -4062,10 +4072,12 @@ impl PolymarketApi {
                 reqwest::header::USER_AGENT,
                 "EVPOLY/1.0 (+https://www.evplus.ai)",
             )
+            .header(reqwest::header::CACHE_CONTROL, "no-cache")
             .query(&[
                 ("granularity", granularity.to_string()),
                 ("start", start_iso),
                 ("end", end_iso),
+                ("_", cache_bust),
             ])
             .send()
             .await
@@ -4086,8 +4098,20 @@ impl PolymarketApi {
 
         let rows: Vec<Vec<Value>> = serde_json::from_str(&body)
             .with_context(|| format!("coinbase candles parse failed body={}", body))?;
+        Ok(Self::coinbase_open_close_from_candle_rows(
+            rows,
+            period_open_ts as i64,
+            period_close_ts as i64,
+        ))
+    }
+
+    fn coinbase_open_close_from_candle_rows(
+        rows: Vec<Vec<Value>>,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> Option<(f64, f64)> {
         if rows.is_empty() {
-            return Ok(None);
+            return None;
         }
 
         let mut candles: Vec<(i64, f64, f64)> = Vec::new(); // (open_ts, open, close)
@@ -4105,23 +4129,62 @@ impl PolymarketApi {
             }
         }
         if candles.is_empty() {
-            return Ok(None);
+            return None;
         }
         candles.sort_by_key(|row| row.0);
 
-        let start = period_open_ts as i64;
-        let end = period_close_ts as i64;
         let mut in_window = candles
             .into_iter()
-            .filter(|(ts, _, _)| *ts >= start && *ts < end)
+            .filter(|(ts, _, _)| *ts >= start_ts && *ts < end_ts)
             .collect::<Vec<_>>();
         if in_window.is_empty() {
-            return Ok(None);
+            return None;
         }
         in_window.sort_by_key(|row| row.0);
-        let open_px = in_window.first().map(|row| row.1);
+        let open_px = in_window
+            .iter()
+            .find(|(ts, _, _)| *ts == start_ts)
+            .map(|row| row.1);
         let close_px = in_window.last().map(|row| row.2);
-        Ok(open_px.zip(close_px))
+        open_px.zip(close_px)
+    }
+
+    fn coinbase_granularity_for_proxy_resolution(timeframe: &str) -> Option<u64> {
+        match timeframe.trim().to_ascii_lowercase().as_str() {
+            "5m" | "15m" | "1h" | "4h" => Some(60),
+            // Daily EVcurve periods are noon-to-noon ET, so compose from 1h buckets
+            // instead of relying on exchange-native daily alignment.
+            "1d" | "d1" | "24h" | "daily" => Some(3_600),
+            _ => None,
+        }
+    }
+
+    fn coinbase_query_timestamp(ts: u64) -> Result<String> {
+        let dt = Utc
+            .timestamp_opt(ts as i64, 0)
+            .single()
+            .ok_or_else(|| anyhow::anyhow!("invalid timestamp"))?;
+        Ok(dt.to_rfc3339_opts(SecondsFormat::Secs, true))
+    }
+
+    fn binance_interval_for_proxy_resolution(
+        symbol: &str,
+        timeframe: &str,
+    ) -> Option<(&'static str, u64)> {
+        let timeframe = timeframe.trim().to_ascii_lowercase();
+        if symbol.trim().eq_ignore_ascii_case("HYPE") {
+            return match timeframe.as_str() {
+                "5m" | "15m" | "1h" | "4h" => Some(("1m", 60)),
+                "1d" | "d1" | "24h" | "daily" => Some(("1h", 3_600)),
+                _ => None,
+            };
+        }
+        match timeframe.as_str() {
+            "5m" | "15m" => Some(("1s", 1)),
+            "1h" | "4h" => Some(("1m", 60)),
+            "1d" | "d1" | "24h" | "daily" => Some(("1h", 3_600)),
+            _ => None,
+        }
     }
 
     async fn fetch_binance_open_close(
@@ -4131,17 +4194,25 @@ impl PolymarketApi {
         period_open_ts: u64,
         period_close_ts: u64,
     ) -> Result<Option<(f64, f64)>> {
-        let interval = match timeframe.trim().to_ascii_lowercase().as_str() {
-            "1h" => "1h",
-            "1d" | "d1" | "24h" | "daily" => "1d",
-            _ => return Ok(None),
+        let Some((interval, interval_secs)) =
+            Self::binance_interval_for_proxy_resolution(symbol, timeframe)
+        else {
+            return Ok(None);
         };
-        let pair = format!("{}USDT", symbol.trim().to_ascii_uppercase());
-        let url = "https://api.binance.com/api/v3/klines";
+        let normalized_symbol = symbol.trim().to_ascii_uppercase();
+        let pair = format!("{}USDT", normalized_symbol);
+        let url = if normalized_symbol == "HYPE" {
+            "https://fapi.binance.com/fapi/v1/klines"
+        } else {
+            "https://api.binance.com/api/v3/klines"
+        };
         let start_ms = (period_open_ts as i64).saturating_mul(1_000);
-        let end_ms = (period_close_ts as i64)
-            .saturating_mul(1_000)
-            .saturating_add(1_000);
+        let end_ms = (period_close_ts as i64).saturating_mul(1_000);
+        let period_secs = period_close_ts.saturating_sub(period_open_ts).max(1);
+        let limit = period_secs
+            .saturating_div(interval_secs.max(1))
+            .saturating_add(2)
+            .clamp(2, 1_000);
 
         let response = self
             .client
@@ -4151,7 +4222,7 @@ impl PolymarketApi {
                 ("interval", interval.to_string()),
                 ("startTime", start_ms.to_string()),
                 ("endTime", end_ms.to_string()),
-                ("limit", "3".to_string()),
+                ("limit", limit.to_string()),
             ])
             .send()
             .await
@@ -4172,8 +4243,18 @@ impl PolymarketApi {
 
         let rows: Vec<Vec<Value>> = serde_json::from_str(&body)
             .with_context(|| format!("binance klines parse failed body={}", body))?;
+        Ok(Self::binance_open_close_from_kline_rows(
+            rows, start_ms, end_ms,
+        ))
+    }
+
+    fn binance_open_close_from_kline_rows(
+        rows: Vec<Vec<Value>>,
+        start_ms: i64,
+        end_ms: i64,
+    ) -> Option<(f64, f64)> {
         if rows.is_empty() {
-            return Ok(None);
+            return None;
         }
 
         let mut parsed: Vec<(i64, f64, f64)> = Vec::new(); // (open_ms, open, close)
@@ -4197,10 +4278,23 @@ impl PolymarketApi {
             }
         }
         if parsed.is_empty() {
-            return Ok(None);
+            return None;
         }
         parsed.sort_by_key(|row| row.0);
-        Ok(parsed.first().map(|row| (row.1, row.2)))
+        let mut in_window = parsed
+            .into_iter()
+            .filter(|(open_ms, _, _)| *open_ms >= start_ms && *open_ms < end_ms)
+            .collect::<Vec<_>>();
+        if in_window.is_empty() {
+            return None;
+        }
+        in_window.sort_by_key(|row| row.0);
+        let open_px = in_window
+            .iter()
+            .find(|(open_ms, _, _)| *open_ms == start_ms)
+            .map(|row| row.1);
+        let close_px = in_window.last().map(|row| row.2);
+        open_px.zip(close_px)
     }
 
     pub async fn fetch_coinbase_period_open_price(
@@ -4326,6 +4420,7 @@ impl PolymarketApi {
         self.place_order_with_timing_with_metadata_policy(
             order,
             PlaceOrderMetadataPolicy::default(),
+            OrderSubmitLane::Default,
         )
         .await
     }
@@ -4337,6 +4432,31 @@ impl PolymarketApi {
         self.place_order_with_timing_with_metadata_policy(
             order,
             PlaceOrderMetadataPolicy::cached_only(),
+            OrderSubmitLane::Default,
+        )
+        .await
+    }
+
+    pub async fn place_order_with_timing_no_buy_collateral_preflight(
+        &self,
+        order: &OrderRequest,
+    ) -> Result<(OrderResponse, PlaceOrderTiming)> {
+        self.place_order_with_timing_with_metadata_policy(
+            order,
+            PlaceOrderMetadataPolicy::default().skip_buy_collateral_preflight(),
+            OrderSubmitLane::Default,
+        )
+        .await
+    }
+
+    pub async fn place_order_with_timing_cached_metadata_only_endgame(
+        &self,
+        order: &OrderRequest,
+    ) -> Result<(OrderResponse, PlaceOrderTiming)> {
+        self.place_order_with_timing_with_metadata_policy(
+            order,
+            PlaceOrderMetadataPolicy::cached_only().skip_buy_collateral_preflight(),
+            OrderSubmitLane::Endgame,
         )
         .await
     }
@@ -4345,6 +4465,7 @@ impl PolymarketApi {
         &self,
         order: &OrderRequest,
         metadata_policy: PlaceOrderMetadataPolicy,
+        submit_lane: OrderSubmitLane,
     ) -> Result<(OrderResponse, PlaceOrderTiming)> {
         let (effective_order_type, retry_policy, attempts) =
             Self::retry_policy_for_order_type(order.order_type.as_str());
@@ -4362,7 +4483,7 @@ impl PolymarketApi {
             let handle = self.get_or_create_clob_client().await?;
             timing.get_client_ms += get_client_started.elapsed().as_millis() as i64;
             match self
-                .place_order_with_handle(&handle, order, metadata_policy)
+                .place_order_with_handle(&handle, order, metadata_policy, submit_lane)
                 .await
             {
                 Ok((resp, handle_timing)) => {
@@ -4676,6 +4797,28 @@ impl PolymarketApi {
         Ok(model)
     }
 
+    pub async fn cached_clob_fee_model(&self, condition_id: &str) -> Option<ClobFeeModel> {
+        let condition_id = condition_id.trim();
+        if condition_id.is_empty() {
+            return None;
+        }
+        self.clob_fee_models_by_condition
+            .lock()
+            .await
+            .get(condition_id)
+            .copied()
+    }
+
+    pub async fn prewarm_endgame_submit_path(&self, condition_id: &str) -> Result<()> {
+        let condition_id = condition_id.trim();
+        if condition_id.is_empty() {
+            anyhow::bail!("condition_id is required for Endgame submit path prewarm");
+        }
+        let _ = self.get_or_create_clob_client().await?;
+        let _ = self.get_clob_fee_model(condition_id).await?;
+        Ok(())
+    }
+
     async fn tick_metadata_retry_after_ms(&self, token_id: &str) -> Option<i64> {
         let token_retry_after_ms = self
             .tick_metadata_retry_after_ms_by_token
@@ -4817,6 +4960,7 @@ impl PolymarketApi {
         handle: &ClobClientHandle,
         order: &OrderRequest,
         metadata_policy: PlaceOrderMetadataPolicy,
+        submit_lane: OrderSubmitLane,
     ) -> Result<(OrderResponse, PlaceOrderHandleTiming)> {
         let mut prepared = self
             .build_and_sign_order_with_handle(handle, order, metadata_policy)
@@ -4832,7 +4976,12 @@ impl PolymarketApi {
 
         for retry_idx in 0..=rate_limit_retry_attempts {
             match self
-                .post_signed_order_local(handle, prepared.signed_order, &mut post_stats)
+                .post_signed_order_local(
+                    handle,
+                    prepared.signed_order,
+                    &mut post_stats,
+                    submit_lane,
+                )
                 .await
             {
                 Ok(resp) => {
@@ -4938,6 +5087,9 @@ impl PolymarketApi {
                             "Order placed successfully. Order ID unavailable".to_string()
                         }),
                 ),
+                making_amount: Some(response.making_amount.to_string()),
+                taking_amount: Some(response.taking_amount.to_string()),
+                trade_ids: response.trade_ids.clone(),
             },
             PlaceOrderHandleTiming {
                 post_order_ms,
@@ -5155,6 +5307,9 @@ impl PolymarketApi {
                                     "Order placed successfully. Order ID unavailable".to_string()
                                 }),
                         ),
+                        making_amount: Some(response.making_amount.to_string()),
+                        taking_amount: Some(response.taking_amount.to_string()),
+                        trade_ids: response.trade_ids.clone(),
                     }),
                     timing,
                     error: None,
@@ -5182,13 +5337,24 @@ impl PolymarketApi {
         handle: &ClobClientHandle,
         signed_order: ClobSignedOrder,
         post_stats: &mut LocalOrderPostStats,
+        submit_lane: OrderSubmitLane,
     ) -> Result<polymarket_client_sdk_v2::clob::types::response::PostOrderResponse> {
-        let _order_permit = self
-            .order_submit_semaphore
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| anyhow::anyhow!("order submit concurrency limiter closed"))?;
+        let semaphore = if submit_lane == OrderSubmitLane::Endgame
+            && Self::env_bool("EVPOLY_ENDGAME_SUBMIT_LANE_ENABLE", true)
+        {
+            self.endgame_order_submit_semaphore.clone()
+        } else {
+            self.order_submit_semaphore.clone()
+        };
+        let _order_permit = semaphore.acquire_owned().await.map_err(|_| {
+            anyhow::anyhow!(
+                "{} order submit concurrency limiter closed",
+                match submit_lane {
+                    OrderSubmitLane::Default => "default",
+                    OrderSubmitLane::Endgame => "endgame",
+                }
+            )
+        })?;
         let post_started = Instant::now();
         let result = handle.client.post_order(signed_order).await;
         let post_ms = post_started.elapsed().as_millis() as i64;
@@ -5444,7 +5610,9 @@ impl PolymarketApi {
                         "{} BUY order token={} price={} size={}",
                         effective_order_type, order.token_id, price, size
                     );
-                    if self.is_deposit_wallet_mode() {
+                    if self.is_deposit_wallet_mode()
+                        && !metadata_policy.skip_buy_collateral_preflight
+                    {
                         self.ensure_buy_collateral_ready(usdc_notional, approval_context.as_str())
                             .await?;
                     }
@@ -6545,6 +6713,11 @@ impl PolymarketApi {
                             "pUSD balance check failed; using cached balance snapshot age_ms={} error={}",
                             age_ms, err
                         );
+                        *self.cached_usdc_balance_allowance.lock().await = Some((
+                            cached_balance.clone(),
+                            cached_allowance.clone(),
+                            cached_ts_ms,
+                        ));
                         return Ok((cached_balance, cached_allowance));
                     }
                 }
@@ -8352,6 +8525,9 @@ impl PolymarketApi {
             } else {
                 response.error_msg.clone()
             },
+            making_amount: Some(response.making_amount.to_string()),
+            taking_amount: Some(response.taking_amount.to_string()),
+            trade_ids: response.trade_ids.clone(),
         };
 
         if normalized_order_id.is_some() {
@@ -9227,6 +9403,139 @@ mod tests {
     }
 
     #[test]
+    fn binance_proxy_resolution_uses_short_interval_for_endgame_windows() {
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("ETH", "5m"),
+            Some(("1s", 1))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("ETH", "15m"),
+            Some(("1s", 1))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("ETH", "1h"),
+            Some(("1m", 60))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("ETH", "4h"),
+            Some(("1m", 60))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("ETH", "1d"),
+            Some(("1h", 3_600))
+        );
+    }
+
+    #[test]
+    fn coinbase_proxy_resolution_uses_live_minute_buckets_for_endgame_windows() {
+        assert_eq!(
+            PolymarketApi::coinbase_granularity_for_proxy_resolution("5m"),
+            Some(60)
+        );
+        assert_eq!(
+            PolymarketApi::coinbase_granularity_for_proxy_resolution("15m"),
+            Some(60)
+        );
+        assert_eq!(
+            PolymarketApi::coinbase_granularity_for_proxy_resolution("1h"),
+            Some(60)
+        );
+        assert_eq!(
+            PolymarketApi::coinbase_granularity_for_proxy_resolution("4h"),
+            Some(60)
+        );
+        assert_eq!(
+            PolymarketApi::coinbase_granularity_for_proxy_resolution("1d"),
+            Some(3_600)
+        );
+    }
+
+    #[test]
+    fn coinbase_query_timestamp_uses_utc_z_suffix() {
+        assert_eq!(
+            PolymarketApi::coinbase_query_timestamp(1_781_882_400).unwrap(),
+            "2026-06-19T15:20:00Z"
+        );
+    }
+
+    #[test]
+    fn hype_binance_proxy_resolution_uses_futures_supported_minute_buckets() {
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("HYPE", "5m"),
+            Some(("1m", 60))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("HYPE", "15m"),
+            Some(("1m", 60))
+        );
+        assert_eq!(
+            PolymarketApi::binance_interval_for_proxy_resolution("HYPE", "1d"),
+            Some(("1h", 3_600))
+        );
+    }
+
+    #[test]
+    fn binance_open_close_excludes_next_period_boundary_candle() {
+        let rows = vec![
+            vec![
+                serde_json::json!(1_000_i64),
+                serde_json::json!("100.0"),
+                Value::Null,
+                Value::Null,
+                serde_json::json!("101.0"),
+            ],
+            vec![
+                serde_json::json!(2_000_i64),
+                serde_json::json!("101.0"),
+                Value::Null,
+                Value::Null,
+                serde_json::json!("102.0"),
+            ],
+            vec![
+                serde_json::json!(3_000_i64),
+                serde_json::json!("999.0"),
+                Value::Null,
+                Value::Null,
+                serde_json::json!("999.0"),
+            ],
+        ];
+
+        let open_close = PolymarketApi::binance_open_close_from_kline_rows(rows, 1_000, 3_000);
+
+        assert_eq!(open_close, Some((100.0, 102.0)));
+    }
+
+    #[test]
+    fn binance_open_close_requires_exact_open_candle() {
+        let rows = vec![vec![
+            serde_json::json!(2_000_i64),
+            serde_json::json!("101.0"),
+            Value::Null,
+            Value::Null,
+            serde_json::json!("102.0"),
+        ]];
+
+        let open_close = PolymarketApi::binance_open_close_from_kline_rows(rows, 1_000, 3_000);
+
+        assert_eq!(open_close, None);
+    }
+
+    #[test]
+    fn coinbase_open_close_requires_exact_open_candle() {
+        let rows = vec![vec![
+            serde_json::json!(2_000_i64),
+            Value::Null,
+            Value::Null,
+            serde_json::json!(101.0),
+            serde_json::json!(102.0),
+        ]];
+
+        let open_close = PolymarketApi::coinbase_open_close_from_candle_rows(rows, 1_000, 3_000);
+
+        assert_eq!(open_close, None);
+    }
+
+    #[test]
     fn detects_fak_no_match_rejection() {
         let error = anyhow::anyhow!(
             "Failed to post V2 order: Status: error(400 Bad Request) making POST call to /order with {{\"error\":\"no orders found to match with FAK order. FAK orders are partially filled or killed if no match is found.\"}}"
@@ -9391,6 +9700,153 @@ mod tests {
         let wrapped = source.context("Failed to fetch pUSD balance and allowance");
 
         assert!(PolymarketApi::is_rate_limit_error(&wrapped));
+    }
+
+    #[test]
+    fn collateral_update_error_cache_invalidation_policy_is_force_only() {
+        assert!(!PolymarketApi::should_invalidate_collateral_cache_after_update_error(false));
+        assert!(PolymarketApi::should_invalidate_collateral_cache_after_update_error(true));
+    }
+
+    fn deposit_wallet_test_api() -> PolymarketApi {
+        PolymarketApi::new(
+            "https://gamma-api.polymarket.com".to_string(),
+            "https://clob.polymarket.com".to_string(),
+            None,
+            Some("0x1111111111111111111111111111111111111111".to_string()),
+            Some("0x1111111111111111111111111111111111111111".to_string()),
+            Some("0x1111111111111111111111111111111111111111".to_string()),
+            Some(3),
+        )
+    }
+
+    #[test]
+    fn non_forced_collateral_update_ttl_preserves_cached_snapshot() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let api = deposit_wallet_test_api();
+            let now_ms = Utc::now().timestamp_millis();
+            let cached_snapshot = (
+                Decimal::from(100_000_000u64),
+                Decimal::from(100_000_000u64),
+                now_ms.saturating_sub(USDC_BALANCE_CACHE_HIT_TTL_MS + 1),
+            );
+            *api.cached_usdc_balance_allowance.lock().await = Some(cached_snapshot.clone());
+            *api.last_usdc_balance_allowance_update_ms.lock().await = Some(now_ms);
+
+            api.update_balance_allowance_for_collateral(false)
+                .await
+                .expect("ttl no-op update");
+
+            assert_eq!(
+                *api.cached_usdc_balance_allowance.lock().await,
+                Some(cached_snapshot)
+            );
+        });
+    }
+
+    #[test]
+    fn balance_allowance_backoff_returns_fallback_cached_snapshot() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let api = deposit_wallet_test_api();
+            let now_ms = Utc::now().timestamp_millis();
+            *api.cached_usdc_balance_allowance.lock().await = Some((
+                Decimal::from(123_000_000u64),
+                Decimal::from(456_000_000u64),
+                now_ms.saturating_sub(USDC_BALANCE_CACHE_HIT_TTL_MS + 1),
+            ));
+            *api.usdc_balance_allowance_retry_after_ms.lock().await = now_ms.saturating_add(30_000);
+
+            let (balance, allowance) = api
+                .check_usdc_balance_allowance()
+                .await
+                .expect("fallback cache during backoff");
+
+            assert_eq!(balance, Decimal::from(123_000_000u64));
+            assert_eq!(allowance, Decimal::from(456_000_000u64));
+        });
+    }
+
+    #[test]
+    fn buy_collateral_ready_uses_sufficient_fallback_cache_during_backoff() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let api = deposit_wallet_test_api();
+            let now_ms = Utc::now().timestamp_millis();
+            *api.cached_usdc_balance_allowance.lock().await = Some((
+                Decimal::from(100_000_000u64),
+                Decimal::from(100_000_000u64),
+                now_ms.saturating_sub(USDC_BALANCE_CACHE_HIT_TTL_MS + 1),
+            ));
+            *api.usdc_balance_allowance_retry_after_ms.lock().await = now_ms.saturating_add(30_000);
+
+            api.ensure_buy_collateral_ready(Decimal::from(50u64), "GTD BUY order")
+                .await
+                .expect("sufficient fallback collateral");
+        });
+    }
+
+    #[test]
+    fn buy_collateral_ready_rejects_insufficient_fallback_balance() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let api = deposit_wallet_test_api();
+            let now_ms = Utc::now().timestamp_millis();
+            *api.cached_usdc_balance_allowance.lock().await = Some((
+                Decimal::from(5_000_000u64),
+                Decimal::from(100_000_000u64),
+                now_ms.saturating_sub(USDC_BALANCE_CACHE_HIT_TTL_MS + 1),
+            ));
+            *api.usdc_balance_allowance_retry_after_ms.lock().await = now_ms.saturating_add(30_000);
+
+            let err = api
+                .ensure_buy_collateral_ready(Decimal::from(10u64), "GTD BUY order")
+                .await
+                .expect_err("insufficient fallback balance");
+
+            assert!(err.to_string().contains("Insufficient pUSD balance"));
+        });
+    }
+
+    #[test]
+    fn buy_collateral_ready_rejects_insufficient_fallback_allowance() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let api = deposit_wallet_test_api();
+            let now_ms = Utc::now().timestamp_millis();
+            *api.cached_usdc_balance_allowance.lock().await = Some((
+                Decimal::from(100_000_000u64),
+                Decimal::from(5_000_000u64),
+                now_ms.saturating_sub(USDC_BALANCE_CACHE_HIT_TTL_MS + 1),
+            ));
+            *api.usdc_balance_allowance_retry_after_ms.lock().await = now_ms.saturating_add(30_000);
+
+            let err = api
+                .ensure_buy_collateral_ready(Decimal::from(10u64), "GTD BUY order")
+                .await
+                .expect_err("insufficient fallback allowance");
+
+            assert!(err
+                .to_string()
+                .contains("Failed to sync pUSD collateral allowance before retry"));
+        });
+    }
+
+    #[test]
+    fn buy_collateral_preflight_policy_is_opt_in() {
+        assert!(!PlaceOrderMetadataPolicy::default().skip_buy_collateral_preflight);
+        assert!(!PlaceOrderMetadataPolicy::cached_only().skip_buy_collateral_preflight);
+        assert!(
+            PlaceOrderMetadataPolicy::default()
+                .skip_buy_collateral_preflight()
+                .skip_buy_collateral_preflight
+        );
+        assert!(
+            PlaceOrderMetadataPolicy::cached_only()
+                .skip_buy_collateral_preflight()
+                .skip_buy_collateral_preflight
+        );
     }
 
     #[test]

@@ -39,6 +39,8 @@ pub struct EndgameQuoteSnapshot {
     pub ask_level_count: usize,
     pub poly_mid: Option<f64>,
     pub updated_ms: i64,
+    pub ws_updated_ms: Option<i64>,
+    pub rest_updated_ms: Option<i64>,
     pub source: EndgameQuoteSource,
     pub seq: u64,
     pub valid: bool,
@@ -114,6 +116,11 @@ impl EndgameQuoteCache {
         }
         let token_id = token_id.trim().to_string();
         let mut inner = self.inner.lock().ok()?;
+        let (previous_ws_updated_ms, previous_rest_updated_ms) = inner
+            .quotes
+            .get(token_id.as_str())
+            .map(|old| (old.ws_updated_ms, old.rest_updated_ms))
+            .unwrap_or((None, None));
         if let Some(old) = inner.quotes.get(token_id.as_str()) {
             if updated_ms < old.updated_ms
                 || (updated_ms == old.updated_ms && source.priority() < old.source.priority())
@@ -131,6 +138,8 @@ impl EndgameQuoteCache {
             ask_level_count: fields.ask_level_count,
             poly_mid: fields.poly_mid,
             updated_ms,
+            ws_updated_ms: quote_ws_updated_ms(source, updated_ms, previous_ws_updated_ms),
+            rest_updated_ms: quote_rest_updated_ms(source, updated_ms, previous_rest_updated_ms),
             source,
             seq: inner.seq,
             valid: true,
@@ -152,6 +161,11 @@ impl EndgameQuoteCache {
         }
         let token_id = token_id.trim().to_string();
         let mut inner = self.inner.lock().ok()?;
+        let (previous_ws_updated_ms, previous_rest_updated_ms) = inner
+            .quotes
+            .get(token_id.as_str())
+            .map(|old| (old.ws_updated_ms, old.rest_updated_ms))
+            .unwrap_or((None, None));
         if let Some(old) = inner.quotes.get(token_id.as_str()) {
             if updated_ms < old.updated_ms
                 || (updated_ms == old.updated_ms && source.priority() < old.source.priority())
@@ -169,6 +183,8 @@ impl EndgameQuoteCache {
             ask_level_count: 0,
             poly_mid: None,
             updated_ms,
+            ws_updated_ms: quote_ws_updated_ms(source, updated_ms, previous_ws_updated_ms),
+            rest_updated_ms: quote_rest_updated_ms(source, updated_ms, previous_rest_updated_ms),
             source,
             seq: inner.seq,
             valid: false,
@@ -176,6 +192,28 @@ impl EndgameQuoteCache {
         };
         inner.quotes.insert(token_id, snapshot.clone());
         Some(snapshot)
+    }
+}
+
+fn quote_ws_updated_ms(
+    source: EndgameQuoteSource,
+    updated_ms: i64,
+    previous: Option<i64>,
+) -> Option<i64> {
+    match source {
+        EndgameQuoteSource::WsBook => Some(updated_ms),
+        EndgameQuoteSource::RestBatchBook | EndgameQuoteSource::RestExactBook => previous,
+    }
+}
+
+fn quote_rest_updated_ms(
+    source: EndgameQuoteSource,
+    updated_ms: i64,
+    previous: Option<i64>,
+) -> Option<i64> {
+    match source {
+        EndgameQuoteSource::WsBook => previous,
+        EndgameQuoteSource::RestBatchBook | EndgameQuoteSource::RestExactBook => Some(updated_ms),
     }
 }
 

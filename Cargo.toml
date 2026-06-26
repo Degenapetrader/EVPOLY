@@ -1,6 +1,6 @@
 [package]
 name = "polymarket-arbitrage-bot"
-version = "2.4.6"
+version = "2.4.7"
 edition = "2021"
 license-file = "LICENSE"
 default-run = "polymarket-arbitrage-bot"
@@ -108,7 +108,7 @@ sha2 = "0.10"
 secrecy = "0.10"
 hex = "0.4"
 base64 = "0.21"
-polymarket_client_sdk_v2 = { version = "=0.6.0-canary.1", features = ["clob", "ctf", "ws", "gamma", "bridge"] }
+polymarket_client_sdk_v2 = { version = "=0.6.0-canary.1", features = ["clob", "ctf", "ws", "gamma", "bridge", "rtds"] }
 alloy = { version = "1.3", features = ["full"] }
 alloy-contract = "1.3"
 chrono = { version = "0.4", features = ["serde"] }

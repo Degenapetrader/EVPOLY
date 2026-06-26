@@ -16,24 +16,32 @@ The scheduler emits intents about 4 minutes before open:
 - `1h`: minute `56`
 - `4h`: minute `56` when hour `%4 == 3`
 
-## Alpha + Discovery Behavior
-- Remote alpha endpoint: `EVPOLY_REMOTE_PREMARKET_ALPHA_URL`
-- Token: `EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN`
-- Runtime timeout: hardcoded `1000ms`
-
-Alpha behavior:
-1. Scheduler emits the local intent around `T-4m`.
-2. Runtime requests an EVPlus Alpha signal for the local base ladder.
-3. Missing, rejected, malformed, or unavailable alpha signal -> fail-closed skip for that asset intent.
+## Discovery Behavior
+Premarket ladder prices are selected locally from deterministic mode settings. The runtime no longer calls a remote Premarket alpha endpoint before building the submit ladder.
 
 Market discovery:
 - Shared timeframe discovery is remote-first.
 - Local discovery fallback is enabled in runtime.
 
 ## Order Ladder
-Premarket uses an internal fixed base ladder and requests the final EVPlus Alpha ladder signal before submit.
-The local runtime no longer exposes or honors public price-preset overrides.
+Premarket uses a fixed base ladder per timeframe bucket and optional local Safe/Aggressive price bias.
 Weights, min-notional sizing, caps, discovery, cancel scheduling, and order placement remain local.
+
+Base prices:
+- `5m`: `0.31, 0.26, 0.22, 0.16, 0.09, 0.03`
+- `15m/1h/4h`: `0.40, 0.30, 0.24, 0.18, 0.12, 0.06`
+
+Weights: `23%, 23%, 17%, 14%, 12%, 11%`
+
+Mode keys:
+- `EVPOLY_PREMARKET_LADDER_MODE_5M`: `normal`, `safe`, or `aggressive`
+- `EVPOLY_PREMARKET_LADDER_MODE_NON_M5`: `normal`, `safe`, or `aggressive`
+
+Bias keys:
+- `EVPOLY_PREMARKET_SAFE_BIAS_PCT=-10`
+- `EVPOLY_PREMARKET_AGGRESSIVE_BIAS_PCT=10`
+
+`normal` uses the base ladder. `safe` and `aggressive` multiply the base prices by `1 + bias_pct / 100`, round up to the nearest cent, and clamp to `0.01..0.99`. Bias values are clamped to `-90..200`.
 
 Rungs are clamped to a fixed `$5` minimum per order.
 Reward `min_size` is ignored for Premarket ladder sizing and submit-time constraints.
@@ -67,8 +75,10 @@ Premarket TP is enabled by default:
 - `EVPOLY_STRATEGY_PREMARKET_ENABLE`
 - `EVPOLY_PREMARKET_BASE_SIZE_USD`
 - `EVPOLY_PREMARKET_TIMEFRAMES`
+- `EVPOLY_PREMARKET_LADDER_MODE_5M`
+- `EVPOLY_PREMARKET_LADDER_MODE_NON_M5`
+- `EVPOLY_PREMARKET_SAFE_BIAS_PCT`
+- `EVPOLY_PREMARKET_AGGRESSIVE_BIAS_PCT`
 - `EVPOLY_PREMARKET_TP_ENABLE`
-- `EVPOLY_REMOTE_PREMARKET_ALPHA_URL`
-- `EVPOLY_REMOTE_PREMARKET_ALPHA_TOKEN`
 - `EVPOLY_REMOTE_MARKET_DISCOVERY_URL`
 - `EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN`

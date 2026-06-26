@@ -227,24 +227,8 @@ pub struct EndgameExecutionConfig {
 
 impl EndgameExecutionConfig {
     pub fn from_env() -> Self {
-        let tick_offsets_ms_raw = env_nonempty(&["EVPOLY_ENDGAME_TICK_OFFSETS_MS".to_string()]);
-        let (offset_scale_ms, mut tick_offsets_sec) = if let Some(raw_ms) = tick_offsets_ms_raw {
-            (1_u64, parse_endgame_offsets(raw_ms.as_str()))
-        } else if let Some(raw_sec) = env_nonempty(&["EVPOLY_ENDGAME_TICK_OFFSETS_SEC".to_string()])
-        {
-            (
-                1_000_u64,
-                parse_endgame_offsets(raw_sec.as_str())
-                    .into_iter()
-                    .map(|offset_sec| offset_sec.saturating_mul(1_000))
-                    .collect::<Vec<_>>(),
-            )
-        } else {
-            (1_u64, DEFAULT_ENDGAME_TICK_OFFSETS_MS.to_vec())
-        };
-        if tick_offsets_sec.is_empty() {
-            tick_offsets_sec = DEFAULT_ENDGAME_TICK_OFFSETS_MS.to_vec();
-        }
+        let offset_scale_ms = 1_u64;
+        let mut tick_offsets_sec = DEFAULT_ENDGAME_TICK_OFFSETS_MS.to_vec();
         tick_offsets_sec.sort_by(|a, b| b.cmp(a));
         tick_offsets_sec.dedup();
 
@@ -367,9 +351,12 @@ impl EndgameExecutionConfig {
             .unwrap_or(0.10)
             .clamp(0.0, 1.0),
             execution_size_mode: StrategyExecutionSizeMode::Shares,
-            base_size_shares: env_f64_any(&["EVPOLY_ENDGAME_BASE_SIZE_SHARES".to_string()])
-                .unwrap_or(50.0)
-                .max(0.0),
+            base_size_shares: env_f64_any(&[
+                "EVPOLY_ENDGAME_BASE_SIZE_SHARES".to_string(),
+                "EVPOLY_ENDGAME_BASE_SIZE_USD".to_string(),
+            ])
+            .unwrap_or(50.0)
+            .max(0.0),
         }
     }
 
@@ -449,13 +436,6 @@ fn parse_endgame_timeframes(raw: &str) -> Vec<crate::strategy::Timeframe> {
         out.push(crate::strategy::Timeframe::H4);
     }
     out
-}
-
-fn parse_endgame_offsets(raw: &str) -> Vec<u64> {
-    raw.split(',')
-        .filter_map(|part| part.trim().parse::<u64>().ok())
-        .filter(|offset| *offset > 0)
-        .collect()
 }
 
 fn normalize_endgame_symbol(raw: &str) -> String {
@@ -981,6 +961,59 @@ mod tests {
             || {
                 let cfg = EndgameExecutionConfig::from_env();
                 assert_eq!(cfg.execution_size_mode(), StrategyExecutionSizeMode::Shares);
+            },
+        );
+    }
+
+    #[test]
+    fn endgame_defaults_use_legacy_three_tick_floor_and_share_size() {
+        with_env(
+            &[
+                (
+                    "EVPOLY_ENDGAME_TICK_OFFSETS_MS",
+                    Some("10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,100"),
+                ),
+                (
+                    "EVPOLY_ENDGAME_TICK_OFFSETS_SEC",
+                    Some("10,9,8,7,6,5,4,3,2,1"),
+                ),
+                ("EVPOLY_ENDGAME_MIN_ENTRY_PRICE", None),
+                ("EVPOLY_ENDGAME_BASE_SIZE_SHARES", None),
+                ("EVPOLY_ENDGAME_BASE_SIZE_USD", None),
+            ],
+            || {
+                let cfg = EndgameExecutionConfig::from_env();
+                assert_eq!(cfg.tick_offsets_sec, vec![2_000, 1_000, 100]);
+                assert!((cfg.min_entry_price - 0.5).abs() < 1e-9);
+                assert!((cfg.base_size_shares - 50.0).abs() < 1e-9);
+            },
+        );
+    }
+
+    #[test]
+    fn endgame_share_size_accepts_legacy_ui_usd_field() {
+        with_env(
+            &[
+                ("EVPOLY_ENDGAME_BASE_SIZE_SHARES", None),
+                ("EVPOLY_ENDGAME_BASE_SIZE_USD", Some("200")),
+            ],
+            || {
+                let cfg = EndgameExecutionConfig::from_env();
+                assert!((cfg.base_size_shares - 200.0).abs() < 1e-9);
+            },
+        );
+    }
+
+    #[test]
+    fn endgame_share_size_prefers_explicit_share_field() {
+        with_env(
+            &[
+                ("EVPOLY_ENDGAME_BASE_SIZE_SHARES", Some("125")),
+                ("EVPOLY_ENDGAME_BASE_SIZE_USD", Some("200")),
+            ],
+            || {
+                let cfg = EndgameExecutionConfig::from_env();
+                assert!((cfg.base_size_shares - 125.0).abs() < 1e-9);
             },
         );
     }

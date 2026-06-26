@@ -1,69 +1,75 @@
 # Endgame Sweep v1 Guide
 
 ## What It Does
-`endgame_sweep_v1` enters late in the period, with local V1 checkpoint timing and a strict execution guard stack.
+`endgame_sweep_v1` enters late in the period using the local V1 three-checkpoint policy. It keeps the old proxy/base direction model and fixed 99c limit, then adds RTDS and Book99-style CEX-depth as guard/sizing layers.
 
 ## Default Scope
 - Symbols: `BTC, ETH, SOL, XRP, DOGE, BNB, HYPE`
 - Timeframes: `5m, 15m, 1h, 4h`
 - Strategy toggle default: `EVPOLY_STRATEGY_ENDGAME_ENABLE=true`
 
-## Proxy Routing Defaults
-- `BTC/ETH/SOL/XRP` use Coinbase as the primary proxy feed path.
-- `BTC/ETH/SOL/XRP` also require a Binance direction-agreement guard before each alpha checkpoint can trade.
-- `DOGE/BNB/HYPE` use Binance trade proxy feed path.
-- `DOGE/BNB/HYPE` use a more tolerant alpha freshness guard for Binance-routed submits.
+## Local V1 Policy
+The default checkpoint schedule is:
 
-## Local V1 Policy And Fast Path
-Endgame V1 uses the configured local tick offsets as its checkpoint policy. A background registry worker discovers the current Polymarket market, prewarms token metadata and market constraints, and keeps the Endgame Polymarket websocket scope subscribed before the due ticks.
+- `t-2000ms`: 20% of the period base size, minimum proxy/base move `2.0 bps`
+- `t-1000ms`: 40% of the period base size, minimum proxy/base move `1.5 bps`
+- `t-100ms`: 40% of the period base size, minimum proxy/base move `1.0 bps`
 
-Polymarket quotes are read from the compact Endgame quote cache. The REST `/books` batch worker refreshes that cache, and websocket book updates can refresh it as well. At the due tick, the decision path skips if the current market context or quote snapshot is missing/stale instead of doing cold discovery/orderbook work on the submit path.
+The checkpoint offsets are code-owned for this legacy path; saved profile/env offset values are ignored.
 
-Fast submit uses a typed Endgame intent and requires prewarmed order metadata by default. This keeps build/sign/post on cached metadata and avoids a submit-time token metadata probe.
+RTDS not-ready surcharge is added to the checkpoint bps threshold. With the default `EVPOLY_ENDGAME_RTDS_NO_GUARD_EXTRA_BPS=1.5`, missing/stale RTDS makes the effective thresholds `3.5/3.0/2.5 bps`.
 
 ## End-to-End Flow
-1. Build symbol proxy feeds (Coinbase primary feeds plus Binance guard/routing feeds).
-2. Compute/restore period base anchor.
-3. Prewarm the current Polymarket market, constraints, metadata, and quote cache before close.
-4. Use the local V1 checkpoint offsets for due ticks.
-5. For each due checkpoint, require Coinbase/Binance direction agreement for `BTC/ETH/SOL/XRP`.
-6. Build direction/probability plan.
-7. Apply mandatory near-base skip gate.
-8. Read market context and quotes from the Endgame registry/cache.
-9. Enforce quote freshness + market constraints.
-10. Apply poly price-band / entry-price guards.
-11. Apply EV-safe sizing and cap checks.
-12. Enqueue to arbiter/trader.
-13. Enforce submit-time proxy freshness and cached-metadata fast submit checks.
+1. Prewarm the current Polymarket market, constraints, metadata, and compact quote cache before close.
+2. Read the live proxy/base move from the configured proxy feed.
+3. For `BTC/ETH/SOL/XRP`, require Coinbase and Binance to agree on direction before the tick can trade.
+4. Evaluate RTDS Chainlink guard. If RTDS has the exact period-open sample and fresh current sample, skip if direction disagrees or absolute RTDS move is below `EVPOLY_ENDGAME_RTDS_GUARD_MIN_BPS`.
+5. If RTDS is unavailable, keep the proxy base and add `EVPOLY_ENDGAME_RTDS_NO_GUARD_EXTRA_BPS` to the tick's near-base threshold.
+6. Require the proxy/base move to exceed the effective near-base threshold.
+7. Require the old Polymarket mid band for the tick: `95-99c`, `97-99c`, then `98-99c`.
+8. Evaluate Book99-style CEX-depth cost-to-flip against rolling depth quantiles.
+9. Apply CEX-depth size multiplier: weak depth reduces size, and strong depth increases size.
+10. Clamp the applied CEX-depth multiplier to `0.0..2.0`, then apply period cap and minimum order checks.
+11. Submit a non-resting Endgame `FAK` buy at the fixed 99c limit, accepting positive partial fills and treating no-fill as failed.
+12. Reject strategy/trader submits that reach the path inside the final 25ms close guard.
 
 ## Sizing Policy
-Endgame execution is fixed to share sizing. Base share key: `EVPOLY_ENDGAME_BASE_SIZE_SHARES` (blank defaults to `50`). `EVPOLY_ENDGAME_EXECUTION_SIZE_MODE` is retained for desktop profile compatibility but does not change runtime mode.
+Endgame execution is fixed to share sizing. Base share key: `EVPOLY_ENDGAME_BASE_SIZE_SHARES` (blank defaults to `50`). If the share key is blank, the legacy desktop profile field `EVPOLY_ENDGAME_BASE_SIZE_USD` is accepted as the share-size fallback. `EVPOLY_ENDGAME_EXECUTION_SIZE_MODE` is retained for desktop profile compatibility but does not change runtime mode.
 
 Multipliers:
+
 - Symbol: `BTC=1.0`, `ETH=0.8`, `SOL/XRP/DOGE/BNB/HYPE=0.5`
-- Checkpoint size weights use fixed runtime defaults.
+- Checkpoint split: `20/40/40`
+- CEX-depth: multiplier can reduce weak-depth trades below 1.0 or increase strong-depth trades above 1.0, with live submit capped by period remaining size.
 
 ## Core Guards
-- Mandatory Endgame near-base skip gate defaults to `1.5` bps (`EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS`).
-- `BTC/ETH/SOL/XRP` require Coinbase and Binance to agree on up/down direction versus their period-open proxy base before an Endgame tick can submit.
-- Quote/proxy freshness gates
-- Submit-time stale guard from the local V1 policy
-- Safety stop defaults to `0s` so local late-window checkpoints can fire.
-- Min entry / price-band gates
-- Per-period and strategy cap gates
+- Coinbase/Binance same-direction guard for `BTC/ETH/SOL/XRP`
+- RTDS exact-open guard when ready; RTDS no-guard bps surcharge when not ready
+- Per-tick proxy/base bps thresholds
+- Polymarket mid-band gate by tick
+- Mandatory CEX-depth freshness/readiness
+- Quote/constraint/metadata prewarm gates
+- Per-period cap and minimum order checks
+- Worker/trader final 25ms close guard
+- FAK submit with partial-fill accounting
 
 ## Key Env Knobs
 - `EVPOLY_STRATEGY_ENDGAME_ENABLE`
+- `EVPOLY_ENDGAME_BASE_SIZE_SHARES`
 - `EVPOLY_ENDGAME_BASE_SIZE_USD`
 - `EVPOLY_ENDGAME_PER_PERIOD_CAP_USD`
 - `EVPOLY_ENDGAME_SYMBOLS`
 - `EVPOLY_ENDGAME_TIMEFRAMES`
-- `EVPOLY_ENTRY_WORKER_COUNT_ENDGAME` (code default `8`)
-- `EVPOLY_ENDGAME_FAST_SUBMIT_ENABLE`
-- `EVPOLY_ENDGAME_PM_QUOTE_CACHE_ENABLE`
-- `EVPOLY_ENDGAME_QUOTE_MAX_AGE_MS`
-- `EVPOLY_ENDGAME_REGISTRY_WORKER_ENABLE`
-- `EVPOLY_ENDGAME_REST_BATCH_POLL_ENABLE`
+- `EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS_TICK0`
+- `EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS_TICK1`
+- `EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS_TICK2`
+- `EVPOLY_ENDGAME_RTDS_GUARD_ENABLE`
+- `EVPOLY_ENDGAME_RTDS_GUARD_MIN_BPS`
+- `EVPOLY_ENDGAME_RTDS_GUARD_STALE_MS`
+- `EVPOLY_ENDGAME_RTDS_NO_GUARD_EXTRA_BPS`
+- `EVPOLY_ENDGAME_CEX_DEPTH_GUARD_ENABLE`
+- `EVPOLY_ENDGAME_CEX_DEPTH_MAX_AGE_MS`
+- `EVPOLY_ENDGAME_CEX_DEPTH_REDUCE_QUANTILE`
+- `EVPOLY_ENDGAME_CEX_DEPTH_INCREASE_QUANTILE`
 - `EVPOLY_ENDGAME_REQUIRE_PREWARMED_METADATA`
-- `EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS`
-- `EVPOLY_ENDGAME_SAFETY_STOP_SEC` (default `0`)
+- `EVPOLY_ENDGAME_SUBMIT_TIMEOUT_MS`

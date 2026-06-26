@@ -54,8 +54,10 @@ const DEFAULT_DISCOVERY_HORIZON_4H: u64 = 1;
 const DEFAULT_DISCOVERY_HORIZON_1D: u64 = 1;
 const DEFAULT_PREMARKET_YES_MIN: f64 = 0.70;
 const DEFAULT_PREMARKET_YES_MAX: f64 = 0.90;
-const DEFAULT_ENDGAME_BASE_OFFSETS_MS: &[u64] = &[2000, 1000, 100];
-const DEFAULT_ENDGAME_NEAR_T_RANDOM_MAX_BPS: u32 = 2500;
+const DEFAULT_ENDGAME_BASE_OFFSETS_MS: &[u64] = &[
+    10_000, 9_000, 8_000, 7_000, 6_000, 5_000, 4_000, 3_000, 2_000, 1_000, 100,
+];
+const DEFAULT_ENDGAME_NEAR_T_RANDOM_MAX_BPS: u32 = 0;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_BASE_MS: i64 = 400;
 const DEFAULT_ENDGAME_SUBMIT_PROXY_MAX_AGE_JITTER_MS: i64 = 100;
 const DEFAULT_ENDGAME_LEGACY_SDK1_COMPAT: bool = true;
@@ -2922,20 +2924,22 @@ mod tests {
 
     #[test]
     fn endgame_near_t_offsets_only_move_toward_close() {
-        for base_ms in [2_000_u64, 1_000, 100] {
+        for base_ms in DEFAULT_ENDGAME_BASE_OFFSETS_MS {
             for idx in 0..200 {
                 let offset = seeded_near_t_offset_ms(
-                    base_ms,
+                    *base_ms,
                     DEFAULT_ENDGAME_NEAR_T_RANDOM_MAX_BPS,
                     format!("seed-{base_ms}-{idx}").as_str(),
                 );
-                let min_offset = base_ms - ((base_ms as u128 * 2500 / 10_000) as u64);
+                let min_offset = *base_ms
+                    - ((*base_ms as u128 * DEFAULT_ENDGAME_NEAR_T_RANDOM_MAX_BPS as u128 / 10_000)
+                        as u64);
                 assert!(
                     offset >= min_offset,
-                    "offset {offset} moved more than 25% from base {base_ms}"
+                    "offset {offset} moved more than configured jitter from base {base_ms}"
                 );
                 assert!(
-                    offset <= base_ms,
+                    offset <= *base_ms,
                     "offset {offset} moved away from T beyond base {base_ms}"
                 );
             }
@@ -2943,8 +2947,11 @@ mod tests {
     }
 
     #[test]
-    fn endgame_default_offsets_are_t0_t1_t2() {
-        assert_eq!(DEFAULT_ENDGAME_BASE_OFFSETS_MS, &[2_000, 1_000, 100]);
+    fn endgame_default_offsets_cover_t10_to_t0() {
+        assert_eq!(
+            DEFAULT_ENDGAME_BASE_OFFSETS_MS,
+            &[10_000, 9_000, 8_000, 7_000, 6_000, 5_000, 4_000, 3_000, 2_000, 1_000, 100]
+        );
     }
 
     #[test]

@@ -1,5 +1,10 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.4.7 - 2026-06-26
+- Bumped Linux app/updater version to 2.4.7.
+- Repinned the bundled runtime sidecar to runtime `v2.4.7` (`ba7a56a`) with restored Premarket ladder controls, legacy Endgame timing with RTDS/FAK/CEX-depth safeguards, and MM Sport discovery snapshot fallback.
+- Ported the portfolio/performance share-card updates and restored editable Premarket Safe/Aggressive ladder bias controls.
+
 ## Linux-v2.4.6 - 2026-06-17
 - Bumped Linux app/updater version to 2.4.6.
 - Repinned the bundled runtime sidecar to runtime `v2.4.6` (`e02c283`) with local secret hardening, fail-closed manual API auth, HTTPS-only remote URL defaults, and remote EVcurve payload validation.

@@ -39,8 +39,8 @@ import {
   downloadLinuxUpdateDeb,
   getGeoAccessStatus,
   getActiveProfileId,
-  getLinuxResumeOffer,
   getHomePerformanceApi,
+  getLinuxResumeOffer,
   getSavedConfig,
   lockSession,
   restartBot,
@@ -54,6 +54,7 @@ import {
   type PendingLinuxResumeOffer,
   type SetupDoctorResult,
   type ProfilePerformancePoint,
+  type ProfilePerformanceView,
 } from "../lib/tauri-commands";
 import {
   buildHomePerformanceSnapshot,
@@ -234,6 +235,7 @@ export function Home() {
   const [performanceShareCard, setPerformanceShareCard] =
     useState<PerformanceShareCardPayload | null>(null);
   const [performanceShareBackground, setPerformanceShareBackground] = useState<string | null>(null);
+  const [homePerformance, setHomePerformance] = useState<ProfilePerformanceView | null>(null);
   const [requestedEditorSection, setRequestedEditorSection] =
     useState<StrategyEditorSection | null>(null);
   const [railDraftValues, setRailDraftValues] = useState<Record<StrategyKey, string>>(() =>
@@ -348,14 +350,30 @@ export function Home() {
   const botRunning = overview?.bot_state === "running";
   const otherProfileRunning = Boolean(overview?.other_profile_running && overview.live_profile_id);
   const liveProfileLabel = overview?.live_profile_name?.trim() || "live profile";
+  const refreshHomePerformance = useCallback(async () => {
+    if (!activeProfileId) {
+      setHomePerformance(null);
+      return;
+    }
+    try {
+      setHomePerformance(await getHomePerformanceApi("1d"));
+    } catch {
+      setHomePerformance(null);
+    }
+  }, [activeProfileId]);
+
+  useEffect(() => {
+    void refreshHomePerformance();
+  }, [refreshHomePerformance, portfolioFeedSeed]);
+
   const performanceSnapshot = useMemo(
     () =>
       buildHomePerformanceSnapshot({
         overview,
-        performance: null,
+        performance: homePerformance,
         publicOpenPositionsValue: overview?.portfolio_value ?? null,
       }),
-    [overview]
+    [overview, homePerformance]
   );
 
   const handleUpdate = async () => {
@@ -424,6 +442,7 @@ export function Home() {
   }, [botRunning, pendingResumeOffer]);
 
   const handleProfileSwitch = async (profileId: string) => {
+    setHomePerformance(null);
     setActiveProfileId(profileId);
     await loadProfileConfig(profileId);
     await refreshOverview(true);

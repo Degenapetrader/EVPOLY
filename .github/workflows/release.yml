@@ -98,6 +98,17 @@ jobs:
           fi
           echo "manifest_path=${manifest_path}" >> "${GITHUB_OUTPUT}"
 
+      - name: Ubuntu deb smoke
+        run: bash scripts/smoke-installer-linux.sh
+
+      - name: Install Ubuntu deb
+        run: sudo apt-get install -y ./src-tauri/target/release/bundle/deb/*.deb
+
+      - name: Verify installed Linux binaries
+        run: |
+          test -x /usr/bin/evpoly-desktop
+          test -x /usr/bin/evpoly-bot
+
       - name: Publish Linux updater manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -113,14 +124,3 @@ jobs:
               --notes "Stable updater manifest for EVPoly Linux releases." \
               --prerelease
           fi
-
-      - name: Ubuntu deb smoke
-        run: bash scripts/smoke-installer-linux.sh
-
-      - name: Install Ubuntu deb
-        run: sudo apt-get install -y ./src-tauri/target/release/bundle/deb/*.deb
-
-      - name: Verify installed Linux binaries
-        run: |
-          test -x /usr/bin/evpoly-desktop
-          test -x /usr/bin/evpoly-bot

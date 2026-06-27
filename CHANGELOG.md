@@ -1,5 +1,10 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.4.8 - 2026-06-27
+- Bumped Linux app/updater version to 2.4.8.
+- Repinned the bundled runtime sidecar to runtime `v2.4.8` (`85c48f4`) with wider MM Sport full rewards discovery, bounded delta discovery, and cache-protected rewards API fallback.
+- Removed stale ignored MM Sport discovery env keys from the generated Linux env template.
+
 ## Linux-v2.4.7 - 2026-06-26
 - Bumped Linux app/updater version to 2.4.7.
 - Repinned the bundled runtime sidecar to runtime `v2.4.7` (`ba7a56a`) with restored Premarket ladder controls, legacy Endgame timing with RTDS/FAK/CEX-depth safeguards, and MM Sport discovery snapshot fallback.

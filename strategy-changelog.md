@@ -9,6 +9,9 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-06-27
+- `mm_sport_v1`: widened full Polymarket rewards discovery from the old 8-page/1000-detail-row effective breadth to a 20-page/2000-detail-row full refresh, while keeping 10-minute delta discovery on the fixed 8-page/1000-detail-row budget. Removed the dead `EVPOLY_MM_SPORT_DISCOVERY_DETAIL_CAP` env/UI surface and made `EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET=20` the documented default (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
+
 ### 2026-06-26
 - `mm_sport_v1`: added a local JSON last-good discovery snapshot (`mm_sport_discovery_snapshot.json`) for MM Sport rewards discovery on the legacy Endgame runtime line. Healthy primary Polymarket rewards API discoveries write the snapshot; on primary API failure after restart, the runtime prefers in-memory cache, then the snapshot, and only uses CLOB current rewards when no cache/snapshot is available (`src/main.rs`).
 

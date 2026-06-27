@@ -1,5 +1,9 @@
 # EVPoly Changelog
 
+## v2.4.8 - 2026-06-27
+- Widened MM Sport full Polymarket rewards discovery to 20 pages and 2000 detail rows while keeping delta discovery bounded and cache-protected.
+- Removed the stale MM Sport discovery detail-cap env surface from runtime docs/examples.
+
 ## v2.4.7 - 2026-06-26
 - Restored local Premarket ladder controls and retained the local ladder bias percentages for Safe/Aggressive modes.
 - Restored legacy Endgame V1 timing while keeping the RTDS, FAK, and Book99 CEX-depth sizing safeguards.

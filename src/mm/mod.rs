@@ -7,7 +7,9 @@ const MM_SPORT_ACTIVE_SPORT_MARKET_CAP_HARDCODED: usize = 600;
 const MM_SPORT_DISCOVERY_FULL_REFRESH_SEC_HARDCODED: u64 = 3_600;
 const MM_SPORT_DISCOVERY_DELTA_REFRESH_SEC_HARDCODED: u64 = 600;
 const MM_SPORT_DISCOVERY_DELTA_PAGE_BUDGET_HARDCODED: u32 = 8;
-const MM_SPORT_DISCOVERY_DETAIL_CAP_HARDCODED: usize = 1_000;
+const MM_SPORT_DISCOVERY_FULL_DETAIL_CAP_HARDCODED: usize = 2_000;
+const MM_SPORT_DISCOVERY_DELTA_DETAIL_CAP_HARDCODED: usize = 1_000;
+const MM_SPORT_REWARDS_PAGE_BUDGET_DEFAULT: u32 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MmSportQuoteSizeMode {
@@ -149,7 +151,8 @@ pub struct MmSportConfig {
     pub discovery_refresh_sec: u64,
     pub discovery_delta_refresh_sec: u64,
     pub discovery_delta_page_budget: u32,
-    pub discovery_detail_cap: usize,
+    pub discovery_full_detail_cap: usize,
+    pub discovery_delta_detail_cap: usize,
     pub rewards_page_budget: u32,
     pub min_reward_rate_per_day: f64,
     pub discovery_route: MmSportDiscoveryRoute,
@@ -301,8 +304,13 @@ impl MmSportConfig {
             discovery_refresh_sec: MM_SPORT_DISCOVERY_FULL_REFRESH_SEC_HARDCODED,
             discovery_delta_refresh_sec: MM_SPORT_DISCOVERY_DELTA_REFRESH_SEC_HARDCODED,
             discovery_delta_page_budget: MM_SPORT_DISCOVERY_DELTA_PAGE_BUDGET_HARDCODED,
-            discovery_detail_cap: MM_SPORT_DISCOVERY_DETAIL_CAP_HARDCODED,
-            rewards_page_budget: env_u32("EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET", 8).clamp(1, 200),
+            discovery_full_detail_cap: MM_SPORT_DISCOVERY_FULL_DETAIL_CAP_HARDCODED,
+            discovery_delta_detail_cap: MM_SPORT_DISCOVERY_DELTA_DETAIL_CAP_HARDCODED,
+            rewards_page_budget: env_u32(
+                "EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET",
+                MM_SPORT_REWARDS_PAGE_BUDGET_DEFAULT,
+            )
+            .clamp(1, 200),
             min_reward_rate_per_day: env_f64("EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY", 5.0)
                 .max(0.0),
             discovery_route,
@@ -912,7 +920,9 @@ mod tests {
                 assert_eq!(cfg.discovery_refresh_sec, 3_600);
                 assert_eq!(cfg.discovery_delta_refresh_sec, 600);
                 assert_eq!(cfg.discovery_delta_page_budget, 8);
-                assert_eq!(cfg.discovery_detail_cap, 1_000);
+                assert_eq!(cfg.discovery_full_detail_cap, 2_000);
+                assert_eq!(cfg.discovery_delta_detail_cap, 1_000);
+                assert_eq!(cfg.rewards_page_budget, 20);
                 assert_eq!(cfg.max_quote_shares, 1000.0);
                 assert_eq!(cfg.nonsport_max_quote_shares, 250.0);
                 assert_eq!(cfg.sizing_for_market(true).max_quote_shares, 1000.0);

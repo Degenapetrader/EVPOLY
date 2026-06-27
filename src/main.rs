@@ -17470,7 +17470,7 @@ async fn main() -> Result<()> {
             );
         } else {
             eprintln!(
-                "🏀 MM Sport enabled (poll_ms={}, event_driven={}, event_fallback_poll_ms={}, ws_stale_ms={}, fifo_ws_gap_cancel_ms={}, discovery_refresh_sec={}, discovery_delta_refresh_sec={}, discovery_delta_page_budget={}, discovery_detail_cap={}, rewards_page_budget={}, min_reward_rate_per_day={:.2}, quote_size_mode={}, exit_mode={}, quote_size_mult={:.3}, pair_baseline_reward_mult={:.3}, max_share_ratio={:.3}, min_top_depth_usd={:.2}, pause_after_fill_sec={}, no_exit_side_pause_sec={}, bust_window_ms={}, bust_shares_1s={:.2}, bust_pause_sec=[{},{}], ratio_breach_cancel_cooldown_ms={}, ratio_pause_sec={}, post_only={}, quote_expiry_sec=[{},{}], require_reward_eligible={}, pregame_only={}, match_only={}, max_markets={})",
+                "🏀 MM Sport enabled (poll_ms={}, event_driven={}, event_fallback_poll_ms={}, ws_stale_ms={}, fifo_ws_gap_cancel_ms={}, discovery_refresh_sec={}, discovery_delta_refresh_sec={}, discovery_delta_page_budget={}, discovery_full_detail_cap={}, discovery_delta_detail_cap={}, rewards_page_budget={}, min_reward_rate_per_day={:.2}, quote_size_mode={}, exit_mode={}, quote_size_mult={:.3}, pair_baseline_reward_mult={:.3}, max_share_ratio={:.3}, min_top_depth_usd={:.2}, pause_after_fill_sec={}, no_exit_side_pause_sec={}, bust_window_ms={}, bust_shares_1s={:.2}, bust_pause_sec=[{},{}], ratio_breach_cancel_cooldown_ms={}, ratio_pause_sec={}, post_only={}, quote_expiry_sec=[{},{}], require_reward_eligible={}, pregame_only={}, match_only={}, max_markets={})",
                 mm_sport_cfg.poll_ms,
                 mm_sport_cfg.event_driven_enable,
                 mm_sport_cfg.event_fallback_poll_ms,
@@ -17479,7 +17479,8 @@ async fn main() -> Result<()> {
                 mm_sport_cfg.discovery_refresh_sec,
                 mm_sport_cfg.discovery_delta_refresh_sec,
                 mm_sport_cfg.discovery_delta_page_budget,
-                mm_sport_cfg.discovery_detail_cap,
+                mm_sport_cfg.discovery_full_detail_cap,
+                mm_sport_cfg.discovery_delta_detail_cap,
                 mm_sport_cfg.rewards_page_budget,
                 mm_sport_cfg.min_reward_rate_per_day,
                 mm_sport_cfg.quote_size_mode.as_str(),
@@ -18051,12 +18052,17 @@ async fn main() -> Result<()> {
                         } else {
                             mm_sport_cfg_for_loop.discovery_delta_page_budget
                         };
+                        let discovery_detail_cap = if should_full_discovery {
+                            mm_sport_cfg_for_loop.discovery_full_detail_cap
+                        } else {
+                            mm_sport_cfg_for_loop.discovery_delta_detail_cap
+                        };
                         match mm_sport_discover_markets(
                             &api_for_mm_sport,
                             mm_sport_cfg_for_loop.as_ref(),
                             discovery_mode,
                             rewards_page_budget,
-                            mm_sport_cfg_for_loop.discovery_detail_cap,
+                            discovery_detail_cap,
                             last_good_discovered_markets.is_empty(),
                         )
                         .await
@@ -18330,7 +18336,7 @@ async fn main() -> Result<()> {
                                         "rewards_api_partial_due_to_error": discovery_report.rewards_api_partial_due_to_error,
                                         "rewards_api_attempts_exhausted": discovery_report.rewards_api_attempts_exhausted,
                                         "detail_candidate_rows": discovery_report.detail_candidate_rows,
-                                        "discovery_detail_cap": mm_sport_cfg_for_loop.discovery_detail_cap,
+                                        "discovery_detail_cap": discovery_detail_cap,
                                         "skipped_detail_cap": discovery_report.skipped_detail_cap,
                                         "degraded_discovery": degraded_discovery,
                                         "full_refresh_interval_ms": full_refresh_interval_ms,

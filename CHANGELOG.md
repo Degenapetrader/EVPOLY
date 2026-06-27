@@ -1,5 +1,8 @@
 # EVPoly Desktop Changelog
 
+## Local - 2026-06-27
+- Repinned the local desktop sidecar build to runtime `c19d3d1`, widening MM Sport full discovery to 20 rewards pages / 2000 detail rows while keeping delta discovery bounded, and removed stale ignored MM Sport discovery env keys from the generated desktop env template.
+
 ## UI-v2.4.7 - 2026-06-26
 - Bumped desktop app/updater version to 2.4.7.
 - Repinned the bundled runtime sidecar to runtime `v2.4.7` (`ba7a56a`) with restored Premarket ladder controls, legacy Endgame timing with RTDS/FAK/CEX-depth safeguards, and MM Sport discovery snapshot fallback.

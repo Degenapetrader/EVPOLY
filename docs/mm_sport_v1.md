@@ -26,6 +26,8 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
 ## Safety Controls
 
 - Fresh-entry reward gates:
+  - `EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET=20`
+  - full rewards discovery inspects up to the first 20 Polymarket rewards pages by default; the 10-minute delta refresh stays on the fixed 8-page budget to limit API load
   - `EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY=5`
   - `EVPOLY_MM_SPORT_REQUIRE_REWARD_ELIGIBLE=true`
   - discovery and the live quote loop both block fresh BUY quotes below the reward floor
@@ -73,6 +75,7 @@ Sports route applies match-only, pregame-only, league filters, and live-game gua
 - `EVPOLY_STRATEGY_MM_SPORT_ENABLE`
 - `EVPOLY_MM_SPORT_HARD_DISABLE`
 - `EVPOLY_MM_SPORT_DISCOVERY_ROUTE`
+- `EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET`
 - `EVPOLY_MM_SPORT_MATCH_ONLY`
 - `EVPOLY_MM_SPORT_MIN_REWARD_RATE_PER_DAY`
 - `EVPOLY_MM_SPORT_REQUIRE_REWARD_ELIGIBLE`

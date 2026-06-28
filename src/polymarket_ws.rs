@@ -473,11 +473,12 @@ impl SharedPolymarketWsState {
     pub async fn get_orderbook_snapshot(
         &self,
         token_id: &str,
-        _max_age_ms: i64,
+        max_age_ms: i64,
     ) -> Option<WsOrderbookSnapshot> {
+        let now_ms = chrono::Utc::now().timestamp_millis();
         let map = self.inner.orderbooks.read().await;
         let snapshot = map.get(token_id)?;
-        if snapshot.updated_ms <= 0 {
+        if snapshot.updated_ms <= 0 || now_ms.saturating_sub(snapshot.updated_ms) > max_age_ms {
             return None;
         }
         Some(snapshot.clone())
@@ -3608,6 +3609,49 @@ mod tests {
 
         state.clear_market_connected(0);
         assert!(!state.market_connected());
+    }
+
+    #[test]
+    fn orderbook_snapshot_respects_max_age() {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        rt.block_on(async {
+            let state = new_shared_polymarket_ws_state();
+            let fresh_token = "fresh-token";
+            let stale_token = "stale-token";
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            {
+                let mut books = state.inner.orderbooks.write().await;
+                books.insert(
+                    fresh_token.to_string(),
+                    WsOrderbookSnapshot {
+                        orderbook: OrderBook {
+                            bids: Vec::new(),
+                            asks: Vec::new(),
+                        },
+                        updated_ms: now_ms,
+                    },
+                );
+                books.insert(
+                    stale_token.to_string(),
+                    WsOrderbookSnapshot {
+                        orderbook: OrderBook {
+                            bids: Vec::new(),
+                            asks: Vec::new(),
+                        },
+                        updated_ms: now_ms - 60_000,
+                    },
+                );
+            }
+
+            assert!(state
+                .get_orderbook_snapshot(fresh_token, 5_000)
+                .await
+                .is_some());
+            assert!(state
+                .get_orderbook_snapshot(stale_token, 5_000)
+                .await
+                .is_none());
+        });
     }
 
     #[test]

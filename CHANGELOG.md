@@ -1,5 +1,9 @@
 # EVPoly Changelog
 
+## v2.5.0 - 2026-06-29
+- Hardened local Endgame fill readiness by allowing valid single-venue proxy direction when the peer venue sample is missing, retrying hot metadata prewarm, and lengthening fast submit outcome waits without retrying ambiguous FAK posts.
+- Fixed MM Sport stale websocket book snapshots so stale books fall back to the FIFO websocket-gap path instead of feeding FIFO/front-ratio decisions.
+
 ## v2.4.8 - 2026-06-27
 - Widened MM Sport full Polymarket rewards discovery to 20 pages and 2000 detail rows while keeping delta discovery bounded and cache-protected.
 - Removed the stale MM Sport discovery detail-cap env surface from runtime docs/examples.

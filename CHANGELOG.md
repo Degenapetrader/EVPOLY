@@ -2,7 +2,7 @@
 
 ## UI-v2.5.0 - 2026-06-29
 - Bumped desktop app/updater version to 2.5.0.
-- Repinned the bundled runtime sidecar to runtime `v2.5.0` (`0e960cf`) with hardened local Endgame fill readiness, the MM Sport stale-book FIFO fallback, and the current Endgame t0/t1/t2 timing.
+- Repinned the bundled runtime sidecar to runtime `v2.5.0` (`8f98513`) with hardened local Endgame fill readiness, the MM Sport stale-book FIFO fallback, and the current Endgame t0/t1/t2 timing.
 
 ## UI-v2.4.8 - 2026-06-27
 - Bumped desktop app/updater version to 2.4.8.

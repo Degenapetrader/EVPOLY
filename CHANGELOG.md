@@ -1,5 +1,9 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.5.0 - 2026-06-29
+- Bumped Linux app/updater version to 2.5.0.
+- Repinned the bundled runtime sidecar to runtime `v2.5.0` (`0e960cf`) with hardened local Endgame fill readiness, the MM Sport stale-book FIFO fallback, and the current Endgame t0/t1/t2 timing.
+
 ## Linux-v2.4.8 - 2026-06-27
 - Bumped Linux app/updater version to 2.4.8.
 - Repinned the bundled runtime sidecar to runtime `v2.4.8` (`85c48f4`) with wider MM Sport full rewards discovery, bounded delta discovery, and cache-protected rewards API fallback.

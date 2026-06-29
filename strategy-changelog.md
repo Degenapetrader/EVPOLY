@@ -9,6 +9,9 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-06-29
+- `endgame_sweep_v1`: reduced local Endgame under-fill causes found in the 2026-06-29 local-vs-SaaS comparison. The V1 dual-proxy direction guard now allows a single valid Coinbase/Binance proxy pair when the peer venue sample is missing, while still skipping real dual-proxy mismatches. Endgame metadata prewarm retry cooldown now defaults to `1000ms`, and the trader attempts a bounded `EVPOLY_ENDGAME_HOT_METADATA_PREWARM_TIMEOUT_MS=750` recovery before recording `endgame_metadata_not_prewarmed`; timed-out hot prewarms keep finishing in the background so the metadata inflight marker is not leaked. Endgame fast submit timeout now defaults to `2500ms` and producer outcome wait to `3500ms`, while FAK submit remains single-attempt because retrying ambiguous post errors can double-buy (`src/main.rs`, `src/trader.rs`, `.env.example`, `.env.full.example`).
+
 ### 2026-06-27
 - `mm_sport_v1`: widened full Polymarket rewards discovery from the old 8-page/1000-detail-row effective breadth to a 20-page/2000-detail-row full refresh, while keeping 10-minute delta discovery on the fixed 8-page/1000-detail-row budget. Removed the dead `EVPOLY_MM_SPORT_DISCOVERY_DETAIL_CAP` env/UI surface and made `EVPOLY_MM_SPORT_REWARDS_PAGE_BUDGET=20` the documented default (`src/mm/mod.rs`, `src/main.rs`, `.env.example`, `.env.full.example`, `docs/mm_sport_v1.md`).
 

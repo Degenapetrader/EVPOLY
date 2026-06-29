@@ -11068,7 +11068,7 @@ async fn main() -> Result<()> {
                             Ok(ArbiterEnqueueResult::Sent) => {
                                 let outcome_wait_default_ms = env_i64_clamped(
                                     "EVPOLY_ENDGAME_SUBMIT_TIMEOUT_MS",
-                                    1_500,
+                                    2_500,
                                     100,
                                     30_000,
                                 )
@@ -26733,8 +26733,8 @@ fn spawn_endgame_registry_worker(
     );
     let metadata_failure_cooldown_ms = env_i64_clamped(
         "EVPOLY_ENDGAME_METADATA_PREWARM_FAILURE_COOLDOWN_MS",
-        60_000,
         1_000,
+        250,
         600_000,
     );
     let constraints_failure_cooldown_ms = env_i64_clamped(
@@ -29096,40 +29096,10 @@ fn evaluate_endgame_v1_proxy_direction_guard(
     binance_open: Option<EndgameV1SpotSample>,
     binance_live: Option<EndgameV1SpotSample>,
 ) -> EndgameV1ProxyDirectionGuardDecision {
-    let Some(coinbase_open) = coinbase_open else {
-        return EndgameV1ProxyDirectionGuardDecision {
-            skip: true,
-            reason: "missing_coinbase_open".to_string(),
-            coinbase_move_bps: None,
-            binance_move_bps: None,
-        };
-    };
-    let Some(binance_open) = binance_open else {
-        return EndgameV1ProxyDirectionGuardDecision {
-            skip: true,
-            reason: "missing_binance_open".to_string(),
-            coinbase_move_bps: None,
-            binance_move_bps: None,
-        };
-    };
-    let Some(coinbase_live) = coinbase_live else {
-        return EndgameV1ProxyDirectionGuardDecision {
-            skip: true,
-            reason: "missing_coinbase_live".to_string(),
-            coinbase_move_bps: None,
-            binance_move_bps: None,
-        };
-    };
-    let Some(binance_live) = binance_live else {
-        return EndgameV1ProxyDirectionGuardDecision {
-            skip: true,
-            reason: "missing_binance_live".to_string(),
-            coinbase_move_bps: None,
-            binance_move_bps: None,
-        };
-    };
-    let coinbase_move_bps = endgame_v1_proxy_move_bps(coinbase_open, coinbase_live);
-    let binance_move_bps = endgame_v1_proxy_move_bps(binance_open, binance_live);
+    let coinbase_move_bps = coinbase_open
+        .and_then(|open| coinbase_live.and_then(|live| endgame_v1_proxy_move_bps(open, live)));
+    let binance_move_bps = binance_open
+        .and_then(|open| binance_live.and_then(|live| endgame_v1_proxy_move_bps(open, live)));
     let coinbase_direction = coinbase_move_bps.and_then(sign_from_endgame_v1_delta);
     let binance_direction = binance_move_bps.and_then(sign_from_endgame_v1_delta);
     match (coinbase_direction, binance_direction) {
@@ -29143,6 +29113,56 @@ fn evaluate_endgame_v1_proxy_direction_guard(
                 binance_move_bps,
             }
         }
+        (Some(_), None) if binance_open.is_none() || binance_live.is_none() => {
+            let reason = if binance_open.is_none() {
+                "proxy_direction_single_coinbase_missing_binance_open"
+            } else {
+                "proxy_direction_single_coinbase_missing_binance_live"
+            };
+            EndgameV1ProxyDirectionGuardDecision {
+                skip: false,
+                reason: reason.to_string(),
+                coinbase_move_bps,
+                binance_move_bps,
+            }
+        }
+        (None, Some(_)) if coinbase_open.is_none() || coinbase_live.is_none() => {
+            let reason = if coinbase_open.is_none() {
+                "proxy_direction_single_binance_missing_coinbase_open"
+            } else {
+                "proxy_direction_single_binance_missing_coinbase_live"
+            };
+            EndgameV1ProxyDirectionGuardDecision {
+                skip: false,
+                reason: reason.to_string(),
+                coinbase_move_bps,
+                binance_move_bps,
+            }
+        }
+        (None, None) if coinbase_open.is_none() => EndgameV1ProxyDirectionGuardDecision {
+            skip: true,
+            reason: "missing_coinbase_open".to_string(),
+            coinbase_move_bps,
+            binance_move_bps,
+        },
+        (None, None) if coinbase_live.is_none() => EndgameV1ProxyDirectionGuardDecision {
+            skip: true,
+            reason: "missing_coinbase_live".to_string(),
+            coinbase_move_bps,
+            binance_move_bps,
+        },
+        (None, None) if binance_open.is_none() => EndgameV1ProxyDirectionGuardDecision {
+            skip: true,
+            reason: "missing_binance_open".to_string(),
+            coinbase_move_bps,
+            binance_move_bps,
+        },
+        (None, None) if binance_live.is_none() => EndgameV1ProxyDirectionGuardDecision {
+            skip: true,
+            reason: "missing_binance_live".to_string(),
+            coinbase_move_bps,
+            binance_move_bps,
+        },
         (None, _) => EndgameV1ProxyDirectionGuardDecision {
             skip: true,
             reason: "coinbase_direction_zero_or_invalid".to_string(),
@@ -29655,8 +29675,12 @@ mod tests {
     }
 
     #[test]
-    fn endgame_v1_proxy_direction_guard_skips_missing_required_proxy() {
+    fn endgame_v1_proxy_direction_guard_allows_single_live_proxy_when_pair_missing() {
         let coinbase_open = Some(EndgameV1SpotSample {
+            source_ts_ms: 1_000,
+            price: 100.0,
+        });
+        let binance_open = Some(EndgameV1SpotSample {
             source_ts_ms: 1_000,
             price: 100.0,
         });
@@ -29664,10 +29688,24 @@ mod tests {
             source_ts_ms: 2_000,
             price: 101.0,
         });
-        let guard =
-            evaluate_endgame_v1_proxy_direction_guard(coinbase_open, coinbase_live, None, None);
+        let guard = evaluate_endgame_v1_proxy_direction_guard(
+            coinbase_open,
+            coinbase_live,
+            binance_open,
+            None,
+        );
+        assert!(!guard.skip);
+        assert_eq!(
+            guard.reason,
+            "proxy_direction_single_coinbase_missing_binance_live"
+        );
+    }
+
+    #[test]
+    fn endgame_v1_proxy_direction_guard_still_skips_when_no_proxy_pair_is_live() {
+        let guard = evaluate_endgame_v1_proxy_direction_guard(None, None, None, None);
         assert!(guard.skip);
-        assert_eq!(guard.reason, "missing_binance_open");
+        assert_eq!(guard.reason, "missing_coinbase_open");
     }
 
     #[test]

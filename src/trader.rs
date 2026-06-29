@@ -5926,18 +5926,124 @@ impl Trader {
                 .has_prewarmed_token_metadata(opportunity.token_id.as_str())
                 .await
         {
-            let reason = "endgame_metadata_not_prewarmed".to_string();
-            self.record_entry_precheck_failure(
-                strategy_id,
-                source_timeframe.as_str(),
-                entry_mode,
-                opportunity,
-                Some(intent.limit_price),
-                None,
-                None,
-                reason.clone(),
-            );
-            return Err(anyhow!(reason));
+            let hot_prewarm_timeout_ms =
+                std::env::var("EVPOLY_ENDGAME_HOT_METADATA_PREWARM_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .unwrap_or(750)
+                    .clamp(50, 5_000);
+            let api_for_hot_prewarm = self.api.clone();
+            let token_id_for_hot_prewarm = opportunity.token_id.clone();
+            let (hot_prewarm_tx, hot_prewarm_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let result = api_for_hot_prewarm
+                    .prewarm_token_metadata(token_id_for_hot_prewarm.as_str())
+                    .await;
+                let _ = hot_prewarm_tx.send(result);
+            });
+            let hot_prewarm_result = tokio::time::timeout(
+                tokio::time::Duration::from_millis(hot_prewarm_timeout_ms),
+                hot_prewarm_rx,
+            )
+            .await;
+            match hot_prewarm_result {
+                Ok(Ok(Ok(cache_hit))) => {
+                    log_event(
+                        "endgame_metadata_hot_prewarm_ready",
+                        json!({
+                            "strategy_id": strategy_id,
+                            "request_id": request_id.as_deref(),
+                            "timeframe": source_timeframe.as_str(),
+                            "period_timestamp": opportunity.period_timestamp,
+                            "condition_id": opportunity.condition_id.as_str(),
+                            "token_id": opportunity.token_id.as_str(),
+                            "timeout_ms": hot_prewarm_timeout_ms,
+                            "cache_hit": cache_hit
+                        }),
+                    );
+                }
+                Ok(Ok(Err(error))) => {
+                    let reason = "endgame_metadata_not_prewarmed".to_string();
+                    log_event(
+                        "endgame_metadata_hot_prewarm_failed",
+                        json!({
+                            "strategy_id": strategy_id,
+                            "request_id": request_id.as_deref(),
+                            "timeframe": source_timeframe.as_str(),
+                            "period_timestamp": opportunity.period_timestamp,
+                            "condition_id": opportunity.condition_id.as_str(),
+                            "token_id": opportunity.token_id.as_str(),
+                            "timeout_ms": hot_prewarm_timeout_ms,
+                            "error": error.to_string()
+                        }),
+                    );
+                    self.record_entry_precheck_failure(
+                        strategy_id,
+                        source_timeframe.as_str(),
+                        entry_mode,
+                        opportunity,
+                        Some(intent.limit_price),
+                        None,
+                        None,
+                        reason.clone(),
+                    );
+                    return Err(anyhow!(reason));
+                }
+                Ok(Err(_)) => {
+                    let reason = "endgame_metadata_not_prewarmed".to_string();
+                    log_event(
+                        "endgame_metadata_hot_prewarm_failed",
+                        json!({
+                            "strategy_id": strategy_id,
+                            "request_id": request_id.as_deref(),
+                            "timeframe": source_timeframe.as_str(),
+                            "period_timestamp": opportunity.period_timestamp,
+                            "condition_id": opportunity.condition_id.as_str(),
+                            "token_id": opportunity.token_id.as_str(),
+                            "timeout_ms": hot_prewarm_timeout_ms,
+                            "error": "worker_dropped"
+                        }),
+                    );
+                    self.record_entry_precheck_failure(
+                        strategy_id,
+                        source_timeframe.as_str(),
+                        entry_mode,
+                        opportunity,
+                        Some(intent.limit_price),
+                        None,
+                        None,
+                        reason.clone(),
+                    );
+                    return Err(anyhow!(reason));
+                }
+                Err(_) => {
+                    let reason = "endgame_metadata_not_prewarmed".to_string();
+                    log_event(
+                        "endgame_metadata_hot_prewarm_failed",
+                        json!({
+                            "strategy_id": strategy_id,
+                            "request_id": request_id.as_deref(),
+                            "timeframe": source_timeframe.as_str(),
+                            "period_timestamp": opportunity.period_timestamp,
+                            "condition_id": opportunity.condition_id.as_str(),
+                            "token_id": opportunity.token_id.as_str(),
+                            "timeout_ms": hot_prewarm_timeout_ms,
+                            "error": "timeout"
+                        }),
+                    );
+                    self.record_entry_precheck_failure(
+                        strategy_id,
+                        source_timeframe.as_str(),
+                        entry_mode,
+                        opportunity,
+                        Some(intent.limit_price),
+                        None,
+                        None,
+                        reason.clone(),
+                    );
+                    return Err(anyhow!(reason));
+                }
+            }
         }
 
         let now_ms = chrono::Utc::now().timestamp_millis();
@@ -6044,7 +6150,6 @@ impl Trader {
         let endgame_order_type = "FAK";
         let submit_ts_ms = chrono::Utc::now().timestamp_millis();
         let submit_instant = std::time::Instant::now();
-        let api_call_started_ms = chrono::Utc::now().timestamp_millis();
         let order = OrderRequest {
             token_id: opportunity.token_id.clone(),
             side: "BUY".to_string(),
@@ -6092,8 +6197,9 @@ impl Trader {
         let submit_timeout_ms = std::env::var("EVPOLY_ENDGAME_SUBMIT_TIMEOUT_MS")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(1_500)
+            .unwrap_or(2_500)
             .clamp(100, 30_000);
+        let api_call_started_ms = chrono::Utc::now().timestamp_millis();
         let place_result = match tokio::time::timeout(
             tokio::time::Duration::from_millis(submit_timeout_ms),
             self.api
@@ -6133,7 +6239,8 @@ impl Trader {
                     "pre_api_ms": pre_api_ms,
                     "token_id": opportunity.token_id.as_str(),
                     "trade_key": trade_key.as_str(),
-                    "post_only": post_only_enabled
+                    "post_only": post_only_enabled,
+                    "submit_timeout_ms": submit_timeout_ms
                 });
                 self.record_trade_event_for_strategy(
                     Some(strategy_id),
@@ -6177,6 +6284,7 @@ impl Trader {
                     "api_sign_ms": api_timing.sign_ms,
                     "api_post_order_ms": api_timing.post_order_ms,
                     "api_retry_count": api_timing.retry_count,
+                    "submit_timeout_ms": submit_timeout_ms,
                     "api_order_type_effective": api_timing.order_type_effective.as_str(),
                     "making_amount": response.making_amount.as_deref(),
                     "taking_amount": response.taking_amount.as_deref(),
@@ -6369,7 +6477,8 @@ impl Trader {
                         "taking_amount": response.taking_amount.as_deref(),
                         "trade_ids": response.trade_ids.clone(),
                         "ack_latency_ms": ack_latency_ms,
-                        "api_total_ms": api_timing.total_api_ms
+                        "api_total_ms": api_timing.total_api_ms,
+                        "submit_timeout_ms": submit_timeout_ms
                     }),
                 );
                 Ok(())
@@ -6397,6 +6506,7 @@ impl Trader {
                         "price": submit_price,
                         "units": units,
                         "notional_usd": investment_amount,
+                        "submit_timeout_ms": submit_timeout_ms,
                         "error": error.to_string()
                     }),
                 );

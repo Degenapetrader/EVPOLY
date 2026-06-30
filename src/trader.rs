@@ -5819,13 +5819,14 @@ impl Trader {
 
     fn infer_endgame_fak_buy_fill(
         response: &crate::models::OrderResponse,
-        _requested_units: f64,
+        requested_units: f64,
         requested_notional: f64,
         limit_price: f64,
         tick: f64,
     ) -> Option<(f64, f64, f64, &'static str)> {
         let making = Self::parse_order_response_amount(response.making_amount.as_deref())?;
         let taking = Self::parse_order_response_amount(response.taking_amount.as_deref())?;
+        let max_requested_units = requested_units.max(0.0) * 1.0001 + 1e-6;
         let max_notional = requested_notional.max(0.0) * 1.05 + 1e-6;
         let min_price = tick.max(0.000_001) * 0.5;
         let max_price = limit_price.max(tick) + tick.max(0.000_001) * 2.0 + 1e-9;
@@ -5846,6 +5847,7 @@ impl Trader {
                     || !notional.is_finite()
                     || shares <= 0.0
                     || notional <= 0.0
+                    || shares > max_requested_units
                     || shares > max_units_by_notional
                     || notional > max_notional
                 {
@@ -6106,15 +6108,11 @@ impl Trader {
             return Err(anyhow!(reason));
         }
 
-        let units = if intent.units.is_finite() && intent.units > 0.0 {
-            intent.units
-        } else {
-            intent.notional_usd / submit_price.max(0.000_001)
-        };
+        let units = intent.units;
         let investment_amount = units.max(0.0) * submit_price.max(0.0);
         if !units.is_finite() || units <= 0.0 || !investment_amount.is_finite() {
             let reason = format!(
-                "endgame_invalid_size: units={:.8} notional={:.8}",
+                "endgame_invalid_share_units: units={:.8} notional={:.8}",
                 units, investment_amount
             );
             self.record_entry_precheck_failure(
@@ -6222,6 +6220,13 @@ impl Trader {
                     .unwrap_or_else(|| provisional_order_id.clone());
                 let ack_latency_ms = ack_ts_ms.saturating_sub(submit_ts_ms);
                 let pre_api_ms = api_call_started_ms.saturating_sub(submit_ts_ms);
+                let signed_units = api_timing
+                    .signed_size
+                    .as_deref()
+                    .and_then(|value| value.trim().parse::<f64>().ok())
+                    .filter(|value| value.is_finite() && *value > 0.0)
+                    .unwrap_or(units);
+                let signed_investment_amount = signed_units.max(0.0) * submit_price.max(0.0);
                 let submit_meta = json!({
                     "phase": "submit",
                     "order_kind": "endgame_fast_fak_buy",
@@ -6286,6 +6291,9 @@ impl Trader {
                     "api_retry_count": api_timing.retry_count,
                     "submit_timeout_ms": submit_timeout_ms,
                     "api_order_type_effective": api_timing.order_type_effective.as_str(),
+                    "api_signed_size": api_timing.signed_size.as_deref(),
+                    "signed_units": signed_units,
+                    "signed_notional_usd": signed_investment_amount,
                     "making_amount": response.making_amount.as_deref(),
                     "taking_amount": response.taking_amount.as_deref(),
                     "trade_ids": response.trade_ids.clone(),
@@ -6308,8 +6316,8 @@ impl Trader {
                     Some("BUY".to_string()),
                     "ENTRY_ACK",
                     Some(submit_price),
-                    Some(units),
-                    Some(investment_amount),
+                    Some(signed_units),
+                    Some(signed_investment_amount),
                     None,
                     Some(ack_meta.to_string()),
                 );
@@ -6317,8 +6325,8 @@ impl Trader {
                 let Some((filled_units, filled_notional, filled_price, fill_amount_source)) =
                     Self::infer_endgame_fak_buy_fill(
                         &response,
-                        units,
-                        investment_amount,
+                        signed_units,
+                        signed_investment_amount,
                         submit_price,
                         tick,
                     )
@@ -16368,16 +16376,22 @@ mod tests {
     }
 
     #[test]
-    fn endgame_fak_fill_accepts_cheaper_notional_execution() {
+    fn endgame_fak_fill_rejects_more_than_requested_shares() {
         let response = fak_order_response("5.939998", "7.518985");
+        assert!(Trader::infer_endgame_fak_buy_fill(&response, 6.46, 5.9432, 0.92, 0.01).is_none());
+    }
+
+    #[test]
+    fn endgame_fak_fill_accepts_cheaper_execution_within_requested_shares() {
+        let response = fak_order_response("3.95", "5.00");
         let (shares, notional, price, source) =
             Trader::infer_endgame_fak_buy_fill(&response, 6.46, 5.9432, 0.92, 0.01)
-                .expect("cheaper FAK execution can fill more shares than requested_units");
+                .expect("cheaper FAK execution within requested_units should be inferred");
 
         assert_eq!(source, "making_usdc_taking_shares");
-        assert!((shares - 7.518985).abs() < 1e-9);
-        assert!((notional - 5.939998).abs() < 1e-9);
-        assert!((price - 0.78999998).abs() < 1e-6);
+        assert!((shares - 5.0).abs() < 1e-9);
+        assert!((notional - 3.95).abs() < 1e-9);
+        assert!((price - 0.79).abs() < 1e-9);
     }
 
     #[test]

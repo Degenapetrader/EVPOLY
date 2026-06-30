@@ -1485,12 +1485,7 @@ fn near_base_skip_threshold_bps() -> f64 {
 }
 
 fn endgame_v1_near_base_skip_thresholds_bps() -> [f64; 3] {
-    let mut values = ENDGAME_V1_NEAR_BASE_SKIP_BPS_BY_TICK;
-    for (idx, value) in values.iter_mut().enumerate() {
-        let key = format!("EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS_TICK{}", idx);
-        *value = env_f64_named(key.as_str(), *value).clamp(0.0, 50.0);
-    }
-    values
+    ENDGAME_V1_NEAR_BASE_SKIP_BPS_BY_TICK
 }
 
 fn endgame_v1_near_base_skip_threshold_bps_for_tick(tick_index: u32) -> f64 {
@@ -1499,6 +1494,19 @@ fn endgame_v1_near_base_skip_threshold_bps_for_tick(tick_index: u32) -> f64 {
         .get(usize::try_from(tick_index).unwrap_or(usize::MAX))
         .copied()
         .unwrap_or_else(|| *values.last().unwrap_or(&1.0))
+}
+
+fn endgame_v1_near_base_symbol_multiplier(symbol: &str) -> f64 {
+    match symbol.trim().to_ascii_uppercase().as_str() {
+        "BTC" => 1.0,
+        "ETH" | "BNB" => 1.5,
+        _ => 2.5,
+    }
+}
+
+fn endgame_v1_near_base_skip_threshold_bps_for_tick_symbol(tick_index: u32, symbol: &str) -> f64 {
+    endgame_v1_near_base_skip_threshold_bps_for_tick(tick_index)
+        * endgame_v1_near_base_symbol_multiplier(symbol)
 }
 
 fn near_base_distance_bps(base: f64, current: f64) -> Option<f64> {
@@ -9722,7 +9730,14 @@ async fn main() -> Result<()> {
                         }
                         let base_near_threshold_bps =
                             endgame_v1_near_base_skip_threshold_bps_for_tick(plan.tick_index);
-                        let effective_near_base_skip_bps = base_near_threshold_bps
+                        let symbol_near_base_multiplier =
+                            endgame_v1_near_base_symbol_multiplier(symbol.as_str());
+                        let multiplied_near_threshold_bps =
+                            endgame_v1_near_base_skip_threshold_bps_for_tick_symbol(
+                                plan.tick_index,
+                                symbol.as_str(),
+                            );
+                        let effective_near_base_skip_bps = multiplied_near_threshold_bps
                             + rtds_guard_decision.no_guard_extra_bps.max(0.0);
                         if let Some(distance_bps) = near_base_distance_bps(base_mid_cb, plan.mid_cb)
                         {
@@ -9742,6 +9757,8 @@ async fn main() -> Result<()> {
                                         "distance_bps": distance_bps,
                                         "threshold_bps": effective_near_base_skip_bps,
                                         "base_threshold_bps": base_near_threshold_bps,
+                                        "symbol_threshold_multiplier": symbol_near_base_multiplier,
+                                        "multiplied_threshold_bps": multiplied_near_threshold_bps,
                                         "rtds_no_guard_extra_bps": rtds_guard_decision.no_guard_extra_bps,
                                         "rtds_guard_ready": rtds_guard_decision.ready,
                                         "rtds_payload": rtds_guard_decision.payload.clone(),
@@ -10365,7 +10382,10 @@ async fn main() -> Result<()> {
                                 );
                                 continue;
                             }
-                            let effective_size_usd = sizing.notional_usd.min(period_remaining_usd);
+                            let effective_size_usd = cap_endgame_sizing_to_period_remaining_usd(
+                                &mut sizing,
+                                period_remaining_usd,
+                            );
                             if effective_size_usd <= 0.0 {
                                 continue;
                             }
@@ -10606,7 +10626,7 @@ async fn main() -> Result<()> {
                             tau_seconds: plan.tau_seconds,
                             limit_price,
                             tick_size: min_tick_size,
-                            units: effective_size_usd / limit_price.max(0.000_001),
+                            units: sizing.shares,
                             notional_usd: effective_size_usd,
                             fair_probability: pricing.fair_probability,
                             execution_probability: pricing.execution_probability,
@@ -25589,6 +25609,21 @@ fn round_price_to_tick(price: f64, tick: f64) -> f64 {
     (price / tick).round() * tick
 }
 
+fn cap_endgame_sizing_to_period_remaining_usd(
+    sizing: &mut endgame_sweep::EndgameExecutionSizing,
+    period_remaining_usd: f64,
+) -> f64 {
+    let effective_size_usd = sizing.notional_usd.min(period_remaining_usd);
+    if effective_size_usd + 1e-9 < sizing.notional_usd
+        && sizing.vwap_price.is_finite()
+        && sizing.vwap_price > 0.0
+    {
+        sizing.notional_usd = effective_size_usd;
+        sizing.shares = effective_size_usd / sizing.vwap_price;
+    }
+    effective_size_usd
+}
+
 fn endgame_sweep_poly_price_band_for_tick(tick_index: u32) -> (f64, f64) {
     if let Ok(raw) = std::env::var("EVPOLY_ENDGAME_SWEEP_POLY_PRICE_BAND") {
         if let Some(parsed) = parse_price_band(raw.as_str()) {
@@ -29530,6 +29565,23 @@ mod tests {
     }
 
     #[test]
+    fn endgame_period_cap_reduces_share_units() {
+        let mut sizing = endgame_sweep::EndgameExecutionSizing {
+            shares: 500.0,
+            notional_usd: 495.0,
+            vwap_price: 0.99,
+            taker_fee_rate_at_vwap: 0.0,
+            edge_bps_at_vwap: 0.0,
+        };
+
+        let effective_size_usd = cap_endgame_sizing_to_period_remaining_usd(&mut sizing, 99.0);
+
+        assert!((effective_size_usd - 99.0).abs() < 1e-9);
+        assert!((sizing.notional_usd - 99.0).abs() < 1e-9);
+        assert!((sizing.shares - 100.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn symbol_ownership_bootstrap_filters_specials_to_endgame_and_evsnipe() {
         let raw = vec![
             "BTC".to_string(),
@@ -29599,26 +29651,28 @@ mod tests {
 
     #[test]
     fn endgame_uses_v1_near_base_skip_thresholds_by_tick() {
-        with_admin_env(
-            &[
-                ("EVPOLY_NEAR_BASE_SKIP_BPS", Some("0.1")),
-                ("EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS_TICK0", None),
-                ("EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS_TICK1", None),
-                ("EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS_TICK2", None),
-            ],
-            || {
-                assert!((near_base_skip_threshold_bps() - 0.1).abs() < 1e-9);
-                assert!((endgame_v1_near_base_skip_threshold_bps_for_tick(0) - 2.0).abs() < 1e-9);
-                assert!((endgame_v1_near_base_skip_threshold_bps_for_tick(1) - 1.5).abs() < 1e-9);
-                assert!((endgame_v1_near_base_skip_threshold_bps_for_tick(2) - 1.0).abs() < 1e-9);
-                assert!((endgame_v1_near_base_skip_threshold_bps_for_tick(7) - 1.0).abs() < 1e-9);
-            },
+        with_admin_env(&[("EVPOLY_NEAR_BASE_SKIP_BPS", Some("0.1"))], || {
+            assert!((near_base_skip_threshold_bps() - 0.1).abs() < 1e-9);
+            assert!((endgame_v1_near_base_skip_threshold_bps_for_tick(0) - 2.0).abs() < 1e-9);
+            assert!((endgame_v1_near_base_skip_threshold_bps_for_tick(1) - 1.5).abs() < 1e-9);
+            assert!((endgame_v1_near_base_skip_threshold_bps_for_tick(2) - 1.0).abs() < 1e-9);
+            assert!((endgame_v1_near_base_skip_threshold_bps_for_tick(7) - 1.0).abs() < 1e-9);
+        });
+    }
+
+    #[test]
+    fn endgame_near_base_threshold_uses_symbol_multiplier() {
+        assert!(
+            (endgame_v1_near_base_skip_threshold_bps_for_tick_symbol(0, "BTC") - 2.0).abs() < 1e-9
         );
-        with_admin_env(
-            &[("EVPOLY_ENDGAME_NEAR_BASE_SKIP_BPS_TICK1", Some("2.25"))],
-            || {
-                assert!((endgame_v1_near_base_skip_threshold_bps_for_tick(1) - 2.25).abs() < 1e-9);
-            },
+        assert!(
+            (endgame_v1_near_base_skip_threshold_bps_for_tick_symbol(0, "ETH") - 3.0).abs() < 1e-9
+        );
+        assert!(
+            (endgame_v1_near_base_skip_threshold_bps_for_tick_symbol(1, "BNB") - 2.25).abs() < 1e-9
+        );
+        assert!(
+            (endgame_v1_near_base_skip_threshold_bps_for_tick_symbol(2, "SOL") - 2.5).abs() < 1e-9
         );
     }
 
@@ -29846,16 +29900,30 @@ mod tests {
 
     #[test]
     fn premarket_fixed_rungs_use_flat_five_floor_even_when_first_rung_targets_two_dollars() {
-        let target_size_usd = 2.0 / 0.23;
-        let sized = build_premarket_fixed_rungs(
-            Timeframe::M15,
-            target_size_usd,
-            PremarketOrderFloor::premarket_flat_five(),
+        with_admin_env(
+            &[
+                (PREMARKET_LADDER_MODE_ENV_KEY_SHARED, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_5M, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, None),
+                (PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, None),
+                (PREMARKET_SAFE_BIAS_PCT_ENV_KEY, None),
+                (PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY, None),
+                ("EVPOLY_PREMARKET_FIXED_LADDER_PRICES", None),
+                ("EVPOLY_PREMARKET_FIXED_LADDER_WEIGHTS", None),
+            ],
+            || {
+                let target_size_usd = 2.0 / 0.23;
+                let sized = build_premarket_fixed_rungs(
+                    Timeframe::M15,
+                    target_size_usd,
+                    PremarketOrderFloor::premarket_flat_five(),
+                );
+                assert_eq!(sized.len(), 6);
+                assert!((sized[0].price - 0.40).abs() < 1e-9);
+                assert!((sized[0].size_usd - 5.0).abs() < 1e-9);
+                assert!(sized.iter().all(|rung| rung.size_usd >= 5.0));
+            },
         );
-        assert_eq!(sized.len(), 6);
-        assert!((sized[0].price - 0.40).abs() < 1e-9);
-        assert!((sized[0].size_usd - 5.0).abs() < 1e-9);
-        assert!(sized.iter().all(|rung| rung.size_usd >= 5.0));
     }
 
     #[test]

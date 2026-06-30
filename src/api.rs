@@ -334,6 +334,7 @@ pub struct PlaceOrderTiming {
     pub local_order_post_attempts: u32,
     pub order_attribution_mode: String,
     pub builder_code_configured: bool,
+    pub signed_size: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -348,6 +349,7 @@ struct PlaceOrderHandleTiming {
     local_order_post_attempts: u32,
     order_attribution_mode: String,
     builder_code_configured: bool,
+    signed_size: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2569,6 +2571,118 @@ impl PolymarketApi {
             .round_dp_with_strategy(USDC_SCALE, RoundingStrategy::MidpointAwayFromZero)
     }
 
+    fn gcd_u128(mut a: u128, mut b: u128) -> u128 {
+        while b != 0 {
+            let r = a % b;
+            a = b;
+            b = r;
+        }
+        a
+    }
+
+    fn pow10_u128(exp: u32) -> Option<u128> {
+        let mut value = 1_u128;
+        for _ in 0..exp {
+            value = value.checked_mul(10)?;
+        }
+        Some(value)
+    }
+
+    fn immediate_buy_legal_size_step_int(price: Decimal) -> Option<u128> {
+        if price <= Decimal::ZERO {
+            return None;
+        }
+        let normalized = price.normalize();
+        let price_int = u128::try_from(normalized.mantissa()).ok()?;
+        if price_int == 0 {
+            return None;
+        }
+        let required_divisor = Self::pow10_u128(normalized.scale().saturating_add(2))?;
+        let g = Self::gcd_u128(price_int, required_divisor).max(1);
+        Some(required_divisor / g)
+    }
+
+    fn floor_size_to_step(size: Decimal, step_int: u128) -> Decimal {
+        if size <= Decimal::ZERO || step_int == 0 {
+            return Decimal::ZERO;
+        }
+        let mut size_q = size.max(Decimal::ZERO).trunc_with_scale(4);
+        size_q.rescale(4);
+        let size_int = size_q.mantissa();
+        if size_int <= 0 {
+            return Decimal::ZERO;
+        }
+        let Ok(step_i128) = i128::try_from(step_int) else {
+            return Decimal::ZERO;
+        };
+        if step_i128 <= 0 {
+            return Decimal::ZERO;
+        }
+        let adjusted_int = (size_int / step_i128) * step_i128;
+        if adjusted_int <= 0 {
+            return Decimal::ZERO;
+        }
+        Decimal::from_i128_with_scale(adjusted_int, 4).normalize()
+    }
+
+    fn immediate_buy_amounts_within_precision(size: Decimal, price: Decimal) -> bool {
+        const TAKER_MAX_SCALE: u32 = 4;
+        const MAKER_MAX_SCALE: u32 = 2;
+        if size <= Decimal::ZERO || price <= Decimal::ZERO {
+            return false;
+        }
+        let taker = size.normalize();
+        if taker.scale() > TAKER_MAX_SCALE {
+            return false;
+        }
+        let maker = (size * price).normalize();
+        maker.scale() <= MAKER_MAX_SCALE
+    }
+
+    fn validate_immediate_buy_amounts_precision(size: Decimal, price: Decimal) -> Result<()> {
+        if Self::immediate_buy_amounts_within_precision(size, price) {
+            return Ok(());
+        }
+        let taker = size.normalize();
+        let maker = (size * price).normalize();
+        anyhow::bail!(
+            "Invalid immediate BUY amounts after quantization: size={} (scale={}), price={}, maker_notional={} (scale={}); requires taker<=4dp and maker<=2dp",
+            taker,
+            taker.scale(),
+            price.normalize(),
+            maker,
+            maker.scale()
+        );
+    }
+
+    fn quantize_buy_size_for_immediate_tif(size: Decimal, price: Decimal) -> Decimal {
+        if size <= Decimal::ZERO || price <= Decimal::ZERO {
+            return size;
+        }
+        let Some(step_int) = Self::immediate_buy_legal_size_step_int(price) else {
+            return size.trunc_with_scale(4).normalize();
+        };
+        Self::floor_size_to_step(size, step_int)
+    }
+
+    fn should_quantize_buy_size_for_order(
+        side: &Side,
+        order_type: &OrderType,
+        post_only: bool,
+    ) -> bool {
+        matches!(side, &Side::Buy)
+            && !post_only
+            && matches!(order_type, OrderType::FAK | OrderType::FOK)
+    }
+
+    fn should_use_endgame_share_limit_builder(
+        submit_lane: OrderSubmitLane,
+        order_type: &OrderType,
+    ) -> bool {
+        submit_lane == OrderSubmitLane::Endgame
+            && matches!(order_type, OrderType::FAK | OrderType::FOK)
+    }
+
     fn prewarm_token_cache_max() -> usize {
         std::env::var("EVPOLY_PREWARM_TOKEN_CACHE_MAX")
             .ok()
@@ -4501,6 +4615,7 @@ impl PolymarketApi {
                         .saturating_add(handle_timing.local_order_post_attempts);
                     timing.order_attribution_mode = handle_timing.order_attribution_mode;
                     timing.builder_code_configured = handle_timing.builder_code_configured;
+                    timing.signed_size = handle_timing.signed_size;
                     timing.total_api_ms = started.elapsed().as_millis() as i64;
                     return Ok((resp, timing));
                 }
@@ -4963,7 +5078,7 @@ impl PolymarketApi {
         submit_lane: OrderSubmitLane,
     ) -> Result<(OrderResponse, PlaceOrderHandleTiming)> {
         let mut prepared = self
-            .build_and_sign_order_with_handle(handle, order, metadata_policy)
+            .build_and_sign_order_with_handle(handle, order, metadata_policy, submit_lane)
             .await?;
         let post_started = Instant::now();
         let mut post_stats = LocalOrderPostStats::default();
@@ -5003,7 +5118,12 @@ impl PolymarketApi {
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                         prepared = self
-                            .build_and_sign_order_with_handle(handle, order, metadata_policy)
+                            .build_and_sign_order_with_handle(
+                                handle,
+                                order,
+                                metadata_policy,
+                                submit_lane,
+                            )
                             .await
                             .context(
                                 "Failed to rebuild order for local order post rate-limit retry",
@@ -5097,6 +5217,7 @@ impl PolymarketApi {
                 local_order_post_attempts: post_stats.attempts,
                 order_attribution_mode,
                 builder_code_configured,
+                signed_size: Some(prepared.size.clone()),
                 ..prepared.timing
             },
         ))
@@ -5132,6 +5253,7 @@ impl PolymarketApi {
                     handle,
                     order,
                     PlaceOrderMetadataPolicy::default(),
+                    OrderSubmitLane::Default,
                 )
                 .await?;
             prepared_orders_meta.push((
@@ -5248,6 +5370,7 @@ impl PolymarketApi {
                 local_order_post_attempts: post_stats.attempts,
                 order_attribution_mode: order_attribution_mode.clone(),
                 builder_code_configured,
+                signed_size: Some(size.clone()),
             };
             if response.success {
                 let upstream_order_id = Self::normalize_post_order_id(response.order_id.as_str());
@@ -5394,6 +5517,7 @@ impl PolymarketApi {
         handle: &ClobClientHandle,
         order: &OrderRequest,
         metadata_policy: PlaceOrderMetadataPolicy,
+        submit_lane: OrderSubmitLane,
     ) -> Result<PreparedSignedOrder> {
         let side = match order.side.as_str() {
             "BUY" => Side::Buy,
@@ -5406,7 +5530,7 @@ impl PolymarketApi {
 
         let price = rust_decimal::Decimal::from_str(&order.price)
             .context(format!("Failed to parse price: {}", order.price))?;
-        let size = rust_decimal::Decimal::from_str(&order.size)
+        let mut size = rust_decimal::Decimal::from_str(&order.size)
             .context(format!("Failed to parse size: {}", order.size))?;
 
         if Self::order_submit_verbose_logs() {
@@ -5509,6 +5633,43 @@ impl PolymarketApi {
 
         let token_id = Self::parse_u256_id(order.token_id.as_str(), "order.token_id")?;
         let token_key = token_id.to_string();
+        let requested_size = size;
+        let use_endgame_share_limit_builder =
+            Self::should_use_endgame_share_limit_builder(submit_lane, &effective_order_type);
+        if use_endgame_share_limit_builder
+            && Self::should_quantize_buy_size_for_order(
+                &side,
+                &effective_order_type,
+                order.post_only.unwrap_or(false),
+            )
+        {
+            let adjusted_size = Self::quantize_buy_size_for_immediate_tif(size, price);
+            if adjusted_size <= Decimal::ZERO {
+                anyhow::bail!(
+                    "Invalid Endgame BUY share size after precision quantization: size={} price={}",
+                    size,
+                    price
+                );
+            }
+            if adjusted_size < size {
+                warn!(
+                    "Quantized Endgame marketable BUY share size for token {} from {} to {} at price {} (tif={}, price_scale={})",
+                    order.token_id,
+                    size,
+                    adjusted_size,
+                    price,
+                    effective_order_type,
+                    price.scale()
+                );
+                size = adjusted_size;
+            }
+            Self::validate_immediate_buy_amounts_precision(size, price).with_context(|| {
+                format!(
+                    "Endgame marketable BUY precision check failed token={} side={} tif={} size={} price={}",
+                    order.token_id, order.side, effective_order_type, size, price
+                )
+            })?;
+        }
         let prewarm_started = Instant::now();
         let prewarm_cache_hit = if metadata_policy.require_cached_order_metadata {
             if !self
@@ -5559,7 +5720,72 @@ impl PolymarketApi {
         let prewarm_ms = prewarm_started.elapsed().as_millis() as i64;
         let mut build_order_ms = 0_i64;
         let mut sign_ms = 0_i64;
-        let signed_order = if matches!(effective_order_type, OrderType::FOK | OrderType::FAK) {
+        let signed_order = if use_endgame_share_limit_builder {
+            if matches!(side, Side::Buy) && !metadata_policy.skip_buy_collateral_preflight {
+                let required_usdc = (size * price)
+                    .round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero);
+                let approval_context = format!(
+                    "{} Endgame BUY order token={} price={} shares={}",
+                    effective_order_type, order.token_id, price, size
+                );
+                if self.is_deposit_wallet_mode() {
+                    self.ensure_buy_collateral_ready(required_usdc, approval_context.as_str())
+                        .await?;
+                } else {
+                    self.ensure_limit_buy_balance_covers_fee(
+                        handle,
+                        token_id,
+                        price,
+                        required_usdc,
+                    )
+                    .await?;
+                }
+            }
+            let mut order_builder = handle
+                .client
+                .limit_order()
+                .token_id(token_id)
+                .size(size)
+                .price(price)
+                .side(side)
+                .order_type(effective_order_type.clone());
+            if let Some(post_only) = order.post_only {
+                order_builder = order_builder.post_only(post_only);
+            }
+
+            let build_started = Instant::now();
+            let signable = match order_builder.build().await {
+                Ok(signable) => signable,
+                Err(first_err) => {
+                    let first_anyhow = anyhow::anyhow!(first_err.to_string());
+                    if Self::is_rate_limit_error(&first_anyhow) {
+                        let retry_after_ms =
+                            self.set_tick_metadata_backoff(token_key.as_str()).await;
+                        let now_ms = chrono::Utc::now().timestamp_millis();
+                        let remaining_ms = retry_after_ms.saturating_sub(now_ms);
+                        anyhow::bail!(
+                            "tick metadata build rate-limited token={} remaining_ms={} err={}",
+                            order.token_id,
+                            remaining_ms.max(0),
+                            first_anyhow
+                        );
+                    }
+                    anyhow::bail!(
+                        "Failed to build Endgame share-unit FAK/FOK order with cached metadata only: {}",
+                        first_err
+                    );
+                }
+            };
+            build_order_ms += build_started.elapsed().as_millis() as i64;
+            let sign_started = Instant::now();
+            let signed = handle
+                .client
+                .sign(&handle.signer, signable)
+                .await
+                .context("Failed to sign Endgame share-unit FAK/FOK order")?;
+            sign_ms += sign_started.elapsed().as_millis() as i64;
+            signed
+        } else if matches!(effective_order_type, OrderType::FOK | OrderType::FAK) {
             // FAK/FOK use market-order builder with explicit price cap.
             // This aligns maker/taker precision with exchange rules for immediate orders.
             let amount = match side {
@@ -5818,11 +6044,16 @@ impl PolymarketApi {
                 local_order_post_attempts: 0,
                 order_attribution_mode: String::new(),
                 builder_code_configured: false,
+                signed_size: None,
             },
             effective_order_type: effective_order_type.to_string(),
             token_id: order.token_id.clone(),
             side: order.side.clone(),
-            size: order.size.clone(),
+            size: if size != requested_size {
+                size.normalize().to_string()
+            } else {
+                order.size.clone()
+            },
             price: order.price.clone(),
         })
     }
@@ -9364,6 +9595,56 @@ mod tests {
     use polymarket_client_sdk_v2::clob::types::Order as ClobOrder;
     use std::borrow::Cow;
 
+    fn start_clob_version_test_server() -> (String, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind version server");
+        let addr = listener.local_addr().expect("version server addr");
+        listener
+            .set_nonblocking(true)
+            .expect("version server nonblocking");
+        let handle = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(10_000);
+            let mut saw_version = false;
+            let mut saw_neg_risk = false;
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _addr)) => {
+                        let mut buf = [0_u8; 1024];
+                        let n = std::io::Read::read(&mut stream, &mut buf)
+                            .expect("read version request");
+                        let request = String::from_utf8_lossy(&buf[..n]);
+                        let body = if request.starts_with("GET /version ") {
+                            saw_version = true;
+                            r#"{"version":2}"#
+                        } else if request.starts_with("GET /neg-risk?") {
+                            saw_neg_risk = true;
+                            r#"{"neg_risk":false}"#
+                        } else {
+                            panic!("unexpected request: {request}");
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        std::io::Write::write_all(&mut stream, response.as_bytes())
+                            .expect("write version response");
+                        if saw_version && saw_neg_risk {
+                            return;
+                        }
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() >= deadline {
+                            panic!("version server did not receive a request");
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Err(err) => panic!("version server accept failed: {err}"),
+                }
+            }
+        });
+        (format!("http://{addr}"), handle)
+    }
+
     #[test]
     fn best_bid_ask_from_orderbook_handles_worst_first_arrays() {
         let orderbook = OrderBook {
@@ -9929,6 +10210,163 @@ mod tests {
         assert!(!deposit_api.supports_batch_order_posts());
         assert!(proxy_api.supports_batch_order_posts());
         assert!(eoa_api.supports_batch_order_posts());
+    }
+
+    #[test]
+    fn endgame_fak_uses_share_limit_builder_only_for_endgame_lane() {
+        assert!(PolymarketApi::should_use_endgame_share_limit_builder(
+            OrderSubmitLane::Endgame,
+            &OrderType::FAK
+        ));
+        assert!(PolymarketApi::should_use_endgame_share_limit_builder(
+            OrderSubmitLane::Endgame,
+            &OrderType::FOK
+        ));
+        assert!(!PolymarketApi::should_use_endgame_share_limit_builder(
+            OrderSubmitLane::Default,
+            &OrderType::FAK
+        ));
+        assert!(!PolymarketApi::should_use_endgame_share_limit_builder(
+            OrderSubmitLane::Endgame,
+            &OrderType::GTC
+        ));
+    }
+
+    #[test]
+    fn endgame_share_limit_buy_size_does_not_expand_at_low_price() {
+        let size = Decimal::from_str("50").expect("size");
+        let high_price = Decimal::from_str("0.99").expect("high price");
+        let low_price = Decimal::from_str("0.01").expect("low price");
+
+        let high_price_size = PolymarketApi::quantize_buy_size_for_immediate_tif(size, high_price);
+        let low_price_size = PolymarketApi::quantize_buy_size_for_immediate_tif(size, low_price);
+
+        assert_eq!(high_price_size, size);
+        assert_eq!(low_price_size, size);
+        assert_eq!(
+            (high_price_size * high_price)
+                .round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero),
+            Decimal::from_str("49.50").expect("maker high")
+        );
+        assert_eq!(
+            (low_price_size * low_price)
+                .round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero),
+            Decimal::from_str("0.50").expect("maker low")
+        );
+    }
+
+    #[test]
+    fn endgame_share_limit_formula_keeps_taker_as_requested_shares() {
+        let size = Decimal::from_str("50").expect("size");
+        let low_price = Decimal::from_str("0.01").expect("price");
+        let maker_usdc = (size * low_price).trunc_with_scale(4);
+        let taker_shares = size;
+
+        assert_eq!(taker_shares, Decimal::from_str("50").expect("taker shares"));
+        assert_eq!(maker_usdc, Decimal::from_str("0.50").expect("maker usdc"));
+        assert!(PolymarketApi::should_use_endgame_share_limit_builder(
+            OrderSubmitLane::Endgame,
+            &OrderType::FAK
+        ));
+    }
+
+    #[test]
+    fn default_fak_buy_keeps_market_order_semantics() {
+        let requested_shares = Decimal::from_str("50").expect("size");
+        let limit_price = Decimal::from_str("0.99").expect("price");
+        let requested_usdc_notional = (requested_shares * limit_price)
+            .round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero);
+
+        assert_eq!(
+            requested_usdc_notional,
+            Decimal::from_str("49.50").expect("usdc")
+        );
+        assert!(!PolymarketApi::should_use_endgame_share_limit_builder(
+            OrderSubmitLane::Default,
+            &OrderType::FAK
+        ));
+    }
+
+    #[test]
+    fn endgame_share_limit_buy_quantizes_without_usdc_reinterpreting_size() {
+        let price = Decimal::from_str("0.99").expect("price");
+        let size = Decimal::from_str("73.88").expect("size");
+        let adjusted = PolymarketApi::quantize_buy_size_for_immediate_tif(size, price);
+
+        assert_eq!(adjusted, Decimal::from_str("73").expect("adjusted"));
+        assert!(PolymarketApi::immediate_buy_amounts_within_precision(
+            adjusted, price
+        ));
+        assert!(!PolymarketApi::immediate_buy_amounts_within_precision(
+            size, price
+        ));
+    }
+
+    #[test]
+    fn endgame_lane_signs_fak_buy_as_share_sized_limit_order() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        rt.block_on(async {
+            let (clob_host, version_server) = start_clob_version_test_server();
+            let token_id = U256::from(123_456_u64);
+            let signer = PrivateKeySigner::from_str(
+                "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+            )
+            .expect("test signer")
+            .with_chain_id(Some(POLYGON));
+            let client = ClobClient::new(clob_host.as_str(), ClobConfig::default())
+                .expect("client")
+                .authentication_builder(&signer)
+                .credentials(Credentials::new(Uuid::nil(), String::new(), String::new()))
+                .authenticate()
+                .await
+                .expect("authenticate");
+            client.set_tick_size(
+                token_id,
+                polymarket_client_sdk_v2::clob::types::TickSize::Hundredth,
+            );
+            let handle = ClobClientHandle { client, signer };
+            let api = PolymarketApi::new(
+                "https://gamma-api.polymarket.com".to_string(),
+                clob_host,
+                None,
+                None,
+                None,
+                None,
+                Some(0),
+            );
+            api.prewarmed_order_metadata
+                .lock()
+                .await
+                .insert(token_id.to_string());
+            let order = OrderRequest {
+                token_id: token_id.to_string(),
+                side: "BUY".to_string(),
+                size: "50".to_string(),
+                price: "0.01".to_string(),
+                order_type: "FAK".to_string(),
+                expiration_ts: None,
+                post_only: None,
+            };
+
+            let prepared = api
+                .build_and_sign_order_with_handle(
+                    &handle,
+                    &order,
+                    PlaceOrderMetadataPolicy::cached_only().skip_buy_collateral_preflight(),
+                    OrderSubmitLane::Endgame,
+                )
+                .await
+                .expect("build signed order");
+            version_server.join().expect("version server");
+
+            let signed = prepared.signed_order.v2();
+            assert_eq!(prepared.size, "50");
+            assert_eq!(prepared.effective_order_type, "FAK");
+            assert_eq!(prepared.signed_order.order_type, OrderType::FAK);
+            assert_eq!(signed.order.side, Side::Buy as u8);
+            assert_eq!(signed.order.makerAmount, U256::from(500_000_u64));
+            assert_eq!(signed.order.takerAmount, U256::from(50_000_000_u64));
+        });
     }
 
     #[test]

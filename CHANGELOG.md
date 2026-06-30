@@ -1,5 +1,9 @@
 # EVPoly Changelog
 
+## v2.5.1 - 2026-06-30
+- Enforced Endgame share-unit sizing so FAK/FOK BUY submissions use configured shares directly without falling back through USD notional conversion.
+- Restored Endgame V1 to the three legacy submit ticks while keeping symbol-specific near-base thresholds.
+
 ## v2.5.0 - 2026-06-29
 - Hardened local Endgame fill readiness by allowing valid single-venue proxy direction when the peer venue sample is missing, retrying hot metadata prewarm, and lengthening fast submit outcome waits without retrying ambiguous FAK posts.
 - Fixed MM Sport stale websocket book snapshots so stale books fall back to the FIFO websocket-gap path instead of feeding FIFO/front-ratio decisions.

@@ -751,7 +751,7 @@ fn setting_specs() -> Vec<BotSettingSpec> {
             mutable: true,
             restart_required: true,
             config_fallback_key: None,
-            description: "Endgame base size in USD before symbol and hard tick multipliers.",
+            description: "Endgame base size in shares before symbol and hard tick multipliers.",
         },
         BotSettingSpec {
             key: "EVPOLY_EVCURVE_BASE_SIZE_USD",

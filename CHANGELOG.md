@@ -1,5 +1,9 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.5.1 - 2026-06-30
+- Bumped Linux app/updater version to 2.5.1.
+- Repinned the bundled runtime sidecar to runtime `v2.5.1` (`3eb4fac`) with enforced Endgame share-unit sizing and the legacy t0/t1/t2 Endgame schedule.
+
 ## Linux-v2.5.0 - 2026-06-29
 - Bumped Linux app/updater version to 2.5.0.
 - Repinned the bundled runtime sidecar to runtime `v2.5.0` (`8f98513`) with hardened local Endgame fill readiness, the MM Sport stale-book FIFO fallback, and the current Endgame t0/t1/t2 timing.

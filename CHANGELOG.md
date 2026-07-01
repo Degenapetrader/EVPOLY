@@ -1,5 +1,9 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.5.2 - 2026-07-01
+- Bumped Linux app/updater version to 2.5.2.
+- Repinned the bundled runtime sidecar to runtime `v2.5.2` (`cdcd646`) with the final Endgame Polymarket price-band guard and longest-enabled-timeframe overlap handling.
+
 ## Linux-v2.5.1 - 2026-06-30
 - Bumped Linux app/updater version to 2.5.1.
 - Repinned the bundled runtime sidecar to runtime `v2.5.1` (`3eb4fac`) with enforced Endgame share-unit sizing and the legacy t0/t1/t2 Endgame schedule.

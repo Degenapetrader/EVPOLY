@@ -8,17 +8,17 @@
 [advisories]
 informational_warnings = ["unmaintained", "unsound", "notice"]
 ignore = [
-  # expires: 2026-06-30 id: RUSTSEC-2026-0037 reason: quinn-proto is present in Cargo.lock; cargo tree -i quinn-proto --target all reports no active dependency path.
+  # expires: 2026-07-31 id: RUSTSEC-2026-0037 reason: quinn-proto is present in Cargo.lock; cargo tree -i quinn-proto --target all reports no active dependency path.
   "RUSTSEC-2026-0037",
-  # expires: 2026-06-30 id: RUSTSEC-2025-0012 reason: transitive in polymarket-client-sdk; awaiting upstream migration off backoff.
+  # expires: 2026-07-31 id: RUSTSEC-2025-0012 reason: transitive in polymarket-client-sdk; awaiting upstream migration off backoff.
   "RUSTSEC-2025-0012",
-  # expires: 2026-06-30 id: RUSTSEC-2024-0384 reason: transitive via backoff in polymarket-client-sdk.
+  # expires: 2026-07-31 id: RUSTSEC-2024-0384 reason: transitive via backoff in polymarket-client-sdk.
   "RUSTSEC-2024-0384",
-  # expires: 2026-06-30 id: RUSTSEC-2024-0436 reason: proc-macro dependency via alloy stack; runtime impact is low.
+  # expires: 2026-07-31 id: RUSTSEC-2024-0436 reason: proc-macro dependency via alloy stack; runtime impact is low.
   "RUSTSEC-2024-0436",
-  # expires: 2026-06-30 id: RUSTSEC-2026-0173 reason: proc-macro dependency via alloy stack; runtime impact is low.
+  # expires: 2026-07-31 id: RUSTSEC-2026-0173 reason: proc-macro dependency via alloy stack; runtime impact is low.
   "RUSTSEC-2026-0173",
-  # expires: 2026-06-30 id: RUSTSEC-2024-0388 reason: lockfile-only advisory in current build graph; no reachable path from active target/features.
+  # expires: 2026-07-31 id: RUSTSEC-2024-0388 reason: lockfile-only advisory in current build graph; no reachable path from active target/features.
   "RUSTSEC-2024-0388",
 ]
 

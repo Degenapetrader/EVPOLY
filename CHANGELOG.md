@@ -1,5 +1,9 @@
 # EVPoly Changelog
 
+## v2.5.2 - 2026-07-01
+- Added a final Endgame Polymarket price-band guard before fast FAK submit, reducing size on stale/unavailable final quotes and skipping fresh out-of-band markets.
+- Changed Endgame overlap handling so only the longest enabled timeframe trades when multiple enabled timeframes for the same symbol close together.
+
 ## v2.5.1 - 2026-06-30
 - Enforced Endgame share-unit sizing so FAK/FOK BUY submissions use configured shares directly without falling back through USD notional conversion.
 - Restored Endgame V1 to the three legacy submit ticks while keeping symbol-specific near-base thresholds.

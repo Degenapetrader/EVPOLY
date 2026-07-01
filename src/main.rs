@@ -9250,6 +9250,7 @@ async fn main() -> Result<()> {
         let endgame_symbols_for_loop = endgame_symbols.clone();
         let signal_state_for_endgame = signal_state.clone();
         let endgame_timeframes = endgame_cfg.enabled_timeframes();
+        let endgame_overlap_timeframes_for_loop = endgame_timeframes.clone();
         let mut coinbase_states_by_symbol: std::collections::HashMap<
             String,
             coinbase_ws::SharedCoinbaseBookState,
@@ -9560,18 +9561,6 @@ async fn main() -> Result<()> {
                 for symbol in endgame_symbols_for_loop.iter() {
                     let symbol_market_key = symbol.to_ascii_lowercase();
                     for timeframe in endgame_cfg_for_loop.enabled_timeframes() {
-                        let Some(coinbase_snapshot) = read_endgame_proxy_book_snapshot(
-                            symbol.as_str(),
-                            timeframe,
-                            now_ms,
-                            endgame_cfg_for_loop.book_freshness_ms,
-                            coinbase_states_for_endgame.as_ref(),
-                            endgame_binance_states_for_loop.as_ref(),
-                        )
-                        .await
-                        else {
-                            continue;
-                        };
                         let market_open_ts = endgame_sweep::timeframe_open_ts(now_ts, timeframe);
                         if market_open_ts <= 0 {
                             continue;
@@ -9581,54 +9570,9 @@ async fn main() -> Result<()> {
                         if now_ts < market_open_ts || now_ts >= market_close_ts {
                             continue;
                         }
-                        if let Some(mid_cb) = coinbase_snapshot
-                            .mid_price
-                            .filter(|v| v.is_finite() && *v > 0.0)
-                        {
-                            base_mid_by_period
-                                .entry((symbol_market_key.clone(), timeframe, market_open_ts))
-                                .or_insert(mid_cb);
-                        }
-                        let Some(base_mid_cb) = base_mid_by_period
-                            .get(&(symbol_market_key.clone(), timeframe, market_open_ts))
-                            .copied()
-                        else {
-                            continue;
-                        };
                         let market_close_ms = market_close_ts.saturating_mul(1_000);
                         let market_open_ms = market_open_ts.saturating_mul(1_000);
                         let period_key = (symbol_market_key.clone(), timeframe, market_open_ts);
-                        if endgame_v1_requires_dual_proxy(symbol.as_str()) {
-                            if let Some(coinbase_sample) =
-                                endgame_v1_spot_sample_from_book(&coinbase_snapshot)
-                            {
-                                endgame_v1_open_spot_by_period_proxy
-                                    .entry((
-                                        symbol_market_key.clone(),
-                                        timeframe,
-                                        market_open_ts,
-                                        EndgameV1ProxyKind::Coinbase,
-                                    ))
-                                    .or_insert(coinbase_sample);
-                            }
-                            if let Some(binance_sample) = read_endgame_binance_spot_sample(
-                                symbol.as_str(),
-                                now_ms,
-                                endgame_cfg_for_loop.book_freshness_ms,
-                                endgame_binance_states_for_loop.as_ref(),
-                            )
-                            .await
-                            {
-                                endgame_v1_open_spot_by_period_proxy
-                                    .entry((
-                                        symbol_market_key.clone(),
-                                        timeframe,
-                                        market_open_ts,
-                                        EndgameV1ProxyKind::Binance,
-                                    ))
-                                    .or_insert(binance_sample);
-                            }
-                        }
                         if !endgame_alpha_policy_by_period.contains_key(&period_key) {
                             let policy = local_endgame_alpha_policy(endgame_cfg_for_loop.as_ref());
                             log_event(
@@ -9694,6 +9638,93 @@ async fn main() -> Result<()> {
                         let Some(due_tick_index) = due_tick_index else {
                             continue;
                         };
+                        if let Some(preferred_timeframe) =
+                            endgame_preferred_overlap_timeframe_for_close(
+                                endgame_overlap_timeframes_for_loop.as_slice(),
+                                market_close_ts,
+                            )
+                        {
+                            if preferred_timeframe != timeframe {
+                                log_event(
+                                    "endgame_skip_overlap_lower_timeframe",
+                                    json!({
+                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                        "asset_symbol": symbol,
+                                        "market_key": symbol_market_key.as_str(),
+                                        "timeframe": timeframe.as_str(),
+                                        "preferred_timeframe": preferred_timeframe.as_str(),
+                                        "market_open_ts": market_open_ts,
+                                        "market_close_ts": market_close_ts,
+                                        "tick_index": due_tick_index,
+                                        "reason": "longer_timeframe_closes_same_window"
+                                    }),
+                                );
+                                processed_tick_slots.insert((
+                                    symbol_market_key.clone(),
+                                    timeframe,
+                                    market_open_ts,
+                                    due_tick_index,
+                                ));
+                                continue;
+                            }
+                        }
+                        let Some(coinbase_snapshot) = read_endgame_proxy_book_snapshot(
+                            symbol.as_str(),
+                            timeframe,
+                            now_ms,
+                            endgame_cfg_for_loop.book_freshness_ms,
+                            coinbase_states_for_endgame.as_ref(),
+                            endgame_binance_states_for_loop.as_ref(),
+                        )
+                        .await
+                        else {
+                            continue;
+                        };
+                        if let Some(mid_cb) = coinbase_snapshot
+                            .mid_price
+                            .filter(|v| v.is_finite() && *v > 0.0)
+                        {
+                            base_mid_by_period
+                                .entry((symbol_market_key.clone(), timeframe, market_open_ts))
+                                .or_insert(mid_cb);
+                        }
+                        let Some(base_mid_cb) = base_mid_by_period
+                            .get(&(symbol_market_key.clone(), timeframe, market_open_ts))
+                            .copied()
+                        else {
+                            continue;
+                        };
+                        if endgame_v1_requires_dual_proxy(symbol.as_str()) {
+                            if let Some(coinbase_sample) =
+                                endgame_v1_spot_sample_from_book(&coinbase_snapshot)
+                            {
+                                endgame_v1_open_spot_by_period_proxy
+                                    .entry((
+                                        symbol_market_key.clone(),
+                                        timeframe,
+                                        market_open_ts,
+                                        EndgameV1ProxyKind::Coinbase,
+                                    ))
+                                    .or_insert(coinbase_sample);
+                            }
+                            if let Some(binance_sample) = read_endgame_binance_spot_sample(
+                                symbol.as_str(),
+                                now_ms,
+                                endgame_cfg_for_loop.book_freshness_ms,
+                                endgame_binance_states_for_loop.as_ref(),
+                            )
+                            .await
+                            {
+                                endgame_v1_open_spot_by_period_proxy
+                                    .entry((
+                                        symbol_market_key.clone(),
+                                        timeframe,
+                                        market_open_ts,
+                                        EndgameV1ProxyKind::Binance,
+                                    ))
+                                    .or_insert(binance_sample);
+                            }
+                        }
 
                         if endgame_v1_requires_dual_proxy(symbol.as_str()) {
                             let coinbase_open = endgame_v1_open_spot_by_period_proxy
@@ -26776,6 +26807,25 @@ fn local_endgame_alpha_policy(cfg: &EndgameExecutionConfig) -> EndgameAlphaPolic
     }
 }
 
+fn endgame_timeframe_closes_at(timeframe: Timeframe, market_close_ts: i64) -> bool {
+    if market_close_ts <= 0 {
+        return false;
+    }
+    let open_ts = endgame_sweep::timeframe_open_ts(market_close_ts.saturating_sub(1), timeframe);
+    open_ts.saturating_add(timeframe.duration_seconds()) == market_close_ts
+}
+
+fn endgame_preferred_overlap_timeframe_for_close(
+    enabled_timeframes: &[Timeframe],
+    market_close_ts: i64,
+) -> Option<Timeframe> {
+    enabled_timeframes
+        .iter()
+        .copied()
+        .filter(|timeframe| endgame_timeframe_closes_at(*timeframe, market_close_ts))
+        .max_by_key(|timeframe| timeframe.duration_seconds())
+}
+
 fn env_i64_clamped(name: &str, default: i64, min: i64, max: i64) -> i64 {
     env_i64_named(name, default).clamp(min, max)
 }
@@ -29612,6 +29662,44 @@ mod tests {
         assert_eq!(endgame_sweep::poly_price_band_for_tick(1), (0.98, 0.99));
         assert_eq!(endgame_sweep::poly_price_band_for_tick(2), (0.98, 0.99));
         assert_eq!(endgame_sweep::poly_price_band_for_tick(7), (0.98, 0.99));
+    }
+
+    #[test]
+    fn endgame_overlap_prefers_longest_enabled_timeframe() {
+        let enabled = [Timeframe::M5, Timeframe::M15, Timeframe::H1, Timeframe::H4];
+
+        assert_eq!(
+            endgame_preferred_overlap_timeframe_for_close(&enabled, 15 * 60),
+            Some(Timeframe::M15)
+        );
+        assert_eq!(
+            endgame_preferred_overlap_timeframe_for_close(&enabled, 60 * 60),
+            Some(Timeframe::H1)
+        );
+        assert_eq!(
+            endgame_preferred_overlap_timeframe_for_close(&enabled, 4 * 60 * 60),
+            Some(Timeframe::H4)
+        );
+        assert_eq!(
+            endgame_preferred_overlap_timeframe_for_close(&enabled, 5 * 60),
+            Some(Timeframe::M5)
+        );
+    }
+
+    #[test]
+    fn endgame_overlap_falls_back_when_higher_timeframe_disabled() {
+        let enabled = [Timeframe::M5, Timeframe::M15, Timeframe::H1];
+
+        assert_eq!(
+            endgame_preferred_overlap_timeframe_for_close(&enabled, 4 * 60 * 60),
+            Some(Timeframe::H1)
+        );
+
+        let enabled = [Timeframe::M5, Timeframe::M15];
+        assert_eq!(
+            endgame_preferred_overlap_timeframe_for_close(&enabled, 60 * 60),
+            Some(Timeframe::M15)
+        );
     }
 
     #[test]

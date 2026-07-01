@@ -47,6 +47,41 @@ pub const STRATEGY_ID_MANUAL_PREMARKET_TAKER_V1: &str = "manual_premarket_taker_
 pub const STRATEGY_ID_MANUAL_CHASE_LIMIT_V1: &str = "manual_chase_limit_v1";
 pub const STRATEGY_ID_MANUAL_CHASE_LIMIT_TAKER_V1: &str = "manual_chase_limit_taker_v1";
 const ENDGAME_FAST_SUBMIT_DEADLINE_GUARD_MS: i64 = 25;
+const ENDGAME_FINAL_PM_QUOTE_MAX_AGE_MS: i64 = 200;
+const ENDGAME_FINAL_PM_REST_TIMEOUT_MS: u64 = 200;
+const ENDGAME_FINAL_PM_STALE_SIZE_MULTIPLIER: f64 = 0.5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndgameFinalPmQuoteAction {
+    SubmitFull,
+    SubmitReduced,
+    Skip,
+}
+
+impl EndgameFinalPmQuoteAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SubmitFull => "submit_full",
+            Self::SubmitReduced => "submit_reduced",
+            Self::Skip => "skip",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct EndgameFinalPmQuoteDecision {
+    action: EndgameFinalPmQuoteAction,
+    reason: &'static str,
+    size_multiplier: f64,
+    source: &'static str,
+    best_bid: Option<f64>,
+    best_ask: Option<f64>,
+    poly_mid: Option<f64>,
+    quote_ts_ms: Option<i64>,
+    quote_age_ms: Option<i64>,
+    band_min: f64,
+    band_max: f64,
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EvsnipeOrderIntent {
@@ -90,6 +125,7 @@ pub struct EndgameOrderIntent {
     pub tick_size: f64,
     pub units: f64,
     pub notional_usd: f64,
+    pub min_order_size_usd: f64,
     pub fair_probability: f64,
     pub execution_probability: f64,
     pub edge_bps_at_vwap: f64,
@@ -5859,13 +5895,208 @@ impl Trader {
             })
     }
 
+    fn endgame_final_pm_poly_mid(best_bid: Option<f64>, best_ask: Option<f64>) -> Option<f64> {
+        let best_bid = best_bid.filter(|value| value.is_finite() && *value > 0.0)?;
+        let best_ask = best_ask.filter(|value| value.is_finite() && *value > 0.0)?;
+        if best_ask < best_bid {
+            return None;
+        }
+        Some((best_bid + best_ask) / 2.0)
+    }
+
+    fn endgame_final_pm_quote_decision_from_parts(
+        source: &'static str,
+        best_bid: Option<f64>,
+        best_ask: Option<f64>,
+        quote_ts_ms: Option<i64>,
+        now_ms: i64,
+        tick_index: u32,
+    ) -> EndgameFinalPmQuoteDecision {
+        let (band_min, band_max) = crate::endgame_sweep::poly_price_band_for_tick(tick_index);
+        let quote_age_ms = quote_ts_ms
+            .filter(|ts| *ts > 0)
+            .map(|ts| now_ms.saturating_sub(ts).max(0));
+        let poly_mid = Self::endgame_final_pm_poly_mid(best_bid, best_ask);
+
+        if quote_age_ms
+            .map(|age| age > ENDGAME_FINAL_PM_QUOTE_MAX_AGE_MS)
+            .unwrap_or(true)
+        {
+            return EndgameFinalPmQuoteDecision {
+                action: EndgameFinalPmQuoteAction::SubmitReduced,
+                reason: "quote_missing_or_stale",
+                size_multiplier: ENDGAME_FINAL_PM_STALE_SIZE_MULTIPLIER,
+                source,
+                best_bid,
+                best_ask,
+                poly_mid,
+                quote_ts_ms,
+                quote_age_ms,
+                band_min,
+                band_max,
+            };
+        }
+
+        let Some(poly_mid) = poly_mid else {
+            return EndgameFinalPmQuoteDecision {
+                action: EndgameFinalPmQuoteAction::SubmitReduced,
+                reason: "poly_mid_unavailable",
+                size_multiplier: ENDGAME_FINAL_PM_STALE_SIZE_MULTIPLIER,
+                source,
+                best_bid,
+                best_ask,
+                poly_mid: None,
+                quote_ts_ms,
+                quote_age_ms,
+                band_min,
+                band_max,
+            };
+        };
+
+        if poly_mid < band_min || poly_mid > band_max {
+            return EndgameFinalPmQuoteDecision {
+                action: EndgameFinalPmQuoteAction::Skip,
+                reason: "poly_mid_outside_entry_band",
+                size_multiplier: 0.0,
+                source,
+                best_bid,
+                best_ask,
+                poly_mid: Some(poly_mid),
+                quote_ts_ms,
+                quote_age_ms,
+                band_min,
+                band_max,
+            };
+        }
+
+        EndgameFinalPmQuoteDecision {
+            action: EndgameFinalPmQuoteAction::SubmitFull,
+            reason: "poly_mid_inside_entry_band",
+            size_multiplier: 1.0,
+            source,
+            best_bid,
+            best_ask,
+            poly_mid: Some(poly_mid),
+            quote_ts_ms,
+            quote_age_ms,
+            band_min,
+            band_max,
+        }
+    }
+
+    fn best_bid_ask_from_orderbook_f64(orderbook: &OrderBook) -> (Option<f64>, Option<f64>) {
+        let best_bid = orderbook
+            .bids
+            .iter()
+            .filter_map(|level| {
+                let price = f64::try_from(level.price).ok()?;
+                let size = f64::try_from(level.size).ok()?;
+                (price.is_finite() && price > 0.0 && size.is_finite() && size > 0.0)
+                    .then_some(price)
+            })
+            .max_by(|left, right| left.total_cmp(right));
+        let best_ask = orderbook
+            .asks
+            .iter()
+            .filter_map(|level| {
+                let price = f64::try_from(level.price).ok()?;
+                let size = f64::try_from(level.size).ok()?;
+                (price.is_finite() && price > 0.0 && size.is_finite() && size > 0.0)
+                    .then_some(price)
+            })
+            .min_by(|left, right| left.total_cmp(right));
+        (best_bid, best_ask)
+    }
+
+    async fn endgame_final_pm_quote_decision(
+        &self,
+        intent: &EndgameOrderIntent,
+        now_ms: i64,
+    ) -> EndgameFinalPmQuoteDecision {
+        if intent.tick_index <= 1 {
+            let result = tokio::time::timeout(
+                tokio::time::Duration::from_millis(ENDGAME_FINAL_PM_REST_TIMEOUT_MS),
+                self.api
+                    .get_orderbook_rest_snapshot(intent.token_id.as_str()),
+            )
+            .await;
+            return match result {
+                Ok(Ok(snapshot)) => {
+                    let (best_bid, best_ask) =
+                        Self::best_bid_ask_from_orderbook_f64(&snapshot.orderbook);
+                    Self::endgame_final_pm_quote_decision_from_parts(
+                        "polymarket_rest_book",
+                        best_bid,
+                        best_ask,
+                        snapshot.source_ts_ms,
+                        chrono::Utc::now().timestamp_millis(),
+                        intent.tick_index,
+                    )
+                }
+                Ok(Err(_)) => EndgameFinalPmQuoteDecision {
+                    action: EndgameFinalPmQuoteAction::SubmitReduced,
+                    reason: "rest_quote_unavailable",
+                    size_multiplier: ENDGAME_FINAL_PM_STALE_SIZE_MULTIPLIER,
+                    source: "polymarket_rest_book",
+                    best_bid: None,
+                    best_ask: None,
+                    poly_mid: None,
+                    quote_ts_ms: None,
+                    quote_age_ms: None,
+                    band_min: crate::endgame_sweep::poly_price_band_for_tick(intent.tick_index).0,
+                    band_max: crate::endgame_sweep::poly_price_band_for_tick(intent.tick_index).1,
+                },
+                Err(_) => EndgameFinalPmQuoteDecision {
+                    action: EndgameFinalPmQuoteAction::SubmitReduced,
+                    reason: "rest_quote_timeout",
+                    size_multiplier: ENDGAME_FINAL_PM_STALE_SIZE_MULTIPLIER,
+                    source: "polymarket_rest_book",
+                    best_bid: None,
+                    best_ask: None,
+                    poly_mid: None,
+                    quote_ts_ms: None,
+                    quote_age_ms: None,
+                    band_min: crate::endgame_sweep::poly_price_band_for_tick(intent.tick_index).0,
+                    band_max: crate::endgame_sweep::poly_price_band_for_tick(intent.tick_index).1,
+                },
+            };
+        }
+
+        if let Some(snapshot) = self
+            .api
+            .get_endgame_quote_cache_snapshot(
+                intent.token_id.as_str(),
+                ENDGAME_FINAL_PM_QUOTE_MAX_AGE_MS,
+            )
+            .await
+        {
+            return Self::endgame_final_pm_quote_decision_from_parts(
+                snapshot.source.as_str(),
+                snapshot.best_bid,
+                snapshot.best_ask,
+                Some(snapshot.updated_ms),
+                chrono::Utc::now().timestamp_millis(),
+                intent.tick_index,
+            );
+        }
+
+        Self::endgame_final_pm_quote_decision_from_parts(
+            "endgame_quote_cache",
+            None,
+            None,
+            None,
+            now_ms,
+            intent.tick_index,
+        )
+    }
+
     pub async fn execute_endgame_buy_fast(
         &self,
         opportunity: &BuyOpportunity,
         intent: &EndgameOrderIntent,
         source_timeframe: Option<&str>,
         request_id: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<f64> {
         let strategy_id = if intent.strategy_id.trim().is_empty() {
             crate::strategy::STRATEGY_ID_ENDGAME_SWEEP_V1
         } else {
@@ -6108,12 +6339,116 @@ impl Trader {
             return Err(anyhow!(reason));
         }
 
-        let units = intent.units;
+        let final_pm_quote_decision = self.endgame_final_pm_quote_decision(intent, now_ms).await;
+        log_event(
+            "endgame_submit_poly_price_band_guard",
+            json!({
+                "strategy_id": strategy_id,
+                "request_id": request_id.as_deref(),
+                "symbol": intent.symbol.as_str(),
+                "timeframe": intent.timeframe.as_str(),
+                "condition_id": intent.condition_id.as_str(),
+                "token_id": intent.token_id.as_str(),
+                "direction": intent.direction.as_str(),
+                "market_open_ts": intent.market_open_ts,
+                "market_close_ts": intent.market_close_ts,
+                "tick_index": intent.tick_index,
+                "source": final_pm_quote_decision.source,
+                "action": final_pm_quote_decision.action.as_str(),
+                "reason": final_pm_quote_decision.reason,
+                "best_bid": final_pm_quote_decision.best_bid,
+                "best_ask": final_pm_quote_decision.best_ask,
+                "poly_mid": final_pm_quote_decision.poly_mid,
+                "quote_ts_ms": final_pm_quote_decision.quote_ts_ms,
+                "quote_age_ms": final_pm_quote_decision.quote_age_ms,
+                "quote_max_age_ms": ENDGAME_FINAL_PM_QUOTE_MAX_AGE_MS,
+                "poly_price_min": final_pm_quote_decision.band_min,
+                "poly_price_max": final_pm_quote_decision.band_max,
+                "original_units": intent.units,
+                "size_multiplier": final_pm_quote_decision.size_multiplier
+            }),
+        );
+        if final_pm_quote_decision.action == EndgameFinalPmQuoteAction::Skip {
+            let reason =
+                "endgame_submit_poly_price_band_guard: poly_mid_outside_entry_band".to_string();
+            self.record_entry_precheck_failure(
+                strategy_id,
+                source_timeframe.as_str(),
+                entry_mode,
+                opportunity,
+                Some(submit_price),
+                Some(intent.units),
+                Some(intent.units.max(0.0) * submit_price.max(0.0)),
+                reason.clone(),
+            );
+            return Err(anyhow!(reason));
+        }
+
+        let now_after_final_guard_ms = chrono::Utc::now().timestamp_millis();
+        if market_close_ms <= 0 || now_after_final_guard_ms >= latest_submit_ms {
+            let reason = format!(
+                "endgame_submit_deadline_guard_after_quote: now_ms={} market_close_ms={} guard_ms={}",
+                now_after_final_guard_ms, market_close_ms, ENDGAME_FAST_SUBMIT_DEADLINE_GUARD_MS
+            );
+            self.record_entry_precheck_failure(
+                strategy_id,
+                source_timeframe.as_str(),
+                entry_mode,
+                opportunity,
+                Some(submit_price),
+                Some(intent.units),
+                Some(intent.units.max(0.0) * submit_price.max(0.0)),
+                reason.clone(),
+            );
+            log_event(
+                "endgame_submit_deadline_guard",
+                json!({
+                    "strategy_id": strategy_id,
+                    "request_id": request_id.as_deref(),
+                    "symbol": intent.symbol.as_str(),
+                    "timeframe": intent.timeframe.as_str(),
+                    "condition_id": intent.condition_id.as_str(),
+                    "token_id": intent.token_id.as_str(),
+                    "direction": intent.direction.as_str(),
+                    "market_open_ts": intent.market_open_ts,
+                    "market_close_ts": intent.market_close_ts,
+                    "tick_index": intent.tick_index,
+                    "now_ms": now_after_final_guard_ms,
+                    "market_close_ms": market_close_ms,
+                    "latest_submit_ms": latest_submit_ms,
+                    "guard_ms": ENDGAME_FAST_SUBMIT_DEADLINE_GUARD_MS,
+                    "reason": "too_close_to_market_close_after_final_quote_guard"
+                }),
+            );
+            return Err(anyhow!(reason));
+        }
+
+        let units = intent.units * final_pm_quote_decision.size_multiplier;
         let investment_amount = units.max(0.0) * submit_price.max(0.0);
         if !units.is_finite() || units <= 0.0 || !investment_amount.is_finite() {
             let reason = format!(
                 "endgame_invalid_share_units: units={:.8} notional={:.8}",
                 units, investment_amount
+            );
+            self.record_entry_precheck_failure(
+                strategy_id,
+                source_timeframe.as_str(),
+                entry_mode,
+                opportunity,
+                Some(submit_price),
+                Some(units),
+                Some(investment_amount),
+                reason.clone(),
+            );
+            return Err(anyhow!(reason));
+        }
+        if intent.min_order_size_usd.is_finite()
+            && intent.min_order_size_usd > 0.0
+            && investment_amount + 1e-9 < intent.min_order_size_usd
+        {
+            let reason = format!(
+                "endgame_final_size_below_min_order: notional={:.8} min_order_size={:.8}",
+                investment_amount, intent.min_order_size_usd
             );
             self.record_entry_precheck_failure(
                 strategy_id,
@@ -6189,7 +6524,7 @@ impl Trader {
             };
             let mut pending = self.pending_trades.lock().await;
             pending.insert(trade_key, trade);
-            return Ok(());
+            return Ok(investment_amount);
         }
 
         let submit_timeout_ms = std::env::var("EVPOLY_ENDGAME_SUBMIT_TIMEOUT_MS")
@@ -6237,6 +6572,19 @@ impl Trader {
                     "best_bid": intent.best_bid,
                     "best_ask": intent.best_ask,
                     "poly_mid_at_intent": intent.poly_mid_at_intent,
+                    "final_pm_quote_source": final_pm_quote_decision.source,
+                    "final_pm_quote_action": final_pm_quote_decision.action.as_str(),
+                    "final_pm_quote_reason": final_pm_quote_decision.reason,
+                    "final_pm_best_bid": final_pm_quote_decision.best_bid,
+                    "final_pm_best_ask": final_pm_quote_decision.best_ask,
+                    "final_pm_poly_mid": final_pm_quote_decision.poly_mid,
+                    "final_pm_quote_ts_ms": final_pm_quote_decision.quote_ts_ms,
+                    "final_pm_quote_age_ms": final_pm_quote_decision.quote_age_ms,
+                    "final_pm_quote_max_age_ms": ENDGAME_FINAL_PM_QUOTE_MAX_AGE_MS,
+                    "final_pm_poly_price_min": final_pm_quote_decision.band_min,
+                    "final_pm_poly_price_max": final_pm_quote_decision.band_max,
+                    "final_pm_size_multiplier": final_pm_quote_decision.size_multiplier,
+                    "original_units": intent.units,
                     "tick_index": intent.tick_index,
                     "tau_seconds": intent.tau_seconds,
                     "edge_bps_at_vwap": intent.edge_bps_at_vwap,
@@ -6489,7 +6837,7 @@ impl Trader {
                         "submit_timeout_ms": submit_timeout_ms
                     }),
                 );
-                Ok(())
+                Ok(signed_investment_amount)
             }
             Err(error) => {
                 self.record_entry_precheck_failure(
@@ -16182,7 +16530,10 @@ impl Trader {
 
 #[cfg(test)]
 mod tests {
-    use super::{EntryExecutionMode, MarketOrderConstraints, Trader};
+    use super::{
+        EndgameFinalPmQuoteAction, EntryExecutionMode, MarketOrderConstraints, Trader,
+        ENDGAME_FINAL_PM_STALE_SIZE_MULTIPLIER,
+    };
     use crate::detector::TokenType;
     use crate::models::{OrderResponse, PendingTrade};
     use crate::tracking_db::MmWalletInventoryRow;
@@ -16909,6 +17260,84 @@ mod tests {
         assert_eq!(Trader::tick_decimal_places(0.001), 3);
         assert_eq!(Trader::tick_decimal_places(0.0001), 4);
         assert_eq!(Trader::tick_decimal_places(1.0), 2);
+    }
+
+    #[test]
+    fn endgame_final_quote_guard_allows_fresh_in_band_quote() {
+        let decision = Trader::endgame_final_pm_quote_decision_from_parts(
+            "test",
+            Some(0.98),
+            Some(0.99),
+            Some(1_000),
+            1_150,
+            0,
+        );
+
+        assert_eq!(decision.action, EndgameFinalPmQuoteAction::SubmitFull);
+        assert_eq!(decision.reason, "poly_mid_inside_entry_band");
+        assert_eq!(decision.poly_mid, Some(0.985));
+        assert_eq!(decision.size_multiplier, 1.0);
+    }
+
+    #[test]
+    fn endgame_final_quote_guard_reduces_on_stale_or_missing_quote() {
+        let stale = Trader::endgame_final_pm_quote_decision_from_parts(
+            "test",
+            Some(0.98),
+            Some(0.99),
+            Some(1_000),
+            1_201,
+            0,
+        );
+        assert_eq!(stale.action, EndgameFinalPmQuoteAction::SubmitReduced);
+        assert_eq!(stale.reason, "quote_missing_or_stale");
+        assert_eq!(
+            stale.size_multiplier,
+            ENDGAME_FINAL_PM_STALE_SIZE_MULTIPLIER
+        );
+
+        let missing_timestamp = Trader::endgame_final_pm_quote_decision_from_parts(
+            "test",
+            Some(0.98),
+            Some(0.99),
+            None,
+            1_150,
+            0,
+        );
+        assert_eq!(
+            missing_timestamp.action,
+            EndgameFinalPmQuoteAction::SubmitReduced
+        );
+        assert_eq!(missing_timestamp.reason, "quote_missing_or_stale");
+
+        let missing_mid = Trader::endgame_final_pm_quote_decision_from_parts(
+            "test",
+            Some(0.98),
+            None,
+            Some(1_100),
+            1_150,
+            0,
+        );
+        assert_eq!(missing_mid.action, EndgameFinalPmQuoteAction::SubmitReduced);
+        assert_eq!(missing_mid.reason, "poly_mid_unavailable");
+    }
+
+    #[test]
+    fn endgame_final_quote_guard_skips_fresh_out_of_band_quote() {
+        let decision = Trader::endgame_final_pm_quote_decision_from_parts(
+            "test",
+            Some(0.95),
+            Some(0.96),
+            Some(1_000),
+            1_050,
+            0,
+        );
+
+        assert_eq!(decision.action, EndgameFinalPmQuoteAction::Skip);
+        assert_eq!(decision.reason, "poly_mid_outside_entry_band");
+        assert_eq!(decision.poly_mid, Some(0.955));
+        assert_eq!(decision.band_min, 0.97);
+        assert_eq!(decision.band_max, 0.99);
     }
 
     #[test]

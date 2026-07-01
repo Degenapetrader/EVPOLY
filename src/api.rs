@@ -2847,6 +2847,24 @@ impl PolymarketApi {
         self.ws_state.lock().await.clone()
     }
 
+    pub async fn get_endgame_quote_cache_snapshot(
+        &self,
+        token_id: &str,
+        max_age_ms: i64,
+    ) -> Option<crate::endgame_quote_cache::EndgameQuoteSnapshot> {
+        if !self.ws_enabled {
+            return None;
+        }
+        let ws_state = self.ws_state_snapshot().await?;
+        let cache = ws_state.endgame_quote_cache()?;
+        let now_ms = Utc::now().timestamp_millis();
+        let snapshot = cache.latest(token_id)?;
+        if !snapshot.valid || snapshot.age_ms(now_ms) > max_age_ms {
+            return None;
+        }
+        Some(snapshot)
+    }
+
     /// Get all active markets (using events keyset endpoint)
     pub async fn get_all_active_markets(&self, limit: u32) -> Result<Vec<Market>> {
         self.get_all_active_markets_page(limit, 0).await

@@ -287,10 +287,11 @@ enum EvsnipeSubmitOutcome {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum EndgameSubmitOutcome {
-    Submitted,
+    Submitted(f64),
     Unknown,
+    Skipped,
     Failed,
 }
 
@@ -8316,8 +8317,9 @@ async fn main() -> Result<()> {
                             }
                         }
 
+                        let mut endgame_submitted_notional_usd: Option<f64> = None;
                         let submit_result = if endgame_fast_submit_enabled {
-                            trader_for_submit
+                            match trader_for_submit
                                 .execute_endgame_buy_fast(
                                     &request.opportunity,
                                     request.endgame_intent.as_ref().expect("checked is_some"),
@@ -8325,6 +8327,13 @@ async fn main() -> Result<()> {
                                     Some(request.request_id.as_str()),
                                 )
                                 .await
+                            {
+                                Ok(submitted_notional_usd) => {
+                                    endgame_submitted_notional_usd = Some(submitted_notional_usd);
+                                    Ok(())
+                                }
+                                Err(error) => Err(error),
+                            }
                         } else if request.intent.strategy_id == STRATEGY_ID_EVSNIPE_V1
                             && matches!(request.entry_mode, EntryExecutionMode::Evsnipe)
                             && request.evsnipe_intent.is_some()
@@ -8355,6 +8364,46 @@ async fn main() -> Result<()> {
                             let err_text = e.to_string();
                             let err_kind = classify_submit_error_kind(err_text.as_str());
                             let class = classify_entry_error(err_text.as_str());
+                            let endgame_final_band_skip =
+                                matches!(request.entry_mode, EntryExecutionMode::Endgame) && {
+                                    let lower = err_text.to_ascii_lowercase();
+                                    lower.contains("endgame_submit_poly_price_band_guard")
+                                        || lower.contains("endgame_final_size_below_min_order")
+                                };
+                            if endgame_final_band_skip {
+                                let mut gate = worker_idempotency_for_submit.lock().await;
+                                gate.finish_without_cooldown(
+                                    &logical_key_for_submit,
+                                    &scope_key_for_submit,
+                                );
+                                drop(gate);
+                                endgame_submit_outcome_guard.send(EndgameSubmitOutcome::Skipped);
+                                log_event(
+                                    "endgame_submit_expected_skipped",
+                                    json!({
+                                        "request_id": request.request_id,
+                                        "logical_key": logical_key_for_submit.as_compact_string(),
+                                        "strategy_id": request.intent.strategy_id,
+                                        "timeframe": scope_key_for_submit.timeframe,
+                                        "entry_mode": request.entry_mode.as_str(),
+                                        "rung_id": rung_id_for_submit,
+                                        "period_timestamp": request.opportunity.period_timestamp,
+                                        "token_id": request.opportunity.token_id,
+                                        "error": err_text.as_str(),
+                                        "worker_pool": pool_label_for_submit
+                                    }),
+                                );
+                                request.timing.worker_done_ts_ms =
+                                    Some(chrono::Utc::now().timestamp_millis());
+                                log_arbiter_request_timing(
+                                    &request,
+                                    pool_label_for_submit,
+                                    worker_index,
+                                    "reject_endgame_expected_skip",
+                                    Some(err_text.as_str()),
+                                );
+                                return;
+                            }
                             let evsnipe_no_fill = request.intent.strategy_id
                                 == STRATEGY_ID_EVSNIPE_V1
                                 && matches!(request.entry_mode, EntryExecutionMode::Evsnipe)
@@ -8515,7 +8564,10 @@ async fn main() -> Result<()> {
                             );
                             return;
                         }
-                        endgame_submit_outcome_guard.send(EndgameSubmitOutcome::Submitted);
+                        endgame_submit_outcome_guard.send(EndgameSubmitOutcome::Submitted(
+                            endgame_submitted_notional_usd
+                                .unwrap_or(request.intent.target_size_usd),
+                        ));
                         evsnipe_submit_outcome_guard.send(EvsnipeSubmitOutcome::Submitted);
 
                         let mut gate = worker_idempotency_for_submit.lock().await;
@@ -9430,30 +9482,54 @@ async fn main() -> Result<()> {
                 let now_ts = now_ms.saturating_div(1_000);
                 while let Ok(event) = endgame_submit_outcome_rx.try_recv() {
                     let submit_status = match event.outcome {
-                        EndgameSubmitOutcome::Submitted => "submitted",
+                        EndgameSubmitOutcome::Submitted(_) => "submitted",
                         EndgameSubmitOutcome::Unknown => "submit_unknown",
+                        EndgameSubmitOutcome::Skipped => "submit_skipped",
                         EndgameSubmitOutcome::Failed => "submit_failed",
                     };
-                    if matches!(
-                        event.outcome,
-                        EndgameSubmitOutcome::Submitted | EndgameSubmitOutcome::Unknown
-                    ) {
-                        emitted_ticks.insert(event.emit_key);
-                        processed_tick_slots.insert((
-                            event.symbol_market_key.clone(),
-                            event.timeframe,
-                            event.market_open_ts,
-                            event.tick_index,
-                        ));
-                        period_direction_locks
-                            .insert(event.period_budget_key.clone(), event.direction);
-                        submitted_notional_by_period
-                            .entry(event.period_budget_key)
-                            .and_modify(|v| *v += event.effective_size_usd)
-                            .or_insert(event.effective_size_usd);
-                    } else {
-                        forget_enqueue_dedupe_key(&enqueue_dedupe_for_endgame, &event.logical_key)
+                    let accounted_effective_size_usd = match event.outcome {
+                        EndgameSubmitOutcome::Submitted(submitted_notional_usd) => {
+                            submitted_notional_usd
+                        }
+                        _ => event.effective_size_usd,
+                    };
+                    match event.outcome {
+                        EndgameSubmitOutcome::Submitted(_) | EndgameSubmitOutcome::Unknown => {
+                            emitted_ticks.insert(event.emit_key);
+                            processed_tick_slots.insert((
+                                event.symbol_market_key.clone(),
+                                event.timeframe,
+                                event.market_open_ts,
+                                event.tick_index,
+                            ));
+                            period_direction_locks
+                                .insert(event.period_budget_key.clone(), event.direction);
+                            submitted_notional_by_period
+                                .entry(event.period_budget_key)
+                                .and_modify(|v| *v += accounted_effective_size_usd)
+                                .or_insert(accounted_effective_size_usd);
+                        }
+                        EndgameSubmitOutcome::Skipped => {
+                            emitted_ticks.insert(event.emit_key);
+                            processed_tick_slots.insert((
+                                event.symbol_market_key.clone(),
+                                event.timeframe,
+                                event.market_open_ts,
+                                event.tick_index,
+                            ));
+                            forget_enqueue_dedupe_key(
+                                &enqueue_dedupe_for_endgame,
+                                &event.logical_key,
+                            )
                             .await;
+                        }
+                        EndgameSubmitOutcome::Failed => {
+                            forget_enqueue_dedupe_key(
+                                &enqueue_dedupe_for_endgame,
+                                &event.logical_key,
+                            )
+                            .await;
+                        }
                     }
                     log_event(
                         "endgame_alpha_tick_executed",
@@ -9466,6 +9542,8 @@ async fn main() -> Result<()> {
                             "tick_index": event.tick_index,
                             "request_id": event.request_id.as_str(),
                             "status": submit_status,
+                            "requested_effective_size_usd": event.effective_size_usd,
+                            "accounted_effective_size_usd": accounted_effective_size_usd,
                             "submit_outcome_wait_ms": event.outcome_wait_ms,
                             "alpha_tick_offsets_ms": event.alpha_tick_offsets_ms,
                             "alpha_submit_proxy_max_age_ms": event.alpha_submit_proxy_max_age_ms,
@@ -9910,7 +9988,7 @@ async fn main() -> Result<()> {
                         let mut side_eval_count = 0usize;
                         let sweep_fixed_limit_price = 0.99_f64;
                         let (sweep_poly_price_min, sweep_poly_price_max) =
-                            endgame_sweep_poly_price_band_for_tick(plan.tick_index);
+                            endgame_sweep::poly_price_band_for_tick(plan.tick_index);
                         let sweep_fair_poly_gap_max: Option<f64> = None;
                         for direction in [Direction::Up, Direction::Down] {
                             if direction != favored_direction {
@@ -10628,6 +10706,7 @@ async fn main() -> Result<()> {
                             tick_size: min_tick_size,
                             units: sizing.shares,
                             notional_usd: effective_size_usd,
+                            min_order_size_usd,
                             fair_probability: pricing.fair_probability,
                             execution_probability: pricing.execution_probability,
                             edge_bps_at_vwap: sizing.edge_bps_at_vwap,
@@ -25624,35 +25703,6 @@ fn cap_endgame_sizing_to_period_remaining_usd(
     effective_size_usd
 }
 
-fn endgame_sweep_poly_price_band_for_tick(tick_index: u32) -> (f64, f64) {
-    if let Ok(raw) = std::env::var("EVPOLY_ENDGAME_SWEEP_POLY_PRICE_BAND") {
-        if let Some(parsed) = parse_price_band(raw.as_str()) {
-            return parsed;
-        }
-    }
-    let tick_key = format!("EVPOLY_ENDGAME_SWEEP_POLY_PRICE_BAND_TICK{}", tick_index);
-    if let Ok(raw) = std::env::var(tick_key.as_str()) {
-        if let Some(parsed) = parse_price_band(raw.as_str()) {
-            return parsed;
-        }
-    }
-    match tick_index {
-        0 => (0.95, 0.99),
-        1 => (0.97, 0.99),
-        _ => (0.98, 0.99),
-    }
-}
-
-fn parse_price_band(raw: &str) -> Option<(f64, f64)> {
-    let (min_raw, max_raw) = raw.split_once('-')?;
-    let min_v = min_raw.trim().parse::<f64>().ok()?;
-    let max_v = max_raw.trim().parse::<f64>().ok()?;
-    if !min_v.is_finite() || !max_v.is_finite() || min_v <= 0.0 || max_v < min_v {
-        return None;
-    }
-    Some((min_v.clamp(0.01, 0.99), max_v.clamp(0.01, 0.99)))
-}
-
 fn to_json_string(value: Value) -> Option<String> {
     serde_json::to_string(&value).ok()
 }
@@ -29558,10 +29608,10 @@ mod tests {
 
     #[test]
     fn endgame_sweep_price_band_varies_by_tick() {
-        assert_eq!(endgame_sweep_poly_price_band_for_tick(0), (0.95, 0.99));
-        assert_eq!(endgame_sweep_poly_price_band_for_tick(1), (0.97, 0.99));
-        assert_eq!(endgame_sweep_poly_price_band_for_tick(2), (0.98, 0.99));
-        assert_eq!(endgame_sweep_poly_price_band_for_tick(7), (0.98, 0.99));
+        assert_eq!(endgame_sweep::poly_price_band_for_tick(0), (0.97, 0.99));
+        assert_eq!(endgame_sweep::poly_price_band_for_tick(1), (0.98, 0.99));
+        assert_eq!(endgame_sweep::poly_price_band_for_tick(2), (0.98, 0.99));
+        assert_eq!(endgame_sweep::poly_price_band_for_tick(7), (0.98, 0.99));
     }
 
     #[test]

@@ -937,6 +937,14 @@ fn normal_cdf(x: f64) -> f64 {
     (0.5 * (1.0 + erf)).clamp(0.0, 1.0)
 }
 
+pub fn poly_price_band_for_tick(tick_index: u32) -> (f64, f64) {
+    match tick_index {
+        0 => (0.97, 0.99),
+        1 => (0.98, 0.99),
+        _ => (0.98, 0.99),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

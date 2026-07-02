@@ -99,7 +99,7 @@ const SAMPLE_CONFIG: BotConfig = {
       },
     },
     endgame: {
-      timeframes: ["5m", "15m", "1h", "4h"],
+      timeframes: ["5m", "15m"],
       per_period_cap_usd: 10000,
       tick0_multiplier: 0.2,
       tick1_multiplier: 0.4,

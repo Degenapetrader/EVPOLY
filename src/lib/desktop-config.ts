@@ -64,6 +64,7 @@ type Timeframe = "5m" | "15m" | "1h" | "4h" | "1d";
 
 const ALL_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h", "1d"] as const;
 const PREMARKET_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h"] as const;
+const ENDGAME_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m"] as const;
 const SESSIONBAND_TIMEFRAMES: readonly Timeframe[] = ["5m", "15m", "1h", "4h"] as const;
 export type PremarketLadderBucket = "m5" | "non_m5";
 export const PREMARKET_LADDER_BASE_PRICES: Record<PremarketLadderBucket, number[]> = {
@@ -223,7 +224,7 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     },
   },
   endgame: {
-    timeframes: ["5m", "15m", "1h", "4h"],
+    timeframes: [...ENDGAME_TIMEFRAMES],
     per_period_cap_usd: 10000,
     tick0_multiplier: 0.2,
     tick1_multiplier: 0.4,
@@ -487,10 +488,7 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
       endgame: {
         ...DEFAULT_CONFIG.strategy_settings.endgame,
         ...saved?.strategy_settings?.endgame,
-        timeframes:
-          saved?.strategy_settings?.endgame?.timeframes?.length
-            ? saved.strategy_settings.endgame.timeframes
-            : DEFAULT_CONFIG.strategy_settings.endgame.timeframes,
+        timeframes: [...ENDGAME_TIMEFRAMES],
       },
       evcurve: {
         ...DEFAULT_CONFIG.strategy_settings.evcurve,
@@ -940,7 +938,7 @@ export function strategyTimeframeOptions(strategy: StrategyKey): readonly Timefr
     case "evcurve":
       return ["15m", "1h", "4h", "1d"];
     case "endgame":
-      return ["5m", "15m", "1h", "4h"];
+      return ENDGAME_TIMEFRAMES;
     default:
       return ALL_TIMEFRAMES;
   }

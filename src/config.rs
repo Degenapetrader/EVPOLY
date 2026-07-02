@@ -225,6 +225,8 @@ pub struct EndgameExecutionConfig {
     pub base_size_shares: f64,
 }
 
+const FIXED_ENDGAME_TIMEFRAMES_CSV: &str = "5m,15m";
+
 impl EndgameExecutionConfig {
     pub fn from_env() -> Self {
         let offset_scale_ms = 1_u64;
@@ -232,8 +234,7 @@ impl EndgameExecutionConfig {
         tick_offsets_sec.sort_by(|a, b| b.cmp(a));
         tick_offsets_sec.dedup();
 
-        let enabled_timeframes_csv = env_nonempty(&["EVPOLY_ENDGAME_TIMEFRAMES".to_string()])
-            .unwrap_or_else(|| "5m,15m,1h,4h".to_string());
+        let enabled_timeframes_csv = FIXED_ENDGAME_TIMEFRAMES_CSV.to_string();
         let enabled_symbols_csv = env_nonempty(&["EVPOLY_ENDGAME_SYMBOLS".to_string()])
             .unwrap_or_else(|| "BTC,ETH,SOL,XRP,DOGE,BNB,HYPE".to_string());
         let per_tick_notional_by_offset =
@@ -361,7 +362,10 @@ impl EndgameExecutionConfig {
     }
 
     pub fn enabled_timeframes(&self) -> Vec<crate::strategy::Timeframe> {
-        parse_endgame_timeframes(self.enabled_timeframes_csv.as_str())
+        vec![
+            crate::strategy::Timeframe::M5,
+            crate::strategy::Timeframe::M15,
+        ]
     }
 
     pub fn enabled_symbols(&self) -> Vec<String> {
@@ -410,32 +414,6 @@ impl EndgameExecutionConfig {
             .unwrap_or_else(|| self.per_tick_notional_for_offset(offset_sec))
             .max(0.0)
     }
-}
-
-fn parse_endgame_timeframes(raw: &str) -> Vec<crate::strategy::Timeframe> {
-    let mut out = Vec::new();
-    for part in raw.split(',') {
-        let normalized = part.trim().to_ascii_lowercase();
-        let timeframe = match normalized.as_str() {
-            "5m" => Some(crate::strategy::Timeframe::M5),
-            "15m" => Some(crate::strategy::Timeframe::M15),
-            "1h" | "60m" => Some(crate::strategy::Timeframe::H1),
-            "4h" | "240m" => Some(crate::strategy::Timeframe::H4),
-            _ => None,
-        };
-        if let Some(tf) = timeframe {
-            if !out.contains(&tf) {
-                out.push(tf);
-            }
-        }
-    }
-    if out.is_empty() {
-        out.push(crate::strategy::Timeframe::M5);
-        out.push(crate::strategy::Timeframe::M15);
-        out.push(crate::strategy::Timeframe::H1);
-        out.push(crate::strategy::Timeframe::H4);
-    }
-    out
 }
 
 fn normalize_endgame_symbol(raw: &str) -> String {
@@ -988,6 +966,21 @@ mod tests {
                 assert!((cfg.base_size_shares - 50.0).abs() < 1e-9);
             },
         );
+    }
+
+    #[test]
+    fn endgame_timeframes_are_hardcoded_to_5m_15m() {
+        with_env(&[("EVPOLY_ENDGAME_TIMEFRAMES", Some("1h,4h"))], || {
+            let cfg = EndgameExecutionConfig::from_env();
+            assert_eq!(cfg.enabled_timeframes_csv, "5m,15m");
+            assert_eq!(
+                cfg.enabled_timeframes(),
+                vec![
+                    crate::strategy::Timeframe::M5,
+                    crate::strategy::Timeframe::M15
+                ]
+            );
+        });
     }
 
     #[test]

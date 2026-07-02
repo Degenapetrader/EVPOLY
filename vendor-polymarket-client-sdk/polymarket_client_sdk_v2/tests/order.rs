@@ -675,6 +675,33 @@ mod limit {
     }
 
     #[tokio::test]
+    async fn should_fail_on_price_not_aligned_to_quarter_cent_tick() -> anyhow::Result<()> {
+        let server = MockServer::start();
+        let client = create_authenticated(&server).await?;
+
+        ensure_requirements(&server, token_1(), TickSize::QuarterCent);
+
+        let err = client
+            .limit_order()
+            .token_id(token_1())
+            .price(dec!(0.0526))
+            .size(dec!(21.04))
+            .side(Side::Buy)
+            .expiration(DateTime::<Utc>::from_str("1970-01-01T13:53:20Z").unwrap())
+            .build()
+            .await
+            .unwrap_err();
+        let msg = &err.downcast_ref::<Validation>().unwrap().reason;
+
+        assert_eq!(
+            msg,
+            "Price 0.0526 is not aligned to the minimum tick size 0.0025"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn should_fail_on_negative_price_and_size() -> anyhow::Result<()> {
         let server = MockServer::start();
         let client = create_authenticated(&server).await?;
@@ -785,6 +812,88 @@ mod limit {
 
             assert_eq!(signable_order.order().tokenId, token_1());
             assert_eq!(signable_order.order().makerAmount, U256::from(11_782_400));
+            assert_eq!(signable_order.order().takerAmount, U256::from(21_040_000));
+            assert_eq!(signable_order.v2().expiration, U256::from(50000));
+
+            assert_eq!(signable_order.order().side, Side::Buy as u8);
+            assert_eq!(
+                signable_order.order().signatureType,
+                SignatureType::Eoa as u8
+            );
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn should_succeed_0_005() -> anyhow::Result<()> {
+            let server = MockServer::start();
+            let client = create_authenticated(&server).await?;
+
+            ensure_requirements(&server, token_1(), TickSize::HalfCent);
+
+            let signable_order = client
+                .limit_order()
+                .token_id(token_1())
+                .price(dec!(0.055))
+                .size(dec!(21.04))
+                .side(Side::Buy)
+                .order_type(OrderType::GTD)
+                .expiration(DateTime::<Utc>::from_str("1970-01-01T13:53:20Z").unwrap())
+                .build()
+                .await?;
+
+            let maker_amount = signable_order.order().makerAmount;
+            let taker_amount = signable_order.order().takerAmount;
+
+            let price = to_decimal(maker_amount) / to_decimal(taker_amount);
+            assert_eq!(price, dec!(0.055));
+
+            assert_eq!(signable_order.order().maker, client.address());
+            assert_eq!(signable_order.order().signer, client.address());
+
+            assert_eq!(signable_order.order().tokenId, token_1());
+            assert_eq!(signable_order.order().makerAmount, U256::from(1_157_200));
+            assert_eq!(signable_order.order().takerAmount, U256::from(21_040_000));
+            assert_eq!(signable_order.v2().expiration, U256::from(50000));
+
+            assert_eq!(signable_order.order().side, Side::Buy as u8);
+            assert_eq!(
+                signable_order.order().signatureType,
+                SignatureType::Eoa as u8
+            );
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn should_succeed_0_0025() -> anyhow::Result<()> {
+            let server = MockServer::start();
+            let client = create_authenticated(&server).await?;
+
+            ensure_requirements(&server, token_1(), TickSize::QuarterCent);
+
+            let signable_order = client
+                .limit_order()
+                .token_id(token_1())
+                .price(dec!(0.0525))
+                .size(dec!(21.04))
+                .side(Side::Buy)
+                .order_type(OrderType::GTD)
+                .expiration(DateTime::<Utc>::from_str("1970-01-01T13:53:20Z").unwrap())
+                .build()
+                .await?;
+
+            let maker_amount = signable_order.order().makerAmount;
+            let taker_amount = signable_order.order().takerAmount;
+
+            let price = to_decimal(maker_amount) / to_decimal(taker_amount);
+            assert_eq!(price, dec!(0.0525));
+
+            assert_eq!(signable_order.order().maker, client.address());
+            assert_eq!(signable_order.order().signer, client.address());
+
+            assert_eq!(signable_order.order().tokenId, token_1());
+            assert_eq!(signable_order.order().makerAmount, U256::from(1_104_600));
             assert_eq!(signable_order.order().takerAmount, U256::from(21_040_000));
             assert_eq!(signable_order.v2().expiration, U256::from(50000));
 
@@ -1347,7 +1456,22 @@ mod market {
         bids: &[OrderSummary],
         asks: &[OrderSummary],
     ) {
-        let minimum_tick_size = TickSize::Tenth;
+        ensure_requirements_for_market_price_with_tick(
+            server,
+            token_id,
+            bids,
+            asks,
+            TickSize::Tenth,
+        );
+    }
+
+    fn ensure_requirements_for_market_price_with_tick(
+        server: &MockServer,
+        token_id: U256,
+        bids: &[OrderSummary],
+        asks: &[OrderSummary],
+        minimum_tick_size: TickSize,
+    ) {
         crate::common::ensure_version(server, 2);
 
         server.mock(|when, then| {
@@ -1923,6 +2047,92 @@ mod market {
 
                 Ok(())
             }
+        }
+
+        #[tokio::test]
+        async fn should_fail_on_price_not_aligned_to_quarter_cent_tick() -> anyhow::Result<()> {
+            let server = MockServer::start();
+            let client = create_authenticated(&server).await?;
+
+            ensure_requirements_for_market_price_with_tick(
+                &server,
+                token_1(),
+                &[],
+                &[OrderSummary::builder()
+                    .price(dec!(0.0526))
+                    .size(Decimal::ONE_HUNDRED)
+                    .build()],
+                TickSize::QuarterCent,
+            );
+
+            let err = client
+                .market_order()
+                .token_id(token_1())
+                .amount(Amount::usdc(Decimal::ONE_HUNDRED)?)
+                .side(Side::Buy)
+                .build()
+                .await
+                .unwrap_err();
+            let msg = &err.downcast_ref::<Validation>().unwrap().reason;
+
+            assert_eq!(
+                msg,
+                "Price 0.0526 is not aligned to the minimum tick size 0.0025"
+            );
+
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn should_succeed_0_0025() -> anyhow::Result<()> {
+            let server = MockServer::start();
+            let client = create_authenticated(&server).await?;
+
+            ensure_requirements_for_market_price_with_tick(
+                &server,
+                token_1(),
+                &[],
+                &[OrderSummary::builder()
+                    .price(dec!(0.0525))
+                    .size(Decimal::ONE_HUNDRED)
+                    .build()],
+                TickSize::QuarterCent,
+            );
+
+            let signable_order = client
+                .market_order()
+                .token_id(token_1())
+                .amount(Amount::usdc(Decimal::ONE_HUNDRED)?)
+                .side(Side::Buy)
+                .expiration(DateTime::<Utc>::from_str("1970-01-01T13:53:20Z").unwrap())
+                .build()
+                .await?;
+
+            let maker_amount = signable_order.order().makerAmount;
+            let taker_amount = signable_order.order().takerAmount;
+
+            let price = (to_decimal(maker_amount) / to_decimal(taker_amount))
+                .trunc_with_scale(USDC_DECIMALS);
+            assert_eq!(price, dec!(0.0525));
+
+            assert_eq!(signable_order.order().maker, client.address());
+            assert_eq!(signable_order.order().signer, client.address());
+
+            assert_eq!(signable_order.order().tokenId, token_1());
+            assert_eq!(signable_order.order().makerAmount, U256::from(100_000_000));
+            assert_eq!(
+                signable_order.order().takerAmount,
+                U256::from(1_904_761_904)
+            );
+            assert_eq!(signable_order.v2().expiration, U256::from(0));
+
+            assert_eq!(signable_order.order().side, Side::Buy as u8);
+            assert_eq!(
+                signable_order.order().signatureType,
+                SignatureType::Eoa as u8
+            );
+
+            Ok(())
         }
 
         #[tokio::test]

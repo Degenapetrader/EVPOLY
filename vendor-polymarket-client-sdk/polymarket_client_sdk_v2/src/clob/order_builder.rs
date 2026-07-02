@@ -296,6 +296,12 @@ impl<K: AuthKind> OrderBuilder<Limit, K> {
             )));
         }
 
+        if !price_aligned_to_tick_size(price, minimum_tick_size) {
+            return Err(Error::validation(format!(
+                "Price {price} is not aligned to the minimum tick size {minimum_tick_size}"
+            )));
+        }
+
         let Some(size) = self.size else {
             return Err(Error::validation(
                 "Unable to build Order due to missing size",
@@ -550,6 +556,12 @@ impl<K: AuthKind> OrderBuilder<Market, K> {
             )));
         }
 
+        if !price_aligned_to_tick_size(price, minimum_tick_size) {
+            return Err(Error::validation(format!(
+                "Price {price} is not aligned to the minimum tick size {minimum_tick_size}"
+            )));
+        }
+
         let amount = match (side, amount.0, self.user_usdc_balance) {
             (Side::Buy, AmountInner::Usdc(raw), Some(balance)) => {
                 // V2 uses `/clob-markets/{id}` `fd` (rate + exponent); `/fee-rate`
@@ -674,6 +686,10 @@ const JS_SAFE_INTEGER_MAX: u64 = (1 << 53) - 1;
 
 fn to_ieee_754_int(value: u64) -> u64 {
     value & JS_SAFE_INTEGER_MAX
+}
+
+fn price_aligned_to_tick_size(price: Decimal, tick_size: Decimal) -> bool {
+    (price % tick_size).is_zero()
 }
 
 #[must_use]

@@ -1,5 +1,9 @@
 # EVPoly Desktop Changelog
 
+## UI-v2.5.5 - 2026-07-02
+- Bumped desktop app/updater version to 2.5.5.
+- Repinned the bundled runtime sidecar to runtime `v2.5.5` (`dfebd4f`) with quarter-cent Polymarket tick-size support.
+
 ## UI-v2.5.2 - 2026-07-01
 - Bumped desktop app/updater version to 2.5.2.
 - Repinned the bundled runtime sidecar to runtime `v2.5.2` (`cdcd646`) with the final Endgame Polymarket price-band guard and longest-enabled-timeframe overlap handling.

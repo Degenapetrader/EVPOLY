@@ -29660,8 +29660,8 @@ mod tests {
     }
 
     #[test]
-    fn endgame_sweep_price_band_varies_by_tick() {
-        assert_eq!(endgame_sweep::poly_price_band_for_tick(0), (0.97, 0.99));
+    fn endgame_sweep_price_band_is_strict_for_all_ticks() {
+        assert_eq!(endgame_sweep::poly_price_band_for_tick(0), (0.98, 0.99));
         assert_eq!(endgame_sweep::poly_price_band_for_tick(1), (0.98, 0.99));
         assert_eq!(endgame_sweep::poly_price_band_for_tick(2), (0.98, 0.99));
         assert_eq!(endgame_sweep::poly_price_band_for_tick(7), (0.98, 0.99));

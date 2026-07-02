@@ -269,7 +269,6 @@ struct DesktopPremarketSettings {
 
 #[derive(Clone, serde::Deserialize)]
 struct DesktopEndgameSettings {
-    timeframes: Vec<String>,
     per_period_cap_usd: f64,
     tick0_multiplier: f64,
     tick1_multiplier: f64,
@@ -690,6 +689,10 @@ fn default_premarket_timeframes() -> Vec<String> {
     )
 }
 
+fn default_endgame_timeframes() -> Vec<String> {
+    vec!["5m".to_string(), "15m".to_string()]
+}
+
 fn normalize_premarket_ladder_mode(value: Option<&str>) -> String {
     match value
         .map(str::trim)
@@ -922,10 +925,6 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 },
             },
             endgame: DesktopEndgameSettings {
-                timeframes: csv_list(
-                    config_io::env_template_default_string("EVPOLY_ENDGAME_TIMEFRAMES"),
-                    &["5m", "15m", "1h", "4h"],
-                ),
                 per_period_cap_usd: config_io::env_template_default_f64(
                     "EVPOLY_ENDGAME_PER_PERIOD_CAP_USD",
                     10000.0,
@@ -1796,14 +1795,25 @@ fn remove_legacy_premarket_ladder_keys(strategy_config: &mut Value) {
     }
 }
 
+fn normalize_endgame_timeframes(strategy_config: &mut Value) {
+    if let Some(strategy) = strategy_config.as_object_mut() {
+        strategy.insert(
+            "EVPOLY_ENDGAME_TIMEFRAMES".to_string(),
+            Value::String(default_endgame_timeframes().join(",")),
+        );
+    }
+}
+
 fn portable_profile_from_profile(profile: &Profile) -> PortableProfile {
+    let mut strategy_config = profile.strategy_config.clone();
+    normalize_endgame_timeframes(&mut strategy_config);
     PortableProfile {
         name: profile.name.clone(),
         eoa_wallet_address: profile.eoa_wallet_address.clone(),
         proxy_wallet_address: profile.proxy_wallet_address.clone(),
         deposit_wallet_address: profile.deposit_wallet_address.clone(),
         signature_type: profile.signature_type,
-        strategy_config: profile.strategy_config.clone(),
+        strategy_config,
         sizing_config: profile.sizing_config.clone(),
     }
 }
@@ -1958,7 +1968,7 @@ fn desktop_config_to_profile_payload(
     );
     strategy.insert(
         "EVPOLY_ENDGAME_TIMEFRAMES".to_string(),
-        Value::String(config.strategy_settings.endgame.timeframes.join(",")),
+        Value::String(default_endgame_timeframes().join(",")),
     );
     strategy.insert(
         "EVPOLY_ENDGAME_TICK0_MULTIPLIER".to_string(),
@@ -2911,7 +2921,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
                 }
             },
             "endgame": {
-                "timeframes": csv_from_object(&strategy, "EVPOLY_ENDGAME_TIMEFRAMES", &["5m", "15m", "1h", "4h"]),
+                "timeframes": default_endgame_timeframes(),
                 "per_period_cap_usd": f64_from_object(&sizing, "EVPOLY_ENDGAME_PER_PERIOD_CAP_USD", config_io::env_template_default_f64("EVPOLY_ENDGAME_PER_PERIOD_CAP_USD", 10000.0)),
                 "tick0_multiplier": 0.20,
                 "tick1_multiplier": 0.40,
@@ -5423,6 +5433,8 @@ fn import_config(
             imported.version
         ));
     }
+    let mut strategy_config = imported.profile.strategy_config.clone();
+    normalize_endgame_timeframes(&mut strategy_config);
     let pm = profiles.lock().map_err(|e| e.to_string())?;
     let mut created = pm
         .create_profile(
@@ -5431,7 +5443,7 @@ fn import_config(
             imported.profile.proxy_wallet_address,
             imported.profile.deposit_wallet_address,
             imported.profile.signature_type,
-            imported.profile.strategy_config.clone(),
+            strategy_config,
             imported.profile.sizing_config.clone(),
         )
         .map_err(|e| e.to_string())?;

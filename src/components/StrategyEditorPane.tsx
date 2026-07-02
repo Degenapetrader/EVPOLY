@@ -1289,13 +1289,6 @@ export function StrategyEditorPane({
 
         {selectedStrategy === "endgame" ? (
           <>
-            {renderTimeframeChoiceCard(
-              "Timeframes",
-              "Choose which Endgame windows can sweep.",
-              strategyTimeframeOptions("endgame"),
-              config.strategy_settings.endgame.timeframes,
-              (next) => patchEndgame({ timeframes: next })
-            )}
             <div className="surface-panel">
               <div className="surface-panel__header">
                 <div className="surface-panel__copy">

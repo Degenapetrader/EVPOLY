@@ -17336,7 +17336,7 @@ mod tests {
         assert_eq!(decision.action, EndgameFinalPmQuoteAction::Skip);
         assert_eq!(decision.reason, "poly_mid_outside_entry_band");
         assert_eq!(decision.poly_mid, Some(0.955));
-        assert_eq!(decision.band_min, 0.97);
+        assert_eq!(decision.band_min, 0.98);
         assert_eq!(decision.band_max, 0.99);
     }
 

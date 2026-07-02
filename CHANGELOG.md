@@ -1,5 +1,10 @@
 # EVPoly Changelog
 
+## v2.5.4 - 2026-07-02
+- Restored Endgame V1 local anchor sampling before due-tick processing so restarts do not seed period opens from near-close samples.
+- Hard-locked Endgame runtime scope to `5m,15m` and ignored saved/env timeframe overrides.
+- Tightened the Endgame first checkpoint Polymarket price band for the local V1 path.
+
 ## v2.5.2 - 2026-07-01
 - Added a final Endgame Polymarket price-band guard before fast FAK submit, reducing size on stale/unavailable final quotes and skipping fresh out-of-band markets.
 - Changed Endgame overlap handling so only the longest enabled timeframe trades when multiple enabled timeframes for the same symbol close together.

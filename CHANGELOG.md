@@ -1,5 +1,8 @@
 # EVPoly Changelog
 
+## v2.5.5 - 2026-07-02
+- Added Polymarket quarter-cent tick-size support so markets with `0.0025` ticks can build and sign valid CLOB orders.
+
 ## v2.5.4 - 2026-07-02
 - Restored Endgame V1 local anchor sampling before due-tick processing so restarts do not seed period opens from near-close samples.
 - Hard-locked Endgame runtime scope to `5m,15m` and ignored saved/env timeframe overrides.

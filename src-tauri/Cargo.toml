@@ -1,6 +1,6 @@
 [package]
 name = "evpoly-desktop"
-version = "2.5.4"
+version = "2.5.5"
 description = "EVPoly Desktop - Cross-platform trading bot manager"
 authors = ["Degenapetrader"]
 license = "SEE LICENSE"

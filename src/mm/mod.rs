@@ -10,6 +10,8 @@ const MM_SPORT_DISCOVERY_DELTA_PAGE_BUDGET_HARDCODED: u32 = 8;
 const MM_SPORT_DISCOVERY_FULL_DETAIL_CAP_HARDCODED: usize = 2_000;
 const MM_SPORT_DISCOVERY_DELTA_DETAIL_CAP_HARDCODED: usize = 1_000;
 const MM_SPORT_REWARDS_PAGE_BUDGET_DEFAULT: u32 = 20;
+const MM_SPORT_DEFAULT_MARKET_BLACKLIST_KEYWORDS: [&str; 3] =
+    ["announcers", "Taylor Swift", "Contest"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MmSportQuoteSizeMode {
@@ -335,8 +337,9 @@ impl MmSportConfig {
             market_allowlist_keywords: parse_string_list_env(
                 "EVPOLY_MM_SPORT_MARKET_ALLOWLIST_KEYWORDS",
             ),
-            market_blacklist_keywords: parse_string_list_env(
+            market_blacklist_keywords: parse_string_list_env_or_default(
                 "EVPOLY_MM_SPORT_MARKET_BLACKLIST_KEYWORDS",
+                &MM_SPORT_DEFAULT_MARKET_BLACKLIST_KEYWORDS,
             ),
             allowed_sport_league_codes: parse_mm_sport_sport_league_codes_env(
                 "EVPOLY_MM_SPORT_ALLOWED_SPORT_LEAGUE_CODES",
@@ -503,17 +506,10 @@ fn env_f64(key: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
-fn parse_string_list_env(key: &str) -> Vec<String> {
-    let Some(raw) = std::env::var(key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    else {
-        return Vec::new();
-    };
+fn normalize_string_list<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     let mut out = Vec::new();
-    for value in raw
-        .split(',')
+    for value in values
+        .into_iter()
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
@@ -524,6 +520,20 @@ fn parse_string_list_env(key: &str) -> Vec<String> {
         out.push(normalized);
     }
     out
+}
+
+fn parse_string_list_env(key: &str) -> Vec<String> {
+    std::env::var(key)
+        .ok()
+        .map(|raw| normalize_string_list(raw.split(',')))
+        .unwrap_or_default()
+}
+
+fn parse_string_list_env_or_default(key: &str, default: &[&str]) -> Vec<String> {
+    match std::env::var(key) {
+        Ok(raw) => normalize_string_list(raw.split(',')),
+        Err(_) => normalize_string_list(default.iter().copied()),
+    }
 }
 
 fn parse_string_list_from_allowed_env(key: &str, allowed: &[&str]) -> Vec<String> {
@@ -1029,6 +1039,31 @@ mod tests {
             let cfg = MmSportConfig::from_env();
             assert!(!cfg.post_only);
         });
+    }
+
+    #[test]
+    fn mm_sport_config_defaults_market_blacklist_when_env_missing() {
+        with_mm_env(
+            &[("EVPOLY_MM_SPORT_MARKET_BLACKLIST_KEYWORDS", None)],
+            || {
+                let cfg = MmSportConfig::from_env();
+                assert_eq!(
+                    cfg.market_blacklist_keywords,
+                    vec!["announcers", "taylor swift", "contest"]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn mm_sport_config_allows_empty_market_blacklist_override() {
+        with_mm_env(
+            &[("EVPOLY_MM_SPORT_MARKET_BLACKLIST_KEYWORDS", Some(""))],
+            || {
+                let cfg = MmSportConfig::from_env();
+                assert!(cfg.market_blacklist_keywords.is_empty());
+            },
+        );
     }
 
     #[test]

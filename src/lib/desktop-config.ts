@@ -276,7 +276,7 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     blocked_sport_league_codes: "",
     blocked_competition_levels: "",
     market_allowlist_keywords: "",
-    market_blacklist_keywords: "",
+    market_blacklist_keywords: "announcers,Taylor Swift,Contest",
     reward_min_shares_cap: 0,
     polymarket_live_guard_enable: true,
     polymarket_live_guard_ws_enable: true,

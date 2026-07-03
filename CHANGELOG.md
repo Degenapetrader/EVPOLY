@@ -1,5 +1,9 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.5.6 - 2026-07-03
+- Bumped Linux app/updater version to 2.5.6.
+- Repinned the bundled runtime sidecar to runtime `v2.5.6` (`0e8f926`) with restored Endgame direct submit behavior, t0-only 5m overlap skip, and default MM Sport market blocklist keywords.
+
 ## Linux-v2.5.5 - 2026-07-02
 - Bumped Linux app/updater version to 2.5.5.
 - Repinned the bundled runtime sidecar to runtime `v2.5.5` (`dfebd4f`) with quarter-cent Polymarket tick-size support.

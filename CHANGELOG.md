@@ -1,5 +1,10 @@
 # EVPoly Changelog
 
+## v2.5.6 - 2026-07-03
+- Restored the Endgame direct FAK submit path by removing the extra final Polymarket quote guard.
+- Changed Endgame overlap handling so 5m is skipped only at the first checkpoint when a longer enabled timeframe closes in the same window.
+- Added default MM Sport market keyword blocks for `announcers`, `Taylor Swift`, and `Contest`.
+
 ## v2.5.5 - 2026-07-02
 - Added Polymarket quarter-cent tick-size support so markets with `0.0025` ticks can build and sign valid CLOB orders.
 

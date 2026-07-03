@@ -8367,8 +8367,7 @@ async fn main() -> Result<()> {
                             let endgame_final_band_skip =
                                 matches!(request.entry_mode, EntryExecutionMode::Endgame) && {
                                     let lower = err_text.to_ascii_lowercase();
-                                    lower.contains("endgame_submit_poly_price_band_guard")
-                                        || lower.contains("endgame_final_size_below_min_order")
+                                    lower.contains("endgame_final_size_below_min_order")
                                 };
                             if endgame_final_band_skip {
                                 let mut gate = worker_idempotency_for_submit.lock().await;
@@ -9698,35 +9697,33 @@ async fn main() -> Result<()> {
                         let Some(due_tick_index) = due_tick_index else {
                             continue;
                         };
-                        if let Some(preferred_timeframe) =
-                            endgame_preferred_overlap_timeframe_for_close(
-                                endgame_overlap_timeframes_for_loop.as_slice(),
-                                market_close_ts,
-                            )
-                        {
-                            if preferred_timeframe != timeframe {
-                                log_event(
-                                    "endgame_skip_overlap_lower_timeframe",
-                                    json!({
-                                        "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
-                                        "asset_symbol": symbol,
-                                        "market_key": symbol_market_key.as_str(),
-                                        "timeframe": timeframe.as_str(),
-                                        "preferred_timeframe": preferred_timeframe.as_str(),
-                                        "market_open_ts": market_open_ts,
-                                        "market_close_ts": market_close_ts,
-                                        "tick_index": due_tick_index,
-                                        "reason": "longer_timeframe_closes_same_window"
-                                    }),
-                                );
-                                processed_tick_slots.insert((
-                                    symbol_market_key.clone(),
-                                    timeframe,
-                                    market_open_ts,
-                                    due_tick_index,
-                                ));
-                                continue;
-                            }
+                        if let Some(preferred_timeframe) = endgame_overlap_skip_for_tick(
+                            endgame_overlap_timeframes_for_loop.as_slice(),
+                            timeframe,
+                            market_close_ts,
+                            due_tick_index,
+                        ) {
+                            log_event(
+                                "endgame_skip_overlap_lower_timeframe",
+                                json!({
+                                    "strategy_id": STRATEGY_ID_ENDGAME_SWEEP_V1,
+                                    "asset_symbol": symbol,
+                                    "market_key": symbol_market_key.as_str(),
+                                    "timeframe": timeframe.as_str(),
+                                    "preferred_timeframe": preferred_timeframe.as_str(),
+                                    "market_open_ts": market_open_ts,
+                                    "market_close_ts": market_close_ts,
+                                    "tick_index": due_tick_index,
+                                    "reason": "skip_5m_t0_when_longer_timeframe_closes_same_window"
+                                }),
+                            );
+                            processed_tick_slots.insert((
+                                symbol_market_key.clone(),
+                                timeframe,
+                                market_open_ts,
+                                due_tick_index,
+                            ));
+                            continue;
                         }
 
                         if endgame_v1_requires_dual_proxy(symbol.as_str()) {
@@ -26829,6 +26826,20 @@ fn endgame_preferred_overlap_timeframe_for_close(
         .max_by_key(|timeframe| timeframe.duration_seconds())
 }
 
+fn endgame_overlap_skip_for_tick(
+    enabled_timeframes: &[Timeframe],
+    timeframe: Timeframe,
+    market_close_ts: i64,
+    tick_index: u32,
+) -> Option<Timeframe> {
+    if timeframe != Timeframe::M5 || tick_index != 0 {
+        return None;
+    }
+    let preferred_timeframe =
+        endgame_preferred_overlap_timeframe_for_close(enabled_timeframes, market_close_ts)?;
+    (preferred_timeframe != timeframe).then_some(preferred_timeframe)
+}
+
 fn env_i64_clamped(name: &str, default: i64, min: i64, max: i64) -> i64 {
     env_i64_named(name, default).clamp(min, max)
 }
@@ -29702,6 +29713,39 @@ mod tests {
         assert_eq!(
             endgame_preferred_overlap_timeframe_for_close(&enabled, 60 * 60),
             Some(Timeframe::M15)
+        );
+    }
+
+    #[test]
+    fn endgame_overlap_skips_only_5m_t0() {
+        let enabled = [Timeframe::M5, Timeframe::M15];
+        let close_ts = 15 * 60;
+
+        assert_eq!(
+            endgame_overlap_skip_for_tick(&enabled, Timeframe::M5, close_ts, 0),
+            Some(Timeframe::M15)
+        );
+        assert_eq!(
+            endgame_overlap_skip_for_tick(&enabled, Timeframe::M5, close_ts, 1),
+            None
+        );
+        assert_eq!(
+            endgame_overlap_skip_for_tick(&enabled, Timeframe::M5, close_ts, 2),
+            None
+        );
+        assert_eq!(
+            endgame_overlap_skip_for_tick(&enabled, Timeframe::M15, close_ts, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn endgame_overlap_does_not_skip_5m_without_longer_overlap() {
+        let enabled = [Timeframe::M5, Timeframe::M15];
+
+        assert_eq!(
+            endgame_overlap_skip_for_tick(&enabled, Timeframe::M5, 5 * 60, 0),
+            None
         );
     }
 

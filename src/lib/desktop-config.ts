@@ -16,12 +16,6 @@ export const STRATEGIES = [
     tooltip: "Early ladder entries before the crowd reacts.",
   },
   {
-    key: "endgame",
-    label: "Endgame",
-    summary: "Waits for late pricing edges before taking the trade.",
-    tooltip: "Late sweep entries near open or resolution.",
-  },
-  {
     key: "evcurve",
     label: "EVCurve",
     summary: "Trades curve-based setups when the price path lines up.",
@@ -50,6 +44,12 @@ export const STRATEGIES = [
     label: "MM 2.0",
     summary: "Quotes selected reward markets with Alpha risk gating.",
     tooltip: "Quote selected reward markets with pUSD caps and inventory-aware exits.",
+  },
+  {
+    key: "endgame",
+    label: "Endgame",
+    summary: "Waits for late pricing edges before taking the trade.",
+    tooltip: "Late sweep entries near open or resolution.",
   },
 ] as const;
 
@@ -348,7 +348,7 @@ export const DEFAULT_CONFIG: BotConfig = {
   symbols: ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"],
   strategies: {
     premarket: true,
-    endgame: true,
+    endgame: false,
     evcurve: true,
     session_band: false,
     evsnipe: true,

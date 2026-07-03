@@ -1072,6 +1072,35 @@ input[type="number"]::-webkit-inner-spin-button {
     gap: 0.6rem;
   }
 
+  .degraded-strategy-banner {
+    display: grid;
+    gap: 0.42rem;
+    border: 1px solid rgba(216, 184, 95, 0.36);
+    border-radius: 8px;
+    background:
+      linear-gradient(180deg, rgba(216, 184, 95, 0.09), transparent 72%),
+      rgba(14, 22, 30, 0.94);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.04),
+      0 0 0 1px rgba(216, 184, 95, 0.08);
+    padding: 1rem 1.2rem;
+  }
+
+  .degraded-strategy-banner__title {
+    color: var(--text-primary);
+    font-size: 1rem;
+    font-weight: 750;
+    line-height: 1.2;
+  }
+
+  .degraded-strategy-banner__body {
+    max-width: 48rem;
+    color: #f4d98d;
+    font-size: 0.94rem;
+    font-weight: 600;
+    line-height: 1.38;
+  }
+
   .strategy-rail {
     display: flex;
     flex-direction: column;

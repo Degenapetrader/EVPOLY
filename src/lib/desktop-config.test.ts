@@ -1,12 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_CONFIG,
+  VISIBLE_STRATEGIES,
   mergeConfig,
   strategyControlSuffix,
   strategySizeValue,
   updateStrategySize,
 } from "./desktop-config";
 import type { BotConfig } from "./tauri-commands";
+
+describe("desktop config strategy defaults", () => {
+  it("keeps Endgame last and off for new configs", () => {
+    expect(DEFAULT_CONFIG.strategies.endgame).toBe(false);
+    expect(mergeConfig(null).strategies.endgame).toBe(false);
+    expect(VISIBLE_STRATEGIES[VISIBLE_STRATEGIES.length - 1]?.key).toBe("endgame");
+  });
+
+  it("preserves explicitly enabled Endgame profiles", () => {
+    expect(
+      mergeConfig({
+        strategies: { endgame: true },
+      } as Partial<BotConfig>).strategies.endgame
+    ).toBe(true);
+  });
+});
 
 describe("desktop config MM 2.0 sizing profiles", () => {
   it("uses route-aware fresh market cap defaults", () => {

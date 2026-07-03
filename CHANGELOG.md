@@ -1,5 +1,8 @@
 # EVPoly Changelog
 
+## v2.5.7 - 2026-07-03
+- Fixed Endgame BUY submission sizing so share-mode orders keep the configured share quantity through the API submit path.
+
 ## v2.5.6 - 2026-07-03
 - Restored the Endgame direct FAK submit path by removing the extra final Polymarket quote guard.
 - Changed Endgame overlap handling so 5m is skipped only at the first checkpoint when a longer enabled timeframe closes in the same window.

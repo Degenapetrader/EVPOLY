@@ -2675,12 +2675,14 @@ impl PolymarketApi {
             && matches!(order_type, OrderType::FAK | OrderType::FOK)
     }
 
-    fn should_use_endgame_share_limit_builder(
+    fn should_use_endgame_share_market_builder(
         submit_lane: OrderSubmitLane,
         order_type: &OrderType,
+        side: &Side,
     ) -> bool {
         submit_lane == OrderSubmitLane::Endgame
             && matches!(order_type, OrderType::FAK | OrderType::FOK)
+            && matches!(side, Side::Buy)
     }
 
     fn prewarm_token_cache_max() -> usize {
@@ -5652,9 +5654,12 @@ impl PolymarketApi {
         let token_id = Self::parse_u256_id(order.token_id.as_str(), "order.token_id")?;
         let token_key = token_id.to_string();
         let requested_size = size;
-        let use_endgame_share_limit_builder =
-            Self::should_use_endgame_share_limit_builder(submit_lane, &effective_order_type);
-        if use_endgame_share_limit_builder
+        let use_endgame_share_market_builder = Self::should_use_endgame_share_market_builder(
+            submit_lane,
+            &effective_order_type,
+            &side,
+        );
+        if use_endgame_share_market_builder
             && Self::should_quantize_buy_size_for_order(
                 &side,
                 &effective_order_type,
@@ -5738,7 +5743,7 @@ impl PolymarketApi {
         let prewarm_ms = prewarm_started.elapsed().as_millis() as i64;
         let mut build_order_ms = 0_i64;
         let mut sign_ms = 0_i64;
-        let signed_order = if use_endgame_share_limit_builder {
+        let signed_order = if use_endgame_share_market_builder {
             if matches!(side, Side::Buy) && !metadata_policy.skip_buy_collateral_preflight {
                 let required_usdc = (size * price)
                     .round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero);
@@ -5759,17 +5764,17 @@ impl PolymarketApi {
                     .await?;
                 }
             }
-            let mut order_builder = handle
+            let share_amount = Amount::shares(size).context(format!(
+                "Failed to build Endgame BUY share amount (shares={}): token={}",
+                size, order.token_id
+            ))?;
+            let order_builder = handle
                 .client
-                .limit_order()
+                .market_order()
                 .token_id(token_id)
-                .size(size)
-                .price(price)
+                .amount(share_amount)
                 .side(side)
                 .order_type(effective_order_type.clone());
-            if let Some(post_only) = order.post_only {
-                order_builder = order_builder.post_only(post_only);
-            }
 
             let build_started = Instant::now();
             let signable = match order_builder.build().await {
@@ -5789,7 +5794,7 @@ impl PolymarketApi {
                         );
                     }
                     anyhow::bail!(
-                        "Failed to build Endgame share-unit FAK/FOK order with cached metadata only: {}",
+                        "Failed to build Endgame share-unit market FAK/FOK order with cached metadata only: {}",
                         first_err
                     );
                 }
@@ -5800,7 +5805,7 @@ impl PolymarketApi {
                 .client
                 .sign(&handle.signer, signable)
                 .await
-                .context("Failed to sign Endgame share-unit FAK/FOK order")?;
+                .context("Failed to sign Endgame share-unit market FAK/FOK order")?;
             sign_ms += sign_started.elapsed().as_millis() as i64;
             signed
         } else if matches!(effective_order_type, OrderType::FOK | OrderType::FAK) {
@@ -9613,29 +9618,43 @@ mod tests {
     use polymarket_client_sdk_v2::clob::types::Order as ClobOrder;
     use std::borrow::Cow;
 
-    fn start_clob_version_test_server() -> (String, std::thread::JoinHandle<()>) {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind version server");
-        let addr = listener.local_addr().expect("version server addr");
+    fn start_clob_endgame_share_market_test_server(
+        token_id: U256,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind endgame share server");
+        let addr = listener.local_addr().expect("endgame share server addr");
         listener
             .set_nonblocking(true)
-            .expect("version server nonblocking");
+            .expect("endgame share server nonblocking");
+        let token_id_text = token_id.to_string();
         let handle = std::thread::spawn(move || {
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(10_000);
             let mut saw_version = false;
             let mut saw_neg_risk = false;
+            let mut saw_book = false;
             loop {
                 match listener.accept() {
                     Ok((mut stream, _addr)) => {
-                        let mut buf = [0_u8; 1024];
+                        let mut buf = [0_u8; 2048];
                         let n = std::io::Read::read(&mut stream, &mut buf)
-                            .expect("read version request");
+                            .expect("read endgame share request");
                         let request = String::from_utf8_lossy(&buf[..n]);
                         let body = if request.starts_with("GET /version ") {
                             saw_version = true;
-                            r#"{"version":2}"#
+                            r#"{"version":2}"#.to_string()
                         } else if request.starts_with("GET /neg-risk?") {
                             saw_neg_risk = true;
-                            r#"{"neg_risk":false}"#
+                            r#"{"neg_risk":false}"#.to_string()
+                        } else if request.starts_with("GET /book?") {
+                            assert!(
+                                request.contains(format!("token_id={token_id_text}").as_str()),
+                                "unexpected book request: {request}"
+                            );
+                            saw_book = true;
+                            format!(
+                                r#"{{"market":"0xbd31dc8a20211944f6b70f31557f1001557b59905b7738480ca09bd4532f84af","asset_id":"{token_id_text}","timestamp":"1000","bids":[],"asks":[{{"price":"0.89","size":"100"}}],"min_order_size":"5","neg_risk":false,"tick_size":"0.01"}}"#
+                            )
                         } else {
                             panic!("unexpected request: {request}");
                         };
@@ -9645,18 +9664,18 @@ mod tests {
                             body
                         );
                         std::io::Write::write_all(&mut stream, response.as_bytes())
-                            .expect("write version response");
-                        if saw_version && saw_neg_risk {
+                            .expect("write endgame share response");
+                        if saw_version && saw_neg_risk && saw_book {
                             return;
                         }
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         if std::time::Instant::now() >= deadline {
-                            panic!("version server did not receive a request");
+                            panic!("endgame share server did not receive expected requests");
                         }
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
-                    Err(err) => panic!("version server accept failed: {err}"),
+                    Err(err) => panic!("endgame share server accept failed: {err}"),
                 }
             }
         });
@@ -10231,27 +10250,36 @@ mod tests {
     }
 
     #[test]
-    fn endgame_fak_uses_share_limit_builder_only_for_endgame_lane() {
-        assert!(PolymarketApi::should_use_endgame_share_limit_builder(
+    fn endgame_fak_uses_share_market_builder_only_for_endgame_buy_lane() {
+        assert!(PolymarketApi::should_use_endgame_share_market_builder(
             OrderSubmitLane::Endgame,
-            &OrderType::FAK
+            &OrderType::FAK,
+            &Side::Buy,
         ));
-        assert!(PolymarketApi::should_use_endgame_share_limit_builder(
+        assert!(PolymarketApi::should_use_endgame_share_market_builder(
             OrderSubmitLane::Endgame,
-            &OrderType::FOK
+            &OrderType::FOK,
+            &Side::Buy,
         ));
-        assert!(!PolymarketApi::should_use_endgame_share_limit_builder(
+        assert!(!PolymarketApi::should_use_endgame_share_market_builder(
             OrderSubmitLane::Default,
-            &OrderType::FAK
+            &OrderType::FAK,
+            &Side::Buy,
         ));
-        assert!(!PolymarketApi::should_use_endgame_share_limit_builder(
+        assert!(!PolymarketApi::should_use_endgame_share_market_builder(
             OrderSubmitLane::Endgame,
-            &OrderType::GTC
+            &OrderType::GTC,
+            &Side::Buy,
+        ));
+        assert!(!PolymarketApi::should_use_endgame_share_market_builder(
+            OrderSubmitLane::Endgame,
+            &OrderType::FAK,
+            &Side::Sell,
         ));
     }
 
     #[test]
-    fn endgame_share_limit_buy_size_does_not_expand_at_low_price() {
+    fn endgame_share_market_buy_size_does_not_expand_at_low_price() {
         let size = Decimal::from_str("50").expect("size");
         let high_price = Decimal::from_str("0.99").expect("high price");
         let low_price = Decimal::from_str("0.01").expect("low price");
@@ -10274,7 +10302,7 @@ mod tests {
     }
 
     #[test]
-    fn endgame_share_limit_formula_keeps_taker_as_requested_shares() {
+    fn endgame_share_market_formula_keeps_taker_as_requested_shares() {
         let size = Decimal::from_str("50").expect("size");
         let low_price = Decimal::from_str("0.01").expect("price");
         let maker_usdc = (size * low_price).trunc_with_scale(4);
@@ -10282,9 +10310,10 @@ mod tests {
 
         assert_eq!(taker_shares, Decimal::from_str("50").expect("taker shares"));
         assert_eq!(maker_usdc, Decimal::from_str("0.50").expect("maker usdc"));
-        assert!(PolymarketApi::should_use_endgame_share_limit_builder(
+        assert!(PolymarketApi::should_use_endgame_share_market_builder(
             OrderSubmitLane::Endgame,
-            &OrderType::FAK
+            &OrderType::FAK,
+            &Side::Buy,
         ));
     }
 
@@ -10299,14 +10328,15 @@ mod tests {
             requested_usdc_notional,
             Decimal::from_str("49.50").expect("usdc")
         );
-        assert!(!PolymarketApi::should_use_endgame_share_limit_builder(
+        assert!(!PolymarketApi::should_use_endgame_share_market_builder(
             OrderSubmitLane::Default,
-            &OrderType::FAK
+            &OrderType::FAK,
+            &Side::Buy,
         ));
     }
 
     #[test]
-    fn endgame_share_limit_buy_quantizes_without_usdc_reinterpreting_size() {
+    fn endgame_share_market_buy_quantizes_without_usdc_reinterpreting_size() {
         let price = Decimal::from_str("0.99").expect("price");
         let size = Decimal::from_str("73.88").expect("size");
         let adjusted = PolymarketApi::quantize_buy_size_for_immediate_tif(size, price);
@@ -10321,11 +10351,12 @@ mod tests {
     }
 
     #[test]
-    fn endgame_lane_signs_fak_buy_as_share_sized_limit_order() {
+    fn endgame_lane_signs_fak_buy_as_share_sized_market_order() {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         rt.block_on(async {
-            let (clob_host, version_server) = start_clob_version_test_server();
             let token_id = U256::from(123_456_u64);
+            let (clob_host, endgame_share_server) =
+                start_clob_endgame_share_market_test_server(token_id);
             let signer = PrivateKeySigner::from_str(
                 "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
             )
@@ -10359,8 +10390,8 @@ mod tests {
             let order = OrderRequest {
                 token_id: token_id.to_string(),
                 side: "BUY".to_string(),
-                size: "50".to_string(),
-                price: "0.01".to_string(),
+                size: "68".to_string(),
+                price: "0.99".to_string(),
                 order_type: "FAK".to_string(),
                 expiration_ts: None,
                 post_only: None,
@@ -10375,15 +10406,15 @@ mod tests {
                 )
                 .await
                 .expect("build signed order");
-            version_server.join().expect("version server");
+            endgame_share_server.join().expect("endgame share server");
 
             let signed = prepared.signed_order.v2();
-            assert_eq!(prepared.size, "50");
+            assert_eq!(prepared.size, "68");
             assert_eq!(prepared.effective_order_type, "FAK");
             assert_eq!(prepared.signed_order.order_type, OrderType::FAK);
             assert_eq!(signed.order.side, Side::Buy as u8);
-            assert_eq!(signed.order.makerAmount, U256::from(500_000_u64));
-            assert_eq!(signed.order.takerAmount, U256::from(50_000_000_u64));
+            assert_eq!(signed.order.makerAmount, U256::from(60_520_000_u64));
+            assert_eq!(signed.order.takerAmount, U256::from(68_000_000_u64));
         });
     }
 

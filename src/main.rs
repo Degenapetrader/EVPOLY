@@ -8367,8 +8367,7 @@ async fn main() -> Result<()> {
                             let endgame_final_band_skip =
                                 matches!(request.entry_mode, EntryExecutionMode::Endgame) && {
                                     let lower = err_text.to_ascii_lowercase();
-                                    lower.contains("endgame_submit_poly_price_band_guard")
-                                        || lower.contains("endgame_final_size_below_min_order")
+                                    lower.contains("endgame_final_size_below_min_order")
                                 };
                             if endgame_final_band_skip {
                                 let mut gate = worker_idempotency_for_submit.lock().await;

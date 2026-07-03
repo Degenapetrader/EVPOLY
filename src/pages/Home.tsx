@@ -1232,6 +1232,13 @@ export function Home() {
               <span className="text-[var(--text-secondary)]">on both taker and maker fills.</span>
             </div>
           ) : null}
+          <div className="degraded-strategy-banner">
+            <div className="degraded-strategy-banner__title">Degraded Strategy</div>
+            <div className="degraded-strategy-banner__body">
+              Up/Down manipulation is degrading performance of Endgame. Consider turning off or
+              reducing size.
+            </div>
+          </div>
           {pendingResumeOffer && !botRunning ? (
             <div className="surface-panel">
               <div className="surface-panel__body flex flex-wrap items-center justify-between gap-3 pt-[var(--space-5)]">

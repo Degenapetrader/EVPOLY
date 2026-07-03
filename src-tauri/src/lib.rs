@@ -809,7 +809,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 "EVPOLY_STRATEGY_PREMARKET_ENABLE",
                 true,
             ),
-            endgame: config_io::env_template_default_bool("EVPOLY_STRATEGY_ENDGAME_ENABLE", true),
+            endgame: config_io::env_template_default_bool("EVPOLY_STRATEGY_ENDGAME_ENABLE", false),
             evcurve: config_io::env_template_default_bool("EVPOLY_STRATEGY_EVCURVE_ENABLE", false),
             session_band: false,
             evsnipe: config_io::env_template_default_bool("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),
@@ -2856,7 +2856,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "symbols": symbols,
         "strategies": {
             "premarket": bool_from_object(&strategy, "EVPOLY_STRATEGY_PREMARKET_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_PREMARKET_ENABLE", true)),
-            "endgame": bool_from_object(&strategy, "EVPOLY_STRATEGY_ENDGAME_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_ENDGAME_ENABLE", true)),
+            "endgame": bool_from_object(&strategy, "EVPOLY_STRATEGY_ENDGAME_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_ENDGAME_ENABLE", false)),
             "evcurve": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVCURVE_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_EVCURVE_ENABLE", false)),
             "session_band": false,
             "evsnipe": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVSNIPE_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true)),
@@ -3278,7 +3278,7 @@ fn count_enabled_strategies(profile: &Profile) -> usize {
         .unwrap_or_else(Map::new);
     [
         ("EVPOLY_STRATEGY_PREMARKET_ENABLE", true),
-        ("EVPOLY_STRATEGY_ENDGAME_ENABLE", true),
+        ("EVPOLY_STRATEGY_ENDGAME_ENABLE", false),
         ("EVPOLY_STRATEGY_EVCURVE_ENABLE", true),
         ("EVPOLY_STRATEGY_SESSIONBAND_ENABLE", false),
         ("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),

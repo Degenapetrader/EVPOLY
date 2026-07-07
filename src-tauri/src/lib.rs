@@ -486,6 +486,8 @@ struct DesktopConfig {
     #[serde(default)]
     deposit_wallet: String,
     sig_type: u8,
+    #[serde(default)]
+    magic_managed_profile: bool,
     #[serde(default = "default_weekend_policy")]
     weekend_policy: String,
     symbols: Vec<String>,
@@ -807,6 +809,7 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
         proxy_wallet,
         deposit_wallet: String::new(),
         sig_type,
+        magic_managed_profile: false,
         weekend_policy: default_weekend_policy(),
         symbols: DESKTOP_SYMBOL_ORDER
             .iter()
@@ -1355,6 +1358,14 @@ fn clean_alpha_key_or_legacy_source(config: &DesktopConfig) -> String {
 
 fn wallet_mode_needs_approval_status(signature_type: u8) -> bool {
     matches!(signature_type, 1 | 2 | 3)
+}
+
+fn is_magic_managed_profile_name(name: &str) -> bool {
+    name.trim_start().starts_with("Magic ")
+}
+
+fn should_reconcile_desktop_magic_deposit_wallet(config: &DesktopConfig) -> bool {
+    config.sig_type == 3 && config.magic_managed_profile
 }
 
 fn clean_onboarding_ready(config: &DesktopConfig) -> bool {
@@ -2894,6 +2905,7 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "proxy_wallet": profile.proxy_wallet_address.clone(),
         "deposit_wallet": profile.deposit_wallet_address.clone(),
         "sig_type": profile.signature_type,
+        "magic_managed_profile": profile.signature_type == 3 && is_magic_managed_profile_name(&profile.name),
         "weekend_policy": normalize_weekend_policy(strategy.get(WEEKEND_POLICY_ENV_KEY).and_then(Value::as_str)),
         "symbols": symbols,
         "strategies": {
@@ -4983,7 +4995,7 @@ async fn ensure_generated_credentials(config: &mut DesktopConfig) -> Result<Vec<
             "not_required".to_string()
         };
     }
-    if config.sig_type == 3 {
+    if should_reconcile_desktop_magic_deposit_wallet(config) {
         if let Some(status) =
             reconcile_desktop_magic_deposit_wallet(config.deposit_wallet.as_str()).await?
         {
@@ -6932,11 +6944,11 @@ mod tests {
         desktop_config_to_profile_payload, desktop_magic_finish_payload,
         gamma_market_metadata_batch_url, merge_config_object, merge_desktop_secrets,
         polymarket_funders_from_private_key, profile_to_desktop_config,
-        remove_legacy_premarket_ladder_keys, simulation_mode_from_profile,
-        PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY, PREMARKET_LADDER_MODE_ENV_KEY_5M,
-        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
-        PREMARKET_LADDER_MODE_ENV_KEY_SHARED, PREMARKET_SAFE_BIAS_PCT_ENV_KEY,
-        WEEKEND_POLICY_ENV_KEY,
+        remove_legacy_premarket_ladder_keys, should_reconcile_desktop_magic_deposit_wallet,
+        simulation_mode_from_profile, DesktopConfig, PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY,
+        PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
+        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
+        PREMARKET_SAFE_BIAS_PCT_ENV_KEY, WEEKEND_POLICY_ENV_KEY,
     };
     use crate::{auth::AppAuth, config_io, profile_manager::Profile};
     use std::collections::HashMap;
@@ -7015,6 +7027,40 @@ mod tests {
         assert_eq!(payload["did_token"], serde_json::json!("token"));
         assert_eq!(payload["rsa_public_key"], serde_json::json!("public-key"));
         assert!(!object.contains_key("rsa_algorithm"));
+    }
+
+    #[test]
+    fn imported_deposit_profile_does_not_use_magic_reconcile_gate() {
+        let mut profile = profile_with_simulation(None);
+        profile.name = "Imported 0x0e77...8e08".to_string();
+        profile.proxy_wallet_address.clear();
+        profile.deposit_wallet_address = "0x2277c18fB73d4cFBD61384bE80eF9339A9496604".to_string();
+        profile.wallet_address = profile.deposit_wallet_address.clone();
+        profile.signature_type = 3;
+        let auth = AppAuth::new(std::env::temp_dir().join("evpoly-test-auth-imported-deposit"));
+
+        let value = profile_to_desktop_config(&profile, &auth).expect("profile to desktop config");
+        let config: DesktopConfig = serde_json::from_value(value.clone()).expect("desktop config");
+
+        assert_eq!(value["magic_managed_profile"], serde_json::json!(false));
+        assert!(!should_reconcile_desktop_magic_deposit_wallet(&config));
+    }
+
+    #[test]
+    fn magic_deposit_profile_keeps_magic_reconcile_gate() {
+        let mut profile = profile_with_simulation(None);
+        profile.name = "Magic degenape88+55911".to_string();
+        profile.proxy_wallet_address.clear();
+        profile.deposit_wallet_address = "0xb094bDB5BA4B20bbfeF1EBf1008DA289481b0D1d".to_string();
+        profile.wallet_address = profile.deposit_wallet_address.clone();
+        profile.signature_type = 3;
+        let auth = AppAuth::new(std::env::temp_dir().join("evpoly-test-auth-magic-deposit"));
+
+        let value = profile_to_desktop_config(&profile, &auth).expect("profile to desktop config");
+        let config: DesktopConfig = serde_json::from_value(value.clone()).expect("desktop config");
+
+        assert_eq!(value["magic_managed_profile"], serde_json::json!(true));
+        assert!(should_reconcile_desktop_magic_deposit_wallet(&config));
     }
 
     #[test]

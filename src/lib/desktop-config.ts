@@ -135,6 +135,13 @@ function normalizeNonNegativeInteger(value: number | undefined, fallback: number
   return Math.floor(value);
 }
 
+export const POLYMARKET_GTD_MIN_EXPIRY_SECONDS = 185;
+export const DEFAULT_MM_SPORT_QUOTE_EXPIRY_MAX_SECONDS = 300;
+
+function normalizeGtdExpirySeconds(value: number | undefined, fallback: number): number {
+  return Math.max(POLYMARKET_GTD_MIN_EXPIRY_SECONDS, normalizeNonNegativeInteger(value, fallback));
+}
+
 function normalizeUtcMinute(value: number | undefined, fallback: number): number {
   if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return fallback;
   return Math.min(1439, Math.floor(value));
@@ -303,8 +310,8 @@ const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     min_entry_top_bid_price: 0.05,
     allow_sponsored_rewards: true,
     sponsored_reward_min_share: 0.5,
-    quote_expiry_min_sec: 65,
-    quote_expiry_max_sec: 185,
+    quote_expiry_min_sec: POLYMARKET_GTD_MIN_EXPIRY_SECONDS,
+    quote_expiry_max_sec: DEFAULT_MM_SPORT_QUOTE_EXPIRY_MAX_SECONDS,
     quote_cooldown_min_sec: 10,
     quote_cooldown_max_sec: 60,
     fifo_max_share_ratio: 0.5,
@@ -408,6 +415,17 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
     savedMmSport?.quote_cooldown_max_sec,
     DEFAULT_CONFIG.strategy_settings.mm_sport.quote_cooldown_min_sec,
     DEFAULT_CONFIG.strategy_settings.mm_sport.quote_cooldown_max_sec
+  );
+  const mmSportQuoteExpiryMin = normalizeGtdExpirySeconds(
+    savedMmSport?.quote_expiry_min_sec,
+    DEFAULT_CONFIG.strategy_settings.mm_sport.quote_expiry_min_sec
+  );
+  const mmSportQuoteExpiryMax = Math.max(
+    normalizeGtdExpirySeconds(
+      savedMmSport?.quote_expiry_max_sec,
+      DEFAULT_CONFIG.strategy_settings.mm_sport.quote_expiry_max_sec
+    ),
+    mmSportQuoteExpiryMin
   );
   const sportQuoteSizeMode = normalizeMMSportQuoteSizeMode(savedMmSport?.quote_size_mode);
   const sportQuoteSizeMultiplier =
@@ -566,6 +584,8 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
           savedMmSport?.nonsport_min_top_depth_usd ?? sportMinTopDepthUsd,
         quote_cooldown_min_sec: mmSportCooldown.quote_cooldown_min_sec,
         quote_cooldown_max_sec: mmSportCooldown.quote_cooldown_max_sec,
+        quote_expiry_min_sec: mmSportQuoteExpiryMin,
+        quote_expiry_max_sec: mmSportQuoteExpiryMax,
         sport_entry_schedule_enabled:
           savedMmSport?.sport_entry_schedule_enabled ??
           savedMmSport?.nonsport_entry_schedule_enabled ??

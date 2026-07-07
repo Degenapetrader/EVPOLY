@@ -178,7 +178,7 @@ const SAMPLE_CONFIG: BotConfig = {
       min_entry_top_bid_price: 0.1,
       allow_sponsored_rewards: true,
       sponsored_reward_min_share: 0.5,
-      quote_expiry_min_sec: 180,
+      quote_expiry_min_sec: 185,
       quote_expiry_max_sec: 300,
       quote_cooldown_min_sec: 10,
       quote_cooldown_max_sec: 60,

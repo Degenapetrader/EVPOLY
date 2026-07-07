@@ -710,8 +710,8 @@ mod tests {
         let mut profile = sample_profile();
         profile.strategy_config = serde_json::json!({
             "EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC": 600.0,
-            "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC": 90.0,
-            "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC": 180.0,
+            "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC": 185.0,
+            "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC": 300.0,
             "EVPOLY_MM_AUTO_REFRESH_SEC": 300.0
         });
 
@@ -726,8 +726,8 @@ mod tests {
         let content = std::fs::read_to_string(&env_path).expect("read env");
 
         assert!(content.contains("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC=600"));
-        assert!(content.contains("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC=90"));
-        assert!(content.contains("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC=180"));
+        assert!(content.contains("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC=185"));
+        assert!(content.contains("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC=300"));
         assert!(content.contains("EVPOLY_MM_AUTO_REFRESH_SEC=300"));
         assert!(!content.contains("EVPOLY_MM_SPORT_PAUSE_AFTER_FILL_SEC=600.0"));
 

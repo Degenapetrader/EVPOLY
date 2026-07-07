@@ -77,6 +77,21 @@ describe("desktop config MM 2.0 sizing profiles", () => {
     expect(merged.strategy_settings.mm_sport.nonsport_entry_schedule_end_minute_utc).toBe(240);
   });
 
+  it("normalizes MM 2.0 quote expiry to Polymarket GTD minimums", () => {
+    const merged = mergeConfig({
+      strategy_settings: {
+        mm_sport: {
+          quote_expiry_min_sec: 90,
+          quote_expiry_max_sec: 180,
+        },
+      },
+    } as Partial<BotConfig>);
+
+    expect(merged.strategy_settings.mm_sport.quote_expiry_min_sec).toBe(185);
+    expect(merged.strategy_settings.mm_sport.quote_expiry_max_sec).toBe(185);
+    expect(mergeConfig(null).strategy_settings.mm_sport.quote_expiry_max_sec).toBe(300);
+  });
+
   it("normalizes MM 2.0 entry price mode", () => {
     expect(mergeConfig(null).strategy_settings.mm_sport.entry_price_mode).toBe("best_bid");
     expect(

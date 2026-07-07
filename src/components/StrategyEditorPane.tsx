@@ -3,6 +3,7 @@ import { SectionPanel } from "./SectionPanel";
 import {
   mmSportRouteDefaultCaps,
   parseNonNegative,
+  POLYMARKET_GTD_MIN_EXPIRY_SECONDS,
   premarketLadderPricesForMode,
   strategyCapValue,
   strategyLabel,
@@ -2172,11 +2173,32 @@ export function StrategyEditorPane({
             <div className="mm-quote-guard-card">
               <h4>Quote Lifetime</h4>
               <div className="mm-quote-grid mm-quote-grid--guard">
-                {renderNumberField("Quote Expiry Min", mmSport.quote_expiry_min_sec, (value) =>
-                  patchMMSport({ quote_expiry_min_sec: value })
+                {renderNumberField(
+                  "Quote Expiry Min",
+                  mmSport.quote_expiry_min_sec,
+                  (value) =>
+                    patchMMSport({
+                      quote_expiry_min_sec: Math.max(value, POLYMARKET_GTD_MIN_EXPIRY_SECONDS),
+                      quote_expiry_max_sec: Math.max(
+                        mmSport.quote_expiry_max_sec,
+                        value,
+                        POLYMARKET_GTD_MIN_EXPIRY_SECONDS
+                      ),
+                    }),
+                  { min: POLYMARKET_GTD_MIN_EXPIRY_SECONDS }
                 )}
-                {renderNumberField("Quote Expiry Max", mmSport.quote_expiry_max_sec, (value) =>
-                  patchMMSport({ quote_expiry_max_sec: value })
+                {renderNumberField(
+                  "Quote Expiry Max",
+                  mmSport.quote_expiry_max_sec,
+                  (value) =>
+                    patchMMSport({
+                      quote_expiry_max_sec: Math.max(
+                        value,
+                        mmSport.quote_expiry_min_sec,
+                        POLYMARKET_GTD_MIN_EXPIRY_SECONDS
+                      ),
+                    }),
+                  { min: POLYMARKET_GTD_MIN_EXPIRY_SECONDS }
                 )}
               </div>
             </div>

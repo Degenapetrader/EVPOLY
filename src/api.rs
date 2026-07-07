@@ -5585,11 +5585,13 @@ impl PolymarketApi {
             }
         };
 
+        const GTD_MIN_EXPIRATION_SECONDS: i64 = 185;
+
         let default_ttl_secs = std::env::var("EVPOLY_LIMIT_ORDER_TTL_SECONDS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(1200)
-            .max(61);
+            .max(GTD_MIN_EXPIRATION_SECONDS as u64);
         let mut expiration_dt = order
             .expiration_ts
             .and_then(|ts| Utc.timestamp_opt(ts, 0).single());
@@ -5609,7 +5611,8 @@ impl PolymarketApi {
                         expiration_dt =
                             Some(Utc::now() + chrono::Duration::seconds(default_ttl_secs as i64));
                     }
-                    let min_exp = Utc::now() + chrono::Duration::seconds(61);
+                    let min_exp =
+                        Utc::now() + chrono::Duration::seconds(GTD_MIN_EXPIRATION_SECONDS);
                     if let Some(exp) = expiration_dt {
                         expiration_dt = Some(if exp < min_exp { min_exp } else { exp });
                     }
@@ -5641,7 +5644,7 @@ impl PolymarketApi {
                     Some(Utc::now() + chrono::Duration::seconds(default_ttl_secs as i64));
             }
             if let Some(exp) = expiration_dt {
-                let min_exp = Utc::now() + chrono::Duration::seconds(61);
+                let min_exp = Utc::now() + chrono::Duration::seconds(GTD_MIN_EXPIRATION_SECONDS);
                 expiration_dt = Some(if exp < min_exp { min_exp } else { exp });
             }
             if expiration_dt.is_some() {

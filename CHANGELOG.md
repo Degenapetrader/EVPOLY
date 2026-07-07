@@ -1,5 +1,8 @@
 # EVPoly Changelog
 
+## v2.6.1 - 2026-07-07
+- Bumped runtime version for the desktop/Linux updater release that fixes imported deposit-wallet start/restart handling.
+
 ## v2.5.7 - 2026-07-03
 - Fixed Endgame BUY submission sizing so share-mode orders keep the configured share quantity through the API submit path.
 

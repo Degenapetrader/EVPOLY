@@ -1,5 +1,10 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.6.1 - 2026-07-07
+- Bumped Linux app/updater version to 2.6.1.
+- Fixed imported sigType 3 deposit-wallet start/restart so Magic reconcile remains enabled only for Magic-created profiles.
+- Repinned the bundled runtime sidecar to runtime `v2.6.1` (`1f58638`).
+
 ## Linux-v2.5.6 - 2026-07-03
 - Bumped Linux app/updater version to 2.5.6.
 - Repinned the bundled runtime sidecar to runtime `v2.5.6` (`0e8f926`) with restored Endgame direct submit behavior, t0-only 5m overlap skip, and default MM Sport market blocklist keywords.

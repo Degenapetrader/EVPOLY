@@ -2424,6 +2424,7 @@ fn mm_sport_size_shares_from_pending(row: &PendingOrderRecord) -> Option<f64> {
 }
 
 const MM_SPORT_LOW_DEPTH_FLOOR_USD: f64 = 200.0;
+const GTD_MIN_EXPIRATION_SECONDS: u64 = 185;
 const MM_SPORT_PAIR_BASELINE_REWARD_MULT: f64 = 0.5;
 const MM_SPORT_FIFO_MIN_CANCEL_AGE_MS: i64 = 10_000;
 const MM_SPORT_LOW_DEPTH_QUOTE_SIZE_MULT: f64 = 1.2;
@@ -3295,14 +3296,21 @@ fn mm_sport_random_quote_expiration(
     min_sec: u64,
     max_sec: u64,
 ) -> (i64, i64, u64) {
+    let effective_min_sec = min_sec.max(GTD_MIN_EXPIRATION_SECONDS);
+    let effective_max_sec = max_sec.max(effective_min_sec);
     let seed_key = format!(
         "mm_sport:quote_expiry:{}",
         condition_id.trim().to_ascii_lowercase(),
     );
-    let ttl_sec = mm_sport_random_range_u64(now_ms, seed_key.as_str(), min_sec, max_sec);
-    let min_ttl_ms = i64::try_from(min_sec.saturating_mul(1_000))
+    let ttl_sec = mm_sport_random_range_u64(
+        now_ms,
+        seed_key.as_str(),
+        effective_min_sec,
+        effective_max_sec,
+    );
+    let min_ttl_ms = i64::try_from(effective_min_sec.saturating_mul(1_000))
         .ok()
-        .unwrap_or(61_000)
+        .unwrap_or(185_000)
         .max(1_000);
     let ttl_ms = i64::try_from(ttl_sec.saturating_mul(1_000))
         .ok()
@@ -3321,9 +3329,11 @@ fn mm_sport_condition_quote_expiration(
     max_sec: u64,
 ) -> (i64, i64, u64) {
     let condition_key = condition_id.trim().to_ascii_lowercase();
-    let min_ttl_ms = i64::try_from(min_sec.saturating_mul(1_000))
+    let effective_min_sec = min_sec.max(GTD_MIN_EXPIRATION_SECONDS);
+    let effective_max_sec = max_sec.max(effective_min_sec);
+    let min_ttl_ms = i64::try_from(effective_min_sec.saturating_mul(1_000))
         .ok()
-        .unwrap_or(61_000)
+        .unwrap_or(185_000)
         .max(1_000);
     if let Some((expiration_ms, ttl_sec)) = quote_expiry_by_condition.get(&condition_key).copied() {
         if expiration_ms > now_ms && expiration_ms.saturating_sub(now_ms) >= min_ttl_ms {
@@ -3331,8 +3341,12 @@ fn mm_sport_condition_quote_expiration(
             return (expiration_ts, expiration_ms, ttl_sec);
         }
     }
-    let (expiration_ts, expiration_ms, ttl_sec) =
-        mm_sport_random_quote_expiration(now_ms, condition_id, min_sec, max_sec);
+    let (expiration_ts, expiration_ms, ttl_sec) = mm_sport_random_quote_expiration(
+        now_ms,
+        condition_id,
+        effective_min_sec,
+        effective_max_sec,
+    );
     quote_expiry_by_condition.insert(condition_key, (expiration_ms, ttl_sec));
     (expiration_ts, expiration_ms, ttl_sec)
 }
@@ -4262,13 +4276,16 @@ async fn mm_sport_place_order(
     if submit_shares <= 0.0 {
         return Ok(None);
     }
+    let min_expiration_ts = now_ms
+        .saturating_div(1_000)
+        .saturating_add(i64::try_from(GTD_MIN_EXPIRATION_SECONDS).unwrap_or(185));
     let order = polymarket_arbitrage_bot::models::OrderRequest {
         token_id: token_id.to_string(),
         side: side.to_ascii_uppercase(),
         size: format!("{:.2}", submit_shares),
         price: format!("{:.*}", price_precision, price),
         order_type: "GTD".to_string(),
-        expiration_ts: Some(expiration_ts.max(1)),
+        expiration_ts: Some(expiration_ts.max(min_expiration_ts).max(1)),
         post_only: Some(post_only),
     };
     let submit_timeout_ms =
@@ -31838,16 +31855,17 @@ mod tests {
     #[test]
     fn mm_sport_condition_quote_expiration_reuses_only_when_min_window_remains() {
         let mut expiries = std::collections::HashMap::new();
-        expiries.insert("cond-a".to_string(), (200_000, 200));
+        expiries.insert("cond-a".to_string(), (300_000, 200));
 
-        let reused = mm_sport_condition_quote_expiration(&mut expiries, 100_000, "cond-a", 61, 300);
-        assert_eq!(reused, (200, 200_000, 200));
+        let reused =
+            mm_sport_condition_quote_expiration(&mut expiries, 100_000, "cond-a", 185, 300);
+        assert_eq!(reused, (300, 300_000, 200));
 
         let refreshed =
-            mm_sport_condition_quote_expiration(&mut expiries, 150_000, "cond-a", 61, 300);
-        assert!(refreshed.1 >= 211_000);
-        assert_ne!(refreshed.1, 200_000);
-        assert!(refreshed.2 >= 61);
+            mm_sport_condition_quote_expiration(&mut expiries, 150_000, "cond-a", 185, 300);
+        assert!(refreshed.1 >= 335_000);
+        assert_ne!(refreshed.1, 300_000);
+        assert!(refreshed.2 >= 185);
     }
 
     #[test]

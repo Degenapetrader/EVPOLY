@@ -9,6 +9,9 @@ Older entries may reference env keys that were removed in later commits.
 
 ## Change Log
 
+### 2026-07-07
+- `premarket_v1` / `mm_sport_v1`: raised local GTD BUY expirations to Polymarket's current 185-second minimum (`src/api.rs`, `src/trader.rs`, `src/main.rs`, `src/mm/mod.rs`, `.env.example`, `.env.full.example`). Generic BUY/GTD order placement, Premarket ladder expiry calculation, and MM Sport quote expiry sampling/submission now clamp shorter saved/env values up to 185 seconds. MM Sport quote expiry defaults changed from `65..185` to `185..300` seconds so refreshed desktop profiles emit exchange-valid expirations.
+
 ### 2026-07-02
 - `endgame_sweep_v1`: tightened the local desktop Endgame tick-0 Polymarket entry band from `0.97..0.99` to `0.98..0.99`, matching later ticks. This affects all Endgame symbols/timeframes on the local bot path through `poly_price_band_for_tick` (`src/endgame_sweep.rs`, `src/main.rs`, `src/trader.rs`).
 - `endgame_sweep_v1`: fixed a v2.5.2 regression where overlap handling moved proxy/base open-anchor sampling behind due-tick selection. The first due tick after a restart could insert the near-close sample as both open and live, producing `0.0` proxy move bps and `endgame_skip_v1_proxy_direction_guard` before submit. Endgame now schedules tick wakeups before snapshot reads, but records period proxy/base anchors only before any tick is due (`src/main.rs`). Endgame timeframe scope is now hardcoded to `5m,15m`; saved/env `EVPOLY_ENDGAME_TIMEFRAMES` values and runtime admin edits no longer change the Endgame loop (`src/config.rs`, `src/bot_admin.rs`, `.env.full.example`, `docs/endgame_sweep_v1.md`).

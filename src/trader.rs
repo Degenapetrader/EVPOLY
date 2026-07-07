@@ -47,6 +47,8 @@ pub const STRATEGY_ID_MANUAL_PREMARKET_TAKER_V1: &str = "manual_premarket_taker_
 pub const STRATEGY_ID_MANUAL_CHASE_LIMIT_V1: &str = "manual_chase_limit_v1";
 pub const STRATEGY_ID_MANUAL_CHASE_LIMIT_TAKER_V1: &str = "manual_chase_limit_taker_v1";
 
+const GTD_MIN_EXPIRATION_SECONDS: u64 = 185;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EvsnipeOrderIntent {
     pub request_id: String,
@@ -1620,7 +1622,10 @@ impl Trader {
     }
 
     fn configured_order_ttl_seconds(&self) -> u64 {
-        self.config.order_ttl_seconds.unwrap_or(1200).max(61)
+        self.config
+            .order_ttl_seconds
+            .unwrap_or(1200)
+            .max(GTD_MIN_EXPIRATION_SECONDS)
     }
 
     fn premarket_fallback_expiration_seconds(source_timeframe: &str) -> u64 {
@@ -1637,7 +1642,7 @@ impl Trader {
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(default_seconds)
-            .clamp(61, 14_400)
+            .clamp(GTD_MIN_EXPIRATION_SECONDS, 14_400)
     }
 
     fn premarket_ladder_expiration_seconds(
@@ -1664,12 +1669,12 @@ impl Trader {
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(240)
-            .clamp(61, 14_400);
+            .clamp(GTD_MIN_EXPIRATION_SECONDS, 14_400);
         let base_rung_seconds = std::env::var("EVPOLY_PREMARKET_EXPIRE_5M_BASE_RUNG_SEC")
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok())
             .unwrap_or(fallback)
-            .clamp(61, 14_400);
+            .clamp(GTD_MIN_EXPIRATION_SECONDS, 14_400);
 
         fallback = base_rung_seconds;
         if submit_price + 1e-9 >= high_rung_min_price {
@@ -1705,15 +1710,12 @@ impl Trader {
                 ttl_deadline
             }
         } else {
-            let ttl_target = now_ts.saturating_add(configured_ttl_seconds.max(61));
+            let ttl_target =
+                now_ts.saturating_add(configured_ttl_seconds.max(GTD_MIN_EXPIRATION_SECONDS));
             let market_end = Self::estimate_end_timestamp(period_timestamp, source_timeframe);
             ttl_target.min(market_end.saturating_sub(5))
         };
-        if premarket_ladder {
-            mode_deadline.max(now_ts.saturating_add(1))
-        } else {
-            mode_deadline.max(now_ts.saturating_add(61))
-        }
+        mode_deadline.max(now_ts.saturating_add(GTD_MIN_EXPIRATION_SECONDS))
     }
 
     fn limit_order_expiration_ts(
@@ -16521,6 +16523,23 @@ mod tests {
             std::env::remove_var("EVPOLY_PREMARKET_EXPIRE_4H_SEC");
             std::env::remove_var("EVPOLY_PREMARKET_CANCEL_AFTER_OPEN_4H_SEC");
         }
+    }
+
+    #[test]
+    fn premarket_ladder_expiration_respects_gtd_minimum_close_to_open() {
+        let _guard = premarket_env_lock();
+        let now_ts = 3_000_000_u64;
+        let period_ts = now_ts + 60;
+        let exp = Trader::compute_limit_order_expiration_ts(
+            now_ts,
+            period_ts,
+            "5m",
+            1_200,
+            EntryExecutionMode::Ladder,
+            crate::strategy::STRATEGY_ID_PREMARKET_V1,
+            0.24,
+        );
+        assert_eq!(exp, now_ts + 185);
     }
 
     #[test]

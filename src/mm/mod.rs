@@ -4,6 +4,8 @@ const MM_SPORT_RATIO_PAUSE_SEC_HARDCODED: u64 = 180;
 const MM_SPORT_FRESH_SCAN_MARKETS_PER_TICK_HARDCODED: usize = 200;
 const MM_SPORT_ORDER_SUBMIT_CONCURRENCY_HARDCODED: usize = 4;
 const MM_SPORT_ACTIVE_SPORT_MARKET_CAP_HARDCODED: usize = 600;
+const MM_SPORT_GTD_MIN_EXPIRY_SEC: u64 = 185;
+const MM_SPORT_QUOTE_EXPIRY_MAX_SEC: u64 = 300;
 const MM_SPORT_DISCOVERY_FULL_REFRESH_SEC_HARDCODED: u64 = 3_600;
 const MM_SPORT_DISCOVERY_DELTA_REFRESH_SEC_HARDCODED: u64 = 600;
 const MM_SPORT_DISCOVERY_DELTA_PAGE_BUDGET_HARDCODED: u32 = 8;
@@ -238,10 +240,16 @@ impl MmSportConfig {
         let bust_pause_min_sec = env_u64("EVPOLY_MM_SPORT_BUST_PAUSE_MIN_SEC", 60).clamp(1, 3_600);
         let bust_pause_max_sec =
             env_u64("EVPOLY_MM_SPORT_BUST_PAUSE_MAX_SEC", 300).clamp(bust_pause_min_sec, 7_200);
-        let quote_expiry_min_sec =
-            env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC", 65).clamp(61, 3_600);
-        let quote_expiry_max_sec =
-            env_u64("EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC", 185).clamp(quote_expiry_min_sec, 7_200);
+        let quote_expiry_min_sec = env_u64(
+            "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MIN_SEC",
+            MM_SPORT_GTD_MIN_EXPIRY_SEC,
+        )
+        .clamp(MM_SPORT_GTD_MIN_EXPIRY_SEC, 3_600);
+        let quote_expiry_max_sec = env_u64(
+            "EVPOLY_MM_SPORT_QUOTE_EXPIRY_MAX_SEC",
+            MM_SPORT_QUOTE_EXPIRY_MAX_SEC,
+        )
+        .clamp(quote_expiry_min_sec, 7_200);
         let quote_size_mode =
             MmSportQuoteSizeMode::from_env(std::env::var("EVPOLY_MM_SPORT_QUOTE_SIZE_MODE").ok());
         let entry_price_mode =
@@ -821,8 +829,8 @@ mod tests {
             || {
                 let cfg = MmSportConfig::from_env();
                 assert_eq!(cfg.pause_after_fill_sec, 600);
-                assert_eq!(cfg.quote_expiry_min_sec, 65);
-                assert_eq!(cfg.quote_expiry_max_sec, 185);
+                assert_eq!(cfg.quote_expiry_min_sec, 185);
+                assert_eq!(cfg.quote_expiry_max_sec, 300);
                 assert!((cfg.inventory_exit_max_loss_cents - 12.5).abs() < 1e-9);
             },
         );
@@ -946,8 +954,8 @@ mod tests {
                 assert_eq!(cfg.fresh_scan_markets_per_tick, 200);
                 assert_eq!(cfg.order_submit_concurrency, 4);
                 assert_eq!(cfg.ratio_pause_sec, 180);
-                assert_eq!(cfg.quote_expiry_min_sec, 90);
-                assert_eq!(cfg.quote_expiry_max_sec, 180);
+                assert_eq!(cfg.quote_expiry_min_sec, 185);
+                assert_eq!(cfg.quote_expiry_max_sec, 185);
                 assert!(cfg.verbose_budget_events);
                 assert!((cfg.fifo_ratio_floor() - 0.01).abs() < 1e-9);
                 assert!((cfg.effective_fifo_max_share_ratio() - 0.09).abs() < 1e-9);

@@ -1,5 +1,9 @@
 # EVPoly Changelog
 
+## v2.6.2 - 2026-07-22
+- Accepted Polymarket market payloads with null or missing `tags`, preventing market deserialization failures.
+- Refreshed the runtime's patch-level Rust dependencies.
+
 ## v2.6.1 - 2026-07-07
 - Bumped runtime version for the desktop/Linux updater release that fixes imported deposit-wallet start/restart handling.
 

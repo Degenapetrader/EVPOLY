@@ -1,6 +1,6 @@
 [package]
 name = "polymarket-arbitrage-bot"
-version = "2.6.1"
+version = "2.6.2"
 edition = "2021"
 license-file = "LICENSE"
 default-run = "polymarket-arbitrage-bot"

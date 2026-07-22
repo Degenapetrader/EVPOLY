@@ -256,6 +256,7 @@ pub struct MarketDetails {
     pub rewards: Rewards,
     #[serde(rename = "seconds_delay")]
     pub seconds_delay: u32,
+    #[serde(default, deserialize_with = "deserialize_string_vec_or_empty")]
     pub tags: Vec<String>,
     #[serde(rename = "taker_base_fee")]
     pub taker_base_fee: rust_decimal::Decimal,
@@ -269,6 +270,13 @@ where
     Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+fn deserialize_string_vec_or_empty<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Rewards {
     #[serde(rename = "max_spread")]
@@ -276,4 +284,86 @@ pub struct Rewards {
     #[serde(rename = "min_size")]
     pub min_size: rust_decimal::Decimal,
     pub rates: Option<serde_json::Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MarketDetails;
+    use serde_json::json;
+
+    fn market_details_json(tags: serde_json::Value) -> serde_json::Value {
+        json!({
+            "accepting_order_timestamp": null,
+            "accepting_orders": true,
+            "active": true,
+            "archived": false,
+            "closed": false,
+            "condition_id": "0xcondition",
+            "description": "Test market",
+            "enable_order_book": true,
+            "end_date_iso": null,
+            "fpmm": "",
+            "game_start_time": null,
+            "icon": "",
+            "image": "",
+            "is_50_50_outcome": false,
+            "maker_base_fee": 0,
+            "market_slug": "test-market",
+            "minimum_order_size": 5,
+            "minimum_tick_size": 0.01,
+            "neg_risk": false,
+            "neg_risk_market_id": "",
+            "neg_risk_request_id": "",
+            "notifications_enabled": false,
+            "question": "Test?",
+            "question_id": "0xquestion",
+            "rewards": {
+                "max_spread": 0,
+                "min_size": 0,
+                "rates": null
+            },
+            "seconds_delay": 0,
+            "tags": tags,
+            "taker_base_fee": 0,
+            "tokens": [
+                {
+                    "outcome": "Yes",
+                    "price": 0.5,
+                    "token_id": "token-yes",
+                    "winner": false
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn market_details_treats_null_tags_as_empty() {
+        let market: MarketDetails = serde_json::from_value(market_details_json(json!(null)))
+            .expect("null tags should deserialize");
+
+        assert!(market.tags.is_empty());
+    }
+
+    #[test]
+    fn market_details_defaults_missing_tags_to_empty() {
+        let mut value = market_details_json(json!([]));
+        value
+            .as_object_mut()
+            .expect("market fixture should be an object")
+            .remove("tags");
+
+        let market: MarketDetails =
+            serde_json::from_value(value).expect("missing tags should deserialize");
+
+        assert!(market.tags.is_empty());
+    }
+
+    #[test]
+    fn market_details_preserves_tag_values() {
+        let market: MarketDetails =
+            serde_json::from_value(market_details_json(json!(["sports", "nba"])))
+                .expect("tag arrays should deserialize");
+
+        assert_eq!(market.tags, ["sports", "nba"]);
+    }
 }

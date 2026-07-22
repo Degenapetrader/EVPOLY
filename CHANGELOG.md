@@ -1,5 +1,9 @@
 # EVPoly Linux Changelog
 
+## Linux-v2.6.2 - 2026-07-22
+- Bumped Linux app/updater version to 2.6.2.
+- Repinned the bundled runtime sidecar to runtime `v2.6.2` (`10eb5b5`) with nullable/missing Polymarket market-tag handling and refreshed patch dependencies.
+
 ## Linux-v2.6.1 - 2026-07-07
 - Bumped Linux app/updater version to 2.6.1.
 - Fixed imported sigType 3 deposit-wallet start/restart so Magic reconcile remains enabled only for Magic-created profiles.

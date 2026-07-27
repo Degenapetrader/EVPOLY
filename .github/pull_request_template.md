@@ -12,10 +12,12 @@
 
 ## Checks
 
+- [ ] Docs-only; no Rust check needed
+- [ ] Focused test(s): <!-- command -->
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo check --all-targets`
-- [ ] `cargo test --all-targets`
-- [ ] `./scripts/security_audit.sh`
+- [ ] Full suite required by broad/high-risk scope and passed
+- [ ] Security audit required by dependency/security/financial boundary and passed
 
 ## Notes
 

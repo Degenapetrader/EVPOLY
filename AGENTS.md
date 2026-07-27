@@ -81,18 +81,29 @@ Strategies include (minimum):
   - reports relayer fields as manual `needs_you` items and does not fake-generate them
   - is advisory only and should not be treated as a runtime gate
 
-### 6) Required Work Sequence for Any Task
+### 6) Verification by Scope and Risk
 1. Run `git status --short`.
 2. Inspect target code paths with `rg` and focused reads.
 3. Implement only requested changes.
 4. If strategy behavior/defaults changed, update `strategy-changelog.md`.
-5. Run local CI-equivalent checks before push, in this order:
+5. Run the lightest credible checks for the changed surface:
+   - Docs-only: no Rust build or test is required.
+   - Isolated Rust change: `cargo fmt --all -- --check`, the narrowest relevant test target or
+     filter, and `cargo check --all-targets`.
+   - Strategy, shared runtime, or multi-module change: formatting, all-target check, and the
+     affected subsystem tests.
+   - Broad refactor, release candidate, dependency/lockfile change, or changes to authentication,
+     signing, custody, deposits, credits, trading execution/risk, permissions, or destructive
+     operations: the full CI-equivalent suite below.
+6. Full CI-equivalent suite, only when required by the previous rule:
    - `cargo fmt --all -- --check`
-   - `cargo check --all-targets`
-   - `cargo test --all-targets --quiet`
+   - `cargo check --locked --all-targets`
+   - `cargo test --locked --all-targets --quiet`
    - `./scripts/security_audit.sh`
-6. Re-check `git status --short` and diff.
-7. Commit with clear scope message.
+7. A timeout is inconclusive, not a failure. Diagnose and rerun the failing target; do not repeatedly
+   restart the whole suite. After a fix, rerun the focused check and one required broad gate.
+8. Re-check `git status --short` and diff.
+9. Commit with clear scope message.
 
 ### 7) Editing Rules
 - Do not revert unrelated user changes.
@@ -113,6 +124,7 @@ Strategies include (minimum):
 
 ### 9) Definition of Done
 - Requested changes implemented.
-- Full local CI-equivalent suite passes.
+- Verification appropriate to the changed scope and risk passes; full-suite evidence is required
+  only for the broad/high-risk cases above.
 - Docs updated when behavior/surface changed.
 - Commit and push completed.

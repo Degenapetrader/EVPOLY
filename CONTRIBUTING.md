@@ -11,11 +11,19 @@
 3. `cargo build --release`
 
 ## Required Checks (Before Push)
-Run in this order:
-- `cargo fmt --all -- --check`
-- `cargo check --all-targets`
-- `cargo test --all-targets --quiet`
-- `./scripts/security_audit.sh`
+Scale checks to the change:
+
+- Docs-only: no Rust build or test.
+- Isolated Rust change: formatting, the narrowest relevant test target/filter, and
+  `cargo check --all-targets`.
+- Strategy, shared runtime, or multi-module change: formatting, all-target check, and affected
+  subsystem tests.
+- Broad refactor, release candidate, dependency/lockfile change, or security/financial execution
+  boundary: `cargo fmt --all -- --check`, `cargo check --locked --all-targets`,
+  `cargo test --locked --all-targets --quiet`, and `./scripts/security_audit.sh`.
+
+A timeout is inconclusive. Diagnose the affected target and rerun it instead of repeatedly restarting
+the entire suite.
 
 ## Strategy Surface Changes
 If strategy logic, risk gates, entry/exit behavior, sizing, checkpoint schedule, or strategy defaults change, update `strategy-changelog.md` in the same PR.

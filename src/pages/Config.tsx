@@ -1,25 +1,23 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-shell";
 import { AppShell } from "../components/AppShell";
 import { InfoPill } from "../components/InfoPill";
 import { LogsDrawer } from "../components/LogsDrawer";
 import { OfficialLinks } from "../components/OfficialLinks";
-import { ProfileSwitcher, type WalletProfileAction } from "../components/ProfileSwitcher";
+import { ProfileSwitcher } from "../components/ProfileSwitcher";
 import { SectionPanel } from "../components/SectionPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { useAppContext } from "../App";
 import { useBotStatus } from "../hooks/useBotStatus";
 import { useHomeOverview } from "../hooks/useHomeOverview";
 import { useWalletSyncStatus } from "../hooks/useWalletSyncStatus";
-import { completeDesktopMagicWalletOnboarding } from "../lib/desktop-magic-onboarding";
 import {
   DEFAULT_CONFIG,
   formatMaybeTime,
   formatUsd,
   mergeConfig,
 } from "../lib/desktop-config";
-import { humanizeMagicProvisioningError } from "../lib/magic-errors";
 import { OFFICIAL_LINKS } from "../lib/official-links";
 import {
   createProfile,
@@ -199,14 +197,9 @@ function importedProfileName(address: string, profiles: Profile[]): string {
   return uniqueProfileName(`Imported ${suffix}`, profiles);
 }
 
-function magicProfileName(email: string, profiles: Profile[]): string {
-  const localPart = email.split("@")[0]?.trim() || "Wallet";
-  return uniqueProfileName(`Magic ${localPart}`, profiles);
-}
 
 export function Config() {
   const navigate = useNavigate();
-  const location = useLocation();
   const { activeProfileId, setActiveProfileId, setAuthenticated } = useAppContext();
   const { status } = useBotStatus();
   const { overview } = useHomeOverview();
@@ -219,9 +212,6 @@ export function Config() {
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [walletProfileMessage, setWalletProfileMessage] = useState<string | null>(null);
-  const [createWalletMethod, setCreateWalletMethod] = useState<WalletProfileAction>("magic");
-  const [magicEmail, setMagicEmail] = useState("");
-  const [magicLoading, setMagicLoading] = useState(false);
   const [importPrivateKey, setImportPrivateKey] = useState("");
   const [importSigType, setImportSigType] = useState("2");
   const [importDepositWallet, setImportDepositWallet] = useState("");
@@ -281,14 +271,6 @@ export function Config() {
     })();
   }, [loadProfileConfig, setActiveProfileId]);
 
-  useEffect(() => {
-    const state = location.state as { createWalletMethod?: WalletProfileAction } | null;
-    if (state?.createWalletMethod === "magic" || state?.createWalletMethod === "private_key") {
-      setCreateWalletMethod(state.createWalletMethod);
-      setTab("setup");
-      setWalletProfileMessage(null);
-    }
-  }, [location.state]);
 
   const dirty = useMemo(() => JSON.stringify(config) !== savedSnapshot, [config, savedSnapshot]);
   const walletSyncDetails = useMemo(
@@ -303,12 +285,8 @@ export function Config() {
   const setupReady = Boolean(
     config.private_key.trim() && (config.sig_type === 0 || activeWalletAddress)
   );
-  const credentialsReady = Boolean(
-    setupReady &&
-      config.alpha_key.trim() &&
-      (config.relayer_remote_signer_token.trim() || config.remote_signer_token.trim())
-  );
-  const onboardingReady = Boolean(credentialsReady && !depositWalletMode);
+  const credentialsReady = setupReady;
+  const onboardingReady = credentialsReady;
 
   const railItems = [
     { label: "Home", to: "/home" },
@@ -371,8 +349,8 @@ export function Config() {
       setConfig(saved);
       setSavedSnapshot(JSON.stringify(saved));
       setSaveMessage(
-        saved.alpha_key.trim() && saved.relayer_remote_signer_token.trim()
-          ? "Settings saved. Onboarding credentials are ready."
+        saved.private_key.trim()
+          ? "Settings saved. Wallet saved locally."
           : "Settings saved."
       );
     } catch (err) {
@@ -532,7 +510,7 @@ export function Config() {
       setImportPrivateKey("");
       setImportDepositWallet("");
       setShowImportPrivateKey(false);
-      const message = "Imported private key profile created and selected. Onboarding credentials are ready.";
+      const message = "Imported private key profile created and selected. Wallet saved locally.";
       setWalletProfileMessage(message);
       setSaveMessage(message);
     } catch (err) {
@@ -542,59 +520,6 @@ export function Config() {
     }
   };
 
-  const handleCreateMagicWalletProfile = async () => {
-    if (!magicEmail.trim()) {
-      setWalletProfileMessage("Enter an email address.");
-      return;
-    }
-
-    setMagicLoading(true);
-    setWalletProfileMessage(null);
-    setSaveMessage(null);
-    try {
-      const email = magicEmail.trim();
-      const result = await completeDesktopMagicWalletOnboarding(email, null);
-      if (result.signatureType !== 3) {
-        setWalletProfileMessage("Magic bridge did not return a Deposit Wallet account.");
-        return;
-      }
-      if (!result.depositWalletAddress) {
-        setWalletProfileMessage("Magic bridge did not return a deposit wallet address.");
-        return;
-      }
-      const funders = await derivePolymarketFunderAddresses(result.privateKey);
-      if (
-        result.signerAddress &&
-        funders.eoa_wallet.trim().toLowerCase() !== result.signerAddress.trim().toLowerCase()
-      ) {
-        throw new Error("Exported Magic private key does not match the provisioned signer.");
-      }
-
-      const profileName = magicProfileName(email, profiles);
-      await saveNewWalletProfile({
-        profileName,
-        privateKey: result.privateKey,
-        eoaWallet: funders.eoa_wallet,
-        signatureType: 3,
-        proxyWallet: "",
-        depositWallet: result.depositWalletAddress,
-        generateCredentials: false,
-      });
-      setMagicEmail("");
-      const statusText = result.provisioningStatus
-        ? ` Provisioning status: ${toStatusLabel(result.provisioningStatus)}.`
-        : "";
-      const message = `New Deposit Wallet profile created and selected. Deposit wallet: ${result.depositWalletAddress}.${statusText}`;
-      setWalletProfileMessage(message);
-      setSaveMessage(message);
-    } catch (err) {
-      setWalletProfileMessage(
-        humanizeMagicProvisioningError(err, "failed to create Magic wallet profile")
-      );
-    } finally {
-      setMagicLoading(false);
-    }
-  };
 
   const handleCreateProfile = async () => {
     try {
@@ -617,8 +542,7 @@ export function Config() {
     }
   };
 
-  const handleOpenCreateWallet = (method: WalletProfileAction) => {
-    setCreateWalletMethod(method);
+  const handleOpenCreateWallet = () => {
     setTab("setup");
     setWalletProfileMessage(null);
   };
@@ -719,13 +643,13 @@ export function Config() {
                   ? "Runtime verifies Deposit Wallet collateral balance and allowance before each BUY order."
                   : onboardingReady
                   ? "This profile is ready to trade. Save changes any time you update the private key, wallet address, or relayer fields."
-                  : "Set the wallet mode, private key, and wallet address when needed. Save will generate EVPOLY alpha and relayer signer credentials automatically."}
+                  : "Set the wallet mode, private key, and wallet address when needed. Save validates the wallet locally. Polymarket relayer credentials are only used for supported gasless wallet operations."}
               </div>
             </div>
 
             <div className="page-split xl:grid-cols-[minmax(0,1.2fr)_minmax(20rem,0.8fr)]">
               <SectionPanel
-                title="Wallet and Onboarding"
+                title="Wallet Setup"
                 subtitle="Set the wallet mode, keys, and relayer fields the runtime needs before saving setup."
               >
                 <div className="grid gap-4 xl:grid-cols-2">
@@ -805,7 +729,7 @@ export function Config() {
                       Support EVPoly with our referral link
                     </div>
                     <div className="mt-2">
-                      New to Polymarket? Create your account with EVPoly before onboarding.
+                      Use an existing Polymarket account and import its signer private key.
                     </div>
                     <div className="mt-1 text-[var(--text-muted)]">
                       Already have a Polymarket account? Skip this step.
@@ -885,60 +809,12 @@ export function Config() {
 
                 <SectionPanel
                   title="Create New Wallet Profile"
-                  subtitle="Create a separate local signing profile with email OTP or an existing private key."
+                  subtitle="Import your existing private key into a separate encrypted local profile."
                 >
                   <div className="space-y-4">
                     {walletProfileMessage ? (
                       <div className="inline-alert inline-alert--warning">{walletProfileMessage}</div>
                     ) : null}
-                    <div
-                      className="segmented-control segmented-control--two wallet-method-tabs"
-                      role="radiogroup"
-                      aria-label="Wallet profile creation method"
-                    >
-                      {[
-                        ["magic", "Email OTP"],
-                        ["private_key", "Private Key"],
-                      ].map(([value, label]) => {
-                        const active = createWalletMethod === value;
-                        return (
-                          <button
-                            key={value}
-                            type="button"
-                            role="radio"
-                            aria-checked={active}
-                            onClick={() => setCreateWalletMethod(value as WalletProfileAction)}
-                            className={`segmented-control__option ${
-                              active ? "segmented-control__option--active" : ""
-                            }`.trim()}
-                          >
-                            {label}
-                          </button>
-                        );
-                      })}
-                    </div>
-
-                    {createWalletMethod === "magic" ? (
-                      <>
-                        <Field
-                          label="Email"
-                          value={magicEmail}
-                          onChange={setMagicEmail}
-                          type="email"
-                        />
-                        <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-3 text-sm leading-6 text-[var(--text-secondary)]">
-                          Magic email OTP creates a new Deposit Wallet profile. The private key is exported locally and saved into this encrypted desktop profile.
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => void handleCreateMagicWalletProfile()}
-                          disabled={magicLoading}
-                          className="ui-button ui-button--primary"
-                        >
-                          {magicLoading ? "Creating..." : "Create Wallet with Email OTP"}
-                        </button>
-                      </>
-                    ) : (
                       <>
                         <div>
                           <label className="field-label">Private Key</label>
@@ -990,7 +866,6 @@ export function Config() {
                           {importLoading ? "Importing..." : "Import Private Key Profile"}
                         </button>
                       </>
-                    )}
                     <div className="text-sm leading-6 text-[var(--text-secondary)]">
                       Creates a separate profile. Existing profiles are not changed.
                     </div>
@@ -1062,14 +937,14 @@ export function Config() {
                 <div className="text-sm leading-6 text-[var(--text-secondary)]">
                   {Number(createSigType) === 3
                     ? "Use a deployed deposit wallet address for new API user profiles."
-                    : "EOA address is derived from the private key during onboarding."}
+                    : "EOA address is derived locally from the private key."}
                 </div>
                 <div className="rounded-[20px] border border-[var(--border)] bg-[rgba(16,22,31,0.72)] px-4 py-4 text-sm leading-6 text-[var(--text-secondary)]">
                   <div className="text-sm font-semibold text-[var(--text-primary)]">
                     Support EVPoly with our referral link
                   </div>
                   <div className="mt-2">
-                    New to Polymarket? Create your account with EVPoly before onboarding.
+                    Use an existing Polymarket account and import its signer private key.
                   </div>
                   <div className="mt-1 text-[var(--text-muted)]">
                     Already have a Polymarket account? Skip this step.

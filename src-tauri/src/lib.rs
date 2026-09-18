@@ -7,7 +7,6 @@ pub mod crypto_vault;
 pub mod geo_access;
 pub mod liquidity_rewards;
 pub mod log_stream;
-pub mod onboard;
 pub mod portfolio_api;
 pub mod profile_manager;
 pub mod wallet_rpc;
@@ -81,7 +80,6 @@ const OBSOLETE_PREMARKET_REMOTE_ALPHA_KEYS: &[&str] = &[
 const DESKTOP_DEBUG_LOG_NAME: &str = "evpoly-desktop-debug.log.txt";
 const FULL_DEBUG_LOG_NAME: &str = "evpoly-full-debug.log.txt";
 const BOT_DEBUG_LOG_NAME: &str = "evpoly-debug.log.txt";
-const DEFAULT_DESKTOP_MAGIC_BRIDGE_BASE_URL: &str = "https://api-web.evplus.ai";
 const DEFAULT_POLYMARKET_BRIDGE_BASE_URL: &str = "https://bridge.polymarket.com";
 const HOME_DB_REFRESH_MS: i64 = 15_000;
 const HOME_REMOTE_REFRESH_MS: i64 = 60_000;
@@ -820,8 +818,8 @@ fn default_desktop_config(eoa_wallet: String, proxy_wallet: String, sig_type: u8
                 "EVPOLY_STRATEGY_PREMARKET_ENABLE",
                 true,
             ),
-            endgame: config_io::env_template_default_bool("EVPOLY_STRATEGY_ENDGAME_ENABLE", false),
-            evcurve: config_io::env_template_default_bool("EVPOLY_STRATEGY_EVCURVE_ENABLE", false),
+            endgame: false,
+            evcurve: false,
             session_band: false,
             evsnipe: config_io::env_template_default_bool("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),
             mm_rewards: false,
@@ -1341,20 +1339,15 @@ fn bound_wallet_for_config(config: &DesktopConfig, eoa_wallet: &str) -> Result<S
 
 fn wallet_binding_for_config(config: &DesktopConfig, eoa_wallet: &str) -> Result<String, String> {
     let bound_wallet = bound_wallet_for_config(config, eoa_wallet)?;
-    Ok(onboard::wallet_binding_fingerprint(
-        eoa_wallet,
-        config.sig_type,
-        bound_wallet.as_str(),
-    ))
+    use sha2::{Digest, Sha256};
+    let normalized = format!("{}|{}|{}", eoa_wallet.trim().to_ascii_lowercase(), config.sig_type, bound_wallet.trim().to_ascii_lowercase());
+    Ok(alloy_primitives::hex::encode(Sha256::digest(normalized.as_bytes())))
 }
 
 fn clean_relayer_remote_signer_token(config: &DesktopConfig) -> String {
     config.relayer_remote_signer_token.trim().to_string()
 }
 
-fn clean_alpha_key_or_legacy_source(config: &DesktopConfig) -> String {
-    config.alpha_key.trim().to_string()
-}
 
 fn wallet_mode_needs_approval_status(signature_type: u8) -> bool {
     matches!(signature_type, 1 | 2 | 3)
@@ -1364,14 +1357,7 @@ fn is_magic_managed_profile_name(name: &str) -> bool {
     name.trim_start().starts_with("Magic ")
 }
 
-fn should_reconcile_desktop_magic_deposit_wallet(config: &DesktopConfig) -> bool {
-    config.sig_type == 3 && config.magic_managed_profile
-}
 
-fn clean_onboarding_ready(config: &DesktopConfig) -> bool {
-    !clean_alpha_key_or_legacy_source(config).is_empty()
-        && !clean_relayer_remote_signer_token(config).is_empty()
-}
 
 fn distinct_order_signer_primary_token(remote_signer_token: &str, primary_token: &str) -> String {
     let remote = remote_signer_token.trim();
@@ -1494,7 +1480,7 @@ fn audit_setup_doctor(config: &DesktopConfig) -> SetupDoctorAudit {
             &mut audit,
             "relayer_api_key",
             "Relayer API Key",
-            "Get RELAYER_API_KEY from https://polymarket.com/settings?tab=api-keys, then paste it into Settings -> Setup. EVPoly can still use remote signer fallback where supported.",
+            "Get RELAYER_API_KEY from https://polymarket.com/settings?tab=api-keys, then paste it into Settings -> Setup. Required only for supported gasless wallet operations; no EVPOLY registration is needed.",
             None,
             false,
         );
@@ -1507,29 +1493,9 @@ fn audit_setup_doctor(config: &DesktopConfig) -> SetupDoctorAudit {
             &mut audit,
             "relayer_api_key_address",
             "Relayer API Key Address",
-            "Get RELAYER_API_KEY_ADDRESS from https://polymarket.com/settings?tab=api-keys, then paste it into Settings -> Setup. EVPoly can still use remote signer fallback where supported.",
+            "Get RELAYER_API_KEY_ADDRESS from https://polymarket.com/settings?tab=api-keys, then paste it into Settings -> Setup. Required only for supported gasless wallet operations; no EVPOLY registration is needed.",
             None,
             false,
-        );
-    }
-
-    if config.alpha_key.trim().is_empty() {
-        push_doctor_missing_generated(
-            &mut audit,
-            "alpha_key",
-            "EVPOLY Alpha Key",
-            "Alpha access is missing and will be generated automatically from onboarding.",
-            None,
-        );
-    }
-
-    if clean_relayer_remote_signer_token(config).is_empty() {
-        push_doctor_missing_generated(
-            &mut audit,
-            "relayer_remote_signer_token",
-            "Relayer Remote Signer Token",
-            "The redeem/merge fallback signer token is missing and will be generated automatically from onboarding.",
-            None,
         );
     }
 
@@ -1562,7 +1528,7 @@ fn mark_failed_generated_doctor_items(items: &mut [SetupDoctorItem], missing_key
         if missing_keys.iter().any(|key| key == &item.key) && item.status == "missing_generated" {
             item.status = "failed".to_string();
             item.message = format!(
-                "{} is still missing after Setup Doctor tried onboarding.",
+                "{} is still missing after Setup Doctor checked the local wallet.",
                 item.label
             );
         }
@@ -1592,7 +1558,7 @@ fn doctor_needs_you_popup(audit: &SetupDoctorAudit) -> SetupDoctorPopup {
     if has_relayer_issue && audit.missing_generated_labels.is_empty() {
         return doctor_popup(
             "Add Relayer Credentials",
-            "Get RELAYER_API_KEY and RELAYER_API_KEY_ADDRESS from https://polymarket.com/settings?tab=api-keys, then paste them into Settings -> Setup. EVPoly can still use remote signer fallback where supported.",
+            "Get RELAYER_API_KEY and RELAYER_API_KEY_ADDRESS from https://polymarket.com/settings?tab=api-keys, then paste them into Settings -> Setup. Required only for supported gasless wallet operations; no EVPOLY registration is needed.",
         );
     }
 
@@ -1601,7 +1567,7 @@ fn doctor_needs_you_popup(audit: &SetupDoctorAudit) -> SetupDoctorPopup {
         return doctor_popup(
             "Finish Setup Doctor",
             format!(
-                "Setup Doctor still could not regenerate {}. Open Settings -> Setup, rerun onboarding, and review the checklist.",
+                "Setup Doctor could not resolve {}. Open Settings -> Setup and review the checklist.",
                 missing
             ),
         );
@@ -1770,27 +1736,7 @@ fn ensure_admin_api_token(value: &str) -> String {
     }
 }
 
-fn desktop_install_id(data_dir: &Path) -> Result<String, String> {
-    let path = data_dir.join("desktop-install-id");
-    if let Ok(value) = std::fs::read_to_string(&path) {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return Ok(trimmed.to_string());
-        }
-    }
-    let install_id = format!("evpoly-desktop-{}", Uuid::new_v4());
-    std::fs::write(&path, install_id.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(install_id)
-}
 
-fn desktop_magic_bridge_base_url() -> String {
-    std::env::var("EVPOLY_DESKTOP_MAGIC_BRIDGE_BASE_URL")
-        .ok()
-        .map(|value| value.trim().trim_end_matches('/').to_string())
-        .filter(|value| value.starts_with("https://") || value.starts_with("http://"))
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| DEFAULT_DESKTOP_MAGIC_BRIDGE_BASE_URL.to_string())
-}
 
 fn polymarket_bridge_base_url() -> String {
     std::env::var("POLYMARKET_BRIDGE_URL")
@@ -1873,11 +1819,11 @@ fn desktop_config_to_profile_payload(
     );
     strategy.insert(
         "EVPOLY_STRATEGY_ENDGAME_ENABLE".to_string(),
-        bool_to_json(config.strategies.endgame),
+        bool_to_json(false),
     );
     strategy.insert(
         "EVPOLY_STRATEGY_EVCURVE_ENABLE".to_string(),
-        bool_to_json(config.strategies.evcurve),
+        bool_to_json(false),
     );
     strategy.insert(
         "EVPOLY_STRATEGY_SESSIONBAND_ENABLE".to_string(),
@@ -2655,6 +2601,8 @@ fn desktop_config_to_profile_payload(
         );
     }
 
+    secrets.retain(|key, _| !config_io::removed_service_key(key));
+
     (
         Value::Object(strategy),
         Value::Object(sizing),
@@ -2910,8 +2858,8 @@ fn profile_to_desktop_config(profile: &Profile, auth: &AppAuth) -> Result<Value,
         "symbols": symbols,
         "strategies": {
             "premarket": bool_from_object(&strategy, "EVPOLY_STRATEGY_PREMARKET_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_PREMARKET_ENABLE", true)),
-            "endgame": bool_from_object(&strategy, "EVPOLY_STRATEGY_ENDGAME_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_ENDGAME_ENABLE", false)),
-            "evcurve": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVCURVE_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_EVCURVE_ENABLE", false)),
+            "endgame": false,
+            "evcurve": false,
             "session_band": false,
             "evsnipe": bool_from_object(&strategy, "EVPOLY_STRATEGY_EVSNIPE_ENABLE", config_io::env_template_default_bool("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true)),
             "mm_rewards": false,
@@ -4857,158 +4805,15 @@ fn restart_bot_with_runtime_paths(
     Ok(())
 }
 
-async fn ensure_generated_credentials(config: &mut DesktopConfig) -> Result<Vec<String>, String> {
-    let private_key = config.private_key.trim();
-    if private_key.is_empty() {
-        return Ok(Vec::new());
-    }
-    if !matches!(config.sig_type, 0..=3) {
-        return Err("wallet mode must be EOA, Proxy, Safe, or Deposit Wallet".to_string());
-    }
-
-    let derived_eoa = wallet_address_from_private_key(private_key)?;
-    config.eoa_wallet = derived_eoa.clone();
-    let bound_wallet = bound_wallet_for_config(config, derived_eoa.as_str())?;
-    let wallet_binding = wallet_binding_for_config(config, derived_eoa.as_str())?;
-    let current_wallet_binding = config.wallet_binding.trim();
-    let wallet_binding_missing = current_wallet_binding.is_empty();
-    let wallet_changed = !wallet_binding_missing && current_wallet_binding != wallet_binding;
-    let alpha_missing = config.alpha_key.trim().is_empty();
-    let relayer_missing = clean_relayer_remote_signer_token(config).is_empty();
-    let credentials_missing = alpha_missing || relayer_missing;
-
-    if wallet_binding_missing {
-        config.wallet_binding = wallet_binding.clone();
-    }
-
-    if wallet_changed {
-        config.alpha_key.clear();
-        config.relayer_remote_signer_token.clear();
-        config.relayer_submit_signer_url.clear();
-        config.remote_signer_token.clear();
-        config.order_signer_primary_token_internal.clear();
-        config.wallet_binding = wallet_binding.clone();
-        config.onboarding_status = "wallet_saved".to_string();
-    }
-
-    let mut fixed_keys = Vec::new();
-    if credentials_missing || wallet_changed {
-        geo_access::ensure_geo_start_allowed()?;
-        let onboarding = if !relayer_missing && !wallet_changed {
-            let alpha_key = onboard::run_alpha_onboarding_for_wallet(bound_wallet.as_str()).await?;
-            onboard::OnboardResult {
-                alpha_key: Some(alpha_key),
-                wallet_binding: Some(wallet_binding.clone()),
-                approval_status: Some(if wallet_mode_needs_approval_status(config.sig_type) {
-                    "not_checked".to_string()
-                } else {
-                    "not_required".to_string()
-                }),
-                ..Default::default()
-            }
-        } else {
-            onboard::run_onboarding_with_existing_alpha(
-                config.private_key.as_str(),
-                config.sig_type,
-                config.proxy_wallet.as_str(),
-                config.deposit_wallet.as_str(),
-                if alpha_missing || wallet_changed {
-                    None
-                } else {
-                    Some(config.alpha_key.as_str())
-                },
-            )
-            .await?
-        };
-
-        if let Some(value) = onboarding
-            .eoa_wallet
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            config.eoa_wallet = value.to_string();
-        }
-        if let Some(value) = onboarding
-            .deposit_wallet_address
-            .as_deref()
-            .or(onboarding.deposit_wallet.as_deref())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            config.deposit_wallet = value.to_string();
-        }
-        if let Some(value) = onboarding
-            .alpha_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            config.alpha_key = value.to_string();
-            fixed_keys.push("alpha_key".to_string());
-        }
-        let relayer_token = onboarding
-            .relayer_remote_signer_token
-            .as_deref()
-            .or(onboarding.remote_signer_token.as_deref())
-            .or(onboarding.signer_token.as_deref())
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        if let Some(value) = relayer_token {
-            config.relayer_remote_signer_token = value.to_string();
-            fixed_keys.push("relayer_remote_signer_token".to_string());
-        }
-        if let Some(value) = onboarding
-            .relayer_submit_signer_url
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            config.relayer_submit_signer_url = value.to_string();
-        }
-        if let Some(value) = onboarding
-            .wallet_binding
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            config.wallet_binding = value.to_string();
-        } else {
-            config.wallet_binding = wallet_binding;
-        }
-        if let Some(value) = onboarding
-            .approval_status
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            config.approval_status = value.to_string();
-        }
-    } else {
-        config.wallet_binding = wallet_binding;
-    }
-
-    if config.approval_status.trim().is_empty() {
-        config.approval_status = if wallet_mode_needs_approval_status(config.sig_type) {
-            "not_checked".to_string()
-        } else {
-            "not_required".to_string()
-        };
-    }
-    if should_reconcile_desktop_magic_deposit_wallet(config) {
-        if let Some(status) =
-            reconcile_desktop_magic_deposit_wallet(config.deposit_wallet.as_str()).await?
-        {
-            config.approval_status = status;
-        }
-    }
-    config.onboarding_status = if clean_onboarding_ready(config) {
-        "credentials_ready".to_string()
-    } else {
-        "wallet_saved".to_string()
-    };
-
-    Ok(fixed_keys)
+async fn ensure_local_wallet_config(config: &mut DesktopConfig) -> Result<Vec<String>, String> {
+    if config.private_key.trim().is_empty() { return Ok(Vec::new()); }
+    if !matches!(config.sig_type, 0..=3) { return Err("Invalid wallet mode".to_string()); }
+    let eoa = wallet_address_from_private_key(config.private_key.as_str())?;
+    let binding = wallet_binding_for_config(config, &eoa)?;
+    let mut changed = Vec::new();
+    if config.eoa_wallet != eoa { config.eoa_wallet = eoa; changed.push("eoa_wallet".to_string()); }
+    if config.wallet_binding != binding { config.wallet_binding = binding; changed.push("wallet_binding".to_string()); }
+    Ok(changed)
 }
 
 async fn prepare_active_profile_runtime_paths(
@@ -5026,7 +4831,7 @@ async fn prepare_active_profile_runtime_paths(
         let value = profile_to_desktop_config(&profile, &auth_guard)?;
         serde_json::from_value::<DesktopConfig>(value).map_err(|e| e.to_string())?
     };
-    let fixed_keys = ensure_generated_credentials(&mut config).await?;
+    let fixed_keys = ensure_local_wallet_config(&mut config).await?;
     let (env_path, config_path) =
         save_profile_and_build_runtime(profiles, auth, data_dir, &mut profile, &config)?;
     if !fixed_keys.is_empty() {
@@ -5058,7 +4863,7 @@ async fn save_config(
         pm.get_profile(&profile_id).ok_or("profile not found")?
     };
     if generate_credentials.unwrap_or(true) {
-        ensure_generated_credentials(&mut config).await?;
+        ensure_local_wallet_config(&mut config).await?;
     }
     save_profile_and_build_runtime(&profiles, &auth, &data_dir.0, &mut profile, &config)?;
     Ok(())
@@ -5161,190 +4966,7 @@ async fn run_setup_doctor(
         }
     }
 
-    let needs_remote_regeneration = initial_audit
-        .missing_generated_keys
-        .iter()
-        .any(|key| key != "eoa_wallet");
-    if needs_remote_regeneration {
-        let alpha_missing = initial_audit
-            .missing_generated_keys
-            .iter()
-            .any(|key| key == "alpha_key");
-        let relayer_missing = initial_audit
-            .missing_generated_keys
-            .iter()
-            .any(|key| key == "relayer_remote_signer_token");
-        let geo_status = geo_access::current_geo_access_status();
-        if geo_status.status == "blocked" {
-            return Ok(doctor_result(
-                "needs_you",
-                initial_audit.items,
-                Some(doctor_popup("Location Blocked", geo_status.reason)),
-                bot_was_running,
-                false,
-            ));
-        }
-        if geo_status.status != "allowed" {
-            return Ok(doctor_result(
-                "needs_you",
-                initial_audit.items,
-                Some(doctor_popup(
-                    "Location Verification Required",
-                    "Doctor could not regenerate remote credentials because location verification is unavailable right now. Open Settings -> Setup and run onboarding after confirming access.",
-                )),
-                bot_was_running,
-                false,
-            ));
-        }
-
-        let onboarding = match if !relayer_missing {
-            let bound_wallet = bound_wallet_for_config(&config, config.eoa_wallet.as_str())?;
-            let wallet_binding = wallet_binding_for_config(&config, config.eoa_wallet.as_str())?;
-            let alpha_key = onboard::run_alpha_onboarding_for_wallet(bound_wallet.as_str()).await?;
-            Ok(onboard::OnboardResult {
-                alpha_key: Some(alpha_key),
-                wallet_binding: Some(wallet_binding),
-                approval_status: Some(if wallet_mode_needs_approval_status(config.sig_type) {
-                    "not_checked".to_string()
-                } else {
-                    "not_required".to_string()
-                }),
-                ..Default::default()
-            })
-        } else {
-            onboard::run_onboarding_with_existing_alpha(
-                config.private_key.as_str(),
-                config.sig_type,
-                config.proxy_wallet.as_str(),
-                config.deposit_wallet.as_str(),
-                if alpha_missing {
-                    None
-                } else {
-                    Some(config.alpha_key.as_str())
-                },
-            )
-            .await
-        } {
-            Ok(result) => result,
-            Err(err) => {
-                return Ok(doctor_result(
-                    "failed",
-                    initial_audit.items,
-                    Some(doctor_popup(
-                        "Could Not Regenerate Remote Credentials",
-                        format!("Setup Doctor could not regenerate remote credentials: {err}"),
-                    )),
-                    bot_was_running,
-                    false,
-                ))
-            }
-        };
-
-        let onboard_remote_signer_token = onboarding
-            .relayer_remote_signer_token
-            .as_ref()
-            .or(onboarding.remote_signer_token.as_ref())
-            .or(onboarding.signer_token.as_ref())
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty());
-
-        let remote_updates = [
-            ("alpha_key", onboarding.alpha_key.as_deref()),
-            ("relayer_remote_signer_token", onboard_remote_signer_token),
-            (
-                "relayer_submit_signer_url",
-                onboarding.relayer_submit_signer_url.as_deref(),
-            ),
-            ("wallet_binding", onboarding.wallet_binding.as_deref()),
-            (
-                "deposit_wallet",
-                onboarding
-                    .deposit_wallet_address
-                    .as_deref()
-                    .or(onboarding.deposit_wallet.as_deref()),
-            ),
-            ("approval_status", onboarding.approval_status.as_deref()),
-            ("admin_api_token", onboarding.admin_api_token.as_deref()),
-        ];
-        for (key, value) in remote_updates {
-            let value = value
-                .map(|entry| entry.trim())
-                .filter(|entry| !entry.is_empty());
-            match key {
-                "alpha_key" => {
-                    if let Some(value) = value {
-                        if config.alpha_key.trim() != value {
-                            config.alpha_key = value.to_string();
-                            config_changed = true;
-                            fixed_keys.push(key.to_string());
-                        }
-                    }
-                }
-                "relayer_remote_signer_token" => {
-                    if let Some(value) = value {
-                        if config.relayer_remote_signer_token.trim() != value {
-                            config.relayer_remote_signer_token = value.to_string();
-                            config.remote_signer_token.clear();
-                            config.order_signer_primary_token_internal.clear();
-                            config_changed = true;
-                            fixed_keys.push(key.to_string());
-                        }
-                    }
-                }
-                "relayer_submit_signer_url" => {
-                    if let Some(value) = value {
-                        if config.relayer_submit_signer_url.trim() != value {
-                            config.relayer_submit_signer_url = value.to_string();
-                            config_changed = true;
-                            fixed_keys.push(key.to_string());
-                        }
-                    }
-                }
-                "wallet_binding" => {
-                    if let Some(value) = value {
-                        if config.wallet_binding.trim() != value {
-                            config.wallet_binding = value.to_string();
-                            config_changed = true;
-                            fixed_keys.push(key.to_string());
-                        }
-                    }
-                }
-                "deposit_wallet" => {
-                    if let Some(value) = value {
-                        if config.deposit_wallet.trim() != value {
-                            config.deposit_wallet = value.to_string();
-                            config_changed = true;
-                            fixed_keys.push(key.to_string());
-                        }
-                    }
-                }
-                "approval_status" => {
-                    if let Some(value) = value {
-                        if config.approval_status.trim() != value {
-                            config.approval_status = value.to_string();
-                            config_changed = true;
-                            fixed_keys.push(key.to_string());
-                        }
-                    }
-                }
-                "admin_api_token" => {
-                    if let Some(value) = value {
-                        if config.admin_api_token.trim() != value {
-                            config.admin_api_token = value.to_string();
-                            config_changed = true;
-                            fixed_keys.push(key.to_string());
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        if clean_onboarding_ready(&config) && config.onboarding_status != "credentials_ready" {
-            config.onboarding_status = "credentials_ready".to_string();
-            config_changed = true;
-        }
-    }
-
+    config_changed |= !fixed_keys.is_empty();
     let final_audit = audit_setup_doctor(&config);
     let mut items = final_audit.items.clone();
     mark_fixed_doctor_items(&mut items, &fixed_keys);
@@ -6507,204 +6129,11 @@ fn open_logs_folder(data_dir: State<'_, AppDataDir>) -> Result<(), String> {
 
 // ── Onboard ──────────────────────────────────────────────────────────
 
-async fn post_desktop_magic_bridge(
-    operation: &str,
-    payload: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let base_url = desktop_magic_bridge_base_url();
-    let url = format!("{base_url}/v1/desktop/magic/{operation}");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| format!("build Magic bridge client: {e}"))?;
-    let response = client
-        .post(url.as_str())
-        .header("accept", "application/json")
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| format!("Magic bridge request failed: {e}"))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|e| format!("Magic bridge response read failed: {e}"))?;
-    if !status.is_success() {
-        return Err(format!("Magic bridge returned {}: {}", status, body));
-    }
-    serde_json::from_str(&body).map_err(|e| format!("parse Magic bridge response: {e}"))
-}
 
-async fn reconcile_desktop_magic_deposit_wallet(
-    deposit_wallet: &str,
-) -> Result<Option<String>, String> {
-    let deposit_wallet = deposit_wallet.trim();
-    if deposit_wallet.is_empty() {
-        return Ok(None);
-    }
-    let response = post_desktop_magic_bridge(
-        "reconcile",
-        serde_json::json!({
-            "deposit_wallet_address": deposit_wallet,
-        }),
-    )
-    .await?;
-    let status = response
-        .get("approval_status")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    let funding_status = response
-        .get("funding_status")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .unwrap_or_default();
-    let funding_balance = response
-        .get("funding_balance_pusd")
-        .and_then(|value| match value {
-            Value::Number(number) => number.as_f64(),
-            Value::String(text) => text.parse::<f64>().ok(),
-            _ => None,
-        })
-        .unwrap_or(0.0);
-    if response
-        .get("profile_id")
-        .and_then(serde_json::Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_some()
-        && status.as_deref() != Some("ready")
-    {
-        if funding_balance <= 0.0
-            || funding_status.eq_ignore_ascii_case("awaiting_deposit")
-            || funding_status.eq_ignore_ascii_case("unknown")
-        {
-            return Err(
-                "Polymarket account created. Deposit Fund to this wallet, then start the bot."
-                    .to_string(),
-            );
-        }
-        return Err(format!(
-            "Deposit Wallet approval is not ready yet (status: {}). Wait a minute and start again.",
-            status.as_deref().unwrap_or("unknown")
-        ));
-    }
-    Ok(status)
-}
 
-#[tauri::command]
-async fn desktop_magic_start(
-    data_dir: State<'_, AppDataDir>,
-    email: String,
-    profile_id: Option<String>,
-) -> Result<serde_json::Value, String> {
-    let email = email.trim();
-    if email.is_empty() {
-        return Err("email is required".to_string());
-    }
-    let install_id = desktop_install_id(&data_dir.0)?;
-    post_desktop_magic_bridge(
-        "start",
-        serde_json::json!({
-            "email": email,
-            "desktop_install_id": install_id,
-            "local_profile_id": profile_id.unwrap_or_default(),
-        }),
-    )
-    .await
-}
 
-fn desktop_magic_finish_payload(
-    desktop_onboard_session_id: &str,
-    did_token: &str,
-    rsa_public_key: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "desktop_onboard_session_id": desktop_onboard_session_id.trim(),
-        "did_token": did_token.trim(),
-        "rsa_public_key": rsa_public_key.trim(),
-    })
-}
 
-#[tauri::command]
-async fn desktop_magic_finish(
-    desktop_onboard_session_id: String,
-    did_token: String,
-    rsa_public_key: String,
-) -> Result<serde_json::Value, String> {
-    if desktop_onboard_session_id.trim().is_empty() {
-        return Err("desktop onboarding session is required".to_string());
-    }
-    if did_token.trim().is_empty() {
-        return Err("Magic DID token is required".to_string());
-    }
-    if rsa_public_key.trim().is_empty() {
-        return Err("RSA public key is required".to_string());
-    }
-    post_desktop_magic_bridge(
-        "finish",
-        desktop_magic_finish_payload(&desktop_onboard_session_id, &did_token, &rsa_public_key),
-    )
-    .await
-}
 
-#[tauri::command]
-async fn run_onboarding(
-    data_dir: State<'_, AppDataDir>,
-    private_key: String,
-    signature_type: u8,
-    proxy_wallet: String,
-    deposit_wallet: Option<String>,
-) -> Result<serde_json::Value, String> {
-    geo_access::ensure_geo_start_allowed()?;
-    append_desktop_debug_line(
-        &data_dir.0,
-        "ONBOARD",
-        format!(
-            "run_onboarding start signature_type={} proxy_wallet_set={}",
-            signature_type,
-            !proxy_wallet.trim().is_empty()
-        )
-        .as_str(),
-    );
-
-    let result = onboard::run_onboarding(
-        &private_key,
-        signature_type,
-        &proxy_wallet,
-        deposit_wallet.as_deref().unwrap_or_default(),
-    )
-    .await
-    .map_err(|e| {
-        append_desktop_debug_line(
-            &data_dir.0,
-            "ONBOARD",
-            format!("run_onboarding error: {e}").as_str(),
-        );
-        e
-    })?;
-
-    append_desktop_debug_line(
-        &data_dir.0,
-        "ONBOARD",
-        format!(
-            "run_onboarding success alpha_key_set={} relayer_remote_signer_token_set={}",
-            result
-                .alpha_key
-                .as_ref()
-                .map(|v| !v.is_empty())
-                .unwrap_or(false),
-            result
-                .relayer_remote_signer_token
-                .as_ref()
-                .map(|v| !v.is_empty())
-                .unwrap_or(false)
-        )
-        .as_str(),
-    );
-    serde_json::to_value(result).map_err(|e| e.to_string())
-}
 
 // ── App entry ────────────────────────────────────────────────────────
 
@@ -6929,9 +6358,6 @@ pub fn run() {
             run_wallet_sync_now,
             get_data_dir_path,
             open_logs_folder,
-            run_onboarding,
-            desktop_magic_start,
-            desktop_magic_finish,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -6941,10 +6367,10 @@ pub fn run() {
 mod tests {
     use super::{
         active_profile_bot_state, activity_trade_price, default_desktop_config,
-        desktop_config_to_profile_payload, desktop_magic_finish_payload,
+        desktop_config_to_profile_payload,
         gamma_market_metadata_batch_url, merge_config_object, merge_desktop_secrets,
         polymarket_funders_from_private_key, profile_to_desktop_config,
-        remove_legacy_premarket_ladder_keys, should_reconcile_desktop_magic_deposit_wallet,
+        remove_legacy_premarket_ladder_keys,
         simulation_mode_from_profile, DesktopConfig, PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY,
         PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
         PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
@@ -7015,19 +6441,6 @@ mod tests {
         assert!(!url.contains("0xaaa%2C0xbbb"));
     }
 
-    #[test]
-    fn desktop_magic_finish_payload_matches_bridge_schema() {
-        let payload = desktop_magic_finish_payload(" session ", " token ", " public-key ");
-        let object = payload.as_object().expect("payload object");
-
-        assert_eq!(
-            payload["desktop_onboard_session_id"],
-            serde_json::json!("session")
-        );
-        assert_eq!(payload["did_token"], serde_json::json!("token"));
-        assert_eq!(payload["rsa_public_key"], serde_json::json!("public-key"));
-        assert!(!object.contains_key("rsa_algorithm"));
-    }
 
     #[test]
     fn imported_deposit_profile_does_not_use_magic_reconcile_gate() {
@@ -7043,11 +6456,12 @@ mod tests {
         let config: DesktopConfig = serde_json::from_value(value.clone()).expect("desktop config");
 
         assert_eq!(value["magic_managed_profile"], serde_json::json!(false));
-        assert!(!should_reconcile_desktop_magic_deposit_wallet(&config));
+        assert_eq!(config.sig_type, 3);
+        assert_eq!(config.deposit_wallet, profile.deposit_wallet_address);
     }
 
     #[test]
-    fn magic_deposit_profile_keeps_magic_reconcile_gate() {
+    fn existing_magic_profile_never_calls_removed_bridge() {
         let mut profile = profile_with_simulation(None);
         profile.name = "Magic degenape88+55911".to_string();
         profile.proxy_wallet_address.clear();
@@ -7060,7 +6474,8 @@ mod tests {
         let config: DesktopConfig = serde_json::from_value(value.clone()).expect("desktop config");
 
         assert_eq!(value["magic_managed_profile"], serde_json::json!(true));
-        assert!(should_reconcile_desktop_magic_deposit_wallet(&config));
+        assert_eq!(config.sig_type, 3);
+        assert_eq!(config.deposit_wallet, profile.deposit_wallet_address);
     }
 
     #[test]
@@ -7109,7 +6524,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_profile_payload_writes_clean_relayer_remote_signer_token() {
+    fn desktop_profile_payload_discards_retired_relayer_signer_token() {
         let mut config = default_desktop_config(
             "0x1111111111111111111111111111111111111111".to_string(),
             "0x2222222222222222222222222222222222222222".to_string(),
@@ -7119,10 +6534,7 @@ mod tests {
 
         let (_, _, secrets, _, _, _, _) = desktop_config_to_profile_payload(&config);
 
-        assert_eq!(
-            secrets.get("EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN"),
-            Some(&"remote-token".to_string())
-        );
+        assert!(!secrets.contains_key("EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN"));
         assert!(!secrets.contains_key("EVPOLY_BUILDER_REMOTE_SIGNER_TOKEN"));
         assert!(!secrets.contains_key("EVPOLY_ORDER_SIGNER_PRIMARY_TOKEN"));
     }

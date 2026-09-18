@@ -10,18 +10,13 @@ import {
 import type { BotConfig } from "./tauri-commands";
 
 describe("desktop config strategy defaults", () => {
-  it("keeps Endgame last and off for new configs", () => {
-    expect(DEFAULT_CONFIG.strategies.endgame).toBe(false);
-    expect(mergeConfig(null).strategies.endgame).toBe(false);
-    expect(VISIBLE_STRATEGIES[VISIBLE_STRATEGIES.length - 1]?.key).toBe("endgame");
-  });
-
-  it("preserves explicitly enabled Endgame profiles", () => {
-    expect(
-      mergeConfig({
-        strategies: { endgame: true },
-      } as Partial<BotConfig>).strategies.endgame
-    ).toBe(true);
+  it("hides retired strategies and disables them for new and saved profiles", () => {
+    const restored = mergeConfig({ strategies: { endgame: true, evcurve: true, session_band: true } } as Partial<BotConfig>);
+    for (const key of ["endgame", "evcurve", "session_band"] as const) {
+      expect(DEFAULT_CONFIG.strategies[key]).toBe(false);
+      expect(restored.strategies[key]).toBe(false);
+      expect(VISIBLE_STRATEGIES.some((strategy) => strategy.key === key)).toBe(false);
+    }
   });
 });
 

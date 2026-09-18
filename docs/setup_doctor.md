@@ -1,68 +1,9 @@
 # Setup Doctor
 
-EVPoly Setup Doctor checks the baseline setup fields a healthy profile should have, regenerates the remote credentials onboarding can provide, and tells the operator exactly what still needs manual input.
+Use the Doctor button on Home to check your imported private key, wallet mode and matching funder address. Wallet identity is derived locally; Doctor does not contact EVPOLY onboarding or generate Alpha/signer tokens.
 
-## What it checks
+Proxy/Safe gasless wallet operations require user-owned `RELAYER_API_KEY` and `RELAYER_API_KEY_ADDRESS` from [Polymarket API Keys](https://polymarket.com/settings?tab=api-keys). Doctor reports missing relayer credentials as manual items; it does not block CLOB trading on those credentials.
 
-- private key
-- proxy wallet for proxy/safe modes
-- deposit wallet address for Deposit Wallet mode
-- remote signer token
-- remote market discovery token
-- Premarket alpha token
-- Endgame alpha token
-- EVSnipe discovery token
-- effective EVCurve / SessionBand shared alpha coverage
-- relayer API key
-- relayer API key address
+Deposit Wallet profiles keep their existing signer, funder and signature type. Their wallet must already be deployed, funded and approved before trading; this release does not provision deposit wallets or add support for their relayer operations.
 
-## What it can auto-fix
-
-Setup Doctor reruns onboarding to refill every remote credential the onboarding service currently returns.
-
-That includes:
-- signer token
-- shared discovery token
-- Premarket alpha token
-- Endgame alpha token
-- EVSnipe discovery token
-
-EVPoly automatically reuses the remote signer token for primary order signing unless onboarding provides a separate internal override token.
-- any shared-alpha runtime backfill used for EVCurve and SessionBand
-
-## What it cannot auto-fix
-
-Setup Doctor does not generate:
-- `RELAYER_API_KEY`
-- `RELAYER_API_KEY_ADDRESS`
-- deployed/funded/approved deposit wallets
-
-Get those from:
-
-`https://polymarket.com/settings?tab=api-keys`
-
-Doctor reports missing relayer fields as `needs_you`, but it does not block the bot from running.
-
-## For users
-
-- Open Home.
-- Click `Doctor`.
-- If EVPoly can regenerate the missing setup, it does it for you.
-- If something still needs manual input, Doctor tells you exactly what to enter and where.
-
-## For AI helpers
-
-Use Doctor as the first missing-setup check before telling a user to re-enter remote credentials manually.
-
-Doctor semantics:
-- `ready`: baseline setup is present
-- `fixed`: Doctor regenerated missing remote setup
-- `needs_you`: manual or external-only fields are still missing
-- `failed`: Doctor itself hit an execution error
-
-Important:
-- Users normally only need the remote signer token. The primary order-signer token is handled internally and should not be entered manually in the normal flow.
-- Doctor is advisory only and should not be treated as a launch gate.
-- Relayer credentials are reported, not generated.
-- Deposit Wallet readiness is separate from Proxy/Safe readiness: the wallet must already be deployed, funded with pUSD, approved through a `WALLET` batch, and synced with CLOB `signature_type=3` before live trading.
-- Onboarding is expected to populate all remote token destinations for all strategies, not only enabled ones.
+Doctor is advisory. It reports `ready`, `fixed` (local wallet fields repaired), `needs_you` (manual fields missing), or `failed` (execution error). Existing profiles do not need an EVPOLY service account or remote credentials.

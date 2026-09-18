@@ -71,7 +71,7 @@ use polymarket_arbitrage_bot::plandaily_tables::PlanDailyTables;
 use polymarket_arbitrage_bot::polymarket_ws::{
     self, new_shared_polymarket_ws_state, PolymarketWsConfig,
 };
-use polymarket_arbitrage_bot::security::{constant_time_eq, env_truthy, write_secret_file};
+use polymarket_arbitrage_bot::security::constant_time_eq;
 use polymarket_arbitrage_bot::sessionband;
 use polymarket_arbitrage_bot::signal_state::new_shared_signal_state;
 use polymarket_arbitrage_bot::size_policy;
@@ -1058,373 +1058,6 @@ fn env_nonempty_named(name: &str) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
-}
-
-fn remote_url_default_named(name: &str) -> Option<&'static str> {
-    match name {
-        "EVPOLY_REMOTE_ENDGAME_ALPHA_URL" => {
-            Some("https://alpha.evplus.ai/v1/alpha/endgame/policy")
-        }
-        "EVPOLY_REMOTE_EVCURVE_ALPHA_URL" => Some("https://alpha.evplus.ai/v1/alpha/evcurve"),
-        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL" => {
-            Some("https://alpha.evplus.ai/v1/alpha/sessionband")
-        }
-        "EVPOLY_REMOTE_MARKET_DISCOVERY_URL" => {
-            Some("https://alpha.evplus.ai/v1/discovery/timeframe")
-        }
-        _ => None,
-    }
-}
-
-fn normalize_remote_url_named(_name: &str, value: String) -> String {
-    value
-}
-
-fn env_nonempty_or_default_named(name: &str) -> Option<String> {
-    env_nonempty_named(name)
-        .map(|value| normalize_remote_url_named(name, value))
-        .or_else(|| remote_url_default_named(name).map(str::to_string))
-}
-
-fn secure_remote_url_or_none(name: &str) -> Option<String> {
-    let url = env_nonempty_or_default_named(name)?;
-    let scheme = match reqwest::Url::parse(url.as_str()) {
-        Ok(parsed) => parsed.scheme().to_ascii_lowercase(),
-        Err(err) => {
-            warn!("Ignoring invalid remote URL {}={}: {}", name, url, err);
-            return None;
-        }
-    };
-    if scheme == "https" || env_truthy("EVPOLY_ALLOW_INSECURE_REMOTE_URLS", false) {
-        return Some(url);
-    }
-    warn!(
-        "Ignoring non-HTTPS remote URL {}={}; set EVPOLY_ALLOW_INSECURE_REMOTE_URLS=true only for local development",
-        name, url
-    );
-    None
-}
-
-fn alpha_bearer_token_named(name: &str) -> Option<String> {
-    env_nonempty_named(name).or_else(|| env_nonempty_named("EVPOLY_ALPHA_KEY"))
-}
-
-fn alpha_setup_value_present(name: &str) -> bool {
-    if name.ends_with("_TOKEN") {
-        env_nonempty_named(name).is_some() || env_nonempty_named("EVPOLY_ALPHA_KEY").is_some()
-    } else {
-        env_nonempty_or_default_named(name).is_some()
-    }
-}
-
-fn env_effectively_missing_named(name: &str) -> bool {
-    !alpha_setup_value_present(name)
-}
-
-fn official_builder_code_for_alpha() -> String {
-    polymarket_arbitrage_bot::builder_attribution::configured_builder_code()
-}
-
-#[derive(Debug, Serialize)]
-struct AlphaOnboardRequest {
-    wallet: String,
-    builder_code: String,
-    client_version: String,
-    install_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AlphaOnboardResponse {
-    ok: bool,
-    alpha_key: String,
-}
-
-fn alpha_onboard_url() -> String {
-    env_nonempty_named("EVPOLY_ALPHA_ONBOARD_URL")
-        .unwrap_or_else(|| "https://alpha.evplus.ai/v1/onboard".to_string())
-}
-
-fn alpha_install_id() -> String {
-    if let Some(value) = env_nonempty_named("EVPOLY_INSTALL_ID") {
-        return value;
-    }
-    let wallet_hint = env_nonempty_named("POLY_FUNDER_WALLET_ADDRESS")
-        .or_else(|| env_nonempty_named("POLY_DEPOSIT_WALLET_ADDRESS"))
-        .or_else(|| env_nonempty_named("POLY_PROXY_WALLET_ADDRESS"))
-        .or_else(|| env_nonempty_named("POLY_WALLET_ADDRESS"))
-        .unwrap_or_else(|| "unknown_wallet".to_string());
-    format!("evpoly-local-{}", wallet_hint.trim().to_ascii_lowercase())
-}
-
-fn persist_generated_alpha_key(alpha_key: &str) {
-    let env_file = env_nonempty_named("EVPOLY_ENV_FILE").unwrap_or_else(|| ".env".to_string());
-    let path = std::path::Path::new(env_file.as_str());
-    if !path.exists() {
-        return;
-    }
-    let Ok(existing) = std::fs::read_to_string(path) else {
-        return;
-    };
-    let mut replaced = false;
-    let mut output = String::new();
-    for line in existing.lines() {
-        if line.trim_start().starts_with("EVPOLY_ALPHA_KEY=") {
-            output.push_str("EVPOLY_ALPHA_KEY=");
-            output.push_str(alpha_key.trim());
-            output.push('\n');
-            replaced = true;
-        } else {
-            output.push_str(line);
-            output.push('\n');
-        }
-    }
-    if !replaced {
-        if !output.ends_with('\n') {
-            output.push('\n');
-        }
-        output.push_str("EVPOLY_ALPHA_KEY=");
-        output.push_str(alpha_key.trim());
-        output.push('\n');
-    }
-    let _ = write_secret_file(path, output);
-}
-
-fn set_remote_alpha_fallback_envs(alpha_key: &str) {
-    let token = alpha_key.trim();
-    if token.is_empty() {
-        return;
-    }
-    for key in [
-        "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN",
-        "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
-        "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
-        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
-    ] {
-        if env_nonempty_named(key).is_none() {
-            unsafe {
-                std::env::set_var(key, token);
-            }
-        }
-    }
-}
-
-async fn ensure_alpha_key_auto_onboard(proxy_wallet: Option<&str>) {
-    if env_nonempty_named("EVPOLY_ALPHA_KEY").is_some()
-        || !env_bool_named("EVPOLY_ALPHA_AUTO_ONBOARD", true)
-    {
-        return;
-    }
-    let Some(wallet) = proxy_wallet
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        warn!("EVPOLY alpha auto-onboard skipped: no trading wallet address is configured");
-        return;
-    };
-    if !polymarket_arbitrage_bot::builder_attribution::configured_builder_code_is_official() {
-        warn!("EVPOLY alpha auto-onboard skipped: POLY_BUILDER_CODE does not match official builder code");
-        return;
-    }
-
-    let payload = AlphaOnboardRequest {
-        wallet: wallet.to_string(),
-        builder_code: official_builder_code_for_alpha(),
-        client_version: env!("CARGO_PKG_VERSION").to_string(),
-        install_id: alpha_install_id(),
-    };
-    let url = alpha_onboard_url();
-    let response = match remote_alpha_http_client()
-        .post(url.as_str())
-        .timeout(Duration::from_millis(2_000))
-        .json(&payload)
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(err) => {
-            warn!("EVPOLY alpha auto-onboard failed url={} err={}", url, err);
-            return;
-        }
-    };
-    let status = response.status();
-    let body = match response.text().await {
-        Ok(body) => body,
-        Err(err) => {
-            warn!("EVPOLY alpha auto-onboard failed to read response: {}", err);
-            return;
-        }
-    };
-    if !status.is_success() {
-        warn!(
-            "EVPOLY alpha auto-onboard rejected status={} body={}",
-            status.as_u16(),
-            truncate_for_log(body.as_str(), 240)
-        );
-        return;
-    }
-    let parsed: AlphaOnboardResponse = match serde_json::from_str(body.as_str()) {
-        Ok(parsed) => parsed,
-        Err(err) => {
-            warn!(
-                "EVPOLY alpha auto-onboard returned invalid response: {} body={}",
-                err,
-                truncate_for_log(body.as_str(), 240)
-            );
-            return;
-        }
-    };
-    if !parsed.ok || parsed.alpha_key.trim().is_empty() {
-        warn!("EVPOLY alpha auto-onboard returned no alpha key");
-        return;
-    }
-    unsafe {
-        std::env::set_var("EVPOLY_ALPHA_KEY", parsed.alpha_key.trim());
-    }
-    set_remote_alpha_fallback_envs(parsed.alpha_key.trim());
-    persist_generated_alpha_key(parsed.alpha_key.trim());
-    log_event(
-        "alpha_auto_onboard_ready",
-        json!({
-            "wallet": wallet,
-            "builder_code_configured": true
-        }),
-    );
-    eprintln!("EVPOLY alpha access ready for wallet {}", wallet);
-}
-
-#[derive(Debug, Default, Clone, Copy)]
-struct RemoteAlphaMissingWarnState {
-    last_warn_ms: i64,
-    skipped_since_warn: u64,
-}
-
-fn remote_alpha_missing_warn_cooldown_ms() -> i64 {
-    static COOLDOWN_MS: OnceLock<i64> = OnceLock::new();
-    *COOLDOWN_MS.get_or_init(|| {
-        std::env::var("EVPOLY_REMOTE_ALPHA_MISSING_WARN_COOLDOWN_SEC")
-            .ok()
-            .and_then(|v| v.trim().parse::<i64>().ok())
-            .unwrap_or(600)
-            .clamp(30, 86_400)
-            .saturating_mul(1_000)
-    })
-}
-
-fn warn_remote_alpha_missing_runtime(strategy_id: &str, required_keys: &[&str], reason: &str) {
-    let missing_keys = required_keys
-        .iter()
-        .copied()
-        .filter(|key| env_effectively_missing_named(key))
-        .collect::<Vec<_>>();
-    if missing_keys.is_empty() {
-        return;
-    }
-    static STATE: OnceLock<
-        StdMutex<std::collections::HashMap<String, RemoteAlphaMissingWarnState>>,
-    > = OnceLock::new();
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let cooldown_ms = remote_alpha_missing_warn_cooldown_ms();
-    let mut skipped_since_last_warn = 1_u64;
-    let mut emit_warning = true;
-    if let Ok(mut guard) = STATE
-        .get_or_init(|| StdMutex::new(std::collections::HashMap::new()))
-        .lock()
-    {
-        let state = guard.entry(strategy_id.to_string()).or_default();
-        state.skipped_since_warn = state.skipped_since_warn.saturating_add(1);
-        skipped_since_last_warn = state.skipped_since_warn;
-        let since_last_ms = now_ms.saturating_sub(state.last_warn_ms);
-        emit_warning = state.last_warn_ms <= 0 || since_last_ms >= cooldown_ms;
-        if emit_warning {
-            state.last_warn_ms = now_ms;
-            state.skipped_since_warn = 0;
-        }
-    }
-    if emit_warning {
-        let missing_keys_csv = missing_keys.join(", ");
-        warn!(
-            "Remote alpha not configured for strategy={} (missing: {}); skipped_decisions_since_last_warn={} reason={}",
-            strategy_id,
-            missing_keys_csv,
-            skipped_since_last_warn,
-            reason
-        );
-        log_event(
-            "remote_alpha_config_missing_warning",
-            json!({
-                "strategy_id": strategy_id,
-                "missing_keys": missing_keys,
-                "reason": reason,
-                "cooldown_ms": cooldown_ms,
-                "skipped_decisions_since_last_warn": skipped_since_last_warn
-            }),
-        );
-    }
-}
-
-fn warn_remote_alpha_config_startup(endgame_alpha_required: bool) {
-    let check_strategy = |strategy_id: &'static str,
-                          strategy_enable_key: &'static str,
-                          strategy_enabled_default: bool,
-                          required_keys: &[&'static str],
-                          required: bool| {
-        if !required || !env_bool_named(strategy_enable_key, strategy_enabled_default) {
-            return;
-        }
-        let missing_keys = required_keys
-            .iter()
-            .copied()
-            .filter(|key| env_effectively_missing_named(key))
-            .collect::<Vec<_>>();
-        if missing_keys.is_empty() {
-            return;
-        }
-        warn!(
-            "Startup preflight: strategy={} enabled but remote alpha config missing ({}). Strategy decisions will be skipped until configured.",
-            strategy_id,
-            missing_keys.join(", ")
-        );
-        log_event(
-            "remote_alpha_config_missing_startup",
-            json!({
-                "strategy_id": strategy_id,
-                "strategy_enable_key": strategy_enable_key,
-                "required": required,
-                "missing_keys": missing_keys
-            }),
-        );
-    };
-
-    check_strategy(
-        STRATEGY_ID_EVCURVE_V1,
-        "EVPOLY_STRATEGY_EVCURVE_ENABLE",
-        true,
-        &[
-            "EVPOLY_REMOTE_EVCURVE_ALPHA_URL",
-            "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
-        ],
-        true,
-    );
-    check_strategy(
-        STRATEGY_ID_SESSIONBAND_V1,
-        "EVPOLY_STRATEGY_SESSIONBAND_ENABLE",
-        false,
-        &[
-            "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
-            "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
-        ],
-        false,
-    );
-    check_strategy(
-        STRATEGY_ID_ENDGAME_SWEEP_V1,
-        "EVPOLY_STRATEGY_ENDGAME_ENABLE",
-        true,
-        &[
-            "EVPOLY_REMOTE_ENDGAME_ALPHA_URL",
-            "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
-        ],
-        endgame_alpha_required,
-    );
 }
 
 fn env_f64_named(name: &str, default: f64) -> f64 {
@@ -6459,8 +6092,8 @@ async fn main() -> Result<()> {
     }
 
     let premarket_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_PREMARKET_ENABLE", true);
-    let endgame_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_ENDGAME_ENABLE", true);
-    let evcurve_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_EVCURVE_ENABLE", true);
+    let endgame_strategy_enabled = false;
+    let evcurve_strategy_enabled = false;
     let sessionband_strategy_enabled = false;
     let evsnipe_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true);
     let mm_sport_strategy_enabled = env_bool_named("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false);
@@ -6919,8 +6552,8 @@ async fn main() -> Result<()> {
             json!({
                 "simulation_mode": is_simulation,
                 "premarket_enabled": env_bool_named("EVPOLY_STRATEGY_PREMARKET_ENABLE", true),
-                "endgame_enabled": env_bool_named("EVPOLY_STRATEGY_ENDGAME_ENABLE", true),
-                "evcurve_enabled": env_bool_named("EVPOLY_STRATEGY_EVCURVE_ENABLE", true),
+                "endgame_enabled": false,
+                "evcurve_enabled": false,
                 "sessionband_enabled": false,
                 "evsnipe_enabled": env_bool_named("EVPOLY_STRATEGY_EVSNIPE_ENABLE", true),
                 "mm_sport_enabled": env_bool_named("EVPOLY_STRATEGY_MM_SPORT_ENABLE", false)
@@ -7320,17 +6953,6 @@ async fn main() -> Result<()> {
     //     eprintln!("═══════════════════════════════════════════════════════════");
     //     eprintln!("");
     // }
-
-    let remote_alpha_wallet = config
-        .polymarket
-        .funder_wallet_address
-        .as_deref()
-        .or(config.polymarket.deposit_wallet_address.as_deref())
-        .or(config.polymarket.proxy_wallet_address.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string());
-    ensure_alpha_key_auto_onboard(remote_alpha_wallet.as_deref()).await;
 
     // Initialize components
     let monitor_arc = if core_monitor_runtime_enabled {
@@ -9233,7 +8855,6 @@ async fn main() -> Result<()> {
         STRATEGY_ID_ENDGAME_SWEEP_V1,
         endgame_cfg.enabled_symbols().as_slice(),
     );
-    warn_remote_alpha_config_startup(false);
     if endgame_cfg.enable {
         let symbols_csv = endgame_symbols.join(",");
         let timeframes = endgame_cfg
@@ -9259,7 +8880,7 @@ async fn main() -> Result<()> {
             endgame_near_base_thresholds_bps[2]
         );
     } else {
-        eprintln!("🎯 Endgame strategy disabled (set EVPOLY_STRATEGY_ENDGAME_ENABLE=true)");
+        eprintln!("🎯 Endgame strategy retired");
     }
     if endgame_cfg.enable {
         let endgame_cfg_for_loop = endgame_cfg.clone();
@@ -12301,7 +11922,7 @@ async fn main() -> Result<()> {
 
                                 let decision_candidates: Vec<evcurve::EvcurveDecisionCandidate> =
                                     if timeframe == Timeframe::D1 {
-                                        evaluate_evcurve_d1_candidates_remote(
+                                        evaluate_retired_evcurve_d1_candidates(
                                             symbol.as_str(),
                                             market_open_ts,
                                             tau_sec,
@@ -12319,7 +11940,7 @@ async fn main() -> Result<()> {
                                             score: 0.0,
                                             p_flip_market: None,
                                             gap_abs: None,
-                                            decision: evaluate_evcurve_decision_remote(
+                                            decision: evaluate_retired_evcurve_decision(
                                                 timeframe,
                                                 symbol.as_str(),
                                                 market_open_ts,
@@ -13236,7 +12857,7 @@ async fn main() -> Result<()> {
                                                 let tau_now =
                                                     close_ts.saturating_sub(now_ts).max(0);
                                                 let recheck_candidates =
-                                                    evaluate_evcurve_d1_candidates_remote(
+                                                    evaluate_retired_evcurve_d1_candidates(
                                                         symbol_task.as_str(),
                                                         market_open_ts,
                                                         tau_now,
@@ -13802,7 +13423,7 @@ async fn main() -> Result<()> {
                                                         let tau_now =
                                                             close_ts.saturating_sub(now_ts).max(0);
                                                         let recheck =
-                                                            evaluate_evcurve_decision_remote(
+                                                            evaluate_retired_evcurve_decision(
                                                                 timeframe,
                                                                 symbol_task.as_str(),
                                                                 market_open_ts,
@@ -14358,7 +13979,7 @@ async fn main() -> Result<()> {
                                             }
 
                                             let tau_now = close_ts.saturating_sub(now_ts).max(0);
-                                            let live_decision = evaluate_evcurve_decision_remote(
+                                            let live_decision = evaluate_retired_evcurve_decision(
                                                 timeframe,
                                                 symbol_task.as_str(),
                                                 market_open_ts,
@@ -15612,7 +15233,7 @@ async fn main() -> Result<()> {
             });
         }
     } else {
-        eprintln!("📈 EVcurve strategy disabled (set EVPOLY_STRATEGY_EVCURVE_ENABLE=true)");
+        eprintln!("📈 EVcurve strategy retired");
     }
 
     let sessionband_cfg = Arc::new(sessionband::SessionBandExecutionConfig::from_env());
@@ -16429,7 +16050,7 @@ async fn main() -> Result<()> {
                                 Direction::Up => (Some(best_ask), None),
                                 Direction::Down => (None, Some(best_ask)),
                             };
-                            let alpha_decision = evaluate_sessionband_decision_remote_or_local(
+                            let alpha_decision = evaluate_retired_sessionband_decision(
                                 symbol.as_str(),
                                 timeframe,
                                 market_open_ts,
@@ -24337,8 +23958,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    if !is_simulation && api.ws_enabled() && env_bool_named("EVPOLY_STRATEGY_EVCURVE_ENABLE", true)
-    {
+    if !is_simulation && api.ws_enabled() && evcurve_strategy_enabled {
         let trader_evcurve_fill = trader_clone.clone();
         let polymarket_ws_evcurve_fill = polymarket_ws_state.clone();
         let evcurve_fill_fallback_poll_ms = std::env::var("EVPOLY_EVCURVE_FILL_FALLBACK_POLL_MS")
@@ -26525,51 +26145,6 @@ struct DiscoveredBtcMarket {
 }
 
 #[derive(Debug, Clone)]
-struct RemoteMarketDiscoveryConfig {
-    url: String,
-    token: Option<String>,
-    timeout_ms: u64,
-    allow_local_fallback: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct RemoteMarketDiscoveryRequest {
-    symbol: String,
-    timeframe: String,
-    target_open_ts: u64,
-    builder_code: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-enum RemoteMarketDiscoveryResponse {
-    Wrapped {
-        market: crate::models::Market,
-        #[serde(default)]
-        matched_open_ts: Option<u64>,
-        #[serde(default)]
-        matched_slug: Option<String>,
-        #[serde(default)]
-        source: Option<String>,
-    },
-    Flat(crate::models::Market),
-}
-
-#[derive(Debug, Clone)]
-struct RemoteEvcurveAlphaConfig {
-    url: String,
-    token: Option<String>,
-    timeout_ms: u64,
-}
-
-#[derive(Debug, Clone)]
-struct RemoteSessionbandAlphaConfig {
-    url: String,
-    token: Option<String>,
-    timeout_ms: u64,
-}
-
-#[derive(Debug, Clone)]
 struct SessionbandDecisionOutcome {
     source: &'static str,
     lead_pct: f64,
@@ -26632,181 +26207,12 @@ fn sessionband_entry_price_mode(using_share_size: bool) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct RemoteEvcurveAlphaRequest {
-    symbol: String,
-    timeframe: String,
-    period_open_ts: i64,
-    tau_sec: i64,
-    base_mid: f64,
-    current_mid: f64,
-    ask_up: Option<f64>,
-    ask_down: Option<f64>,
-    d1_zero_rule_already_fired: bool,
-    d1_ev_rule_already_fired: bool,
-    builder_code: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RemoteEvcurveAlphaDecisionPayload {
-    should_buy: bool,
-    #[serde(default)]
-    skip_reason: Option<String>,
-    hold_side: String,
-    group_key: String,
-    tau_sec: i64,
-    base_mid: f64,
-    current_mid: f64,
-    lead_pct: f64,
-    #[serde(default)]
-    lead_bin_idx: Option<usize>,
-    #[serde(default)]
-    flips: Option<u32>,
-    #[serde(default)]
-    n: Option<u32>,
-    #[serde(default)]
-    p_flip: Option<f64>,
-    #[serde(default)]
-    p_hold: Option<f64>,
-    #[serde(default)]
-    max_buy_hold: Option<f64>,
-    #[serde(default)]
-    ask_up: Option<f64>,
-    #[serde(default)]
-    ask_down: Option<f64>,
-    #[serde(default)]
-    chosen_ask: Option<f64>,
-    #[serde(default)]
-    tau_low_sec: Option<i64>,
-    #[serde(default)]
-    tau_high_sec: Option<i64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RemoteEvcurveAlphaCandidatePayload {
-    sub_strategy: String,
-    score: f64,
-    #[serde(default)]
-    p_flip_market: Option<f64>,
-    #[serde(default)]
-    gap_abs: Option<f64>,
-    decision: RemoteEvcurveAlphaDecisionPayload,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RemoteEvcurveAlphaResponse {
-    ok: bool,
-    kind: String,
-    #[serde(default)]
-    decision: Option<RemoteEvcurveAlphaDecisionPayload>,
-    #[serde(default)]
-    candidates: Vec<RemoteEvcurveAlphaCandidatePayload>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct RemoteSessionbandAlphaRequest {
-    symbol: String,
-    timeframe: String,
-    period_open_ts: i64,
-    tau_sec: i64,
-    base_mid: f64,
-    current_mid: f64,
-    ask_up: Option<f64>,
-    ask_down: Option<f64>,
-    builder_code: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RemoteSessionbandAlphaResult {
-    #[serde(default)]
-    symbol: Option<String>,
-    #[serde(default)]
-    timeframe: Option<String>,
-    #[serde(default)]
-    period_open_ts: Option<i64>,
-    tau_sec: i64,
-    lead_pct: f64,
-    direction: String,
-    #[serde(default)]
-    session_index: Option<u8>,
-    #[serde(default)]
-    watch_start_sec: Option<i64>,
-    #[serde(default)]
-    tau_trigger_sec: Option<i64>,
-    #[serde(default)]
-    trigger_rate_pct: Option<f64>,
-    should_buy: bool,
-    #[serde(default)]
-    skip_reason: Option<String>,
-    #[serde(default)]
-    band_price_min: Option<f64>,
-    #[serde(default)]
-    band_price_max: Option<f64>,
-    #[serde(default)]
-    score_bps: Option<f64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct RemoteSessionbandAlphaResponse {
-    ok: bool,
-    result: RemoteSessionbandAlphaResult,
-}
-
 #[derive(Debug, Clone)]
 struct EndgameAlphaPolicy {
     tick_offsets_ms: Vec<u64>,
     submit_proxy_max_age_ms: i64,
     source: String,
     reason: Option<String>,
-}
-
-const REMOTE_ALPHA_PRIMARY_HOST: &str = "alpha.evplus.ai";
-const REMOTE_ALPHA_FALLBACK_HOST: &str = "alpha2.evplus.ai";
-
-fn remote_market_discovery_config() -> Option<&'static RemoteMarketDiscoveryConfig> {
-    static CONFIG: OnceLock<Option<RemoteMarketDiscoveryConfig>> = OnceLock::new();
-    CONFIG
-        .get_or_init(|| {
-            let url = secure_remote_url_or_none("EVPOLY_REMOTE_MARKET_DISCOVERY_URL")?;
-            let timeout_ms = 2_000_u64;
-            Some(RemoteMarketDiscoveryConfig {
-                url,
-                token: alpha_bearer_token_named("EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN"),
-                timeout_ms,
-                allow_local_fallback: true,
-            })
-        })
-        .as_ref()
-}
-
-fn remote_evcurve_alpha_config() -> Option<&'static RemoteEvcurveAlphaConfig> {
-    static CONFIG: OnceLock<Option<RemoteEvcurveAlphaConfig>> = OnceLock::new();
-    CONFIG
-        .get_or_init(|| {
-            let url = secure_remote_url_or_none("EVPOLY_REMOTE_EVCURVE_ALPHA_URL")?;
-            let timeout_ms = 1_000_u64;
-            Some(RemoteEvcurveAlphaConfig {
-                url,
-                token: alpha_bearer_token_named("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN"),
-                timeout_ms,
-            })
-        })
-        .as_ref()
-}
-
-fn remote_sessionband_alpha_config() -> Option<&'static RemoteSessionbandAlphaConfig> {
-    static CONFIG: OnceLock<Option<RemoteSessionbandAlphaConfig>> = OnceLock::new();
-    CONFIG
-        .get_or_init(|| {
-            let url = secure_remote_url_or_none("EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL")?;
-            let timeout_ms = 1_000_u64;
-            Some(RemoteSessionbandAlphaConfig {
-                url,
-                token: alpha_bearer_token_named("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN"),
-                timeout_ms,
-            })
-        })
-        .as_ref()
 }
 
 fn local_endgame_alpha_policy(cfg: &EndgameExecutionConfig) -> EndgameAlphaPolicy {
@@ -27369,169 +26775,7 @@ fn mm_sport_depth_skip_alpha_enabled() -> bool {
     false
 }
 
-fn remote_alpha_http_client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
-}
-
-fn remote_alpha_failover_url(url: &str) -> Option<String> {
-    let mut parsed = reqwest::Url::parse(url).ok()?;
-    if !parsed
-        .host_str()
-        .map(|host| host.eq_ignore_ascii_case(REMOTE_ALPHA_PRIMARY_HOST))
-        .unwrap_or(false)
-    {
-        return None;
-    }
-    parsed.set_host(Some(REMOTE_ALPHA_FALLBACK_HOST)).ok()?;
-    Some(parsed.to_string())
-}
-
-fn remote_alpha_should_failover_status(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::REQUEST_TIMEOUT
-        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error()
-}
-
-fn should_failover_remote_alpha_error(err: &anyhow::Error) -> bool {
-    err.chain().any(|cause| {
-        if let Some(req_err) = cause.downcast_ref::<reqwest::Error>() {
-            return req_err.is_timeout() || req_err.is_connect() || req_err.is_request();
-        }
-        if let Some(io_err) = cause.downcast_ref::<std::io::Error>() {
-            return matches!(
-                io_err.kind(),
-                std::io::ErrorKind::TimedOut
-                    | std::io::ErrorKind::ConnectionRefused
-                    | std::io::ErrorKind::ConnectionAborted
-                    | std::io::ErrorKind::ConnectionReset
-                    | std::io::ErrorKind::NotConnected
-                    | std::io::ErrorKind::BrokenPipe
-            );
-        }
-        false
-    })
-}
-
-async fn send_remote_json_post_once<T: Serialize + ?Sized>(
-    url: &str,
-    timeout_ms: u64,
-    token: Option<&str>,
-    wallet_header: Option<&str>,
-    payload: &T,
-) -> Result<(reqwest::StatusCode, String)> {
-    let mut request = remote_alpha_http_client()
-        .post(url)
-        .timeout(Duration::from_millis(timeout_ms))
-        .json(payload);
-    let token_owned = token
-        .map(str::to_string)
-        .or_else(|| env_nonempty_named("EVPOLY_ALPHA_KEY"));
-    if let Some(token) = token_owned
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        request = request.bearer_auth(token);
-    }
-    let wallet_header_value = wallet_header
-        .map(str::to_string)
-        .or_else(|| env_nonempty_named("POLY_FUNDER_WALLET_ADDRESS"))
-        .or_else(|| env_nonempty_named("POLY_DEPOSIT_WALLET_ADDRESS"))
-        .or_else(|| env_nonempty_named("POLY_PROXY_WALLET_ADDRESS"));
-    if let Some(wallet) = wallet_header_value.as_deref() {
-        request = request.header("x-wallet-address", wallet);
-    }
-    let response = request
-        .send()
-        .await
-        .with_context(|| format!("failed to send remote request to {}", url))?;
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .with_context(|| format!("failed to read remote response body from {}", url))?;
-    Ok((status, body))
-}
-
-async fn send_remote_json_post_with_alpha_failover<T: Serialize + ?Sized>(
-    url: &str,
-    timeout_ms: u64,
-    token: Option<&str>,
-    wallet_header: Option<&str>,
-    payload: &T,
-    route_label: &str,
-) -> Result<(reqwest::StatusCode, String)> {
-    let fallback_url = remote_alpha_failover_url(url);
-    let primary_outcome =
-        send_remote_json_post_once(url, timeout_ms, token, wallet_header, payload).await;
-    match primary_outcome {
-        Ok((status, body)) => {
-            if remote_alpha_should_failover_status(status) {
-                if let Some(fallback) = fallback_url.as_deref() {
-                    warn!(
-                        "Remote {} primary returned status={} url={} -> retrying fallback={}",
-                        route_label,
-                        status.as_u16(),
-                        url,
-                        fallback
-                    );
-                    return send_remote_json_post_once(
-                        fallback,
-                        timeout_ms,
-                        token,
-                        wallet_header,
-                        payload,
-                    )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "remote {} fallback request failed after primary status={}",
-                            route_label,
-                            status.as_u16()
-                        )
-                    });
-                }
-            }
-            Ok((status, body))
-        }
-        Err(primary_err) => {
-            if let Some(fallback) = fallback_url.as_deref() {
-                if should_failover_remote_alpha_error(&primary_err) {
-                    warn!(
-                        "Remote {} primary transport failed url={} -> retrying fallback={} err={}",
-                        route_label, url, fallback, primary_err
-                    );
-                    return send_remote_json_post_once(
-                        fallback,
-                        timeout_ms,
-                        token,
-                        wallet_header,
-                        payload,
-                    )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "remote {} fallback request failed after primary transport error: {}",
-                            route_label, primary_err
-                        )
-                    });
-                }
-            }
-            Err(primary_err)
-        }
-    }
-}
-
-fn evcurve_hold_side_from_text(value: &str) -> Option<evcurve::HoldSide> {
-    match value.trim().to_ascii_uppercase().as_str() {
-        "UP" => Some(evcurve::HoldSide::Up),
-        "DOWN" => Some(evcurve::HoldSide::Down),
-        _ => None,
-    }
-}
-
-fn evcurve_remote_skip_decision(
+fn evcurve_retired_skip_decision(
     reason: &str,
     tau_sec: i64,
     base_mid: f64,
@@ -27568,378 +26812,41 @@ fn evcurve_remote_skip_decision(
     }
 }
 
-fn remote_evcurve_decision_from_payload(
-    payload: RemoteEvcurveAlphaDecisionPayload,
-) -> Result<evcurve::EvcurveDecision> {
-    let hold_side = evcurve_hold_side_from_text(payload.hold_side.as_str()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "remote evcurve response contained invalid hold_side={}",
-            payload.hold_side
-        )
-    })?;
-    validate_finite_field("remote evcurve tau_sec", payload.tau_sec as f64)?;
-    validate_price_field("remote evcurve base_mid", payload.base_mid)?;
-    validate_price_field("remote evcurve current_mid", payload.current_mid)?;
-    validate_finite_field("remote evcurve lead_pct", payload.lead_pct)?;
-    validate_optional_probability_field("remote evcurve p_flip", payload.p_flip)?;
-    validate_optional_probability_field("remote evcurve p_hold", payload.p_hold)?;
-    validate_optional_price_field("remote evcurve max_buy_hold", payload.max_buy_hold)?;
-    validate_optional_price_field("remote evcurve ask_up", payload.ask_up)?;
-    validate_optional_price_field("remote evcurve ask_down", payload.ask_down)?;
-    validate_optional_price_field("remote evcurve chosen_ask", payload.chosen_ask)?;
-    Ok(evcurve::EvcurveDecision {
-        should_buy: payload.should_buy,
-        skip_reason: payload.skip_reason,
-        hold_side,
-        group_key: payload.group_key,
-        tau_sec: payload.tau_sec,
-        base_mid: payload.base_mid,
-        current_mid: payload.current_mid,
-        lead_pct: payload.lead_pct,
-        lead_bin_idx: payload.lead_bin_idx,
-        flips: payload.flips,
-        n: payload.n,
-        p_flip: payload.p_flip,
-        p_hold: payload.p_hold,
-        max_buy_hold: payload.max_buy_hold,
-        ask_up: payload.ask_up,
-        ask_down: payload.ask_down,
-        chosen_ask: payload.chosen_ask,
-        tau_low_sec: payload.tau_low_sec,
-        tau_high_sec: payload.tau_high_sec,
-    })
-}
-
-fn validate_finite_field(name: &str, value: f64) -> Result<()> {
-    if !value.is_finite() {
-        anyhow::bail!("{} must be finite", name);
-    }
-    Ok(())
-}
-
-fn validate_price_field(name: &str, value: f64) -> Result<()> {
-    validate_finite_field(name, value)?;
-    if !(0.0..=1.0).contains(&value) {
-        anyhow::bail!("{} must be in [0, 1], got {}", name, value);
-    }
-    Ok(())
-}
-
-fn validate_optional_price_field(name: &str, value: Option<f64>) -> Result<()> {
-    if let Some(value) = value {
-        validate_price_field(name, value)?;
-    }
-    Ok(())
-}
-
-fn validate_optional_probability_field(name: &str, value: Option<f64>) -> Result<()> {
-    validate_optional_price_field(name, value)
-}
-
-fn remote_evcurve_candidate_from_payload(
-    payload: RemoteEvcurveAlphaCandidatePayload,
-) -> Result<evcurve::EvcurveDecisionCandidate> {
-    Ok(evcurve::EvcurveDecisionCandidate {
-        sub_strategy: payload.sub_strategy,
-        score: payload.score,
-        p_flip_market: payload.p_flip_market,
-        gap_abs: payload.gap_abs,
-        decision: remote_evcurve_decision_from_payload(payload.decision)?,
-    })
-}
-
-async fn fetch_remote_evcurve_decision(
-    cfg: &RemoteEvcurveAlphaConfig,
-    timeframe: Timeframe,
-    symbol: &str,
-    period_open_ts: i64,
-    tau_sec: i64,
-    base_mid: f64,
-    current_mid: f64,
-    ask_up: Option<f64>,
-    ask_down: Option<f64>,
-) -> Result<evcurve::EvcurveDecision> {
-    let payload = RemoteEvcurveAlphaRequest {
-        symbol: normalize_market_symbol(symbol),
-        timeframe: timeframe.as_str().to_string(),
-        period_open_ts,
-        tau_sec,
-        base_mid,
-        current_mid,
-        ask_up,
-        ask_down,
-        d1_zero_rule_already_fired: false,
-        d1_ev_rule_already_fired: false,
-        builder_code: official_builder_code_for_alpha(),
-    };
-    let (status, body) = send_remote_json_post_with_alpha_failover(
-        cfg.url.as_str(),
-        cfg.timeout_ms,
-        cfg.token.as_deref(),
-        None,
-        &payload,
-        "evcurve_alpha",
-    )
-    .await
-    .context("failed to call remote evcurve alpha service")?;
-    if !status.is_success() {
-        anyhow::bail!(
-            "remote evcurve alpha rejected request (status={} body={})",
-            status.as_u16(),
-            truncate_for_log(body.as_str(), 300)
-        );
-    }
-    let parsed: RemoteEvcurveAlphaResponse =
-        serde_json::from_str(body.as_str()).with_context(|| {
-            format!(
-                "failed to parse remote evcurve alpha response: {}",
-                truncate_for_log(body.as_str(), 300)
-            )
-        })?;
-    if !parsed.ok {
-        anyhow::bail!("remote evcurve alpha returned ok=false");
-    }
-    if parsed.kind != "decision" {
-        anyhow::bail!(
-            "remote evcurve alpha returned unexpected kind={} (expected decision)",
-            parsed.kind
-        );
-    }
-    let decision_payload = parsed
-        .decision
-        .ok_or_else(|| anyhow::anyhow!("remote evcurve alpha response missing decision payload"))?;
-    remote_evcurve_decision_from_payload(decision_payload)
-}
-
-async fn fetch_remote_evcurve_d1_candidates(
-    cfg: &RemoteEvcurveAlphaConfig,
-    symbol: &str,
-    period_open_ts: i64,
-    tau_sec: i64,
-    base_mid: f64,
-    current_mid: f64,
-    ask_up: Option<f64>,
-    ask_down: Option<f64>,
-    d1_zero_rule_already_fired: bool,
-    d1_ev_rule_already_fired: bool,
-) -> Result<Vec<evcurve::EvcurveDecisionCandidate>> {
-    let payload = RemoteEvcurveAlphaRequest {
-        symbol: normalize_market_symbol(symbol),
-        timeframe: Timeframe::D1.as_str().to_string(),
-        period_open_ts,
-        tau_sec,
-        base_mid,
-        current_mid,
-        ask_up,
-        ask_down,
-        d1_zero_rule_already_fired,
-        d1_ev_rule_already_fired,
-        builder_code: official_builder_code_for_alpha(),
-    };
-    let (status, body) = send_remote_json_post_with_alpha_failover(
-        cfg.url.as_str(),
-        cfg.timeout_ms,
-        cfg.token.as_deref(),
-        None,
-        &payload,
-        "evcurve_alpha_d1",
-    )
-    .await
-    .context("failed to call remote evcurve alpha service for D1 candidates")?;
-    if !status.is_success() {
-        anyhow::bail!(
-            "remote evcurve D1 rejected request (status={} body={})",
-            status.as_u16(),
-            truncate_for_log(body.as_str(), 300)
-        );
-    }
-    let parsed: RemoteEvcurveAlphaResponse =
-        serde_json::from_str(body.as_str()).with_context(|| {
-            format!(
-                "failed to parse remote evcurve D1 response: {}",
-                truncate_for_log(body.as_str(), 300)
-            )
-        })?;
-    if !parsed.ok {
-        anyhow::bail!("remote evcurve D1 returned ok=false");
-    }
-    if parsed.kind != "d1_candidates" {
-        anyhow::bail!(
-            "remote evcurve D1 returned unexpected kind={} (expected d1_candidates)",
-            parsed.kind
-        );
-    }
-    let mut out = Vec::with_capacity(parsed.candidates.len());
-    for candidate in parsed.candidates {
-        out.push(remote_evcurve_candidate_from_payload(candidate)?);
-    }
-    Ok(out)
-}
-
-async fn evaluate_evcurve_decision_remote(
-    timeframe: Timeframe,
-    symbol: &str,
-    period_open_ts: i64,
+async fn evaluate_retired_evcurve_decision(
+    _timeframe: Timeframe,
+    _symbol: &str,
+    _period_open_ts: i64,
     tau_sec: i64,
     base_mid: f64,
     current_mid: f64,
     ask_up: Option<f64>,
     ask_down: Option<f64>,
 ) -> evcurve::EvcurveDecision {
-    let Some(cfg) = remote_evcurve_alpha_config() else {
-        warn_remote_alpha_missing_runtime(
-            STRATEGY_ID_EVCURVE_V1,
-            &[
-                "EVPOLY_REMOTE_EVCURVE_ALPHA_URL",
-                "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
-            ],
-            "remote_alpha_not_configured",
-        );
-        return evcurve_remote_skip_decision(
-            "remote_alpha_not_configured",
-            tau_sec,
-            base_mid,
-            current_mid,
-            ask_up,
-            ask_down,
-        );
-    };
-    match fetch_remote_evcurve_decision(
-        cfg,
-        timeframe,
-        symbol,
-        period_open_ts,
+    evcurve_retired_skip_decision(
+        "strategy_retired",
         tau_sec,
         base_mid,
         current_mid,
         ask_up,
         ask_down,
     )
-    .await
-    {
-        Ok(decision) => {
-            log_event(
-                "remote_evcurve_alpha_hit",
-                json!({
-                    "strategy_id": STRATEGY_ID_EVCURVE_V1,
-                    "symbol": symbol,
-                    "timeframe": timeframe.as_str(),
-                    "period_open_ts": period_open_ts,
-                    "tau_sec": tau_sec
-                }),
-            );
-            decision
-        }
-        Err(err) => {
-            warn!(
-                "Remote EVcurve alpha failed symbol={} tf={} period={} tau={} err={}",
-                symbol,
-                timeframe.as_str(),
-                period_open_ts,
-                tau_sec,
-                err
-            );
-            evcurve_remote_skip_decision(
-                "remote_alpha_unavailable",
-                tau_sec,
-                base_mid,
-                current_mid,
-                ask_up,
-                ask_down,
-            )
-        }
-    }
 }
 
-async fn evaluate_evcurve_d1_candidates_remote(
-    symbol: &str,
-    period_open_ts: i64,
-    tau_sec: i64,
-    base_mid: f64,
-    current_mid: f64,
-    ask_up: Option<f64>,
-    ask_down: Option<f64>,
-    d1_zero_rule_already_fired: bool,
-    d1_ev_rule_already_fired: bool,
+async fn evaluate_retired_evcurve_d1_candidates(
+    _symbol: &str,
+    _period_open_ts: i64,
+    _tau_sec: i64,
+    _base_mid: f64,
+    _current_mid: f64,
+    _ask_up: Option<f64>,
+    _ask_down: Option<f64>,
+    _d1_zero_rule_already_fired: bool,
+    _d1_ev_rule_already_fired: bool,
 ) -> Vec<evcurve::EvcurveDecisionCandidate> {
-    let Some(cfg) = remote_evcurve_alpha_config() else {
-        warn_remote_alpha_missing_runtime(
-            STRATEGY_ID_EVCURVE_V1,
-            &[
-                "EVPOLY_REMOTE_EVCURVE_ALPHA_URL",
-                "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
-            ],
-            "remote_alpha_not_configured",
-        );
-        return vec![evcurve::EvcurveDecisionCandidate {
-            sub_strategy: "remote_not_configured".to_string(),
-            score: 0.0,
-            p_flip_market: None,
-            gap_abs: None,
-            decision: evcurve_remote_skip_decision(
-                "remote_alpha_not_configured",
-                tau_sec,
-                base_mid,
-                current_mid,
-                ask_up,
-                ask_down,
-            ),
-        }];
-    };
-
-    match fetch_remote_evcurve_d1_candidates(
-        cfg,
-        symbol,
-        period_open_ts,
-        tau_sec,
-        base_mid,
-        current_mid,
-        ask_up,
-        ask_down,
-        d1_zero_rule_already_fired,
-        d1_ev_rule_already_fired,
-    )
-    .await
-    {
-        Ok(candidates) => {
-            log_event(
-                "remote_evcurve_alpha_hit",
-                json!({
-                    "strategy_id": STRATEGY_ID_EVCURVE_V1,
-                    "symbol": symbol,
-                    "timeframe": Timeframe::D1.as_str(),
-                    "period_open_ts": period_open_ts,
-                    "tau_sec": tau_sec,
-                    "kind": "d1_candidates",
-                    "candidate_count": candidates.len()
-                }),
-            );
-            candidates
-        }
-        Err(err) => {
-            warn!(
-                "Remote EVcurve D1 alpha failed symbol={} period={} tau={} err={}",
-                symbol, period_open_ts, tau_sec, err
-            );
-            vec![evcurve::EvcurveDecisionCandidate {
-                sub_strategy: "remote_unavailable".to_string(),
-                score: 0.0,
-                p_flip_market: None,
-                gap_abs: None,
-                decision: evcurve_remote_skip_decision(
-                    "remote_alpha_unavailable",
-                    tau_sec,
-                    base_mid,
-                    current_mid,
-                    ask_up,
-                    ask_down,
-                ),
-            }]
-        }
-    }
+    Vec::new()
 }
 
-fn sessionband_remote_error_outcome(
+fn sessionband_retired_outcome(
     period_open_ts: i64,
     _tau_sec: i64,
     base_mid: f64,
@@ -27968,379 +26875,23 @@ fn sessionband_remote_error_outcome(
     }
 }
 
-async fn fetch_remote_sessionband_decision(
-    cfg: &RemoteSessionbandAlphaConfig,
-    timeframe: Timeframe,
-    symbol: &str,
+async fn evaluate_retired_sessionband_decision(
+    _symbol: &str,
+    _timeframe: Timeframe,
     period_open_ts: i64,
     tau_sec: i64,
     base_mid: f64,
     current_mid: f64,
-    ask_up: Option<f64>,
-    ask_down: Option<f64>,
-) -> Result<SessionbandDecisionOutcome> {
-    let payload = RemoteSessionbandAlphaRequest {
-        symbol: normalize_market_symbol(symbol),
-        timeframe: timeframe.as_str().to_string(),
-        period_open_ts,
-        tau_sec,
-        base_mid,
-        current_mid,
-        ask_up,
-        ask_down,
-        builder_code: official_builder_code_for_alpha(),
-    };
-    let (status, body) = send_remote_json_post_with_alpha_failover(
-        cfg.url.as_str(),
-        cfg.timeout_ms,
-        cfg.token.as_deref(),
-        None,
-        &payload,
-        "sessionband_alpha",
-    )
-    .await
-    .context("failed to call remote sessionband alpha service")?;
-    if !status.is_success() {
-        anyhow::bail!(
-            "remote sessionband alpha rejected request (status={} body={})",
-            status.as_u16(),
-            truncate_for_log(body.as_str(), 300)
-        );
-    }
-    let parsed: RemoteSessionbandAlphaResponse =
-        serde_json::from_str(body.as_str()).with_context(|| {
-            format!(
-                "failed to parse remote sessionband alpha response: {}",
-                truncate_for_log(body.as_str(), 300)
-            )
-        })?;
-    if !parsed.ok {
-        anyhow::bail!("remote sessionband alpha returned ok=false");
-    }
-    if let Some(resp_symbol) = parsed.result.symbol.as_deref() {
-        if !normalize_market_symbol(resp_symbol)
-            .as_str()
-            .eq_ignore_ascii_case(normalize_market_symbol(symbol).as_str())
-        {
-            anyhow::bail!(
-                "remote sessionband alpha symbol mismatch response={} expected={}",
-                resp_symbol,
-                symbol
-            );
-        }
-    }
-    if let Some(resp_tf) = parsed.result.timeframe.as_deref() {
-        if !resp_tf.trim().eq_ignore_ascii_case(timeframe.as_str()) {
-            anyhow::bail!(
-                "remote sessionband alpha timeframe mismatch response={} expected={}",
-                resp_tf,
-                timeframe.as_str()
-            );
-        }
-    }
-    if let Some(resp_open_ts) = parsed.result.period_open_ts {
-        if resp_open_ts != period_open_ts {
-            anyhow::bail!(
-                "remote sessionband alpha period_open mismatch response={} expected={}",
-                resp_open_ts,
-                period_open_ts
-            );
-        }
-    }
-    if parsed.result.tau_sec != tau_sec {
-        anyhow::bail!(
-            "remote sessionband alpha tau mismatch response={} expected={}",
-            parsed.result.tau_sec,
-            tau_sec
-        );
-    }
-
-    let direction = match parsed.result.direction.trim().to_ascii_uppercase().as_str() {
-        "UP" => Direction::Up,
-        "DOWN" => Direction::Down,
-        other => anyhow::bail!("remote sessionband alpha invalid direction={}", other),
-    };
-
-    Ok(SessionbandDecisionOutcome {
-        source: "remote",
-        lead_pct: parsed.result.lead_pct,
-        direction,
-        session_index: parsed.result.session_index,
-        watch_start_sec: parsed.result.watch_start_sec,
-        tau_trigger_sec: parsed.result.tau_trigger_sec,
-        trigger_rate_pct: parsed.result.trigger_rate_pct,
-        should_buy: parsed.result.should_buy,
-        skip_reason: parsed.result.skip_reason,
-        band_price_min: parsed.result.band_price_min,
-        band_price_max: parsed.result.band_price_max,
-        score_bps: parsed.result.score_bps,
-    })
-}
-
-async fn evaluate_sessionband_decision_remote_or_local(
-    symbol: &str,
-    timeframe: Timeframe,
-    period_open_ts: i64,
-    tau_sec: i64,
-    base_mid: f64,
-    current_mid: f64,
-    ask_up: Option<f64>,
-    ask_down: Option<f64>,
+    _ask_up: Option<f64>,
+    _ask_down: Option<f64>,
 ) -> SessionbandDecisionOutcome {
-    let Some(cfg) = remote_sessionband_alpha_config() else {
-        warn_remote_alpha_missing_runtime(
-            STRATEGY_ID_SESSIONBAND_V1,
-            &[
-                "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
-                "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
-            ],
-            "remote_alpha_not_configured",
-        );
-        return sessionband_remote_error_outcome(
-            period_open_ts,
-            tau_sec,
-            base_mid,
-            current_mid,
-            "remote_alpha_not_configured",
-        );
-    };
-
-    match fetch_remote_sessionband_decision(
-        cfg,
-        timeframe,
-        symbol,
+    sessionband_retired_outcome(
         period_open_ts,
         tau_sec,
         base_mid,
         current_mid,
-        ask_up,
-        ask_down,
+        "strategy_retired",
     )
-    .await
-    {
-        Ok(result) => {
-            log_event(
-                "remote_sessionband_alpha_hit",
-                json!({
-                    "strategy_id": STRATEGY_ID_SESSIONBAND_V1,
-                    "symbol": symbol,
-                    "timeframe": timeframe.as_str(),
-                    "period_open_ts": period_open_ts,
-                    "tau_sec": tau_sec
-                }),
-            );
-            result
-        }
-        Err(err) => {
-            warn!(
-                "Remote SessionBand alpha failed symbol={} tf={} period={} tau={} err={}",
-                symbol,
-                timeframe.as_str(),
-                period_open_ts,
-                tau_sec,
-                err
-            );
-            sessionband_remote_error_outcome(
-                period_open_ts,
-                tau_sec,
-                base_mid,
-                current_mid,
-                "remote_alpha_unavailable",
-            )
-        }
-    }
-}
-
-fn build_allowed_market_slugs_for_timeframe(
-    symbol: &str,
-    timeframe: Timeframe,
-    target_open_ts: u64,
-) -> Vec<(String, u64)> {
-    if timeframe == Timeframe::D1 {
-        let daily = d1_event_slug_candidates(symbol, target_open_ts)
-            .into_iter()
-            .map(|candidate| (candidate.slug, candidate.open_ts))
-            .collect::<Vec<_>>();
-        if !daily.is_empty() {
-            return daily;
-        }
-    }
-    if timeframe == Timeframe::H1 {
-        let strict_match = h1_discovery_strict_match_enabled();
-        let hourly = h1_event_slug_candidates(symbol, target_open_ts)
-            .into_iter()
-            .filter(|candidate| {
-                h1_discovery_candidate_allowed_for_target(
-                    candidate.open_ts,
-                    target_open_ts,
-                    strict_match,
-                )
-            })
-            .map(|candidate| (candidate.slug, candidate.open_ts))
-            .collect::<Vec<_>>();
-        if !hourly.is_empty() {
-            return hourly;
-        }
-    }
-    let mut out = Vec::new();
-    for prefix in market_symbol_slug_prefixes(symbol) {
-        for tf_slug in timeframe_slug_candidates(timeframe) {
-            out.push((
-                format!("{}-updown-{}-{}", prefix, tf_slug, target_open_ts),
-                target_open_ts,
-            ));
-        }
-    }
-    out
-}
-
-fn truncate_for_log(value: &str, max_chars: usize) -> String {
-    let mut iter = value.chars();
-    let truncated: String = iter.by_ref().take(max_chars).collect();
-    if iter.next().is_some() {
-        format!("{}...", truncated)
-    } else {
-        truncated
-    }
-}
-
-fn remote_market_discovery_response_to_discovered(
-    response: RemoteMarketDiscoveryResponse,
-    timeframe: Timeframe,
-    target_open_ts: u64,
-    symbol: &str,
-) -> Result<Option<DiscoveredBtcMarket>> {
-    let (market, matched_open_ts, matched_slug, source): (
-        crate::models::Market,
-        Option<u64>,
-        Option<String>,
-        Option<String>,
-    ) = match response {
-        RemoteMarketDiscoveryResponse::Wrapped {
-            market,
-            matched_open_ts,
-            matched_slug,
-            source,
-        } => (market, matched_open_ts, matched_slug, source),
-        RemoteMarketDiscoveryResponse::Flat(market) => (market, None, None, None),
-    };
-
-    if !market.active || market.closed {
-        return Ok(None);
-    }
-    if market.condition_id.trim().is_empty() {
-        anyhow::bail!("remote discovery returned empty condition_id");
-    }
-    let matched_open_ts = matched_open_ts.unwrap_or(target_open_ts);
-    let matched_slug = matched_slug
-        .map(|slug| slug.trim().to_string())
-        .filter(|slug| !slug.is_empty())
-        .unwrap_or_else(|| market.slug.trim().to_string());
-    if matched_slug.is_empty() {
-        anyhow::bail!("remote discovery returned empty slug");
-    }
-    if !market
-        .slug
-        .trim()
-        .eq_ignore_ascii_case(matched_slug.as_str())
-    {
-        anyhow::bail!(
-            "remote discovery slug mismatch response_slug={} matched_slug={}",
-            market.slug,
-            matched_slug
-        );
-    }
-
-    let allowed = build_allowed_market_slugs_for_timeframe(symbol, timeframe, target_open_ts);
-    if !allowed.iter().any(|(allowed_slug, allowed_open_ts)| {
-        *allowed_open_ts == matched_open_ts
-            && allowed_slug.eq_ignore_ascii_case(matched_slug.as_str())
-    }) {
-        anyhow::bail!(
-            "remote discovery returned disallowed market tf={} symbol={} target_open_ts={} matched_open_ts={} matched_slug={} expected_count={}",
-            timeframe.as_str(),
-            symbol,
-            target_open_ts,
-            matched_open_ts,
-            matched_slug,
-            allowed.len()
-        );
-    }
-
-    if let Some(source_text) = source.as_deref() {
-        log_event(
-            "remote_market_discovery_hit",
-            json!({
-                "timeframe": timeframe.as_str(),
-                "symbol": symbol,
-                "target_open_ts": target_open_ts,
-                "matched_open_ts": matched_open_ts,
-                "matched_slug": matched_slug,
-                "condition_id": market.condition_id,
-                "source": source_text
-            }),
-        );
-    }
-
-    Ok(Some(DiscoveredBtcMarket {
-        market,
-        matched_open_ts,
-        matched_slug,
-        source: "remote",
-    }))
-}
-
-async fn discover_market_for_timeframe_once_remote(
-    timeframe: Timeframe,
-    target_open_ts: u64,
-    symbol: &str,
-) -> Result<Option<DiscoveredBtcMarket>> {
-    let Some(cfg) = remote_market_discovery_config() else {
-        return Ok(None);
-    };
-    let payload = RemoteMarketDiscoveryRequest {
-        symbol: symbol.to_string(),
-        timeframe: timeframe.as_str().to_string(),
-        target_open_ts,
-        builder_code: official_builder_code_for_alpha(),
-    };
-    let (status, body) = send_remote_json_post_with_alpha_failover(
-        cfg.url.as_str(),
-        cfg.timeout_ms,
-        cfg.token.as_deref(),
-        None,
-        &payload,
-        "market_discovery",
-    )
-    .await
-    .context("failed to call remote market discovery service")?;
-    if status == reqwest::StatusCode::NO_CONTENT || status == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    if !status.is_success() {
-        anyhow::bail!(
-            "remote market discovery rejected request (status={} body={})",
-            status.as_u16(),
-            truncate_for_log(body.as_str(), 300)
-        );
-    }
-    if body.trim().is_empty() {
-        return Ok(None);
-    }
-    let parsed: RemoteMarketDiscoveryResponse =
-        serde_json::from_str(body.as_str()).with_context(|| {
-            format!(
-                "failed to parse remote market discovery response: {}",
-                truncate_for_log(body.as_str(), 300)
-            )
-        })?;
-    remote_market_discovery_response_to_discovered(parsed, timeframe, target_open_ts, symbol)
-}
-
-fn remote_market_discovery_allow_local_fallback() -> bool {
-    remote_market_discovery_config()
-        .map(|cfg| cfg.allow_local_fallback)
-        .unwrap_or(true)
 }
 
 #[derive(Debug, Clone)]
@@ -28587,30 +27138,6 @@ async fn discover_market_for_timeframe_once(
         (target_open_ts / period_secs) * period_secs
     };
 
-    if remote_market_discovery_config().is_some() {
-        match discover_market_for_timeframe_once_remote(timeframe, target_open_ts, symbol_label)
-            .await
-        {
-            Ok(Some(discovered)) => return Some(discovered),
-            Ok(None) => {
-                if !remote_market_discovery_allow_local_fallback() {
-                    return None;
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "Remote market discovery failed tf={} symbol={} target_open_ts={} err={}",
-                    timeframe.as_str(),
-                    symbol_label,
-                    target_open_ts,
-                    e
-                );
-                if !remote_market_discovery_allow_local_fallback() {
-                    return None;
-                }
-            }
-        }
-    }
     discover_market_for_timeframe_once_local(api, timeframe, target_open_ts, symbol_label).await
 }
 
@@ -29634,36 +28161,6 @@ mod tests {
             || {
                 assert_eq!(admin_api_bind(), "127.0.0.1:9787");
             },
-        );
-    }
-
-    #[test]
-    fn remote_alpha_defaults_match_current_routes() {
-        let expected = [
-            (
-                "EVPOLY_REMOTE_MARKET_DISCOVERY_URL",
-                "https://alpha.evplus.ai/v1/discovery/timeframe",
-            ),
-            (
-                "EVPOLY_REMOTE_ENDGAME_ALPHA_URL",
-                "https://alpha.evplus.ai/v1/alpha/endgame/policy",
-            ),
-            (
-                "EVPOLY_REMOTE_EVCURVE_ALPHA_URL",
-                "https://alpha.evplus.ai/v1/alpha/evcurve",
-            ),
-            (
-                "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
-                "https://alpha.evplus.ai/v1/alpha/sessionband",
-            ),
-        ];
-
-        for (key, url) in expected {
-            assert_eq!(remote_url_default_named(key), Some(url), "{key}");
-        }
-        assert_eq!(
-            remote_url_default_named("EVPOLY_REMOTE_MM_SPORT_DEPTH_SKIP_ALPHA_URL"),
-            None
         );
     }
 

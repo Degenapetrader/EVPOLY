@@ -253,7 +253,7 @@ impl EndgameExecutionConfig {
                 .unwrap_or_default();
 
         Self {
-            enable: env_bool_named("EVPOLY_STRATEGY_ENDGAME_ENABLE").unwrap_or(true),
+            enable: false,
             poll_interval_ms: env_u64_any(&["EVPOLY_ENDGAME_POLL_MS".to_string()])
                 .unwrap_or(500)
                 .max(20),
@@ -930,6 +930,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn retired_configs_ignore_legacy_enable_overrides() {
+        with_env(
+            &[
+                ("EVPOLY_STRATEGY_ENDGAME_ENABLE", Some("true")),
+                ("EVPOLY_STRATEGY_EVCURVE_ENABLE", Some("true")),
+            ],
+            || {
+                assert!(!EndgameExecutionConfig::from_env().enable);
+                assert!(!crate::evcurve::EvcurveExecutionConfig::from_env().enable);
+            },
+        );
     }
 
     #[test]

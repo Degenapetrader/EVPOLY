@@ -16,6 +16,17 @@ pub const STRATEGY_ID_LEGACY_DEFAULT: &str = "legacy_default";
 pub const DEFAULT_MARKET_KEY: &str = "btc";
 pub const DEFAULT_ASSET_SYMBOL: &str = "BTC";
 
+/// Retired strategies cannot be restored by a saved profile or environment override.
+pub fn ensure_strategy_entry_enabled(strategy_id: &str) -> anyhow::Result<()> {
+    if matches!(
+        strategy_id.trim(),
+        STRATEGY_ID_ENDGAME_SWEEP_V1 | STRATEGY_ID_EVCURVE_V1 | STRATEGY_ID_SESSIONBAND_V1
+    ) {
+        anyhow::bail!("strategy_retired: {}", strategy_id);
+    }
+    Ok(())
+}
+
 pub fn default_strategy_id() -> String {
     STRATEGY_ID_LEGACY_DEFAULT.to_string()
 }
@@ -508,5 +519,28 @@ mod tests {
                 .asset_symbol,
             "ETH"
         );
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    #[test]
+    fn retired_entries_are_blocked_but_active_strategies_remain_available() {
+        for id in [
+            STRATEGY_ID_ENDGAME_SWEEP_V1,
+            STRATEGY_ID_EVCURVE_V1,
+            STRATEGY_ID_SESSIONBAND_V1,
+        ] {
+            assert!(ensure_strategy_entry_enabled(id).is_err());
+        }
+        for id in [
+            STRATEGY_ID_PREMARKET_V1,
+            STRATEGY_ID_EVSNIPE_V1,
+            STRATEGY_ID_MM_SPORT_V1,
+            STRATEGY_ID_LEGACY_DEFAULT,
+        ] {
+            assert!(ensure_strategy_entry_enabled(id).is_ok());
+        }
     }
 }

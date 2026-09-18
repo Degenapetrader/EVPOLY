@@ -8,18 +8,19 @@
 [advisories]
 informational_warnings = ["unmaintained", "unsound", "notice"]
 ignore = [
-  # expires: 2026-07-31 id: RUSTSEC-2026-0037 reason: quinn-proto is present in Cargo.lock; cargo tree -i quinn-proto --target all reports no active dependency path.
-  "RUSTSEC-2026-0037",
-  # expires: 2026-07-31 id: RUSTSEC-2025-0012 reason: transitive in polymarket-client-sdk; awaiting upstream migration off backoff.
+  # Reviewed 2026-09-18; see docs/security-release-2.6.3.md for dependency paths and reachability.
+  # expires: 2026-10-31 id: RUSTSEC-2025-0012 reason: unmaintained SDK backoff; migration would change retry behavior; no vulnerability reported.
   "RUSTSEC-2025-0012",
-  # expires: 2026-07-31 id: RUSTSEC-2024-0384 reason: transitive via backoff in polymarket-client-sdk.
+  # expires: 2026-10-31 id: RUSTSEC-2024-0384 reason: unmaintained clock dependency via SDK backoff; no vulnerability reported.
   "RUSTSEC-2024-0384",
-  # expires: 2026-07-31 id: RUSTSEC-2024-0436 reason: proc-macro dependency via alloy stack; runtime impact is low.
+  # expires: 2026-10-31 id: RUSTSEC-2024-0436 reason: unmaintained compile-time macro dependency via Alloy; no runtime dependency.
   "RUSTSEC-2024-0436",
-  # expires: 2026-07-31 id: RUSTSEC-2026-0173 reason: proc-macro dependency via alloy stack; runtime impact is low.
+  # expires: 2026-10-31 id: RUSTSEC-2026-0173 reason: unmaintained compile-time macro error handling via Alloy; no runtime dependency.
   "RUSTSEC-2026-0173",
-  # expires: 2026-07-31 id: RUSTSEC-2024-0388 reason: lockfile-only advisory in current build graph; no reachable path from active target/features.
+  # expires: 2026-10-31 id: RUSTSEC-2024-0388 reason: lockfile-only unmaintained macro; cargo tree --target all reports no active dependency path.
   "RUSTSEC-2024-0388",
+  # expires: 2026-10-31 id: RUSTSEC-2026-0253 reason: Alloy uses only u64/B256 LRU keys without Drop; the advisory requires a panicking key Drop during pop and subsequent cache reuse.
+  "RUSTSEC-2026-0253",
 ]
 
 [output]

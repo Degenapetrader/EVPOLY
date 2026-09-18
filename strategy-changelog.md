@@ -1,7 +1,13 @@
 # Strategy Changelog
 
 This file documents EVPoly strategy architecture, decision flow, and change history.
-When strategy logic/config is changed, add a new dated entry under `## Change Log`.
+When strategy logic/config is changed, add a new dated entry under `## Change Log
+
+### 2026-09-18 — v2.6.3 local operation and strategy retirement
+- Premarket/shared timeframe discovery now queries Polymarket directly for all supported symbols/timeframes (`src/main.rs`); remove Alpha 1/2 discovery and decision clients and automatic onboarding. Existing local ladders and Hit-only EVSnipe are preserved.
+- Endgame/EVCurve are permanently disabled in runtime config, admin status, and entry submission; saved env flags cannot restore them. SessionBand stays disabled. Existing positions retain close/redeem handling.
+- Proxy/Safe wallet operations use user-owned Polymarket relayer API credentials; remove EVPOLY AWS signer fallback. Builder attribution and license remain unchanged.
+`.
 
 Current operator-facing behavior is summarized in `README.md` and `docs/*.md`.
 This file is append-heavy history plus high-level architecture notes.

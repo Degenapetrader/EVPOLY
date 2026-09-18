@@ -1,7 +1,6 @@
 use crate::event_log::log_event;
 use crate::models::*;
 use crate::polymarket_ws::{SharedPolymarketWsState, WsOrderStatusSnapshot, WsTradeSnapshot};
-use crate::security::env_truthy;
 use anyhow::{Context, Result};
 use base64;
 use base64::engine::general_purpose::URL_SAFE;
@@ -8845,7 +8844,7 @@ impl PolymarketApi {
             .send()
             .await
             .context(format!(
-                "Failed to send {} request to relayer with RELAYER_API_KEY fallback",
+                "Failed to send {} request to relayer with user RELAYER_API_KEY",
                 context_label
             ))?;
         let status = response.status();
@@ -9311,6 +9310,54 @@ fn reward_rate_from_gamma_row(row: &Value) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn relayer_submit_keeps_local_payload_and_uses_only_user_api_credentials() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/submit", listener.local_addr().unwrap());
+        let body = r#"{"type":"SAFE","signature":"local-signature","nonce":"7"}"#;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut buf = [0u8; 2048];
+                let n = socket.read(&mut buf).await.unwrap();
+                assert!(n > 0);
+                request.extend_from_slice(&buf[..n]);
+                if request.ends_with(body.as_bytes()) {
+                    break;
+                }
+            }
+            let request = String::from_utf8(request).unwrap();
+            let headers = request
+                .split("\r\n\r\n")
+                .next()
+                .unwrap()
+                .to_ascii_lowercase();
+            assert!(headers.starts_with("post /submit "));
+            assert!(headers.contains("relayer_api_key: user-key"));
+            assert!(headers
+                .contains("relayer_api_key_address: 0x1111111111111111111111111111111111111111"));
+            assert!(!headers.contains("poly_builder_"));
+            assert_eq!(request.split("\r\n\r\n").nth(1), Some(body));
+            socket.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 6\r\nConnection: close\r\n\r\ndenied").await.unwrap();
+        });
+        let api = deposit_wallet_test_api();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            api.submit_relayer_redeem_request_with_api_key(
+                &url,
+                body,
+                "test",
+                "user-key",
+                "0x1111111111111111111111111111111111111111",
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result.unwrap_err().to_string().contains("403"));
+        server.await.unwrap();
+    }
     use alloy::dyn_abi::Eip712Domain;
     use alloy::primitives::Signature;
     use polymarket_client_sdk_v2::auth::Uuid;

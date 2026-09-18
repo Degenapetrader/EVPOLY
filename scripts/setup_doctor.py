@@ -62,7 +62,7 @@ def _parse_signature_type(raw: str) -> int:
         value = int((raw or "").strip())
     except Exception:
         return 0
-    return value if value in (0, 1, 2) else 0
+    return value if value in (0, 1, 2, 3) else 0
 
 
 def _parse_env_bool(raw: str, default: bool) -> bool:
@@ -89,6 +89,7 @@ def _collect_audit(env_path: Path) -> Dict[str, Any]:
     private_key = _env_value(env_path, "POLY_PRIVATE_KEY")
     signature_type = _parse_signature_type(_env_value(env_path, "POLY_SIGNATURE_TYPE"))
     proxy_wallet = _env_value(env_path, "POLY_PROXY_WALLET_ADDRESS")
+    deposit_wallet = _env_value(env_path, "POLY_DEPOSIT_WALLET_ADDRESS")
     relayer_key = _env_value(env_path, "RELAYER_API_KEY")
     relayer_address = _env_value(env_path, "RELAYER_API_KEY_ADDRESS")
 
@@ -127,6 +128,11 @@ def _collect_audit(env_path: Path) -> Dict[str, Any]:
         )
         blocking_missing_labels.append("Proxy Wallet")
         manual_missing_labels.append("Proxy Wallet")
+
+    if signature_type == 3 and not deposit_wallet:
+        items.append(_status_item("POLY_DEPOSIT_WALLET_ADDRESS", "Deposit Wallet", "missing_user", "Deposit mode requires POLY_DEPOSIT_WALLET_ADDRESS in .env."))
+        blocking_missing_labels.append("Deposit Wallet")
+        manual_missing_labels.append("Deposit Wallet")
 
     if signature_type in (1, 2) and not relayer_key:
         items.append(

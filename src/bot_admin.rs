@@ -18,8 +18,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -1273,23 +1272,6 @@ fn persist_env_value(env_file: &str, key: &str, value: &str) -> Result<()> {
         .with_context(|| format!("failed to harden env file permissions {}", path.display()))?;
 
     Ok(())
-}
-
-fn truncate_for_response(raw: &str, max_chars: usize) -> String {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return String::new();
-    }
-    let count = trimmed.chars().count();
-    if count <= max_chars {
-        return trimmed.to_string();
-    }
-    let prefix = trimmed.chars().take(max_chars).collect::<String>();
-    format!("{}...(truncated {} chars)", prefix, count - max_chars)
-}
-
-fn is_valid_signature_type(value: u8) -> bool {
-    matches!(value, 0 | 1 | 2)
 }
 
 fn pick_specs_for_scope<'a>(

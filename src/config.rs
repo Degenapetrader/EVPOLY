@@ -933,6 +933,20 @@ mod tests {
     }
 
     #[test]
+    fn retired_configs_ignore_legacy_enable_overrides() {
+        with_env(
+            &[
+                ("EVPOLY_STRATEGY_ENDGAME_ENABLE", Some("true")),
+                ("EVPOLY_STRATEGY_EVCURVE_ENABLE", Some("true")),
+            ],
+            || {
+                assert!(!EndgameExecutionConfig::from_env().enable);
+                assert!(!crate::evcurve::EvcurveExecutionConfig::from_env().enable);
+            },
+        );
+    }
+
+    #[test]
     fn endgame_execution_size_mode_is_hardcoded_to_shares() {
         with_env(
             &[("EVPOLY_ENDGAME_EXECUTION_SIZE_MODE", Some("usd"))],

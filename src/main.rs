@@ -71,7 +71,7 @@ use polymarket_arbitrage_bot::plandaily_tables::PlanDailyTables;
 use polymarket_arbitrage_bot::polymarket_ws::{
     self, new_shared_polymarket_ws_state, PolymarketWsConfig,
 };
-use polymarket_arbitrage_bot::security::{constant_time_eq, env_truthy, write_secret_file};
+use polymarket_arbitrage_bot::security::constant_time_eq;
 use polymarket_arbitrage_bot::sessionband;
 use polymarket_arbitrage_bot::signal_state::new_shared_signal_state;
 use polymarket_arbitrage_bot::size_policy;
@@ -23958,7 +23958,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    if !is_simulation && api.ws_enabled() && false {
+    if !is_simulation && api.ws_enabled() && evcurve_strategy_enabled {
         let trader_evcurve_fill = trader_clone.clone();
         let polymarket_ws_evcurve_fill = polymarket_ws_state.clone();
         let evcurve_fill_fallback_poll_ms = std::env::var("EVPOLY_EVCURVE_FILL_FALLBACK_POLL_MS")
@@ -26892,49 +26892,6 @@ async fn evaluate_retired_sessionband_decision(
         current_mid,
         "strategy_retired",
     )
-}
-
-fn build_allowed_market_slugs_for_timeframe(
-    symbol: &str,
-    timeframe: Timeframe,
-    target_open_ts: u64,
-) -> Vec<(String, u64)> {
-    if timeframe == Timeframe::D1 {
-        let daily = d1_event_slug_candidates(symbol, target_open_ts)
-            .into_iter()
-            .map(|candidate| (candidate.slug, candidate.open_ts))
-            .collect::<Vec<_>>();
-        if !daily.is_empty() {
-            return daily;
-        }
-    }
-    if timeframe == Timeframe::H1 {
-        let strict_match = h1_discovery_strict_match_enabled();
-        let hourly = h1_event_slug_candidates(symbol, target_open_ts)
-            .into_iter()
-            .filter(|candidate| {
-                h1_discovery_candidate_allowed_for_target(
-                    candidate.open_ts,
-                    target_open_ts,
-                    strict_match,
-                )
-            })
-            .map(|candidate| (candidate.slug, candidate.open_ts))
-            .collect::<Vec<_>>();
-        if !hourly.is_empty() {
-            return hourly;
-        }
-    }
-    let mut out = Vec::new();
-    for prefix in market_symbol_slug_prefixes(symbol) {
-        for tf_slug in timeframe_slug_candidates(timeframe) {
-            out.push((
-                format!("{}-updown-{}-{}", prefix, tf_slug, target_open_ts),
-                target_open_ts,
-            ));
-        }
-    }
-    out
 }
 
 #[derive(Debug, Clone)]

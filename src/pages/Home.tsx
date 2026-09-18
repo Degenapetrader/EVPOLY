@@ -186,7 +186,7 @@ function strategyKeyFromRoute(strategySlug?: string): StrategyKey | null {
 }
 
 const WEEKEND_POLICY_TOOLTIP_PAUSE =
-  "Stops new weekend entries for Premarket, Endgame, and EVCurve.";
+  "Stops new weekend entries for Premarket.";
 const WEEKEND_POLICY_TOOLTIP_OFF =
   "Premarket, Endgame, and EVCurve keep trading on weekends.";
 
@@ -1225,20 +1225,6 @@ export function Home() {
       }
       banner={
         <div className="space-y-3">
-          {!selectedStrategyMeta ? (
-            <div className="rounded-[8px] border border-[#24496e] bg-[#102136] px-5 py-4 text-[18px] text-[var(--text-primary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-              <strong className="font-semibold">Builder fees apply to all trades:</strong>{" "}
-              <span className="text-[#9fc7ff]">0.1%</span>{" "}
-              <span className="text-[var(--text-secondary)]">on both taker and maker fills.</span>
-            </div>
-          ) : null}
-          <div className="degraded-strategy-banner">
-            <div className="degraded-strategy-banner__title">Degraded Strategy</div>
-            <div className="degraded-strategy-banner__body">
-              Up/Down manipulation is degrading performance of Endgame. Consider turning off or
-              reducing size.
-            </div>
-          </div>
           {pendingResumeOffer && !botRunning ? (
             <div className="surface-panel">
               <div className="surface-panel__body flex flex-wrap items-center justify-between gap-3 pt-[var(--space-5)]">

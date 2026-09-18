@@ -1,0 +1,106 @@
+name: Sign locally built release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version already built and verified locally
+        required: true
+        default: "2.6.3"
+      manifest_sha256:
+        description: SHA-256 of the pre-staged signing-request.json
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: evpoly-local-release-signing
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    runs-on: [self-hosted, linux, x64, evpoly-release-signing]
+    timeout-minutes: 10
+    steps:
+      - name: Verify artifact hashes, sign, and verify existing updater trust
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+
+          # Matches the public key already trusted by installed Desktop/Linux apps.
+          TRUSTED_KEY = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhEREEyMDUzNTkyQzAxMTcKUldRWEFTeFpVeURhamVrSWVIblFOcGNXR3JkaitqenV4Z09wWFNDMUYvcUFhcWlnQ2FCNndJcmYK"
+
+          def digest(path):
+              with path.open("rb") as stream:
+                  return hashlib.file_digest(stream, "sha256").hexdigest()
+
+          def verify_request(root, version, manifest_hash):
+              if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+                  raise ValueError("Invalid version")
+              if not re.fullmatch(r"[0-9a-f]{64}", manifest_hash):
+                  raise ValueError("Invalid manifest digest")
+              manifest = root / "signing-request.json"
+              if manifest.is_symlink() or digest(manifest) != manifest_hash:
+                  raise ValueError("Manifest digest mismatch")
+              request = json.loads(manifest.read_text())
+              expected = {
+                  f"EVPoly_{version}_x64-setup.exe",
+                  f"EVPoly_{version}_amd64.AppImage",
+                  f"EVPoly_{version}_amd64.deb",
+              }
+              files = request["files"]
+              if request["version"] != version or len(files) != 3:
+                  raise ValueError("Unexpected release request")
+              if {entry["name"] for entry in files} != expected:
+                  raise ValueError("Unexpected artifact names")
+              for entry in files:
+                  path = root / entry["name"]
+                  if path.is_symlink() or not path.is_file():
+                      raise ValueError("Artifact must be a regular file")
+                  if digest(path) != entry["sha256"]:
+                      raise ValueError("Artifact digest mismatch")
+              return files
+
+          def main():
+              source = Path("/release-inputs")
+              output = Path("/release-output")
+              files = verify_request(source, os.environ["RELEASE_VERSION"], os.environ["MANIFEST_SHA256"])
+              if not os.environ.get("TAURI_SIGNING_PRIVATE_KEY"):
+                  raise ValueError("Existing signing key is unavailable")
+              output.mkdir(exist_ok=True)
+              public_key = base64.b64decode(TRUSTED_KEY).decode().splitlines()[1]
+              for entry in files:
+                  artifact = output / entry["name"]
+                  shutil.copyfile(source / entry["name"], artifact)
+                  result = subprocess.run([
+                      "/opt/node/bin/node", "/opt/tauri/node_modules/@tauri-apps/cli/tauri.js",
+                      "signer", "sign", str(artifact),
+                  ], capture_output=True)
+                  if result.returncode:
+                      raise RuntimeError("Signing failed; secret output suppressed")
+                  signature = Path(str(artifact) + ".sig")
+                  decoded = Path(str(artifact) + ".minisig")
+                  decoded.write_bytes(base64.b64decode(signature.read_bytes(), validate=True))
+                  verified = subprocess.run([
+                      "minisign", "-Vm", str(artifact), "-x", str(decoded), "-P", public_key,
+                  ], capture_output=True)
+                  decoded.unlink()
+                  if verified.returncode or digest(artifact) != entry["sha256"]:
+                      raise RuntimeError("Signature or post-sign artifact verification failed")
+                  print(f"Verified original updater trust: {entry['name']} {entry['sha256']}")
+          if __name__ == "__main__":
+              main()
+          PY

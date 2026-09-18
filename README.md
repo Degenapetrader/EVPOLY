@@ -24,15 +24,15 @@ Licensed under [PolyForm Noncommercial 1.0.0](LICENSE).
 
 ## Strategy Set
 - `premarket_v1`
-- `endgame_sweep_v1`
-- `evcurve_v1`
-- `sessionband_v1` (S-Band)
+- `endgame_sweep_v1` (retired)
+- `evcurve_v1` (retired)
+- `sessionband_v1` (disabled)
 - `evsnipe_v1`
 - `mm_sport_v1` (MM 2.0)
 
 ## Current Default Runtime Profile
-- Strategy toggles default ON: `premarket`, `endgame`, `evcurve`, `sessionband`, `evsnipe`
-- Strategy toggles default OFF: `mm_sport`
+- Strategy toggles default ON: `premarket`, `evsnipe`
+- Strategy toggles default OFF: `mm_sport`; Endgame, EVCurve and SessionBand cannot be enabled
 - Default symbols (`premarket`): `BTC,ETH,SOL,XRP`
 - Default symbols (`evcurve`, `sessionband`): `BTC,ETH,SOL,XRP`
 - Default symbols (`endgame`, `evsnipe`): `BTC,ETH,SOL,XRP,DOGE,BNB,HYPE`
@@ -165,7 +165,7 @@ Runtime-level changes in this branch:
 - Defaults `POLY_CLOB_API_URL` to `https://clob.polymarket.com`; main2 is CLOB V2 only.
 - Uses CLOB V2 order signing through the SDK; V2 signed orders carry `timestamp`, `metadata`, and `builder` through the SDK instead of legacy `nonce`, `feeRateBps`, and `taker` fields.
 - Uses the built-in official builder code for V2 builder attribution. EVPOLY does not send local maker/taker fee bps on orders; Polymarket applies the active builder fee rates attached to that code at match time.
-- Remote submit signing is restricted to non-order relayer flows.
+- Non-order relayer flows use locally signed payloads and user-owned Polymarket relayer API keys.
 - Moves direct collateral contract checks to the pUSD collateral token address and uses the SDK V2 exchange addresses through `exchange_v2` where present.
 - Replaces Gamma offset discovery with `/events/keyset` and `/markets/keyset`, using `after_cursor` / `next_cursor` and local skipping only for callers that still pass a legacy `offset` argument.
 

@@ -77,8 +77,6 @@ sol! {
     }
 }
 
-const RELAYER_SUBMIT_SIGNER_URL_DEFAULT: &str =
-    "https://im23e4zz3k.execute-api.eu-west-1.amazonaws.com/sign/submit";
 const AUTO_REDEEM_OPERATOR_ADDRESS: &str = "0x05cD9922A5d37faE921Fc5Dee280A9dBc4C3b393";
 const POLYMARKET_PUSD_COLLATERAL_ADDRESS: &str = "0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB";
 const USDC_BALANCE_CACHE_HIT_TTL_MS: i64 = 60_000;
@@ -495,26 +493,6 @@ pub struct AutoRedeemApprovalStatus {
     pub ctf_contract: String,
     pub operator: String,
     pub enabled: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct RemoteRelayerSubmitSignerRequest {
-    method: String,
-    path: String,
-    body: String,
-    timestamp: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RemoteRelayerSubmitSignerResponse {
-    #[serde(rename = "poly_builder_api_key")]
-    relayer_api_key: String,
-    #[serde(rename = "poly_builder_timestamp")]
-    relayer_timestamp: String,
-    #[serde(rename = "poly_builder_passphrase")]
-    relayer_passphrase: String,
-    #[serde(rename = "poly_builder_signature")]
-    relayer_signature: String,
 }
 
 impl RewardsMarketEntry {
@@ -1153,33 +1131,6 @@ impl PolymarketApi {
         }
     }
 
-    fn ensure_no_local_relayer_submit_hmac_secrets(&self) -> Result<()> {
-        for key in [
-            "POLY_BUILDER_API_KEY",
-            "POLY_BUILDER_API_SECRET",
-            "POLY_BUILDER_API_PASSPHRASE",
-        ] {
-            if Self::env_nonempty(key).is_some() {
-                anyhow::bail!(
-                    "{} is legacy relayer submit HMAC config and is not supported locally. Use RELAYER_API_KEY or the relayer submit signer token instead.",
-                    key
-                );
-            }
-        }
-        Ok(())
-    }
-
-    fn relayer_submit_signer_token(&self) -> Result<String> {
-        self.ensure_no_local_relayer_submit_hmac_secrets()?;
-        let signer_token = Self::env_nonempty("EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN")
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN is required for relayer submit signer fallback"
-                )
-            })?;
-        Ok(signer_token)
-    }
-
     fn relayer_api_key_primary_credentials(&self) -> Result<Option<(String, String)>> {
         let api_key = Self::env_nonempty("RELAYER_API_KEY");
         let api_key_address = Self::env_nonempty("RELAYER_API_KEY_ADDRESS");
@@ -1196,33 +1147,6 @@ impl PolymarketApi {
                     )
                 })?;
                 Ok(Some((key, format!("{:#x}", parsed))))
-            }
-        }
-    }
-
-    fn relayer_submit_signer_url(&self) -> Result<String> {
-        let configured_url = Self::env_nonempty("EVPOLY_RELAYER_SUBMIT_SIGNER_URL");
-        let url = configured_url
-            .as_deref()
-            .unwrap_or(RELAYER_SUBMIT_SIGNER_URL_DEFAULT);
-        match reqwest::Url::parse(url) {
-            Ok(parsed)
-                if parsed.scheme().eq_ignore_ascii_case("https")
-                    || env_truthy("EVPOLY_ALLOW_INSECURE_REMOTE_URLS", false) =>
-            {
-                Ok(url.to_string())
-            }
-            Ok(_) if configured_url.is_some() => {
-                anyhow::bail!(
-                    "EVPOLY_RELAYER_SUBMIT_SIGNER_URL must use https; set EVPOLY_ALLOW_INSECURE_REMOTE_URLS=true only for local development"
-                )
-            }
-            Err(err) if configured_url.is_some() => {
-                anyhow::bail!("invalid EVPOLY_RELAYER_SUBMIT_SIGNER_URL={}: {}", url, err)
-            }
-            Ok(_) | Err(_) => {
-                warn!("Configured relayer signer default is insecure or invalid; relayer signer fallback is disabled");
-                anyhow::bail!("relayer signer default URL is insecure or invalid")
             }
         }
     }
@@ -1250,81 +1174,6 @@ impl PolymarketApi {
             "none"
         };
         Ok((mode.to_string(), builder_code_configured))
-    }
-
-    async fn request_remote_relayer_submit_headers_via(
-        &self,
-        sign_url: &str,
-        signer_token: Option<&str>,
-        method: &str,
-        path: &str,
-        body: &str,
-    ) -> Result<RemoteRelayerSubmitSignerResponse> {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            .to_string();
-
-        let payload = RemoteRelayerSubmitSignerRequest {
-            method: method.to_ascii_uppercase(),
-            path: path.to_string(),
-            body: body.to_string(),
-            timestamp,
-        };
-        let mut request = self.client.post(sign_url);
-        request = request
-            .header("User-Agent", "polymarket-trading-bot/1.0")
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .json(&payload);
-        if let Some(token) = signer_token {
-            request = request.bearer_auth(token);
-        }
-        let response = request
-            .send()
-            .await
-            .context("Failed to call EVPOLY relayer submit signer")?;
-
-        let status = response.status();
-        let body_text = response
-            .text()
-            .await
-            .context("Failed to read relayer submit signer response")?;
-        if !status.is_success() {
-            anyhow::bail!(
-                "Relayer submit signer rejected request (status {}): {}",
-                status,
-                &body_text[..200.min(body_text.len())]
-            );
-        }
-
-        serde_json::from_str::<RemoteRelayerSubmitSignerResponse>(&body_text)
-            .context("Failed to parse relayer submit signer response")
-    }
-
-    async fn request_remote_relayer_submit_headers(
-        &self,
-        method: &str,
-        path: &str,
-        body: &str,
-    ) -> Result<RemoteRelayerSubmitSignerResponse> {
-        let normalized_method = method.to_ascii_uppercase();
-        match path {
-            "/submit" => {
-                let submit_signer_url = self.relayer_submit_signer_url()?;
-                let submit_token = self.relayer_submit_signer_token()?;
-                self.request_remote_relayer_submit_headers_via(
-                    submit_signer_url.as_str(),
-                    Some(submit_token.as_str()),
-                    normalized_method.as_str(),
-                    path,
-                    body,
-                )
-                .await
-            }
-            _ => anyhow::bail!("Unsupported relayer submit signer path: {}", path),
-        }
     }
 
     fn parse_hex_address(address: &str) -> Result<AlloyAddress> {
@@ -8064,62 +7913,18 @@ impl PolymarketApi {
 
         let body_string = serde_json::to_string(&relayer_request)
             .context("Failed to serialize relayer request")?;
-        let remote_headers = self
-            .request_remote_relayer_submit_headers("POST", "/submit", body_string.as_str())
-            .await?;
-
-        // Send request to relayer
-        let response = self
-            .client
-            .post(RELAYER_SUBMIT)
-            .header("User-Agent", "polymarket-trading-bot/1.0")
-            .header("POLY_BUILDER_API_KEY", &remote_headers.relayer_api_key)
-            .header("POLY_BUILDER_TIMESTAMP", &remote_headers.relayer_timestamp)
-            .header(
-                "POLY_BUILDER_PASSPHRASE",
-                &remote_headers.relayer_passphrase,
+        let (key, address) = self.relayer_api_key_primary_credentials()?.ok_or_else(|| {
+            anyhow::anyhow!("Polymarket relayer API credentials are required for approvals")
+        })?;
+        let response_text = self
+            .submit_relayer_redeem_request_with_api_key(
+                RELAYER_SUBMIT,
+                &body_string,
+                "Trading approval",
+                &key,
+                &address,
             )
-            .header("POLY_BUILDER_SIGNATURE", &remote_headers.relayer_signature)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .body(body_string)
-            .send()
-            .await
-            .context("Failed to send setApprovalForAll request to relayer")?;
-
-        let status = response.status();
-        let response_text = response
-            .text()
-            .await
-            .context("Failed to read relayer response")?;
-
-        if !status.is_success() {
-            let sig_type_hint = if self.signature_type == Some(2) {
-                "\n\n   💡 For signature_type 2 (GNOSIS_SAFE), the relayer expects a Safe transaction format:\n\
-                  - Get nonce from /nonce endpoint\n\
-                  - Derive Safe address from signer\n\
-                  - Build SafeTx struct hash\n\
-                  - Sign and pack signature\n\
-                  - Send: { from, to, proxyWallet, data, nonce, signature, signatureParams, type: \"SAFE\", metadata }\n\
-                  \n\
-                  Consider using signature_type 1 (POLY_PROXY) if possible, or implement the full Safe flow."
-            } else {
-                ""
-            };
-
-            anyhow::bail!(
-                "Relayer rejected setApprovalForAll request (status: {}): {}\n\
-                \n\
-                CTF Contract Address: {:#x}\n\
-                Exchange Contract Address: {:#x}\n\
-                Signature Type: {:?}\n\
-                \n\
-                This may be a relayer endpoint issue, remote-signer authentication problem, or request format mismatch.\n\
-                Please verify relayer signer endpoint envs, EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN, and wallet binding.{}",
-                status, response_text, ctf_contract_address, exchange_address, self.signature_type, sig_type_hint
-            );
-        }
-
+            .await?;
         // Parse relayer response
         let relayer_response: serde_json::Value =
             serde_json::from_str(&response_text).context("Failed to parse relayer response")?;
@@ -9020,52 +8825,6 @@ impl PolymarketApi {
         Ok(format!("0x{}", hex::encode(&call_data)))
     }
 
-    async fn submit_relayer_redeem_request_with_remote_signer_headers(
-        &self,
-        relayer_submit_url: &str,
-        body_string: &str,
-        context_label: &str,
-    ) -> Result<String> {
-        let remote_headers = self
-            .request_remote_relayer_submit_headers("POST", "/submit", body_string)
-            .await?;
-
-        let response = self
-            .client
-            .post(relayer_submit_url)
-            .header("User-Agent", "polymarket-trading-bot/1.0")
-            .header("POLY_BUILDER_API_KEY", &remote_headers.relayer_api_key)
-            .header("POLY_BUILDER_TIMESTAMP", &remote_headers.relayer_timestamp)
-            .header(
-                "POLY_BUILDER_PASSPHRASE",
-                &remote_headers.relayer_passphrase,
-            )
-            .header("POLY_BUILDER_SIGNATURE", &remote_headers.relayer_signature)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .body(body_string.to_string())
-            .send()
-            .await
-            .context(format!(
-                "Failed to send {} request to relayer",
-                context_label
-            ))?;
-        let status = response.status();
-        let response_text = response
-            .text()
-            .await
-            .context("Failed to read relayer response")?;
-        if !status.is_success() {
-            anyhow::bail!(
-                "{} failed (status {}): {}",
-                context_label,
-                status,
-                &response_text[..200.min(response_text.len())]
-            );
-        }
-        Ok(response_text)
-    }
-
     async fn submit_relayer_redeem_request_with_api_key(
         &self,
         relayer_submit_url: &str,
@@ -9109,90 +8868,27 @@ impl PolymarketApi {
         &self,
         relayer_request: serde_json::Value,
         context_label: &str,
-        allow_relayer_api_key_fallback: bool,
+        _allow_relayer_api_key_fallback: bool,
     ) -> Result<RedeemResponse> {
-        const RELAYER_SUBMIT: &str = "https://relayer-v2.polymarket.com/submit";
-        let body_string = serde_json::to_string(&relayer_request)
+        let (key, address) = self.relayer_api_key_primary_credentials()?.ok_or_else(|| {
+            anyhow::anyhow!("This wallet operation requires your Polymarket RELAYER_API_KEY and RELAYER_API_KEY_ADDRESS. Configure them in wallet settings; EVPOLY onboarding is no longer used.")
+        })?;
+        let body = serde_json::to_string(&relayer_request)
             .context("Failed to serialize relayer request")?;
-
-        let response_text = if allow_relayer_api_key_fallback {
-            match self.relayer_api_key_primary_credentials() {
-                Ok(Some((relayer_api_key, relayer_api_key_address))) => {
-                    match self
-                        .submit_relayer_redeem_request_with_api_key(
-                            RELAYER_SUBMIT,
-                            body_string.as_str(),
-                            context_label,
-                            relayer_api_key.as_str(),
-                            relayer_api_key_address.as_str(),
-                        )
-                        .await
-                    {
-                        Ok(response_text) => response_text,
-                        Err(primary_err) => {
-                            warn!(
-                                "{} RELAYER_API_KEY primary submit failed; retrying with remote signer fallback: {}",
-                                context_label, primary_err
-                            );
-                            self.submit_relayer_redeem_request_with_remote_signer_headers(
-                                RELAYER_SUBMIT,
-                                body_string.as_str(),
-                                context_label,
-                            )
-                            .await
-                            .context(format!(
-                                "{} failed via RELAYER_API_KEY primary and remote signer fallback",
-                                context_label
-                            ))?
-                        }
-                    }
-                }
-                Ok(None) => self
-                    .submit_relayer_redeem_request_with_remote_signer_headers(
-                        RELAYER_SUBMIT,
-                        body_string.as_str(),
-                        context_label,
-                    )
-                    .await
-                    .context(format!(
-                        "{} RELAYER_API_KEY primary not configured; remote signer submit failed",
-                        context_label
-                    ))?,
-                Err(primary_cfg_err) => {
-                    warn!(
-                        "{} RELAYER_API_KEY primary config invalid ({}); retrying with remote signer fallback",
-                        context_label, primary_cfg_err
-                    );
-                    self.submit_relayer_redeem_request_with_remote_signer_headers(
-                        RELAYER_SUBMIT,
-                        body_string.as_str(),
-                        context_label,
-                    )
-                    .await
-                    .context(format!(
-                        "{} failed via invalid RELAYER_API_KEY primary config and remote signer fallback",
-                        context_label
-                    ))?
-                }
-            }
-        } else {
-            self.submit_relayer_redeem_request_with_remote_signer_headers(
-                RELAYER_SUBMIT,
-                body_string.as_str(),
+        let response_text = self
+            .submit_relayer_redeem_request_with_api_key(
+                "https://relayer-v2.polymarket.com/submit",
+                &body,
                 context_label,
+                &key,
+                &address,
             )
-            .await?
-        };
-
+            .await?;
         let relayer_response: serde_json::Value =
             serde_json::from_str(&response_text).context("Failed to parse relayer response")?;
         let transaction_id = relayer_response["transactionID"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing transactionID in relayer response"))?;
-        eprintln!(
-            "   ✅ {} submitted. tx_id={}",
-            context_label, transaction_id
-        );
         self.check_relayer_transaction(transaction_id).await
     }
 

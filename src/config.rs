@@ -253,7 +253,7 @@ impl EndgameExecutionConfig {
                 .unwrap_or_default();
 
         Self {
-            enable: env_bool_named("EVPOLY_STRATEGY_ENDGAME_ENABLE").unwrap_or(true),
+            enable: false,
             poll_interval_ms: env_u64_any(&["EVPOLY_ENDGAME_POLL_MS".to_string()])
                 .unwrap_or(500)
                 .max(20),

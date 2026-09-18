@@ -3190,6 +3190,7 @@ impl Trader {
     }
 
     pub async fn run_ladder_cancel_maintenance(&self) -> Result<()> {
+        self.cancel_retired_strategy_entries().await?;
         if !Self::env_bool_named("EVPOLY_PARALLEL_CANCEL_MAINTENANCE_ENABLE", true) {
             self.cancel_expired_ladder_orders().await?;
             self.cancel_expired_endgame_orders().await?;
@@ -3201,6 +3202,44 @@ impl Trader {
         );
         ladder_res?;
         endgame_res?;
+        Ok(())
+    }
+
+    async fn cancel_retired_strategy_entries(&self) -> Result<()> {
+        if self.simulation_mode {
+            return Ok(());
+        }
+        let candidates: Vec<(String, String)> = {
+            let pending = self.pending_trades.lock().await;
+            pending
+                .iter()
+                .filter(|(_, trade)| {
+                    crate::strategy::ensure_strategy_entry_enabled(&trade.strategy_id).is_err()
+                        && !trade.sold
+                        && !trade.buy_order_confirmed
+                        && !trade.redemption_abandoned
+                })
+                .filter_map(|(key, trade)| {
+                    trade.order_id.as_ref().map(|id| (key.clone(), id.clone()))
+                })
+                .collect()
+        };
+        let tracked_ids: HashSet<String> = candidates.iter().map(|(_, id)| id.clone()).collect();
+        self.apply_cancel_candidates(candidates, "retired_strategy_entry_cancel")
+            .await?;
+        if let Some(db) = &self.tracking_db {
+            let rows = db
+                .list_active_pending_orders()?
+                .into_iter()
+                .filter(|row| {
+                    row.side.eq_ignore_ascii_case("BUY")
+                        && crate::strategy::ensure_strategy_entry_enabled(&row.strategy_id).is_err()
+                        && !tracked_ids.contains(&row.order_id)
+                })
+                .collect();
+            self.cancel_db_only_pending_rows(rows, "retired_strategy_entry_cancel")
+                .await?;
+        }
         Ok(())
     }
 
@@ -5873,6 +5912,7 @@ impl Trader {
         } else {
             intent.strategy_id.trim()
         };
+        crate::strategy::ensure_strategy_entry_enabled(&strategy_id)?;
         let entry_mode = EntryExecutionMode::Endgame;
         let source_timeframe = Self::normalize_timeframe_label(source_timeframe);
         let request_id = request_id
@@ -6903,6 +6943,7 @@ impl Trader {
         let fixed_amount = self.config.fixed_trade_amount;
         let source_timeframe = Self::normalize_timeframe_label(source_timeframe);
         let strategy_id = Self::normalize_strategy_id(strategy_id);
+        crate::strategy::ensure_strategy_entry_enabled(&strategy_id)?;
         let request_id = request_id
             .map(str::trim)
             .filter(|v| !v.is_empty())

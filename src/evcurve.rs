@@ -200,7 +200,7 @@ impl EvcurveExecutionConfig {
         let min_buy_price = env_f64("EVPOLY_EVCURVE_MIN_BUY_PRICE", 0.60).clamp(0.0, 1.0);
 
         Self {
-            enable: env_bool("EVPOLY_STRATEGY_EVCURVE_ENABLE", true),
+            enable: false,
             d1_enable,
             poll_interval_ms: env_u64("EVPOLY_EVCURVE_POLL_MS", 250).max(100),
             symbols,

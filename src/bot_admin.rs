@@ -177,10 +177,6 @@ struct BotAuditFixRequest {
     issue_ids: Option<Vec<String>>,
     persist: Option<bool>,
     env_file: Option<String>,
-    run_onboard_if_needed: Option<bool>,
-    onboard_api_base: Option<String>,
-    onboard_skip_approvals: Option<bool>,
-    onboard_skip_retention_cron: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -921,7 +917,7 @@ fn normalize_strategy_slug(raw: &str) -> Option<&'static str> {
 
 fn strategy_enable_default(strategy_slug: &str) -> bool {
     match strategy_slug {
-        "premarket" | "endgame" | "evcurve" | "sessionband" | "evsnipe" => true,
+        "premarket" | "evsnipe" => true,
         _ => false,
     }
 }
@@ -1296,144 +1292,6 @@ fn is_valid_signature_type(value: u8) -> bool {
     matches!(value, 0 | 1 | 2)
 }
 
-fn resolve_heal_signature_type(ctx: &BotAdminContext) -> u8 {
-    std::env::var("POLY_SIGNATURE_TYPE")
-        .ok()
-        .and_then(|raw| raw.trim().parse::<u8>().ok())
-        .filter(|value| is_valid_signature_type(*value))
-        .or_else(|| {
-            ctx.config
-                .polymarket
-                .signature_type
-                .filter(|value| is_valid_signature_type(*value))
-        })
-        .unwrap_or(0)
-}
-
-fn resolve_heal_private_key(ctx: &BotAdminContext) -> Option<String> {
-    std::env::var("POLY_PRIVATE_KEY")
-        .ok()
-        .or_else(|| ctx.config.polymarket.private_key.clone())
-        .map(|raw| raw.trim().to_string())
-        .filter(|raw| !raw.is_empty())
-}
-
-fn resolve_heal_proxy_wallet(ctx: &BotAdminContext) -> Option<String> {
-    std::env::var("POLY_PROXY_WALLET_ADDRESS")
-        .ok()
-        .or_else(|| ctx.config.polymarket.proxy_wallet_address.clone())
-        .map(|raw| raw.trim().to_string())
-        .filter(|raw| !raw.is_empty())
-}
-
-fn is_remote_alpha_missing_issue(issue: &DoctorIssue) -> bool {
-    issue.id.starts_with("remote_alpha:") && issue.id.ends_with(":missing_config")
-}
-
-fn run_onboard_refill(
-    ctx: &BotAdminContext,
-    env_file: &str,
-    onboard_api_base: Option<&str>,
-    skip_approvals: bool,
-    skip_retention_cron: bool,
-) -> Value {
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("scripts")
-        .join("remote_onboard.py");
-    if !script.exists() {
-        return json!({
-            "ok": false,
-            "error": format!("onboard script missing: {}", script.display())
-        });
-    }
-
-    let Some(private_key) = resolve_heal_private_key(ctx) else {
-        return json!({
-            "ok": false,
-            "error": "POLY_PRIVATE_KEY is missing (env/config), cannot run onboard refill"
-        });
-    };
-    let signature_type = resolve_heal_signature_type(ctx);
-    let proxy_wallet = resolve_heal_proxy_wallet(ctx);
-    if matches!(signature_type, 1 | 2) && proxy_wallet.is_none() {
-        return json!({
-            "ok": false,
-            "error": format!(
-                "POLY_PROXY_WALLET_ADDRESS is required for signature_type={}",
-                signature_type
-            )
-        });
-    }
-
-    let mut command = Command::new("python3");
-    command
-        .arg(script.as_os_str())
-        .arg("--write-env-file")
-        .arg(env_file)
-        .arg("--signature-type")
-        .arg(signature_type.to_string())
-        .env("POLY_PRIVATE_KEY", private_key);
-    if let Some(api_base) = onboard_api_base
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        command.arg("--api-base").arg(api_base);
-    }
-    if skip_approvals {
-        command.arg("--skip-approvals");
-    }
-    if skip_retention_cron {
-        command.arg("--skip-retention-cron");
-    }
-    if let Some(proxy) = proxy_wallet.as_deref() {
-        if matches!(signature_type, 1 | 2) {
-            command.arg("--proxy-wallet").arg(proxy);
-        }
-    }
-    if let Some(repo_root) = script.parent().and_then(Path::parent) {
-        command.current_dir(repo_root);
-    }
-
-    let started_at = Instant::now();
-    match command.output() {
-        Ok(output) => {
-            let elapsed_ms = started_at.elapsed().as_millis() as u64;
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let code = output.status.code().unwrap_or(-1);
-            let ok = output.status.success();
-            let payload = json!({
-                "ok": ok,
-                "exit_code": code,
-                "elapsed_ms": elapsed_ms,
-                "env_file": env_file,
-                "signature_type": signature_type,
-                "skip_approvals": skip_approvals,
-                "skip_retention_cron": skip_retention_cron,
-                "api_base_override": onboard_api_base
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty()),
-                "stdout": truncate_for_response(stdout.as_str(), 4_000),
-                "stderr": truncate_for_response(stderr.as_str(), 2_000),
-            });
-            log_event("bot_audit_fix_onboard_refill", payload.clone());
-            payload
-        }
-        Err(err) => {
-            let payload = json!({
-                "ok": false,
-                "error": format!("failed to execute onboard refill: {}", err),
-                "env_file": env_file,
-                "signature_type": signature_type,
-                "skip_approvals": skip_approvals,
-                "skip_retention_cron": skip_retention_cron
-            });
-            log_event("bot_audit_fix_onboard_refill", payload.clone());
-            payload
-        }
-    }
-}
-
 fn pick_specs_for_scope<'a>(
     specs: &'a [BotSettingSpec],
     scope: &str,
@@ -1735,6 +1593,9 @@ fn strategy_label(strategy_slug: &str) -> &'static str {
 }
 
 fn strategy_enabled(strategy_slug: &str) -> bool {
+    if matches!(strategy_slug, "endgame" | "evcurve" | "sessionband") {
+        return false;
+    }
     strategy_enable_key(strategy_slug)
         .and_then(|key| std::env::var(key).ok())
         .and_then(|raw| parse_bool_raw(raw.as_str()))
@@ -2396,7 +2257,7 @@ async fn collect_doctor_issues(
                 "hints": [
                     "Likely /auth/derive-api-key rate limiting or invalid API credentials",
                     "Reduce submit/auth pressure (entry concurrency, cancel cadence)",
-                    "Re-run onboard if credentials/signature type are mismatched"
+                    "Check local wallet credentials and signature type"
                 ]
             })),
             auto_fixable: false,
@@ -2435,90 +2296,6 @@ async fn collect_doctor_issues(
             }),
         });
     }
-
-    let env_bool = |key: &str, default: bool| {
-        std::env::var(key)
-            .ok()
-            .and_then(|raw| parse_bool_raw(raw.as_str()))
-            .unwrap_or(default)
-    };
-    let env_missing = |key: &str| {
-        std::env::var(key)
-            .map(|raw| raw.trim().is_empty())
-            .unwrap_or(true)
-    };
-    let remote_token_missing = |key: &str| env_missing(key) && env_missing("EVPOLY_ALPHA_KEY");
-    let remote_url_has_builtin_default = |key: &str| {
-        matches!(
-            key,
-            "EVPOLY_REMOTE_ENDGAME_ALPHA_URL"
-                | "EVPOLY_REMOTE_EVCURVE_ALPHA_URL"
-                | "EVPOLY_REMOTE_MARKET_DISCOVERY_URL"
-        )
-    };
-    let endgame_alpha_required = env_bool("EVPOLY_ENDGAME_ALPHA_REQUIRED", true);
-    let mut check_remote_alpha_issue = |strategy_id: &'static str,
-                                        enable_key: &'static str,
-                                        enabled_default: bool,
-                                        url_key: &'static str,
-                                        token_key: &'static str,
-                                        required: bool| {
-        if !required || !env_bool(enable_key, enabled_default) {
-            return;
-        }
-        let mut missing_keys = Vec::<&'static str>::new();
-        if env_missing(url_key) && !remote_url_has_builtin_default(url_key) {
-            missing_keys.push(url_key);
-        }
-        if remote_token_missing(token_key) {
-            missing_keys.push(token_key);
-        }
-        if missing_keys.is_empty() {
-            return;
-        }
-        issues.push(DoctorIssue {
-            id: format!("remote_alpha:{}:missing_config", strategy_id),
-            severity: "error",
-            key: None,
-            summary: format!(
-                "{} is enabled but remote alpha config is missing ({})",
-                strategy_id,
-                missing_keys.join(", ")
-            ),
-            recommended_fix: None,
-            auto_fixable: false,
-            details: json!({
-                "strategy_id": strategy_id,
-                "strategy_enable_key": enable_key,
-                "required": required,
-                "missing_keys": missing_keys
-            }),
-        });
-    };
-    check_remote_alpha_issue(
-        STRATEGY_ID_EVCURVE_V1,
-        "EVPOLY_STRATEGY_EVCURVE_ENABLE",
-        true,
-        "EVPOLY_REMOTE_EVCURVE_ALPHA_URL",
-        "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
-        true,
-    );
-    check_remote_alpha_issue(
-        STRATEGY_ID_SESSIONBAND_V1,
-        "EVPOLY_STRATEGY_SESSIONBAND_ENABLE",
-        false,
-        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
-        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
-        false,
-    );
-    check_remote_alpha_issue(
-        STRATEGY_ID_ENDGAME_SWEEP_V1,
-        "EVPOLY_STRATEGY_ENDGAME_ENABLE",
-        true,
-        "EVPOLY_REMOTE_ENDGAME_ALPHA_URL",
-        "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
-        endgame_alpha_required,
-    );
 
     issues
 }
@@ -2702,10 +2479,7 @@ pub async fn try_handle_bot_request(
                         .and_then(|key| std::env::var(key).ok())
                         .map(|_| "env")
                         .unwrap_or("default");
-                    let enable_value = enable_key
-                        .and_then(|key| std::env::var(key).ok())
-                        .and_then(|raw| parse_bool_raw(raw.as_str()))
-                        .unwrap_or_else(|| strategy_enable_default(slug));
+                    let enable_value = strategy_enabled(slug);
                     json!({
                         "slug": slug,
                         "strategy_id": strategy_id,
@@ -2808,10 +2582,7 @@ pub async fn try_handle_bot_request(
                 .into_iter()
                 .map(|(slug, strategy_id, aliases)| {
                     let settings = strategy_settings_snapshot(slug, specs.as_slice(), config_ref);
-                    let enabled = strategy_enable_key(slug)
-                        .and_then(|key| std::env::var(key).ok())
-                        .and_then(|raw| parse_bool_raw(raw.as_str()))
-                        .unwrap_or_else(|| strategy_enable_default(slug));
+                    let enabled = strategy_enabled(slug);
                     json!({
                         "slug": slug,
                         "strategy_id": strategy_id,
@@ -2940,46 +2711,11 @@ pub async fn try_handle_bot_request(
                 )
             };
 
-            let remote_alpha_issue_ids = selected_issues
-                .iter()
-                .filter(|issue| is_remote_alpha_missing_issue(issue))
-                .map(|issue| issue.id.clone())
-                .collect::<Vec<_>>();
-            let run_onboard_requested = payload.run_onboard_if_needed.unwrap_or(false);
-            let should_run_onboard = run_onboard_requested && !remote_alpha_issue_ids.is_empty();
-            let onboard_result = if should_run_onboard {
-                Some(run_onboard_refill(
-                    ctx,
-                    env_file,
-                    payload.onboard_api_base.as_deref(),
-                    payload.onboard_skip_approvals.unwrap_or(true),
-                    payload.onboard_skip_retention_cron.unwrap_or(true),
-                ))
-            } else {
-                None
-            };
-
-            let issues_after = collect_doctor_issues(ctx, specs.as_slice()).await;
-            let remaining_remote_alpha_issue_ids = issues_after
-                .iter()
-                .filter(|issue| is_remote_alpha_missing_issue(issue))
-                .map(|issue| issue.id.clone())
-                .collect::<Vec<_>>();
-            let onboard_ok = onboard_result
-                .as_ref()
-                .and_then(|value| value.get("ok"))
-                .and_then(Value::as_bool)
-                .unwrap_or(true);
-            let overall_ok =
-                result.get("ok").and_then(Value::as_bool).unwrap_or(false) && onboard_ok;
-            let message = if !has_fix_changes && onboard_result.is_none() {
-                "no_auto_fixable_issues"
-            } else if !has_fix_changes && onboard_result.is_some() {
-                "onboard_refill_attempted"
-            } else if onboard_result.is_some() {
-                "auto_fix_applied_and_onboard_refill_attempted"
-            } else {
+            let overall_ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            let message = if has_fix_changes {
                 "auto_fix_applied"
+            } else {
+                "no_auto_fixable_issues"
             };
 
             BotHttpResponse {
@@ -2992,10 +2728,6 @@ pub async fn try_handle_bot_request(
                     "env_file": env_file,
                     "message": message,
                     "result": result,
-                    "onboard": onboard_result,
-                    "onboard_requested": run_onboard_requested,
-                    "onboard_remote_alpha_issue_ids": remote_alpha_issue_ids,
-                    "remaining_remote_alpha_issue_ids": remaining_remote_alpha_issue_ids
                 }),
             }
         }
@@ -3074,10 +2806,7 @@ pub async fn try_handle_bot_request(
                         body: json!({"ok": false, "error": "unknown_strategy"}),
                     });
                 };
-                let enabled = strategy_enable_key(slug)
-                    .and_then(|key| std::env::var(key).ok())
-                    .and_then(|raw| parse_bool_raw(raw.as_str()))
-                    .unwrap_or_else(|| strategy_enable_default(slug));
+                let enabled = strategy_enabled(slug);
                 let settings = strategy_settings_snapshot(slug, specs.as_slice(), config_ref);
                 BotHttpResponse {
                     status_code: 200,

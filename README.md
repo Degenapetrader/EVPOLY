@@ -101,79 +101,13 @@ bash scripts/verify_env_coverage.sh --env-file .env
 - Builder fees apply to all trades: 0.1% on both taker and maker fills.
 - Leave `POLY_BUILDER_CODE` blank unless you are intentionally testing an advanced override.
 - Builder fee rates are not configured locally. The CLOB validates the builder code and applies the active server-side rates at match time.
-- Relayer submit fallback uses `EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN` only for non-order proxy wallet flows such as redeem, merge, approvals, and Auto-Redeem approval toggles.
-- Shared timeframe discovery uses the configured remote discovery endpoint first, with local fallback where supported. EVSnipe discovery is local-only.
-
-## Remote Alpha/Discovery Fallbacks
-Remote endpoints still default to `https://alpha.evplus.ai/...` and retry to `https://alpha2.evplus.ai/...` on transport/timeout/429/5xx failure classes.
-
-Timeout policy currently hardcoded in runtime:
-- Premarket alpha signal: `1000ms`
-- Endgame alpha: `1000ms`
-- EVcurve alpha: `1000ms`
-- S-Band alpha: `1000ms`
-- Shared timeframe discovery: `2000ms`
-
-## Alpha Access
-Normal users do not need to request or buy an alpha key.
-
-With the official builder code unchanged, runtime auto-registers `EVPOLY_ALPHA_KEY` on first start when `EVPOLY_ALPHA_AUTO_ONBOARD=true` and `POLY_PROXY_WALLET_ADDRESS` is present. Blank per-endpoint remote tokens fall back to `EVPOLY_ALPHA_KEY`.
-
-## Advanced Remote Onboarding (Optional)
-Use this only when you need to refresh legacy remote signer/discovery values manually.
-
-Recommended helper env:
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install --upgrade requests eth-account
-```
-
-Debian 12 fallback if you do not want a venv:
-```bash
-python3 -m pip install --break-system-packages --upgrade requests eth-account
-```
-
-Run onboarding:
-```bash
-python3 scripts/remote_onboard.py \
-  --wallet "0xYOUR_EOA_WALLET" \
-  --private-key "$POLY_PRIVATE_KEY" \
-  --signature-type 1 \
-  --proxy-wallet "$POLY_PROXY_WALLET_ADDRESS" \
-  --write-env-file .env
-```
-
-Onboarding writes remote signer/discovery destinations it can populate from API runtime plus admin token defaults. Order posting stays local through the CLOB V2 SDK.
-
-Important sizing note:
-- Set strategy base-size vars explicitly:
-  - `EVPOLY_PREMARKET_BASE_SIZE_USD`
-  - `EVPOLY_ENDGAME_BASE_SIZE_USD`
-  - `EVPOLY_EVCURVE_BASE_SIZE_USD`
-  - `EVPOLY_SESSIONBAND_BASE_SIZE_USD`
-- If left blank, Premarket/EVcurve/SessionBand default to `10` USD and Endgame defaults to `50` USD.
-
-Important relayer note:
-- Redeem/merge primary path uses:
-  - `RELAYER_API_KEY`
-  - `RELAYER_API_KEY_ADDRESS`
-- If relayer API keys are not available, proxy wallet relayer flows can fall back to `EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN`.
-- Onboarding does not generate relayer credentials; you must create them manually in Polymarket.
-- Get these from:
-  `https://polymarket.com/settings?tab=api-keys`
+- Gasless proxy/safe approvals, merge and redeem require the user's own `RELAYER_API_KEY` and `RELAYER_API_KEY_ADDRESS` from [Polymarket](https://polymarket.com/settings?tab=api-keys). These are separate from locally derived CLOB trading credentials.
+- Discovery queries Polymarket directly. Premarket uses its existing local ladder policy; EVSnipe retains its existing Hit-market strategy.
+- Alpha hosts, EVPOLY AWS onboarding/signing and api-web/Magic wallet creation are no longer used. Import your existing signer private key; keep its matching wallet mode and funder address.
+- Endgame and EVCurve are retired, including for saved profiles. SessionBand remains disabled. Existing positions retain the existing close/redeem paths.
 
 ## Setup Doctor
-Run Setup Doctor when a setup looks incomplete or a remote credential was cleared:
-
-```bash
-python3 scripts/setup_doctor.py --env-file .env
-```
-
-Setup Doctor:
-- checks wallet fields, alpha self-onboarding posture, and relayer manual fields,
-- reports manual-only fields like relayer credentials as `needs_you`,
-- does not block the bot from running.
+Run `python3 scripts/setup_doctor.py --env-file .env` to check local wallet fields and optional gasless relayer credentials. It is advisory and does not gate trading on EVPOLY service credentials.
 
 ## Manual Endpoint Service
 Standalone HTTP API binary:

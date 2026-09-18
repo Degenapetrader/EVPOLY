@@ -2,7 +2,7 @@
 """EVPOLY setup doctor.
 
 Checks the current env against the baseline public V2 runtime fields that a
-healthy EVPOLY setup should have, confirms alpha self-onboarding posture, and
+healthy EVPOLY setup should have and
 reports any remaining manual fields that still need user input.
 """
 
@@ -91,8 +91,6 @@ def _collect_audit(env_path: Path) -> Dict[str, Any]:
     proxy_wallet = _env_value(env_path, "POLY_PROXY_WALLET_ADDRESS")
     relayer_key = _env_value(env_path, "RELAYER_API_KEY")
     relayer_address = _env_value(env_path, "RELAYER_API_KEY_ADDRESS")
-    alpha_key = _env_value(env_path, "EVPOLY_ALPHA_KEY")
-    alpha_auto_onboard = _parse_env_bool(_env_value(env_path, "EVPOLY_ALPHA_AUTO_ONBOARD"), True)
 
     if not private_key:
         items.append(
@@ -130,59 +128,27 @@ def _collect_audit(env_path: Path) -> Dict[str, Any]:
         blocking_missing_labels.append("Proxy Wallet")
         manual_missing_labels.append("Proxy Wallet")
 
-    if not relayer_key:
+    if signature_type in (1, 2) and not relayer_key:
         items.append(
             _status_item(
                 "RELAYER_API_KEY",
                 "Relayer API Key",
                 "missing_user",
-                "Get RELAYER_API_KEY from https://polymarket.com/settings?tab=api-keys and add it to .env. EVPOLY can still use remote signer fallback where supported.",
+                "Get RELAYER_API_KEY from https://polymarket.com/settings?tab=api-keys and add it to .env. These credentials are required for gasless approvals, merge, and redeem; order signing remains local.",
             )
         )
         manual_missing_labels.append("Relayer API Key")
 
-    if not relayer_address:
+    if signature_type in (1, 2) and not relayer_address:
         items.append(
             _status_item(
                 "RELAYER_API_KEY_ADDRESS",
                 "Relayer API Key Address",
                 "missing_user",
-                "Get RELAYER_API_KEY_ADDRESS from https://polymarket.com/settings?tab=api-keys and add it to .env. EVPOLY can still use remote signer fallback where supported.",
+                "Get RELAYER_API_KEY_ADDRESS from https://polymarket.com/settings?tab=api-keys and add it to .env. These credentials are required for gasless approvals, merge, and redeem; order signing remains local.",
             )
         )
         manual_missing_labels.append("Relayer API Key Address")
-
-    if alpha_key:
-        items.append(
-            _status_item(
-                "EVPOLY_ALPHA_KEY",
-                "Alpha Access",
-                "ok",
-                "EVPOLY_ALPHA_KEY is already present.",
-            )
-        )
-    elif alpha_auto_onboard:
-        items.append(
-            _status_item(
-                "EVPOLY_ALPHA_KEY",
-                "Alpha Access",
-                "ok",
-                (
-                    "EVPOLY_ALPHA_KEY is blank; runtime will auto-register it on first start "
-                    "when POLY_PROXY_WALLET_ADDRESS and the official builder code are present."
-                ),
-            )
-        )
-    else:
-        items.append(
-            _status_item(
-                "EVPOLY_ALPHA_KEY",
-                "Alpha Access",
-                "missing_user",
-                "Set EVPOLY_ALPHA_KEY manually or set EVPOLY_ALPHA_AUTO_ONBOARD=true.",
-            )
-        )
-        manual_missing_labels.append("Alpha Access")
 
     if not items:
         items.append(
@@ -214,7 +180,7 @@ def _popup_for_needs_you(audit: Dict[str, Any], relayer_only: bool) -> Dict[str,
             "body": (
                 "Get RELAYER_API_KEY and RELAYER_API_KEY_ADDRESS from "
                 "https://polymarket.com/settings?tab=api-keys and add them to .env. "
-                "EVPOLY can still use remote signer fallback where supported."
+                "These credentials are required for gasless approvals, merge, and redeem; order signing remains local."
             ),
         }
     missing = _missing_sentence(audit["manual_missing_labels"])
@@ -225,7 +191,7 @@ def _popup_for_needs_you(audit: Dict[str, Any], relayer_only: bool) -> Dict[str,
         }
     return {
         "title": "Finish Setup Doctor",
-        "body": "Setup Doctor finished, but some baseline remote credentials are still missing.",
+        "body": "Setup Doctor finished, but some wallet fields are still missing.",
     }
 
 

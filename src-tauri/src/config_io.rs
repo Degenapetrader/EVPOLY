@@ -224,7 +224,11 @@ pub fn generate_env_file(
 
     // Old profile secrets and custom strategy settings must not restore retired services.
     env_map.retain(|key, _| !removed_service_key(key));
-    for key in ["EVPOLY_STRATEGY_ENDGAME_ENABLE", "EVPOLY_STRATEGY_EVCURVE_ENABLE", "EVPOLY_STRATEGY_SESSIONBAND_ENABLE"] {
+    for key in [
+        "EVPOLY_STRATEGY_ENDGAME_ENABLE",
+        "EVPOLY_STRATEGY_EVCURVE_ENABLE",
+        "EVPOLY_STRATEGY_SESSIONBAND_ENABLE",
+    ] {
         env_map.insert(key.to_string(), "false".to_string());
     }
 
@@ -258,7 +262,9 @@ pub fn generate_env_file(
             continue;
         }
         if let Some((key, _)) = trimmed.split_once('=') {
-            if removed_service_key(key) { continue; }
+            if removed_service_key(key) {
+                continue;
+            }
             if let Some(val) = env_map.get(key) {
                 output.push_str(&format!("{key}={val}\n"));
             } else {
@@ -446,17 +452,31 @@ mod tests {
             "EVPOLY_REMOTE_MARKET_DISCOVERY_URL": "https://removed.invalid/discovery"
         });
         let mut secrets = HashMap::new();
-        for key in ["EVPOLY_ALPHA_KEY", "EVPOLY_RELAYER_SUBMIT_SIGNER_URL", "EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN", "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN"] {
+        for key in [
+            "EVPOLY_ALPHA_KEY",
+            "EVPOLY_RELAYER_SUBMIT_SIGNER_URL",
+            "EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN",
+            "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
+        ] {
             secrets.insert(key.to_string(), "obsolete".to_string());
         }
-        secrets.insert("RELAYER_API_KEY".to_string(), "user-owned-test-key".to_string());
-        secrets.insert("POLY_PRIVATE_KEY".to_string(), "preserved-test-key".to_string());
-        let dir = std::env::temp_dir().join(format!("evpoly-retired-services-{}", std::process::id()));
+        secrets.insert(
+            "RELAYER_API_KEY".to_string(),
+            "user-owned-test-key".to_string(),
+        );
+        secrets.insert(
+            "POLY_PRIVATE_KEY".to_string(),
+            "preserved-test-key".to_string(),
+        );
+        let dir =
+            std::env::temp_dir().join(format!("evpoly-retired-services-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = generate_env_file(&profile, &secrets, &dir).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         for line in text.lines().filter(|line| !line.starts_with('#')) {
-            if let Some((key, _)) = line.split_once('=') { assert!(!super::removed_service_key(key), "{key}"); }
+            if let Some((key, _)) = line.split_once('=') {
+                assert!(!super::removed_service_key(key), "{key}");
+            }
         }
         for key in ["ENDGAME", "EVCURVE", "SESSIONBAND"] {
             assert!(text.contains(&format!("EVPOLY_STRATEGY_{key}_ENABLE=false")));
@@ -497,8 +517,6 @@ mod tests {
         assert_eq!(config["polymarket"]["signature_type"], 2);
         assert_eq!(config["trading"]["order_ttl_seconds"], 1200);
     }
-
-
 
     #[test]
     fn generate_env_file_drops_obsolete_premarket_remote_alpha_fields() {
@@ -663,5 +681,12 @@ mod tests {
 pub(crate) fn removed_service_key(key: &str) -> bool {
     key.starts_with("EVPOLY_ALPHA_")
         || key.starts_with("EVPOLY_REMOTE_") && (key.contains("ALPHA") || key.contains("DISCOVERY"))
-        || matches!(key, "EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN" | "EVPOLY_RELAYER_SUBMIT_SIGNER_URL" | "EVPOLY_REMOTE_SIGNER_TOKEN" | "EVPOLY_REMOTE_SIGNER_URL" | "EVPOLY_DESKTOP_MAGIC_BRIDGE_BASE_URL")
+        || matches!(
+            key,
+            "EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN"
+                | "EVPOLY_RELAYER_SUBMIT_SIGNER_URL"
+                | "EVPOLY_REMOTE_SIGNER_TOKEN"
+                | "EVPOLY_REMOTE_SIGNER_URL"
+                | "EVPOLY_DESKTOP_MAGIC_BRIDGE_BASE_URL"
+        )
 }

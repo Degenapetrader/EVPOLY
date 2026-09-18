@@ -1340,14 +1340,20 @@ fn bound_wallet_for_config(config: &DesktopConfig, eoa_wallet: &str) -> Result<S
 fn wallet_binding_for_config(config: &DesktopConfig, eoa_wallet: &str) -> Result<String, String> {
     let bound_wallet = bound_wallet_for_config(config, eoa_wallet)?;
     use sha2::{Digest, Sha256};
-    let normalized = format!("{}|{}|{}", eoa_wallet.trim().to_ascii_lowercase(), config.sig_type, bound_wallet.trim().to_ascii_lowercase());
-    Ok(alloy_primitives::hex::encode(Sha256::digest(normalized.as_bytes())))
+    let normalized = format!(
+        "{}|{}|{}",
+        eoa_wallet.trim().to_ascii_lowercase(),
+        config.sig_type,
+        bound_wallet.trim().to_ascii_lowercase()
+    );
+    Ok(alloy_primitives::hex::encode(Sha256::digest(
+        normalized.as_bytes(),
+    )))
 }
 
 fn clean_relayer_remote_signer_token(config: &DesktopConfig) -> String {
     config.relayer_remote_signer_token.trim().to_string()
 }
-
 
 fn wallet_mode_needs_approval_status(signature_type: u8) -> bool {
     matches!(signature_type, 1 | 2 | 3)
@@ -1356,8 +1362,6 @@ fn wallet_mode_needs_approval_status(signature_type: u8) -> bool {
 fn is_magic_managed_profile_name(name: &str) -> bool {
     name.trim_start().starts_with("Magic ")
 }
-
-
 
 fn distinct_order_signer_primary_token(remote_signer_token: &str, primary_token: &str) -> String {
     let remote = remote_signer_token.trim();
@@ -1735,8 +1739,6 @@ fn ensure_admin_api_token(value: &str) -> String {
         trimmed.to_string()
     }
 }
-
-
 
 fn polymarket_bridge_base_url() -> String {
     std::env::var("POLYMARKET_BRIDGE_URL")
@@ -4806,13 +4808,23 @@ fn restart_bot_with_runtime_paths(
 }
 
 async fn ensure_local_wallet_config(config: &mut DesktopConfig) -> Result<Vec<String>, String> {
-    if config.private_key.trim().is_empty() { return Ok(Vec::new()); }
-    if !matches!(config.sig_type, 0..=3) { return Err("Invalid wallet mode".to_string()); }
+    if config.private_key.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    if !matches!(config.sig_type, 0..=3) {
+        return Err("Invalid wallet mode".to_string());
+    }
     let eoa = wallet_address_from_private_key(config.private_key.as_str())?;
     let binding = wallet_binding_for_config(config, &eoa)?;
     let mut changed = Vec::new();
-    if config.eoa_wallet != eoa { config.eoa_wallet = eoa; changed.push("eoa_wallet".to_string()); }
-    if config.wallet_binding != binding { config.wallet_binding = binding; changed.push("wallet_binding".to_string()); }
+    if config.eoa_wallet != eoa {
+        config.eoa_wallet = eoa;
+        changed.push("eoa_wallet".to_string());
+    }
+    if config.wallet_binding != binding {
+        config.wallet_binding = binding;
+        changed.push("wallet_binding".to_string());
+    }
     Ok(changed)
 }
 
@@ -6129,12 +6141,6 @@ fn open_logs_folder(data_dir: State<'_, AppDataDir>) -> Result<(), String> {
 
 // ── Onboard ──────────────────────────────────────────────────────────
 
-
-
-
-
-
-
 // ── App entry ────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -6367,14 +6373,13 @@ pub fn run() {
 mod tests {
     use super::{
         active_profile_bot_state, activity_trade_price, default_desktop_config,
-        desktop_config_to_profile_payload,
-        gamma_market_metadata_batch_url, merge_config_object, merge_desktop_secrets,
-        polymarket_funders_from_private_key, profile_to_desktop_config,
-        remove_legacy_premarket_ladder_keys,
-        simulation_mode_from_profile, DesktopConfig, PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY,
-        PREMARKET_LADDER_MODE_ENV_KEY_5M, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5,
-        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY, PREMARKET_LADDER_MODE_ENV_KEY_SHARED,
-        PREMARKET_SAFE_BIAS_PCT_ENV_KEY, WEEKEND_POLICY_ENV_KEY,
+        desktop_config_to_profile_payload, gamma_market_metadata_batch_url, merge_config_object,
+        merge_desktop_secrets, polymarket_funders_from_private_key, profile_to_desktop_config,
+        remove_legacy_premarket_ladder_keys, simulation_mode_from_profile, DesktopConfig,
+        PREMARKET_AGGRESSIVE_BIAS_PCT_ENV_KEY, PREMARKET_LADDER_MODE_ENV_KEY_5M,
+        PREMARKET_LADDER_MODE_ENV_KEY_NON_M5, PREMARKET_LADDER_MODE_ENV_KEY_NON_M5_LEGACY,
+        PREMARKET_LADDER_MODE_ENV_KEY_SHARED, PREMARKET_SAFE_BIAS_PCT_ENV_KEY,
+        WEEKEND_POLICY_ENV_KEY,
     };
     use crate::{auth::AppAuth, config_io, profile_manager::Profile};
     use std::collections::HashMap;
@@ -6440,7 +6445,6 @@ mod tests {
         assert!(url.contains("limit=2"));
         assert!(!url.contains("0xaaa%2C0xbbb"));
     }
-
 
     #[test]
     fn imported_deposit_profile_does_not_use_magic_reconcile_gate() {

@@ -54,7 +54,7 @@ export const STRATEGIES = [
 ] as const;
 
 export const VISIBLE_STRATEGIES = STRATEGIES.filter(
-  (strategy) => strategy.key !== "mm_rewards" && strategy.key !== "session_band"
+  (strategy) => !["mm_rewards", "session_band", "endgame", "evcurve"].includes(strategy.key)
 );
 
 export type StrategyKey = (typeof STRATEGIES)[number]["key"];
@@ -356,7 +356,7 @@ export const DEFAULT_CONFIG: BotConfig = {
   strategies: {
     premarket: true,
     endgame: false,
-    evcurve: true,
+    evcurve: false,
     session_band: false,
     evsnipe: true,
     mm_rewards: false,
@@ -447,6 +447,8 @@ export function mergeConfig(saved: Partial<BotConfig> | null | undefined): BotCo
     strategies: {
       ...DEFAULT_CONFIG.strategies,
       ...saved?.strategies,
+      endgame: false,
+      evcurve: false,
       session_band: false,
       mm_rewards: false,
     },

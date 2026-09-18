@@ -200,16 +200,6 @@ pub fn generate_env_file(
         env_map.remove(key);
     }
 
-    let shared_alpha_token = [
-        "EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN",
-        "EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN",
-        "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN",
-        "EVPOLY_REMOTE_MARKET_DISCOVERY_TOKEN",
-        "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
-    ]
-    .iter()
-    .find_map(|key| nonempty_map_value(&env_map, key));
-
     if env_map
         .get("POLY_POLYGON_RPC_HTTP_URL")
         .map(|value| value.trim().is_empty() || value.trim() == "https://1rpc.io/matic")
@@ -232,24 +222,14 @@ pub fn generate_env_file(
         );
     }
 
-    if env_map
-        .get("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN")
-        .map(|value| value.trim().is_empty())
-        .unwrap_or(true)
-    {
-        if let Some(shared_token) = shared_alpha_token.clone() {
-            env_map.insert("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN".into(), shared_token);
-        }
-    }
-
-    if env_map
-        .get("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN")
-        .map(|value| value.trim().is_empty())
-        .unwrap_or(true)
-    {
-        if let Some(shared_token) = shared_alpha_token {
-            env_map.insert("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN".into(), shared_token);
-        }
+    // Old profile secrets and custom strategy settings must not restore retired services.
+    env_map.retain(|key, _| !removed_service_key(key));
+    for key in [
+        "EVPOLY_STRATEGY_ENDGAME_ENABLE",
+        "EVPOLY_STRATEGY_EVCURVE_ENABLE",
+        "EVPOLY_STRATEGY_SESSIONBAND_ENABLE",
+    ] {
+        env_map.insert(key.to_string(), "false".to_string());
     }
 
     // Keep MM rewards selection mode explicit so all core codepaths and telemetry
@@ -282,6 +262,9 @@ pub fn generate_env_file(
             continue;
         }
         if let Some((key, _)) = trimmed.split_once('=') {
+            if removed_service_key(key) {
+                continue;
+            }
             if let Some(val) = env_map.get(key) {
                 output.push_str(&format!("{key}={val}\n"));
             } else {
@@ -460,6 +443,51 @@ mod tests {
     }
 
     #[test]
+    fn saved_profiles_cannot_restore_retired_services_or_strategies() {
+        let mut profile = sample_profile();
+        profile.strategy_config = serde_json::json!({
+            "EVPOLY_STRATEGY_ENDGAME_ENABLE": true,
+            "EVPOLY_STRATEGY_EVCURVE_ENABLE": true,
+            "EVPOLY_STRATEGY_SESSIONBAND_ENABLE": true,
+            "EVPOLY_REMOTE_MARKET_DISCOVERY_URL": "https://removed.invalid/discovery"
+        });
+        let mut secrets = HashMap::new();
+        for key in [
+            "EVPOLY_ALPHA_KEY",
+            "EVPOLY_RELAYER_SUBMIT_SIGNER_URL",
+            "EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN",
+            "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_TOKEN",
+        ] {
+            secrets.insert(key.to_string(), "obsolete".to_string());
+        }
+        secrets.insert(
+            "RELAYER_API_KEY".to_string(),
+            "user-owned-test-key".to_string(),
+        );
+        secrets.insert(
+            "POLY_PRIVATE_KEY".to_string(),
+            "preserved-test-key".to_string(),
+        );
+        let dir =
+            std::env::temp_dir().join(format!("evpoly-retired-services-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = generate_env_file(&profile, &secrets, &dir).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        for line in text.lines().filter(|line| !line.starts_with('#')) {
+            if let Some((key, _)) = line.split_once('=') {
+                assert!(!super::removed_service_key(key), "{key}");
+            }
+        }
+        for key in ["ENDGAME", "EVCURVE", "SESSIONBAND"] {
+            assert!(text.contains(&format!("EVPOLY_STRATEGY_{key}_ENABLE=false")));
+        }
+        assert!(text.contains("RELAYER_API_KEY=user-owned-test-key"));
+        assert!(text.contains("POLY_PRIVATE_KEY=preserved-test-key"));
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
     fn build_config_json_includes_required_runtime_fields() {
         let config = build_config_json(&sample_profile());
 
@@ -488,92 +516,6 @@ mod tests {
         assert_eq!(config["polymarket"]["api_key"], "");
         assert_eq!(config["polymarket"]["signature_type"], 2);
         assert_eq!(config["trading"]["order_ttl_seconds"], 1200);
-    }
-
-    #[test]
-    fn core_env_template_uses_current_remote_alpha_routes() {
-        let defaults = super::core_env_defaults();
-        let expected = [
-            (
-                "EVPOLY_REMOTE_MARKET_DISCOVERY_URL",
-                "https://alpha.evplus.ai/v1/discovery/timeframe",
-            ),
-            (
-                "EVPOLY_REMOTE_ENDGAME_ALPHA_URL",
-                "https://alpha.evplus.ai/v1/alpha/endgame/policy",
-            ),
-            (
-                "EVPOLY_REMOTE_EVCURVE_ALPHA_URL",
-                "https://alpha.evplus.ai/v1/alpha/evcurve",
-            ),
-            (
-                "EVPOLY_REMOTE_SESSIONBAND_ALPHA_URL",
-                "https://alpha.evplus.ai/v1/alpha/sessionband",
-            ),
-            (
-                "EVPOLY_REMOTE_EVSNIPE_DISCOVERY_URL",
-                "https://alpha.evplus.ai/v1/discovery/evsnipe",
-            ),
-        ];
-
-        for (key, url) in expected {
-            assert_eq!(defaults.get(key).map(String::as_str), Some(url), "{key}");
-        }
-        assert_eq!(
-            defaults
-                .get("EVPOLY_PREMARKET_LADDER_MODE_5M")
-                .map(String::as_str),
-            Some("normal")
-        );
-        assert_eq!(
-            defaults
-                .get("EVPOLY_PREMARKET_LADDER_MODE_NON_M5")
-                .map(String::as_str),
-            Some("normal")
-        );
-        assert_eq!(
-            defaults
-                .get("EVPOLY_PREMARKET_SAFE_BIAS_PCT")
-                .map(String::as_str),
-            Some("-10")
-        );
-        assert_eq!(
-            defaults
-                .get("EVPOLY_PREMARKET_AGGRESSIVE_BIAS_PCT")
-                .map(String::as_str),
-            Some("10")
-        );
-    }
-
-    #[test]
-    fn generate_env_file_reuses_shared_alpha_token_for_missing_strategy_tokens() {
-        let profile = sample_profile();
-        let mut secrets = HashMap::new();
-        secrets.insert(
-            "EVPOLY_REMOTE_ENDGAME_ALPHA_TOKEN".to_string(),
-            "shared-alpha-token".to_string(),
-        );
-
-        let temp_dir =
-            std::env::temp_dir().join(format!("evpoly-config-io-test-{}", std::process::id()));
-        std::fs::create_dir_all(&temp_dir).expect("create temp dir");
-
-        let env_path = generate_env_file(&profile, &secrets, &temp_dir).expect("generate env");
-        let content = std::fs::read_to_string(&env_path).expect("read env");
-
-        assert!(content.contains("POLY_POLYGON_RPC_HTTP_URL=https://1rpc.io/matic"));
-        assert!(content.contains("POLY_POLYGON_RPC_HTTP_FALLBACK_URL=https://polygon-rpc.com"));
-        assert!(content
-            .contains("POLY_PROXY_WALLET_ADDRESS=0x2222222222222222222222222222222222222222"));
-        assert!(content.contains("POLY_DEPOSIT_WALLET_ADDRESS="));
-        assert!(content
-            .contains("POLY_FUNDER_WALLET_ADDRESS=0x2222222222222222222222222222222222222222"));
-        assert!(content.contains("EVPOLY_REMOTE_EVCURVE_ALPHA_TOKEN=shared-alpha-token"));
-        assert!(content.contains("EVPOLY_REMOTE_SESSIONBAND_ALPHA_TOKEN=shared-alpha-token"));
-        assert!(content.contains("EVPOLY_MM_MARKET_MODE=auto"));
-
-        let _ = std::fs::remove_file(env_path);
-        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[test]
@@ -734,4 +676,17 @@ mod tests {
         let _ = std::fs::remove_file(env_path);
         let _ = std::fs::remove_dir_all(temp_dir);
     }
+}
+
+pub(crate) fn removed_service_key(key: &str) -> bool {
+    key.starts_with("EVPOLY_ALPHA_")
+        || key.starts_with("EVPOLY_REMOTE_") && (key.contains("ALPHA") || key.contains("DISCOVERY"))
+        || matches!(
+            key,
+            "EVPOLY_RELAYER_REMOTE_SIGNER_TOKEN"
+                | "EVPOLY_RELAYER_SUBMIT_SIGNER_URL"
+                | "EVPOLY_REMOTE_SIGNER_TOKEN"
+                | "EVPOLY_REMOTE_SIGNER_URL"
+                | "EVPOLY_DESKTOP_MAGIC_BRIDGE_BASE_URL"
+        )
 }

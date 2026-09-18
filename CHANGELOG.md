@@ -1,5 +1,12 @@
 # EVPoly Linux Changelog
 
+## 2.6.3 — 2026-09-18
+
+- Remove Alpha and EVPOLY hosted onboarding/signing dependencies. Use direct Polymarket discovery and local private-key signing.
+- Retire Endgame and EVCurve for new and existing profiles. Preserve Hit-only EVSnipe, builder attribution and license.
+- Desktop/Linux use private-key import only, remove Magic creation and the fee banner, and retain the release update banner.
+- Gasless approvals, merge and redeem now require user-owned Polymarket relayer API credentials.
+
 ## Linux-v2.6.2 - 2026-07-22
 - Bumped Linux app/updater version to 2.6.2.
 - Repinned the bundled runtime sidecar to runtime `v2.6.2` (`10eb5b5`) with nullable/missing Polymarket market-tag handling and refreshed patch dependencies.

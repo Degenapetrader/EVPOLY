@@ -8,13 +8,19 @@ Cross-platform desktop app for the EVPoly trading bot. Built with Tauri v2 + Rea
 - X: [https://x.com/EVplusAI](https://x.com/EVplusAI)
 - GitHub: [https://github.com/Degenapetrader/EVPOLY](https://github.com/Degenapetrader/EVPOLY)
 
+## Local wallet setup
+
+Import an existing signer private key and preserve its matching wallet mode and funder address. Alpha services, EVPOLY AWS onboarding/signing and the Magic/api-web wallet bridge are no longer used. Gasless Proxy/Safe approvals, merge and redeem require your own Polymarket `RELAYER_API_KEY` and `RELAYER_API_KEY_ADDRESS`. CLOB trading credentials are derived locally.
+
+Endgame and EVCurve are retired, including saved profiles; SessionBand remains disabled. Premarket, Hit-only EVSnipe and MM 2.0 remain available. Builder attribution and license are unchanged.
+
 ## Setup Doctor
 
-Use the `Doctor` button on Home when a profile looks incomplete or a remote token was cleared.
+Use the `Doctor` button on Home when a profile looks incomplete or wallet details have changed.
 
 Setup Doctor:
 - checks the baseline setup fields a healthy EVPoly profile should have,
-- regenerates every remote credential onboarding can provide,
+- validates the imported private key and derives wallet identity locally,
 - reports manual-only items like relayer credentials as `needs_you`,
 - never blocks the bot from running.
 

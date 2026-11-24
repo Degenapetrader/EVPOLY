@@ -2,6 +2,8 @@
 
 EVPoly is a Rust trading engine for Polymarket with multiple strategy loops, shared arbiter/risk enforcement, persistent tracking (`tracking.db`), remote alpha integrations, and a standalone manual execution API.
 
+**Hosted option:** [EVPLUS](https://www.evplus.ai/) runs a Polymarket trading bot for you 24/7, no server needed, from your own wallet with a trade-only key that cannot withdraw. Its last 30 days, after fees and losses included, are public on the [Track Record](https://www.evplus.ai/track-record).
+
 Work best on VULTR VPS, Recommended 2 vCPU and 4GB RAM, server Amsterdam
 
 $300 free credit: https://www.vultr.com/?ref=9750476
